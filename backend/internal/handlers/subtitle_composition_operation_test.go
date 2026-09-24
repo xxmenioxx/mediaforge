@@ -128,3 +128,96 @@ func TestSubtitleCompositionPublicationBarrierRejectsCancelledBeforeCommit(t *te
 	delete(subtitleExtractionOperations.items, operationID)
 	subtitleExtractionOperations.Unlock()
 }
+
+func TestSubtitleCompositionOperationRevalidatesFrozenSourcesAtPublicationBoundary(t *testing.T) {
+	directory := t.TempDir()
+	request := compositionOperationRequestFixture(t, directory)
+	originalHook := subtitleCompositionBeforePublicationHook
+	defer func() { subtitleCompositionBeforePublicationHook = originalHook }()
+	subtitleCompositionBeforePublicationHook = func() {
+		path := strings.TrimPrefix(request.Supplementals[0].Source.Identity, "external:")
+		if err := os.WriteFile(path, []byte("changed at publication boundary"), 0o644); err != nil {
+			t.Fatalf("change frozen supplemental: %v", err)
+		}
+	}
+	operationID, err := startSubtitleCompositionOperation(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := waitForSubtitleCompositionOperation(t, operationID)
+	if operation.Status != "error" || !strings.Contains(operation.Error, "stale_source") {
+		t.Fatalf("publication-boundary stale source was not rejected: %#v", operation)
+	}
+	if _, statErr := os.Stat(request.OutputPath); !os.IsNotExist(statErr) {
+		t.Fatalf("stale publication left canonical output: %v", statErr)
+	}
+	if _, statErr := os.Stat(strings.TrimSuffix(request.OutputPath, filepath.Ext(request.OutputPath)) + ".fonts"); !os.IsNotExist(statErr) {
+		t.Fatalf("stale publication left attachment directory: %v", statErr)
+	}
+}
+
+func TestSubtitleCompositionAttachmentPublicationIsAtomicAndUsesExistingArtifactBoundary(t *testing.T) {
+	directory := t.TempDir()
+	stage := filepath.Join(directory, "stage.ass")
+	fontStage := filepath.Join(directory, "stage.font.ttf")
+	output := filepath.Join(directory, "output.ass")
+	if err := os.WriteFile(stage, []byte("ASS"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fontStage, []byte("font"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	view := &subtitleCompositionOperationView{OutputIdentity: "identity", OutputPath: output, Provenance: SubtitleCompositionProvenance{AttachmentDecisions: []SubtitleCompositionAttachmentDecision{{SafeName: "Font.ttf", Action: "added"}}}}
+	staged := []subtitleCompositionStagedAttachment{{Path: fontStage, SafeName: "Font.ttf", Decision: SubtitleCompositionAttachmentDecision{OriginalName: "Font.ttf", SafeName: "Font.ttf", Digest: "digest", Action: "added"}}}
+	if err := publishSubtitleCompositionUnit("subtitle-compose-attachment", context.Background(), subtitleCompositionOperationRequest{OutputPath: output, OutputIdentity: "identity"}, stage, output, view, staged); err != nil {
+		t.Fatal(err)
+	}
+	fontPath := filepath.Join(strings.TrimSuffix(output, filepath.Ext(output))+".fonts", "Font.ttf")
+	if _, err := os.Stat(output); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := os.ReadFile(fontPath); err != nil || string(content) != "font" {
+		t.Fatalf("published font attachment=%q err=%v", content, err)
+	}
+
+	cancelStage := filepath.Join(directory, "cancel.ass")
+	cancelFont := filepath.Join(directory, "cancel.ttf")
+	cancelOutput := filepath.Join(directory, "cancel-output.ass")
+	_ = os.WriteFile(cancelStage, []byte("ASS"), 0o644)
+	_ = os.WriteFile(cancelFont, []byte("font"), 0o644)
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := publishSubtitleCompositionUnit("subtitle-compose-cancel-attachment", cancelCtx, subtitleCompositionOperationRequest{OutputPath: cancelOutput, OutputIdentity: "cancel"}, cancelStage, cancelOutput, &subtitleCompositionOperationView{OutputIdentity: "cancel"}, []subtitleCompositionStagedAttachment{{Path: cancelFont, SafeName: "Font.ttf", Decision: SubtitleCompositionAttachmentDecision{SafeName: "Font.ttf", Digest: "cancel", Action: "added"}}}); err == nil {
+		t.Fatal("cancelled attachment publication crossed the barrier")
+	}
+	if _, err := os.Stat(cancelOutput); !os.IsNotExist(err) {
+		t.Fatalf("cancelled attachment publication left ASS: %v", err)
+	}
+	cancelFontPath := filepath.Join(strings.TrimSuffix(cancelOutput, filepath.Ext(cancelOutput))+".fonts", "Font.ttf")
+	if _, err := os.Stat(cancelFontPath); !os.IsNotExist(err) {
+		t.Fatalf("cancelled attachment publication left font: %v", err)
+	}
+
+	failureStage := filepath.Join(directory, "failure.ass")
+	failureFont := filepath.Join(directory, "failure.ttf")
+	failureOutput := filepath.Join(directory, "failure-output.ass")
+	_ = os.WriteFile(failureStage, []byte("ASS"), 0o644)
+	_ = os.WriteFile(failureFont, []byte("new-font"), 0o644)
+	failureDir := strings.TrimSuffix(failureOutput, filepath.Ext(failureOutput)) + ".fonts"
+	if err := os.MkdirAll(failureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existingFont := filepath.Join(failureDir, "Font.ttf")
+	if err := os.WriteFile(existingFont, []byte("existing-font"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishSubtitleCompositionUnit("subtitle-compose-failure-attachment", context.Background(), subtitleCompositionOperationRequest{OutputPath: failureOutput, OutputIdentity: "failure"}, failureStage, failureOutput, &subtitleCompositionOperationView{OutputIdentity: "failure"}, []subtitleCompositionStagedAttachment{{Path: failureFont, SafeName: "Font.ttf", Decision: SubtitleCompositionAttachmentDecision{SafeName: "Font.ttf", Digest: "failure", Action: "added"}}}); err == nil {
+		t.Fatal("attachment collision did not fail closed")
+	}
+	if _, err := os.Stat(failureOutput); !os.IsNotExist(err) {
+		t.Fatalf("failed attachment publication left ASS: %v", err)
+	}
+	if content, err := os.ReadFile(existingFont); err != nil || string(content) != "existing-font" {
+		t.Fatalf("failed attachment publication damaged existing font=%q err=%v", content, err)
+	}
+}

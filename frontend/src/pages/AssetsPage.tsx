@@ -66,7 +66,7 @@ import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -2574,6 +2574,8 @@ function AssetRow({
   const [subtitleQualityMessages, setSubtitleQualityMessages] = useState<Record<string, string>>({});
   const [subtitleRestyleMessages, setSubtitleRestyleMessages] = useState<Record<string, string>>({});
   const [subtitleRestyleOperations, setSubtitleRestyleOperations] = useState<Record<string, SubtitleRestyleOperationState>>({});
+  const [subtitleCompositionOperation, setSubtitleCompositionOperation] = useState<SubtitleExtractionOperation | null>(null);
+  const [subtitleCompositionError, setSubtitleCompositionError] = useState('');
   const [translationSource, setTranslationSource] = useState<SubtitleTranslationSourceSelector | null>(null);
   const subtitleOperationPollers = useRef<Set<string>>(new Set());
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
@@ -3195,6 +3197,20 @@ async function restoreSubtitleOperations() {
     );
 
     for (const operation of runningOperations) {
+      if (operation.kind === 'compose') {
+        setSubtitleCompositionOperation(operation);
+        void waitForSubtitleOperation(
+          operation.id,
+          'composition',
+          -1,
+          'ass',
+			(operationUpdate) => setSubtitleCompositionOperation(operationUpdate),
+          api.subtitleOperation,
+        ).catch((error) => {
+          setSubtitleCompositionOperation((current) => current ? { ...current, status: 'error', error: error instanceof Error ? error.message : 'Subtitle composition failed.', retryable: true } : current);
+        });
+        continue;
+      }
       const format = operation.format;
       if (format === 'both') {
         continue;
@@ -3229,6 +3245,78 @@ async function restoreSubtitleOperations() {
       'Failed to restore subtitle extraction operations',
       error,
     );
+  }
+}
+
+async function composeSubtitles(input: SubtitleCompositionInput) {
+  if (subtitleCompositionOperation?.status === 'running') return;
+  setSubtitleCompositionError('');
+  try {
+    const started = await api.composeSubtitles(input);
+    const initial: SubtitleExtractionOperation = {
+      id: started.operationId,
+      assetPath: asset.path,
+      status: 'running',
+      phase: started.phase,
+      progress: started.progress,
+      processed: 0,
+      total: 0,
+      streamIndex: -1,
+      format: 'ass',
+      kind: 'compose',
+      message: 'Starting subtitle composition…',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    setSubtitleCompositionOperation(initial);
+    await waitForSubtitleOperation(
+      started.operationId,
+      'composition',
+      -1,
+      'ass',
+      (operation) => setSubtitleCompositionOperation(operation),
+      api.subtitleOperation,
+    );
+    await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+    await queryClient.invalidateQueries({ queryKey: ['subtitleEligibility', asset.path] });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Subtitle composition failed.';
+    setSubtitleCompositionError(message);
+    setSubtitleCompositionOperation((current) => current ? { ...current, status: 'error', error: message, retryable: true } : current);
+  }
+}
+
+async function cancelSubtitleComposition() {
+  const operation = subtitleCompositionOperation;
+  if (!operation || operation.status !== 'running') return;
+  const operationId = operation.id;
+  try {
+    const cancelled = await api.cancelSubtitleOperation(operationId);
+    setSubtitleCompositionOperation(cancelled);
+  } catch (error) {
+    setSubtitleCompositionError(error instanceof Error ? error.message : 'Unable to cancel subtitle composition.');
+  }
+}
+
+async function retrySubtitleComposition() {
+  const operation = subtitleCompositionOperation;
+  if (!operation || !operation.retryable) return;
+  setSubtitleCompositionError('');
+  try {
+    const retried = await api.retrySubtitleOperation(operation.id);
+    setSubtitleCompositionOperation(retried.operation);
+    await waitForSubtitleOperation(
+      retried.operation.id,
+      'composition',
+      -1,
+      'ass',
+      (operationUpdate) => setSubtitleCompositionOperation(operationUpdate),
+      api.subtitleOperation,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Subtitle composition retry failed.';
+    setSubtitleCompositionError(message);
+    setSubtitleCompositionOperation((current) => current ? { ...current, status: 'error', error: message, retryable: true } : current);
   }
 }
 
@@ -4354,7 +4442,17 @@ async function generateExternalSubtitle(
                           }
                         }}
                       />
-                    <SubtitleCompositionEligibilityPanel eligibility={subtitleEligibility.data?.composition} loading={subtitleEligibility.isLoading} />
+                    <SubtitleCompositionEligibilityPanel
+                      assetPath={asset.path}
+                      eligibility={subtitleEligibility.data?.composition}
+                      loading={subtitleEligibility.isLoading}
+                      disabled={hasOpenJob}
+                      operation={subtitleCompositionOperation}
+                      error={subtitleCompositionError}
+                      onCompose={composeSubtitles}
+                      onCancel={cancelSubtitleComposition}
+                      onRetry={retrySubtitleComposition}
+                    />
                     </>
                     ) : null}
                     {externalSubtitles.isError ? (
@@ -4937,6 +5035,7 @@ type SubtitleGenerationState = {
     | 'analyzing'
     | 'extracting'
     | 'ocr'
+    | 'reconciliation'
     | 'cleanup'
     | 'publishing'
     | 'completed'

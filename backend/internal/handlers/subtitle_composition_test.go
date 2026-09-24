@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -190,6 +193,9 @@ func TestSubtitleCompositionIdentityIgnoresOperationTimeAndAttachmentsAreDetermi
 	if !bytes.Equal(attachments[0].Content, []byte("font")) {
 		t.Fatal("attachment reconciliation mutated source content")
 	}
+	if _, err := reconcileSubtitleCompositionAttachments([]SubtitleCompositionAttachment{{SourceIdentity: "required", OriginalName: "../font.ttf", Content: []byte("font"), Required: true}}); err == nil {
+		t.Fatal("unsafe required attachment conflict was not rejected")
+	}
 }
 
 func TestComposeSubtitleDocumentsPreservesNativeStylesAndNamespacesCollisions(t *testing.T) {
@@ -301,6 +307,92 @@ func TestSubtitleCompositionUsesCanonicalSRTAndBitmapOCRCueBoundaries(t *testing
 	bitmapCues := subtitleCompositionCuesFromBitmap([]canonicalBitmapSubtitleCue{{SourceOrdinal: 0, Start: 1, End: 2, Text: "OCR sign", Geometry: &bitmapCueGeometry{CanvasWidth: 720, CanvasHeight: 480, BitmapX: 40, BitmapY: 30, BitmapWidth: 640, BitmapHeight: 80}}}, bitmapSource)
 	if len(bitmapCues) != 1 || !bitmapCues[0].Layout.HasBitmapGeometry {
 		t.Fatalf("bitmap composition did not consume canonical OCR geometry: %#v", bitmapCues)
+	}
+}
+
+func TestSubtitleCompositionBitmapCandidatesRequireCurrentCanonicalOCR(t *testing.T) {
+	policy := defaultSubtitleStylePolicy()
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("bitmap-source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stream := FFProbeStream{Index: 4, CodecName: "hdmv_pgs_subtitle", Tags: map[string]string{"language": "eng", "role": "full"}}
+	withoutOCR := subtitleEmbeddedEligibility(mediaPath, stream, "media-r1", policy)
+	if withoutOCR.Representation != "bitmap" || !withoutOCR.Regenerate.Eligible {
+		t.Fatalf("generic bitmap eligibility changed unexpectedly: %#v", withoutOCR)
+	}
+	withoutOCRComposition := subtitleCompositionEligibility(nil, []SubtitleSourceEligibility{withoutOCR}, policy)
+	if withoutOCRComposition.Eligible || len(withoutOCRComposition.PrimaryCandidates) != 1 || withoutOCRComposition.PrimaryCandidates[0].Eligible || !strings.Contains(withoutOCRComposition.PrimaryCandidates[0].Reason, "canonical OCR") {
+		t.Fatalf("PGS without canonical OCR was selectable: %#v", withoutOCRComposition)
+	}
+
+	artifactPath := filepath.Join(filepath.Dir(mediaPath), "episode.eng.srt")
+	if err := os.WriteFile(artifactPath, []byte("1\n00:00:01,000 --> 00:00:02,000\nOCR text\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stateRoot := t.TempDir()
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", stateRoot)
+	evidence := testPublishedOCREvidence(mediaPath, "OCR text")
+	evidence.Identity.StreamIndex = stream.Index
+	evidence.Identity.StreamCodec = stream.CodecName
+	logicalTransform := "subtitle:4:converted:both"
+	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), artifactPath, "srt", logicalTransform, evidence, "composition-test", ""); err != nil {
+		t.Fatal(err)
+	}
+	artifact, found := findPublishedCanonicalOCRArtifactForEmbeddedSource(mediaPath, stream)
+	if !found {
+		t.Fatal("current canonical OCR artifact was not found")
+	}
+	withOCR := withoutOCR
+	withOCR.Representation = artifact.Format
+	withOCR.Regenerate = SubtitleModeEligibility{Eligible: true}
+	withOCR.CanonicalOCRArtifactIdentity = artifact.Identity
+	withOCR.CanonicalOCRArtifactRevision = artifact.Revision
+	withOCR.CanonicalOCRArtifactPath = artifact.Path
+	withOCR.CanonicalOCRLogicalTransform = artifact.LogicalTransform
+	withOCRComposition := subtitleCompositionEligibility(nil, []SubtitleSourceEligibility{withOCR}, policy)
+	if !withOCRComposition.Eligible || len(withOCRComposition.PrimaryCandidates) != 1 || !withOCRComposition.PrimaryCandidates[0].Eligible {
+		t.Fatalf("current canonical OCR result was not composable: %#v", withOCRComposition)
+	}
+
+	if err := os.WriteFile(artifactPath, []byte("1\n00:00:01,000 --> 00:00:02,000\nchanged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := currentSubtitleCompositionSourceRevision(SubtitleCompositionSource{
+		Identity:                     "embedded:" + mediaPath + "#stream=4",
+		Revision:                     "media-r1",
+		Representation:               artifact.Format,
+		Language:                     "eng",
+		Role:                         SubtitleRoleFull,
+		CueClass:                     CompositionCueDialogue,
+		StreamIndex:                  stream.Index,
+		CanonicalOCRArtifactIdentity: artifact.Identity,
+		CanonicalOCRArtifactRevision: artifact.Revision,
+		CanonicalOCRArtifactPath:     artifact.Path,
+		CanonicalOCRLogicalTransform: artifact.LogicalTransform,
+	}); err == nil {
+		t.Fatal("stale canonical OCR artifact was accepted")
+	}
+}
+
+func TestSubtitleCompositionBitmapRequestNeverUsesDirectASSExtraction(t *testing.T) {
+	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("bitmap-source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := mediaFileFingerprint(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = (AssetHandler{}).prepareSubtitleCompositionRequest(mediaPath, SubtitleCompositionRequest{
+		Path: mediaPath,
+		Primary: SubtitleCompositionSourceRequest{SubtitleCompositionSource: SubtitleCompositionSource{
+			Identity: "embedded:" + mediaPath + "#stream=4", Revision: revision, Representation: "bitmap", Language: "eng", Role: SubtitleRoleFull, CueClass: CompositionCueDialogue, StreamIndex: 4,
+		}},
+		Supplementals: []SubtitleCompositionSourceRequest{{SourcePath: "unused.srt"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "canonical OCR") {
+		t.Fatalf("bitmap request did not fail closed before direct ASS extraction: %v", err)
 	}
 }
 

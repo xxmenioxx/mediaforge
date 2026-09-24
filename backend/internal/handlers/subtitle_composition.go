@@ -50,17 +50,21 @@ type compositionLayoutEvidence struct {
 // track or sidecar. Identity and revision are deliberately distinct: the
 // former identifies the source, while the latter detects stale work.
 type SubtitleCompositionSource struct {
-	Identity         string               `json:"identity"`
-	Revision         string               `json:"revision"`
-	Representation   string               `json:"representation"`
-	Language         string               `json:"language"`
-	Role             SubtitleSemanticRole `json:"role"`
-	RoleProvenance   string               `json:"roleProvenance,omitempty"`
-	CueClass         CompositionCueClass  `json:"cueClass"`
-	TrackLabel       string               `json:"trackLabel,omitempty"`
-	StreamIndex      int                  `json:"streamIndex,omitempty"`
-	Primary          bool                 `json:"primary"`
-	ExplicitLanguage bool                 `json:"explicitLanguage,omitempty"`
+	Identity                     string               `json:"identity"`
+	Revision                     string               `json:"revision"`
+	Representation               string               `json:"representation"`
+	Language                     string               `json:"language"`
+	Role                         SubtitleSemanticRole `json:"role"`
+	RoleProvenance               string               `json:"roleProvenance,omitempty"`
+	CueClass                     CompositionCueClass  `json:"cueClass"`
+	TrackLabel                   string               `json:"trackLabel,omitempty"`
+	StreamIndex                  int                  `json:"streamIndex,omitempty"`
+	Primary                      bool                 `json:"primary"`
+	ExplicitLanguage             bool                 `json:"explicitLanguage,omitempty"`
+	CanonicalOCRArtifactIdentity string               `json:"canonicalOcrArtifactIdentity,omitempty"`
+	CanonicalOCRArtifactRevision string               `json:"canonicalOcrArtifactRevision,omitempty"`
+	CanonicalOCRArtifactPath     string               `json:"canonicalOcrArtifactPath,omitempty"`
+	CanonicalOCRLogicalTransform string               `json:"canonicalOcrLogicalTransform,omitempty"`
 }
 
 type SubtitleCompositionPolicy struct {
@@ -345,20 +349,21 @@ type SubtitleCompositionDecision struct {
 }
 
 type SubtitleCompositionProvenance struct {
-	SourceIdentities []string                                `json:"sourceIdentities"`
-	SourceRevisions  []string                                `json:"sourceRevisions"`
-	Languages        []string                                `json:"languages"`
-	ResolvedLanguage string                                  `json:"resolvedLanguage"`
-	Roles            []SubtitleSemanticRole                  `json:"roles"`
-	Classes          []CompositionCueClass                   `json:"classes"`
-	Counts           map[SubtitleCompositionDecisionKind]int `json:"counts"`
-	Decisions        []SubtitleCompositionDecision           `json:"decisions,omitempty"`
-	Conflicts        []string                                `json:"conflicts,omitempty"`
-	AttachmentNotes  []string                                `json:"attachmentNotes,omitempty"`
-	OutputIdentity   string                                  `json:"outputIdentity,omitempty"`
-	OutputPath       string                                  `json:"outputPath,omitempty"`
-	Preferred        bool                                    `json:"preferred"`
-	Default          bool                                    `json:"default"`
+	SourceIdentities    []string                                `json:"sourceIdentities"`
+	SourceRevisions     []string                                `json:"sourceRevisions"`
+	Languages           []string                                `json:"languages"`
+	ResolvedLanguage    string                                  `json:"resolvedLanguage"`
+	Roles               []SubtitleSemanticRole                  `json:"roles"`
+	Classes             []CompositionCueClass                   `json:"classes"`
+	Counts              map[SubtitleCompositionDecisionKind]int `json:"counts"`
+	Decisions           []SubtitleCompositionDecision           `json:"decisions,omitempty"`
+	Conflicts           []string                                `json:"conflicts,omitempty"`
+	AttachmentNotes     []string                                `json:"attachmentNotes,omitempty"`
+	AttachmentDecisions []SubtitleCompositionAttachmentDecision `json:"attachmentDecisions,omitempty"`
+	OutputIdentity      string                                  `json:"outputIdentity,omitempty"`
+	OutputPath          string                                  `json:"outputPath,omitempty"`
+	Preferred           bool                                    `json:"preferred"`
+	Default             bool                                    `json:"default"`
 }
 
 type SubtitleCompositionResult struct {
@@ -555,6 +560,14 @@ func sourceDescriptorValid(source SubtitleCompositionSource) error {
 	}
 	if (source.Role == "" || source.Role == SubtitleRoleUnknown) && source.CueClass == CompositionCueUnknown {
 		return fmt.Errorf("composition source %q has ambiguous role/classification", source.Identity)
+	}
+	if strings.TrimSpace(source.CanonicalOCRArtifactPath) != "" {
+		if !strings.HasPrefix(strings.TrimSpace(source.Identity), "embedded:") ||
+			strings.TrimSpace(source.CanonicalOCRArtifactIdentity) == "" ||
+			strings.TrimSpace(source.CanonicalOCRArtifactRevision) == "" ||
+			strings.TrimSpace(source.CanonicalOCRLogicalTransform) == "" {
+			return fmt.Errorf("composition source %q has incomplete canonical OCR provenance", source.Identity)
+		}
 	}
 	return nil
 }
@@ -924,8 +937,9 @@ func serializeASSDocument(document assDocument) ([]byte, error) {
 }
 
 type SubtitleCompositionDocument struct {
-	Source   SubtitleCompositionSource
-	Document assDocument
+	Source      SubtitleCompositionSource
+	Document    assDocument
+	Attachments []SubtitleCompositionAttachment
 }
 
 func normalizedASSStyleDefinition(style assStyleDefinition) string {
@@ -978,6 +992,26 @@ func ComposeSubtitleDocuments(policy SubtitleCompositionPolicy, primary Subtitle
 	}
 	if result.Conflict && !policy.AllowReviewableConflicts {
 		return assDocument{}, result, nil, fmt.Errorf("composition contains unresolved event conflicts")
+	}
+	attachments := make([]SubtitleCompositionAttachment, 0)
+	for _, document := range append([]SubtitleCompositionDocument{primary}, supplementals...) {
+		attachments = append(attachments, document.Attachments...)
+	}
+	if len(attachments) > 0 {
+		decisions, attachmentErr := reconcileSubtitleCompositionAttachments(attachments)
+		if attachmentErr != nil {
+			return assDocument{}, result, nil, attachmentErr
+		}
+		if len(decisions) > compositionMaxProvenanceItems {
+			decisions = decisions[:compositionMaxProvenanceItems]
+		}
+		result.Provenance.AttachmentDecisions = append([]SubtitleCompositionAttachmentDecision(nil), decisions...)
+		for _, decision := range decisions {
+			if len(result.Provenance.AttachmentNotes) >= compositionMaxProvenanceItems {
+				break
+			}
+			result.Provenance.AttachmentNotes = append(result.Provenance.AttachmentNotes, decision.Action+":"+decision.OriginalName+"->"+decision.SafeName)
+		}
 	}
 
 	documents := append([]SubtitleCompositionDocument{primary}, supplementals...)

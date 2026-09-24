@@ -328,7 +328,7 @@ export const api = {
     ),
 
   composeSubtitles: (input: SubtitleCompositionInput) =>
-    request<{ operationId: string; status: 'running'; kind: 'compose'; phase: string; progress: number; outputIdentity: string }>(
+    request<{ operationId: string; status: 'running'; kind: 'compose'; phase: SubtitleExtractionOperation['phase']; progress: number; outputIdentity: string }>(
       '/api/assets/subtitle-compose',
       { method: 'POST', body: JSON.stringify(input) },
     ),

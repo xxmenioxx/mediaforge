@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1328,6 +1329,67 @@ func loadPublishedCanonicalOCRSnapshot(path, format, logicalTransform string) (*
 		return nil, false
 	}
 	return &snapshot, true
+}
+
+type canonicalOCRArtifactDescriptor struct {
+	Identity         string
+	Revision         string
+	Path             string
+	Format           string
+	LogicalTransform string
+}
+
+// findPublishedCanonicalOCRArtifactForEmbeddedSource only consults the
+// canonical OCR publication snapshots. It does not discover sidecars by
+// filename and never starts OCR work.
+func findPublishedCanonicalOCRArtifactForEmbeddedSource(mediaPath string, stream FFProbeStream) (canonicalOCRArtifactDescriptor, bool) {
+	cleanMediaPath := filepath.Clean(strings.TrimSpace(mediaPath))
+	if cleanMediaPath == "" || cleanMediaPath == "." {
+		return canonicalOCRArtifactDescriptor{}, false
+	}
+	entries, err := os.ReadDir(publishedSubtitleSnapshotRoot())
+	if err != nil {
+		return canonicalOCRArtifactDescriptor{}, false
+	}
+	candidates := []canonicalOCRArtifactDescriptor{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		content, readErr := os.ReadFile(filepath.Join(publishedSubtitleSnapshotRoot(), entry.Name()))
+		if readErr != nil {
+			continue
+		}
+		var raw publishedCanonicalOCRSnapshot
+		if json.Unmarshal(content, &raw) != nil || raw.Revision.ArtifactPath == "" {
+			continue
+		}
+		snapshot, valid := loadPublishedCanonicalOCRSnapshot(raw.Revision.ArtifactPath, raw.Format, raw.LogicalTransformKey)
+		if !valid || snapshot == nil || snapshot.Evidence.Identity.SourcePath != cleanMediaPath || snapshot.Evidence.Identity.StreamIndex != stream.Index || !snapshot.Evidence.Complete || len(snapshot.Evidence.Cues) == 0 {
+			continue
+		}
+		artifactRevision, revisionErr := mediaFileFingerprint(snapshot.Revision.ArtifactPath)
+		if revisionErr != nil {
+			continue
+		}
+		candidates = append(candidates, canonicalOCRArtifactDescriptor{
+			Identity: snapshot.OwnerIdentity, Revision: artifactRevision, Path: snapshot.Revision.ArtifactPath,
+			Format: strings.ToLower(strings.TrimSpace(snapshot.Format)), LogicalTransform: snapshot.LogicalTransformKey,
+		})
+	}
+	if len(candidates) == 0 {
+		return canonicalOCRArtifactDescriptor{}, false
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Format != candidates[j].Format {
+			return candidates[i].Format == "ass"
+		}
+		if candidates[i].Path != candidates[j].Path {
+			return candidates[i].Path < candidates[j].Path
+		}
+		return candidates[i].LogicalTransform < candidates[j].LogicalTransform
+	})
+	return candidates[0], true
 }
 
 func commitPublishedCanonicalOCRSnapshot(

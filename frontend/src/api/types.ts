@@ -350,6 +350,11 @@ export type SubtitleCompositionCandidate = {
   compositionClass: string;
   streamIndex?: number;
   sourceType: 'embedded' | 'external' | string;
+  sourcePath?: string;
+  canonicalOcrArtifactIdentity?: string;
+  canonicalOcrArtifactRevision?: string;
+  canonicalOcrArtifactPath?: string;
+  canonicalOcrLogicalTransform?: string;
   eligible: boolean;
   reason?: string;
 };
@@ -378,6 +383,10 @@ export type SubtitleCompositionSourceRequest = {
   role: SubtitleSemanticRole;
   cueClass: string;
   sourcePath: string;
+  canonicalOcrArtifactIdentity?: string;
+  canonicalOcrArtifactRevision?: string;
+  canonicalOcrArtifactPath?: string;
+  canonicalOcrLogicalTransform?: string;
 };
 
 export type SubtitleCompositionInput = {
@@ -2236,6 +2245,7 @@ export type SubtitleExtractionOperation = {
     | 'analyzing'
     | 'extracting'
     | 'ocr'
+    | 'reconciliation'
     | 'cleanup'
     | 'publishing'
     | 'completed'
