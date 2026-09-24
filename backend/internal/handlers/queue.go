@@ -2139,6 +2139,23 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 		if _, ok := decodeCadenceRecommendation(scan.CadenceRecommendation); ok {
 			snapshot[cadenceRecommendationSnapshotKey] = scan.CadenceRecommendation
 		}
+		plan := canonicalSamplingPlanFromScan(scan, frameStructureSamplingPolicy(h.db), nil, samplingPlanPolicyVersion)
+		snapshot["samplingPlan"] = samplingPlanMap(plan)
+		snapshot["samplingPlanIdentity"] = plan.PlanIdentity
+	} else if strings.TrimSpace(path) != "" {
+		fingerprint := strings.TrimSpace(path)
+		if info, statErr := os.Stat(path); statErr == nil {
+			fingerprint = fmt.Sprintf("%s|%d|%d|%d", filepath.Clean(path), info.Size(), info.ModTime().UnixNano(), info.Mode())
+		}
+		plan := resolveCanonicalSamplingPlan(SamplingPlanInput{
+			BasePlan:             canonicalSamplingPlan(0, frameStructureSamplingPolicy(h.db)),
+			SourceFingerprint:    fingerprint,
+			SourceRevision:       fingerprint,
+			SourceStreamIdentity: "0:v:0",
+			PolicyVersion:        samplingPlanPolicyVersion,
+		})
+		snapshot["samplingPlan"] = samplingPlanMap(plan)
+		snapshot["samplingPlanIdentity"] = plan.PlanIdentity
 	}
 	return h.freezeResolvedRestorationSnapshot(snapshot, scan, path)
 }
