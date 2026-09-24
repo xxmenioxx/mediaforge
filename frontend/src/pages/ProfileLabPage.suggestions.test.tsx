@@ -11,7 +11,18 @@ vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return {
     ...actual,
-    waitForCompatiblePreviewReady: vi.fn().mockResolvedValue({ state: 'ready', code: 'ready' }),
+    waitForCompatiblePreviewReady: vi.fn().mockImplementation(async (requestId: string) => ({
+      requestId,
+      artifactId: `artifact-${requestId}`,
+      generationToken: `generation-${requestId}`,
+      generationVersion: 1,
+      sourceRevision: { size: 1024, modifiedAtNS: 1, mode: 0o600 },
+      start: '00:00:00',
+      seconds: 20,
+      normalization: { mode: 'normalize_bt709', applied: true, sarPreserved: true },
+      state: 'ready',
+      code: 'ready',
+    })),
     api: {
       ...actual.api,
       assets: vi.fn(),
@@ -24,6 +35,7 @@ vi.mock('../api/client', async (importOriginal) => {
       latestSnapshot: vi.fn(),
       suggestProfile: vi.fn(),
       createCompatiblePreviewRequest: vi.fn(),
+      compatiblePreviewStatus: vi.fn(),
       inspectCompatibleAssetPreview: vi.fn(),
       compatibleAssetFrameMetrics: vi.fn(),
       startLabFidelityOperation: vi.fn(),
@@ -34,7 +46,7 @@ vi.mock('../api/client', async (importOriginal) => {
   };
 });
 
-import { ApiRequestError, api } from '../api/client';
+import { ApiRequestError, api, waitForCompatiblePreviewReady } from '../api/client';
 import { ProfileLabPage } from './ProfileLabPage';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 
@@ -225,6 +237,18 @@ describe('Profile Lab Process Asset suggestions', () => {
     vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: scan, status: 'current', requiresAnalysis: false, staleComponents: [] });
     vi.mocked(api.suggestProfile).mockResolvedValue(nullableSuggestion);
     vi.mocked(api.createCompatiblePreviewRequest).mockImplementation(async (options) => ({ requestId: `${String(options.start ?? 'base').replaceAll(':', '')}-${JSON.stringify(options.profile ?? {}).length}`, cacheIdentity: 'cache', expiresInSeconds: 7200, path: options.path }));
+    vi.mocked(api.compatiblePreviewStatus).mockImplementation(async (requestId) => ({
+      requestId,
+      artifactId: `artifact-${requestId}`,
+      generationToken: `generation-${requestId}`,
+      generationVersion: 1,
+      sourceRevision: { size: 1024, modifiedAtNS: 1, mode: 0o600 },
+      start: '00:00:00',
+      seconds: 20,
+      normalization: { mode: 'normalize_bt709', applied: true, sarPreserved: true },
+      state: 'ready',
+      code: 'ready',
+    }));
     vi.mocked(api.inspectCompatibleAssetPreview).mockResolvedValue(previewInspection);
     vi.mocked(api.compatibleAssetFrameMetrics).mockResolvedValue({ comparable: true, reason: '', sourceDimensions: '960x720', outputDimensions: '960x720', ssim: 0.99, psnr: 42 });
     vi.mocked(api.startLabFidelityOperation).mockImplementation(async ({ primaryRequestId, referenceRequestId }) => ({
@@ -232,6 +256,9 @@ describe('Profile Lab Process Asset suggestions', () => {
       status: 'completed',
       phase: 'aggregate',
       primaryRequestId,
+      primaryArtifactId: `artifact-${primaryRequestId}`,
+      primaryGeneration: `generation-${primaryRequestId}:1`,
+      materialSignature: `material-${primaryRequestId}`,
       completedWindows: 1,
       totalWindows: 1,
       createdAt: new Date().toISOString(),
@@ -393,12 +420,44 @@ describe('Profile Lab Process Asset suggestions', () => {
     20_000,
   );
 
+  it('rejects a same-path Sample A cache when the backend source revision changes', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+    await waitFor(() => expect(referencePreviewRequests()).toHaveLength(1), { timeout: 12_000 });
+
+    const revisionB = { size: 2048, modifiedAtNS: 2, mode: 0o600 };
+    const readyB = {
+      requestId: 'revision-b-reference', artifactId: 'artifact-revision-b', generationToken: 'generation-revision-b',
+      generationVersion: 2, sourceRevision: revisionB, start: '00:00:00', seconds: 20,
+      normalization: { mode: 'normalize_bt709', applied: true, sarPreserved: true }, state: 'ready', code: 'ready',
+    } as never;
+    vi.mocked(api.compatiblePreviewStatus).mockResolvedValue(readyB);
+    vi.mocked(waitForCompatiblePreviewReady).mockResolvedValue(readyB);
+
+    await userEvent.click(processVideo);
+    await waitFor(() => expect(referencePreviewRequests()).toHaveLength(2), { timeout: 12_000 });
+    expect(vi.mocked(api.inspectCompatibleAssetPreview)).toHaveBeenCalledTimes(2);
+  }, 20_000);
+
   it('publishes a playable primary preview before Fidelity completes and cancels only Fidelity', async () => {
     vi.mocked(api.startLabFidelityOperation).mockImplementationOnce(async ({ primaryRequestId }) => ({
       id: 'lab-fidelity-running',
       status: 'running',
       phase: 'additional_window_encode',
       primaryRequestId,
+      primaryArtifactId: `artifact-${primaryRequestId}`,
+      primaryGeneration: `generation-${primaryRequestId}:1`,
+      materialSignature: `material-${primaryRequestId}`,
       completedWindows: 1,
       totalWindows: 5,
       createdAt: new Date().toISOString(),
@@ -438,6 +497,9 @@ describe('Profile Lab Process Asset suggestions', () => {
       status: 'failed',
       phase: 'additional_window_metrics',
       primaryRequestId: 'will-be-replaced-by-mock',
+      primaryArtifactId: 'artifact-will-be-replaced-by-mock',
+      primaryGeneration: 'generation-will-be-replaced-by-mock:1',
+      materialSignature: 'material-will-be-replaced-by-mock',
       completedWindows: 1,
       totalWindows: 5,
       error: 'additional evidence failed',
@@ -478,6 +540,9 @@ describe('Profile Lab Process Asset suggestions', () => {
       status: 'running',
       phase: 'primary_evidence',
       primaryRequestId,
+      primaryArtifactId: `artifact-${primaryRequestId}`,
+      primaryGeneration: `generation-${primaryRequestId}:1`,
+      materialSignature: `material-${primaryRequestId}`,
       completedWindows: 0,
       totalWindows: 5,
       createdAt: new Date().toISOString(),
@@ -511,6 +576,9 @@ describe('Profile Lab Process Asset suggestions', () => {
       status: 'running',
       phase: 'additional_window_encode',
       primaryRequestId,
+      primaryArtifactId: `artifact-${primaryRequestId}`,
+      primaryGeneration: `generation-${primaryRequestId}:1`,
+      materialSignature: `material-${primaryRequestId}`,
       completedWindows: 1,
       totalWindows: 5,
       createdAt: new Date().toISOString(),
@@ -540,11 +608,15 @@ describe('Profile Lab Process Asset suggestions', () => {
     expect((startInput as HTMLInputElement).value).toBe('00:00:05');
     await waitFor(() => expect(api.cancelLabFidelityOperation).toHaveBeenCalledWith('lab-fidelity-signature-a'));
 
+    const primaryRequestIdA = vi.mocked(api.startLabFidelityOperation).mock.calls[0]?.[0].primaryRequestId ?? '';
     resolvePoll?.({
       id: 'lab-fidelity-signature-a',
       status: 'completed',
       phase: 'aggregate',
-      primaryRequestId: 'primary-a',
+      primaryRequestId: primaryRequestIdA,
+      primaryArtifactId: `artifact-${primaryRequestIdA}`,
+      primaryGeneration: `generation-${primaryRequestIdA}:1`,
+      materialSignature: `material-${primaryRequestIdA}`,
       completedWindows: 1,
       totalWindows: 1,
       result: {
@@ -555,7 +627,7 @@ describe('Profile Lab Process Asset suggestions', () => {
           source: previewInspection.source,
           output: previewInspection.output,
           metrics: { comparable: true, ssim: 0.99, psnr: 42 },
-          requestId: 'primary-a',
+          requestId: primaryRequestIdA,
           canonicalFidelity: { status: 'passed' },
         }],
         source: previewInspection.source,
@@ -563,7 +635,7 @@ describe('Profile Lab Process Asset suggestions', () => {
         conversion: previewInspection.output,
         normalization: previewInspection.normalization,
         referenceRequestId: 'reference-a',
-        conversionRequestId: 'primary-a',
+        conversionRequestId: primaryRequestIdA,
         canonicalStatus: 'passed',
         aggregateStatus: 'completed',
         visualAggregate: { comparableCount: 1, totalCount: 1, averageSSIM: 0.99, minimumSSIM: 0.99, metricVerdict: 'Safe' },

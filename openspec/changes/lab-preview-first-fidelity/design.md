@@ -143,10 +143,11 @@ POST /api/lab/fidelity/operations/:id/cancel
 
 The exact route names should be confirmed against the route package during
 implementation. A start request contains only bounded identity and policy
-inputs: the primary Compatible Preview request ID, an optional current UI
-signature for stale-result correlation, and a validated sampling-policy
-snapshot/version. The backend resolves the frozen primary descriptor, source
-revision, effective plan, normalization, and artifact identity from #1/#14;
+inputs: the primary Compatible Preview request ID, an optional small UI
+correlation signature, and bounded duration/policy inputs. The backend resolves
+the frozen primary descriptor, source revision, effective plan, normalization,
+artifact identity, generation token/version, and sampling policy from #1/#14
+and the backend LAB resolver;
 the request does not repeat an unbounded Profile or media-analysis payload.
 
 The server rejects or reports a retryable `primary_not_ready` condition if the
@@ -159,8 +160,10 @@ The operation snapshot is shaped conceptually as:
 
 ```text
 LabFidelityOperation {
-    id, state, phase, materialSignature,
+    id, state, phase, materialSignature, clientCorrelationSignature,
     primaryRequestId, primaryArtifactId, primaryGeneration,
+    sourceRevision, normalizedInterval, normalization,
+    canonicalEncodeSignature, samplingPolicyVersion,
     windows: bounded summaries/references,
     completedWindows, totalWindows,
     currentStart, currentDuration,
@@ -184,6 +187,16 @@ The implementation should reuse the existing Profile Sample Estimate operation
 pattern: a mutex-protected in-memory store, context cancellation, a bounded
 capacity channel, status snapshots, and age/max-history cleanup. It must not
 turn that pattern into a general operation engine.
+
+`materialSignature` is a backend-owned SHA-256 identity over bounded,
+canonical descriptor facts: source path/revision, normalized primary interval,
+normalization, canonical encode signature, artifact ID, generation token/
+version, and the frozen sampling policy/version. A client correlation
+signature may be echoed for UI diagnostics, but it cannot replace or alter the
+backend material identity. After capacity acquisition, the runner re-resolves
+the primary request and rejects a changed artifact/generation/source revision/
+plan as retryable `stale_primary`; it never attributes generation B evidence
+to an operation frozen for generation A.
 
 ### 3. Freeze a coherent primary and window plan
 
@@ -248,10 +261,12 @@ PreviewArtifactEvidence {
 }
 ```
 
-The key is `(artifactId, generationToken/version)` for output evidence. Source
-evidence is additionally keyed by source revision, canonical source interval,
-and normalization. Derived frame references and metrics include their relevant
-source/normalization identity. The provider is process-local and bounded in v1;
+The key is `(artifactId, generationToken/version)` for output evidence. A
+stream-global source probe is keyed by source path/revision only and is shared
+across intervals and normalization modes. Interval-specific source evidence is
+keyed by source revision plus canonical `[start,end]`; normalized frame/metric
+evidence additionally includes normalization. Derived frame references and
+metrics include their relevant source/normalization identity. The provider is process-local and bounded in v1;
 it may use the durable #1/#14 artifact encoder evidence as an input. It is not
 a second artifact cache and does not change artifact publication or retention.
 
@@ -380,12 +395,13 @@ normalization evidence. The system must not encode a processed artifact merely
 to obtain Sample A's source frame.
 
 The cache signature currently represented by
-`labReferenceRequestSignature(path,start,seconds,normalization)` will be
-strengthened by backend source revision and canonical interval identity. The
-processed Profile is excluded. `CachedLabReferencePreview` should retain the
-request/artifact/generation and bounded evidence identity rather than only a
-mutable UI inspection. A profile-only edit therefore keeps the reference cache;
-source revision, interval, or normalization changes invalidate it.
+`labReferenceRequestSignature(path,start,seconds,normalization)` remains a
+small frontend reuse hint, but reuse is validated against the authoritative
+#14/#15 ready status. `CachedLabReferencePreview` retains request ID, artifact
+ID, generation token/version, source revision, normalized interval, and
+normalization alongside bounded inspection evidence. The processed Profile is
+excluded. A profile-only edit therefore keeps the reference cache; a same-path
+source revision, interval, or normalization change rejects it before reuse.
 
 ### 10. Keep the frontend states independent and read-only outside orchestration
 
@@ -411,9 +427,12 @@ credentials, Cookie, Range/seek, or native transport policy a #19 concern.
 The UI shows `Sample B: Ready` independently from `Frame Fidelity: Analyzing
 window X of Y`, exposes completed windows incrementally, and provides cancel
 and retry for Fidelity without disabling playback. A result is applied only if
-its operation ID, primary request/artifact identity, and material signature
-match the current draft. Tab changes render snapshots and artifact/evidence
-references only; they do not start hidden media work.
+its operation ID, primary request/artifact and generation identity, backend
+material signature, and current local correlation still match the active run.
+The check happens before state application, so a late operation whose request
+ignores AbortSignal cannot temporarily install stale `lastFidelityInspection`
+data. Tab changes render snapshots and artifact/evidence references only; they
+do not start hidden media work.
 
 ### 11. Use a bounded failure policy
 

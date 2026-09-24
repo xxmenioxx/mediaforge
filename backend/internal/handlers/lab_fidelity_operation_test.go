@@ -161,6 +161,79 @@ func TestLabFidelityEvidenceIdentityIncludesGeneration(t *testing.T) {
 	}
 }
 
+func TestLabFidelityMaterialSignatureIsBackendOwnedAndBoundToExecutionIdentity(t *testing.T) {
+	descriptor := testCompatiblePreviewDescriptor(t, "material-authority")
+	descriptor.Path = "/media/raw/movie.mkv"
+	descriptor.SourceRevision = compatiblePreviewSourceRevision{Size: 10, ModifiedAtNS: 20, Mode: 0o600}
+	descriptor.Start = "00:00:05"
+	descriptor.Seconds = 20
+	descriptor.GenerationToken = "generation-a"
+	descriptor.GenerationVersion = 1
+	plan := SamplingPlan{AssetDurationSeconds: 120, WindowSeconds: 20, Positions: []float64{0.08, 0.27, 0.5}, InitialWindows: 3, InterlaceValidation: "automatic", CropDepth: "normal"}
+	first := labFidelityMaterialSignature(descriptor, plan)
+	if first == "" || first == "client-correlation" {
+		t.Fatalf("backend material signature was not resolved independently: %q", first)
+	}
+	if got := labFidelityMaterialSignature(descriptor, plan); got != first {
+		t.Fatalf("backend material signature was not deterministic: %q != %q", got, first)
+	}
+	replacement := *descriptor
+	replacement.GenerationToken = "generation-b"
+	replacement.GenerationVersion = 2
+	if got := labFidelityMaterialSignature(&replacement, plan); got == first {
+		t.Fatal("replaced artifact generation reused the old backend material signature")
+	}
+	changedPolicy := plan
+	changedPolicy.Positions = []float64{0.08, 0.5, 0.92}
+	if got := labFidelityMaterialSignature(descriptor, changedPolicy); got == first {
+		t.Fatal("material signature ignored a materially changed sampling policy")
+	}
+}
+
+func TestLabFidelityRunnerRejectsPrimaryGenerationReplacementBeforeEvidence(t *testing.T) {
+	descriptor := testCompatiblePreviewDescriptor(t, "stale-primary")
+	descriptor.SourceRevision = compatiblePreviewSourceRevision{Size: 10, ModifiedAtNS: 20, Mode: 0o600}
+	descriptor.GenerationToken = "generation-a"
+	descriptor.GenerationVersion = 1
+	plan := SamplingPlan{AssetDurationSeconds: 120, WindowSeconds: 20, Positions: []float64{0.5}, InitialWindows: 1, InterlaceValidation: "automatic", CropDepth: "normal"}
+	operation := LabFidelityOperation{
+		PrimaryArtifactID: descriptor.ArtifactID, PrimaryGeneration: "generation-a:1",
+		SourceRevision: labSourceRevisionMap(descriptor.SourceRevision), PrimaryStart: 0, PrimaryDuration: 2,
+		Normalization: labNormalizationMap(descriptor.Normalization), PlanSignature: descriptor.CanonicalEncodeSignature,
+		MaterialSignature: labFidelityMaterialSignature(descriptor, plan), samplingPlan: plan,
+	}
+	replaced := *descriptor
+	replaced.GenerationToken = "generation-b"
+	replaced.GenerationVersion = 2
+	if labFidelityDescriptorMatchesOperation(operation, &replaced) {
+		t.Fatal("operation accepted replacement generation B as frozen generation A")
+	}
+	if !labFidelityDescriptorMatchesOperation(operation, descriptor) {
+		t.Fatal("operation rejected its unchanged frozen primary descriptor")
+	}
+}
+
+func TestLabFidelityEvidenceKeysSeparateGlobalAndIntervalIdentity(t *testing.T) {
+	base := testCompatiblePreviewDescriptor(t, "evidence-keys")
+	base.SourceRevision = compatiblePreviewSourceRevision{Size: 10, ModifiedAtNS: 20, Mode: 0o600}
+	base.Start, base.Seconds = "00:00:05", 20
+	base.Normalization.Mode = "normalize_bt709"
+	globalEquivalent := *base
+	globalEquivalent.Start, globalEquivalent.Seconds = "00:00:30", 10
+	globalEquivalent.Normalization.Mode = "preserve"
+	if labSourceProbeKey(base) != labSourceProbeKey(&globalEquivalent) {
+		t.Fatal("stream-global source evidence was incorrectly duplicated per interval or normalization")
+	}
+	if labPreviewEvidenceCacheKey(base) == labPreviewEvidenceCacheKey(&globalEquivalent) {
+		t.Fatal("interval/output evidence key did not include interval and normalization identity")
+	}
+	replacedSource := *base
+	replacedSource.SourceRevision.ModifiedAtNS++
+	if labSourceProbeKey(base) == labSourceProbeKey(&replacedSource) {
+		t.Fatal("stream-global source evidence key reused a replaced source revision")
+	}
+}
+
 func TestLabFidelityPartialAggregateKeepsCanonicalMismatchVisible(t *testing.T) {
 	descriptor := testCompatiblePreviewDescriptor(t, "aggregate")
 	windows := []models.JSONMap{{

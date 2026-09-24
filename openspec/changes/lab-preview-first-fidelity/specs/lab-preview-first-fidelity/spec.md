@@ -180,6 +180,16 @@ artifact SHALL be independent.
   be obtained once and reused by those consumers where the evidence is
   sufficient
 
+#### Scenario: Source evidence keys preserve semantic scope
+
+- **WHEN** consumers request source evidence for multiple intervals and
+  normalization modes
+- **THEN** stream-global evidence SHALL be reusable by source revision alone,
+  interval evidence SHALL include source revision plus canonical interval, and
+  normalized frame/metric evidence SHALL additionally include normalization;
+  generic whole-stream evidence SHALL not be artificially duplicated per
+  interval
+
 #### Scenario: Replaced generation cannot reuse stale evidence
 
 - **WHEN** a failed or stale artifact is regenerated with a new generation
@@ -378,10 +388,18 @@ operation that reuses it.
 
 ### Requirement: Material signatures and frozen plans SHALL protect current UI state
 
-Each operation and each returned result SHALL be bound to a material signature
-covering the source revision, asset, `Start`, `Seconds`, normalization, and
-frozen effective video plan. A late status or result from an older signature
-SHALL not become the current `lastFidelityInspection` for a newer signature.
+Each operation and each returned result SHALL expose a backend-owned material
+signature covering the source revision, source/path identity, normalized
+primary interval, normalization, frozen effective video/canonical encode plan,
+primary artifact ID, generation token/version, and materially relevant sampling
+policy/version. The backend SHALL derive this signature from bounded canonical
+serialization; a client-provided correlation string MAY be retained for UI
+diagnostics but SHALL not be the material authority. After capacity wait, the
+runner SHALL re-resolve the primary request and fail retryably as
+`stale_primary` if artifact, generation, source revision, interval,
+normalization, plan, or canonical material signature changed. A late status or
+result from an older operation/material identity SHALL not become the current
+`lastFidelityInspection` for a newer signature.
 Changing tabs SHALL only render already-collected results and SHALL not start
 encoding, probing, or metrics work.
 
@@ -393,6 +411,21 @@ encoding, probing, or metrics work.
   explicitly selects the older run, and A's windows SHALL retain A's frozen
   expected plan
 
+#### Scenario: Replaced primary generation is fenced before evidence
+
+- **WHEN** operation A captures primary generation A, the request is replaced
+  by generation B while A waits for capacity, and A begins execution
+- **THEN** A SHALL fail with a bounded retryable stale-primary result and SHALL
+  not attribute generation B evidence to A
+
+#### Scenario: Backend identity fences an aborted late result
+
+- **WHEN** operation A completes after its AbortSignal is ignored and the
+  current material is B
+- **THEN** A SHALL be rejected before state application by operation ID,
+  primary request/artifact/generation identity, backend material signature,
+  and current local correlation; A SHALL never become current inspection data
+
 #### Scenario: Tab changes are read-only
 
 - **WHEN** the user switches among Previews, Technical, Frames,
@@ -403,12 +436,12 @@ encoding, probing, or metrics work.
 ### Requirement: Source reference caching SHALL be material-signature based
 
 The source/reference preview and its reusable inspection/evidence SHALL remain
-available when its material signature is unchanged. The signature SHALL
-include the source revision, selected source time window, and normalization
-decision; it SHALL not include the processed Profile object identity. A change
-only to the processed profile SHALL not regenerate equivalent source/reference
-evidence. A source revision, `Start`, `Seconds`, or normalization change SHALL
-invalidate it.
+available when its backend-authoritative identity is unchanged. That identity
+SHALL bind request ID, artifact ID, generation token/version, source revision,
+selected normalized source interval, and normalization decision; it SHALL not
+include the processed Profile object identity. A change only to the processed
+profile SHALL not regenerate equivalent source/reference evidence. A source
+revision, `Start`, `Seconds`, or normalization change SHALL invalidate it.
 
 #### Scenario: Profile-only edit reuses source reference
 
@@ -422,6 +455,13 @@ invalidate it.
 - **WHEN** source revision, selected interval, or normalization changes
 - **THEN** the previous reference cache SHALL not be attributed to the new run
   and a new source/reference request or evidence identity SHALL be used
+
+#### Scenario: Same path with a replaced source revision invalidates cache
+
+- **WHEN** `/media/movie.mkv` has source revision A when reference evidence is
+  cached and the same path later resolves to source revision B
+- **THEN** cached evidence for A SHALL be rejected and the canonical reference
+  identity for B SHALL be resolved
 
 ### Requirement: The #15 integration SHALL be an adapter, not a duplicate lifecycle
 

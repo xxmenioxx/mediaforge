@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,46 +25,107 @@ const (
 	labFidelityFailed    = "failed"
 	labFidelityCanceled  = "canceled"
 
-	labFidelityOperationRetention  = 24 * time.Hour
-	labFidelityOperationMaxHistory = 500
-	labFidelityOperationTimeout    = 30 * time.Minute
+	labFidelityOperationRetention    = 24 * time.Hour
+	labFidelityOperationMaxHistory   = 500
+	labFidelityOperationTimeout      = 30 * time.Minute
+	labFidelityMaterialVersion       = "lab-fidelity-material-v2"
+	labFidelitySamplingPolicyVersion = "lab-fidelity-sampling-v1"
 )
 
 // LabFidelityOperation is intentionally bounded. Large probe payloads remain
 // behind the process-local evidence provider and are represented by the
 // completed window summaries returned in Result.
 type LabFidelityOperation struct {
-	ID                string           `json:"id"`
-	Status            string           `json:"status"`
-	Phase             string           `json:"phase"`
-	PrimaryRequestID  string           `json:"primaryRequestId"`
-	PrimaryArtifactID string           `json:"primaryArtifactId,omitempty"`
-	PrimaryGeneration string           `json:"primaryGeneration,omitempty"`
-	SourceRevision    models.JSONMap   `json:"sourceRevision,omitempty"`
-	PrimaryStart      float64          `json:"primaryStart,omitempty"`
-	PrimaryDuration   float64          `json:"primaryDuration,omitempty"`
-	Normalization     models.JSONMap   `json:"normalization,omitempty"`
-	FrozenPlan        models.JSONMap   `json:"frozenPlan,omitempty"`
-	PlanSignature     string           `json:"planSignature,omitempty"`
-	MaterialSignature string           `json:"materialSignature,omitempty"`
-	CompletedWindows  int              `json:"completedWindows"`
-	TotalWindows      int              `json:"totalWindows"`
-	CurrentStart      float64          `json:"currentStart,omitempty"`
-	CurrentDuration   float64          `json:"currentDuration,omitempty"`
-	Windows           []models.JSONMap `json:"windows,omitempty"`
-	Result            models.JSONMap   `json:"result,omitempty"`
-	Error             string           `json:"error,omitempty"`
-	Retryable         bool             `json:"retryable,omitempty"`
-	CreatedAt         time.Time        `json:"createdAt"`
-	UpdatedAt         time.Time        `json:"updatedAt"`
+	ID                         string         `json:"id"`
+	Status                     string         `json:"status"`
+	Phase                      string         `json:"phase"`
+	PrimaryRequestID           string         `json:"primaryRequestId"`
+	PrimaryArtifactID          string         `json:"primaryArtifactId,omitempty"`
+	PrimaryGeneration          string         `json:"primaryGeneration,omitempty"`
+	SourceRevision             models.JSONMap `json:"sourceRevision,omitempty"`
+	PrimaryStart               float64        `json:"primaryStart,omitempty"`
+	PrimaryDuration            float64        `json:"primaryDuration,omitempty"`
+	Normalization              models.JSONMap `json:"normalization,omitempty"`
+	FrozenPlan                 models.JSONMap `json:"frozenPlan,omitempty"`
+	PlanSignature              string         `json:"planSignature,omitempty"`
+	MaterialSignature          string         `json:"materialSignature,omitempty"`
+	ClientCorrelationSignature string         `json:"clientCorrelationSignature,omitempty"`
+	SamplingPolicyVersion      string         `json:"samplingPolicyVersion,omitempty"`
+	SamplingPolicy             models.JSONMap `json:"samplingPolicy,omitempty"`
+	samplingPlan               SamplingPlan
+	CompletedWindows           int              `json:"completedWindows"`
+	TotalWindows               int              `json:"totalWindows"`
+	CurrentStart               float64          `json:"currentStart,omitempty"`
+	CurrentDuration            float64          `json:"currentDuration,omitempty"`
+	Windows                    []models.JSONMap `json:"windows,omitempty"`
+	Result                     models.JSONMap   `json:"result,omitempty"`
+	Error                      string           `json:"error,omitempty"`
+	Retryable                  bool             `json:"retryable,omitempty"`
+	CreatedAt                  time.Time        `json:"createdAt"`
+	UpdatedAt                  time.Time        `json:"updatedAt"`
 }
 
 type labFidelityOperationInput struct {
 	PrimaryRequestID   string  `json:"primaryRequestId"`
 	ReferenceRequestID string  `json:"referenceRequestId,omitempty"`
 	DurationSeconds    float64 `json:"durationSeconds,omitempty"`
-	MaterialSignature  string  `json:"materialSignature,omitempty"`
-	DraftSignature     string  `json:"draftSignature,omitempty"`
+	// MaterialSignature is retained as a legacy wire-compatible input. It is
+	// never used as the operation's material authority; the backend computes
+	// MaterialSignature from the resolved descriptor below.
+	MaterialSignature          string `json:"materialSignature,omitempty"`
+	ClientCorrelationSignature string `json:"clientCorrelationSignature,omitempty"`
+	DraftSignature             string `json:"draftSignature,omitempty"`
+}
+
+type labFidelityMaterialIdentity struct {
+	Version                  string                          `json:"version"`
+	SourcePath               string                          `json:"sourcePath"`
+	SourceRevision           compatiblePreviewSourceRevision `json:"sourceRevision"`
+	PrimaryStartSeconds      int                             `json:"primaryStartSeconds"`
+	PrimaryDurationSeconds   int                             `json:"primaryDurationSeconds"`
+	Normalization            previewNormalizationDecision    `json:"normalization"`
+	CanonicalEncodeSignature string                          `json:"canonicalEncodeSignature"`
+	ArtifactID               string                          `json:"artifactId"`
+	GenerationToken          string                          `json:"generationToken"`
+	GenerationVersion        int64                           `json:"generationVersion"`
+	SamplingPolicyVersion    string                          `json:"samplingPolicyVersion"`
+	SamplingPolicy           SamplingPlan                    `json:"samplingPolicy"`
+}
+
+func labFidelityMaterialSignature(descriptor *compatiblePreviewDescriptor, plan SamplingPlan) string {
+	if descriptor == nil {
+		return ""
+	}
+	identity := labFidelityMaterialIdentity{
+		Version:                  labFidelityMaterialVersion,
+		SourcePath:               descriptor.Path,
+		SourceRevision:           descriptor.SourceRevision,
+		PrimaryStartSeconds:      previewTimestampSeconds(descriptor.Start),
+		PrimaryDurationSeconds:   max(1, descriptor.Seconds),
+		Normalization:            descriptor.Normalization,
+		CanonicalEncodeSignature: descriptor.CanonicalEncodeSignature,
+		ArtifactID:               descriptor.ArtifactID,
+		GenerationToken:          descriptor.GenerationToken,
+		GenerationVersion:        descriptor.GenerationVersion,
+		SamplingPolicyVersion:    labFidelitySamplingPolicyVersion,
+		SamplingPolicy:           plan,
+	}
+	payload, err := json.Marshal(identity)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(payload)
+	return fmt.Sprintf("%s-%x", labFidelityMaterialVersion, digest[:])
+}
+
+func labFidelitySamplingPolicyMap(plan SamplingPlan) models.JSONMap {
+	return models.JSONMap{
+		"version": labFidelitySamplingPolicyVersion, "assetDurationSeconds": plan.AssetDurationSeconds,
+		"windowSeconds": plan.WindowSeconds, "positions": plan.Positions, "adaptive": plan.Adaptive,
+		"initialWindows": plan.InitialWindows, "earlyConfidenceEnabled": plan.EarlyConfidenceEnabled,
+		"earlyConfidenceThreshold": plan.EarlyConfidenceThreshold, "interlaceValidation": plan.InterlaceValidation,
+		"cropDepth": plan.CropDepth,
+	}
 }
 
 type labFidelityOperationStore struct {
@@ -127,7 +190,7 @@ const (
 )
 
 func labPreviewEvidenceCacheKey(descriptor *compatiblePreviewDescriptor) string {
-	return fmt.Sprintf("%s:%s:%d", descriptor.ArtifactID, descriptor.GenerationToken, descriptor.GenerationVersion)
+	return fmt.Sprintf("%s:%s:%d:%s:%s:%d:%d:%d:%d:%s", descriptor.ArtifactID, descriptor.GenerationToken, descriptor.GenerationVersion, descriptor.Path, descriptor.Start, descriptor.Seconds, descriptor.SourceRevision.Size, descriptor.SourceRevision.ModifiedAtNS, descriptor.SourceRevision.Mode, descriptor.Normalization.Mode)
 }
 
 func labPreviewEvidenceCacheGet(key string) (labPreviewEvidenceCacheEntry, bool) {
@@ -173,6 +236,8 @@ func labPreviewEvidenceCachePutMetrics(key string, metrics previewFrameMetrics) 
 }
 
 func labSourceProbeKey(descriptor *compatiblePreviewDescriptor) string {
+	// This provider contains stream-global characteristics only. It is shared
+	// by intervals and normalization modes, but never across source revisions.
 	return fmt.Sprintf("%s:%d:%d:%d", descriptor.Path, descriptor.SourceRevision.Size, descriptor.SourceRevision.ModifiedAtNS, descriptor.SourceRevision.Mode)
 }
 
@@ -319,6 +384,22 @@ func (h AssetHandler) StartLabFidelityOperation(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "primary Compatible Preview artifact is not ready", "code": "primary_not_ready", "state": "not_ready", "retryable": true})
 		return
 	}
+	duration := input.DurationSeconds
+	if duration <= 0 {
+		duration = float64(previewTimestampSeconds(descriptor.Start) + max(1, descriptor.Seconds))
+	}
+	plan := canonicalSamplingPlan(duration, frameStructureSamplingPolicy(h.db))
+	clientCorrelation := strings.TrimSpace(input.ClientCorrelationSignature)
+	if clientCorrelation == "" {
+		// Accept the pre-hardening field for wire compatibility, but never use
+		// it as the operation's material authority.
+		clientCorrelation = strings.TrimSpace(input.MaterialSignature)
+	}
+	materialSignature := labFidelityMaterialSignature(descriptor, plan)
+	if materialSignature == "" {
+		c.JSON(http.StatusConflict, gin.H{"error": "could not resolve backend Fidelity material identity", "code": "stale_primary", "retryable": true})
+		return
+	}
 
 	now := time.Now()
 	store := &labFidelityOperations
@@ -332,7 +413,11 @@ func (h AssetHandler) StartLabFidelityOperation(c *gin.Context) {
 		SourceRevision:    labSourceRevisionMap(descriptor.SourceRevision),
 		PrimaryStart:      float64(previewTimestampSeconds(descriptor.Start)), PrimaryDuration: float64(max(1, descriptor.Seconds)),
 		Normalization: labNormalizationMap(descriptor.Normalization), FrozenPlan: descriptor.ResolvedVideoDecision,
-		PlanSignature: descriptor.CanonicalEncodeSignature, MaterialSignature: input.MaterialSignature, CreatedAt: now, UpdatedAt: now,
+		PlanSignature: descriptor.CanonicalEncodeSignature, MaterialSignature: materialSignature,
+		ClientCorrelationSignature: clientCorrelation, SamplingPolicyVersion: labFidelitySamplingPolicyVersion,
+		SamplingPolicy: labFidelitySamplingPolicyMap(plan), samplingPlan: plan,
+		TotalWindows: len(labFidelityWindowPlans(float64(previewTimestampSeconds(descriptor.Start)), float64(max(1, descriptor.Seconds)), duration, plan)),
+		CreatedAt:    now, UpdatedAt: now,
 	}
 	store.Lock()
 	store.items[id] = operation
@@ -359,6 +444,19 @@ func (h AssetHandler) CancelLabFidelityOperation(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, operation)
+}
+
+func labFidelityDescriptorMatchesOperation(operation LabFidelityOperation, descriptor *compatiblePreviewDescriptor) bool {
+	if descriptor == nil || operation.PrimaryArtifactID != descriptor.ArtifactID ||
+		operation.PrimaryGeneration != fmt.Sprintf("%s:%d", descriptor.GenerationToken, descriptor.GenerationVersion) ||
+		operation.PlanSignature != descriptor.CanonicalEncodeSignature ||
+		operation.PrimaryStart != float64(previewTimestampSeconds(descriptor.Start)) ||
+		operation.PrimaryDuration != float64(max(1, descriptor.Seconds)) ||
+		!reflect.DeepEqual(operation.SourceRevision, labSourceRevisionMap(descriptor.SourceRevision)) ||
+		!reflect.DeepEqual(operation.Normalization, labNormalizationMap(descriptor.Normalization)) {
+		return false
+	}
+	return operation.MaterialSignature == labFidelityMaterialSignature(descriptor, operation.samplingPlan)
 }
 
 func (h AssetHandler) executeLabFidelityOperation(ctx context.Context, cancel context.CancelFunc, input labFidelityOperationInput, id string) {
@@ -404,23 +502,26 @@ func (h AssetHandler) executeLabFidelityOperation(ctx context.Context, cancel co
 		})
 		return
 	}
+	operation, ok := labFidelityOperations.copy(id)
+	if !ok || !labFidelityDescriptorMatchesOperation(operation, descriptor) {
+		labFidelityOperations.update(id, func(operation *LabFidelityOperation) {
+			operation.Status, operation.Phase, operation.Error, operation.Retryable = labFidelityFailed, "stale_primary", "primary Compatible Preview generation changed before LAB Fidelity evidence began", true
+		})
+		return
+	}
 	primaryStart := float64(previewTimestampSeconds(descriptor.Start))
 	primaryDuration := float64(max(1, descriptor.Seconds))
-	duration := input.DurationSeconds
-	if duration <= 0 {
+	duration := operation.samplingPlan.AssetDurationSeconds
+	plan := operation.samplingPlan
+	if duration <= 0 || len(plan.Positions) == 0 {
 		duration = primaryStart + primaryDuration
+		plan = canonicalSamplingPlan(duration, frameStructureSamplingPolicy(h.db))
 	}
-	plan := canonicalSamplingPlan(duration, frameStructureSamplingPolicy(h.db))
 	windows := labFidelityWindowPlans(primaryStart, primaryDuration, duration, plan)
 	labFidelityOperations.update(id, func(operation *LabFidelityOperation) {
 		operation.TotalWindows = len(windows)
-		operation.PrimaryArtifactID = descriptor.ArtifactID
-		operation.PrimaryGeneration = fmt.Sprintf("%s:%d", descriptor.GenerationToken, descriptor.GenerationVersion)
-		operation.PrimaryStart = primaryStart
-		operation.PrimaryDuration = primaryDuration
-		operation.Normalization = labNormalizationMap(descriptor.Normalization)
-		operation.FrozenPlan = descriptor.ResolvedVideoDecision
-		operation.PlanSignature = descriptor.CanonicalEncodeSignature
+		operation.SamplingPolicy = labFidelitySamplingPolicyMap(plan)
+		operation.SamplingPolicyVersion = labFidelitySamplingPolicyVersion
 	})
 
 	completed := make([]models.JSONMap, 0, len(windows))
@@ -435,6 +536,17 @@ func (h AssetHandler) executeLabFidelityOperation(ctx context.Context, cancel co
 		})
 
 		windowDescriptor := descriptor
+		if window.Primary {
+			currentEntry, _, currentKnown := compatiblePreviewRequestLookup(input.PrimaryRequestID, time.Now())
+			currentDescriptor, currentErr := h.compatiblePreviewDescriptorForEntry(currentEntry, input.PrimaryRequestID)
+			if !currentKnown || currentErr != nil || !labFidelityDescriptorMatchesOperation(operation, currentDescriptor) {
+				labFidelityOperations.update(id, func(operation *LabFidelityOperation) {
+					operation.Status, operation.Phase, operation.Error, operation.Retryable = labFidelityFailed, "stale_primary", "primary Compatible Preview generation changed before LAB Fidelity evidence began", true
+				})
+				return
+			}
+			windowDescriptor = currentDescriptor
+		}
 		if !window.Primary {
 			request := labFidelityAdditionalWindowRequest(descriptor, window)
 			requestID, additionalDescriptor, requestErr := h.ensureLabCompatiblePreviewRequest(request)
@@ -464,14 +576,14 @@ func (h AssetHandler) executeLabFidelityOperation(ctx context.Context, cancel co
 		labFidelityOperations.update(id, func(operation *LabFidelityOperation) {
 			operation.CompletedWindows = index + 1
 			operation.Windows = append([]models.JSONMap(nil), completed...)
-			operation.Result = labFidelityOperationResult(input, descriptor, completed, plan, len(windows), false)
+			operation.Result = labFidelityOperationResultWithIdentity(input, operation, descriptor, completed, plan, len(windows), false)
 		})
 	}
 
 	labFidelityOperations.update(id, func(operation *LabFidelityOperation) {
 		operation.Status = labFidelityCompleted
 		operation.Phase = "aggregate"
-		operation.Result = labFidelityOperationResult(input, descriptor, completed, plan, len(windows), true)
+		operation.Result = labFidelityOperationResultWithIdentity(input, operation, descriptor, completed, plan, len(windows), true)
 		operation.CurrentStart = 0
 		operation.CurrentDuration = 0
 		operation.Error = ""
@@ -652,6 +764,19 @@ func labFidelityOperationResult(input labFidelityOperationInput, descriptor *com
 	if complete {
 		result["overallVerdict"] = labFidelityOverallVerdict(canonicalStatus, visualAggregate)
 	}
+	return result
+}
+
+func labFidelityOperationResultWithIdentity(input labFidelityOperationInput, operation *LabFidelityOperation, descriptor *compatiblePreviewDescriptor, windows []models.JSONMap, plan SamplingPlan, totalWindows int, complete bool) models.JSONMap {
+	result := labFidelityOperationResult(input, descriptor, windows, plan, totalWindows, complete)
+	if result == nil || operation == nil {
+		return result
+	}
+	result["materialSignature"] = operation.MaterialSignature
+	result["primaryRequestId"] = operation.PrimaryRequestID
+	result["primaryArtifactId"] = operation.PrimaryArtifactID
+	result["primaryGeneration"] = operation.PrimaryGeneration
+	result["samplingPolicyVersion"] = operation.SamplingPolicyVersion
 	return result
 }
 

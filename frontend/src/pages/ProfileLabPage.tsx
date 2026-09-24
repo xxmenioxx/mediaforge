@@ -57,6 +57,7 @@ import type {
   ProfileInput,
   ProfileSampleEstimateOperation,
   LabFidelityOperation,
+  CompatiblePreviewLifecycleResponse,
   ProfileSuggestion,
   AdvisorFinding,
 	RestorationRecommendationPlan,
@@ -194,6 +195,11 @@ type LabSettingsProfileSave = {
 };
 
 type LabFidelityInspection = {
+  operationId?: string;
+  materialSignature?: string;
+  primaryRequestId?: string;
+  primaryArtifactId?: string;
+  primaryGeneration?: string;
   assetPath: string;
   draftSignature: string;
   requestSignature: string;
@@ -266,8 +272,74 @@ type LabFidelityInspection = {
 type CachedLabReferencePreview = {
   signature: string;
   requestId: string;
+  artifactId: string;
+  generationToken: string;
+  generationVersion: number;
+  sourceRevision: Record<string, unknown>;
+  start: string;
+  seconds: number;
+  normalization: Record<string, unknown>;
   inspection: PreviewInspection;
 };
+
+type LabFidelityRunIdentity = {
+  operationId: string;
+  primaryRequestId: string;
+  primaryArtifactId: string;
+  primaryGeneration: string;
+  materialSignature: string;
+  localRequestSignature: string;
+};
+
+function labFidelityOperationMatchesRun(operation: LabFidelityOperation, run: LabFidelityRunIdentity) {
+  return operation.id === run.operationId &&
+    operation.primaryRequestId === run.primaryRequestId &&
+    operation.primaryArtifactId === run.primaryArtifactId &&
+    operation.primaryGeneration === run.primaryGeneration &&
+    operation.materialSignature === run.materialSignature;
+}
+
+function labReferenceStatusMatchesCache(cache: CachedLabReferencePreview, status: CompatiblePreviewLifecycleResponse) {
+  return status.state === 'ready' &&
+    status.requestId === cache.requestId &&
+    status.artifactId === cache.artifactId &&
+    status.generationToken === cache.generationToken &&
+    status.generationVersion === cache.generationVersion &&
+    JSON.stringify(status.sourceRevision ?? {}) === JSON.stringify(cache.sourceRevision) &&
+    String(status.start ?? '') === cache.start &&
+    Number(status.seconds ?? 0) === cache.seconds &&
+    JSON.stringify(status.normalization ?? {}) === JSON.stringify(cache.normalization);
+}
+
+function cachedLabReferenceFromReadyStatus(
+  signature: string,
+  requestId: string,
+  inspection: PreviewInspection,
+  status: CompatiblePreviewLifecycleResponse,
+): CachedLabReferencePreview | null {
+  if (
+    status.state !== 'ready' ||
+    !status.artifactId ||
+    !status.generationToken ||
+    typeof status.generationVersion !== 'number' ||
+    !status.sourceRevision ||
+    !status.start ||
+    typeof status.seconds !== 'number' ||
+    !status.normalization
+  ) return null;
+  return {
+    signature,
+    requestId,
+    artifactId: status.artifactId,
+    generationToken: status.generationToken,
+    generationVersion: status.generationVersion,
+    sourceRevision: status.sourceRevision,
+    start: status.start,
+    seconds: status.seconds,
+    normalization: status.normalization,
+    inspection,
+  };
+}
 
 function labInspectionFromOperation(
   operation: LabFidelityOperation,
@@ -279,6 +351,11 @@ function labInspectionFromOperation(
   if (!windows.length) return null;
   return {
     ...result,
+    operationId: operation.id,
+    materialSignature: operation.materialSignature,
+    primaryRequestId: operation.primaryRequestId,
+    primaryArtifactId: operation.primaryArtifactId,
+    primaryGeneration: operation.primaryGeneration,
     assetPath: typeof result.assetPath === 'string' ? result.assetPath : fallback.assetPath,
     draftSignature: typeof result.draftSignature === 'string' ? result.draftSignature : fallback.draftSignature,
     requestSignature: typeof result.requestSignature === 'string' && result.requestSignature ? result.requestSignature : fallback.requestSignature,
@@ -867,6 +944,8 @@ export function ProfileLabPage() {
   const [lastFidelityInspection, setLastFidelityInspection] = useState<LabFidelityInspection | null>(null);
   const [labFidelityOperation, setLabFidelityOperation] = useState<LabFidelityOperation | null>(null);
   const labFidelityOperationRef = useRef<LabFidelityOperation | null>(null);
+  const labFidelityRunIdentityRef = useRef<LabFidelityRunIdentity | null>(null);
+  const currentVideoRequestSignatureRef = useRef('');
   const primaryPreviewReadyRef = useRef(false);
   const processedVideoStatusChange = useCallback((status: 'idle' | 'loading' | 'ready' | 'error') => {
     setVideoPreviewStatus((current) => current === 'ready' && status === 'loading' ? current : status);
@@ -995,6 +1074,7 @@ export function ProfileLabPage() {
       previewNormalization,
       videoDraft,
     );
+  currentVideoRequestSignatureRef.current = currentVideoRequestSignature;
 
   const videoPreviewStale = videoPreviewNonce > 0 && videoPreviewStatus !== 'loading' && (
     processedPreviewNormalization !== previewNormalization ||
@@ -1008,12 +1088,14 @@ export function ProfileLabPage() {
       setProcessedReferencePreviewRequestId('');
     }
     if (processedVideoRequestSignature && processedVideoRequestSignature !== currentVideoRequestSignature) {
-      if (labFidelityOperation && ['queued', 'running'].includes(labFidelityOperation.status)) {
-        void api.cancelLabFidelityOperation(labFidelityOperation.id).catch(() => undefined);
+      const activeFidelityOperation = labFidelityOperationRef.current ?? labFidelityOperation;
+      if (activeFidelityOperation && ['queued', 'running'].includes(activeFidelityOperation.status)) {
+        void api.cancelLabFidelityOperation(activeFidelityOperation.id).catch(() => undefined);
       }
       fidelityAbortRef.current?.abort();
       videoPreviewCancelRef.current?.abort();
       labFidelityOperationRef.current = null;
+      labFidelityRunIdentityRef.current = null;
       setLabFidelityOperation(null);
       setProcessedVideoPreviewRequestId('');
       setVideoPreviewNonce(0);
@@ -1314,10 +1396,23 @@ export function ProfileLabPage() {
       onProgress?: (operation: LabFidelityOperation) => void;
     }): Promise<LabFidelityInspection> => {
 
-      const cachedReference =
+      let cachedReference =
         referencePreviewCacheRef.current?.signature === referenceSignature
           ? referencePreviewCacheRef.current
           : null;
+      if (cachedReference && !primaryRequestId) {
+        try {
+          const cachedStatus = await api.compatiblePreviewStatus(cachedReference.requestId, signal);
+          if (!labReferenceStatusMatchesCache(cachedReference, cachedStatus)) {
+            cachedReference = null;
+            referencePreviewCacheRef.current = null;
+          }
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          cachedReference = null;
+          referencePreviewCacheRef.current = null;
+        }
+      }
       const referenceRequestPromise = cachedReference
         ? Promise.resolve({ requestId: cachedReference.requestId })
         : api.createCompatiblePreviewRequest(reference, signal);
@@ -1325,7 +1420,18 @@ export function ProfileLabPage() {
         ? { requestId: primaryRequestId }
         : await api.createCompatiblePreviewRequest(conversion, signal);
       const referenceReady = cachedReference
-        ? Promise.resolve()
+        ? Promise.resolve<CompatiblePreviewLifecycleResponse>({
+            requestId: cachedReference.requestId,
+            artifactId: cachedReference.artifactId,
+            generationToken: cachedReference.generationToken,
+            generationVersion: cachedReference.generationVersion,
+            sourceRevision: cachedReference.sourceRevision,
+            start: cachedReference.start,
+            seconds: cachedReference.seconds,
+            normalization: cachedReference.normalization,
+            state: 'ready',
+            code: 'ready',
+          })
         : waitForCompatiblePreviewReady((await referenceRequestPromise).requestId, signal, createCompatiblePreviewOwnerId());
 
       // The primary request is the only processed request started before the
@@ -1339,7 +1445,7 @@ export function ProfileLabPage() {
         primaryRequestId: conversionRequest.requestId,
         referenceRequestId: referenceRequest.requestId,
         durationSeconds: selectedAssetSnapshot?.duration ?? 0,
-        materialSignature: labOperationSignature(labVideoRequestSignature(
+        clientCorrelationSignature: labOperationSignature(labVideoRequestSignature(
           conversion.path,
           String(conversion.start ?? '00:00:00'),
           Number(conversion.seconds ?? 20),
@@ -1351,10 +1457,11 @@ export function ProfileLabPage() {
       onProgress?.(started);
       let operation = started;
       let referenceInspection: PreviewInspection | undefined = cachedReference?.inspection;
-      await referenceReady;
+      const referenceReadyStatus = await referenceReady;
       if (!cachedReference && !signal?.aborted) {
         referenceInspection = await api.inspectCompatibleAssetPreview(referenceRequest.requestId, signal);
-        referencePreviewCacheRef.current = { signature: referenceSignature, requestId: referenceRequest.requestId, inspection: referenceInspection };
+        const nextCache = cachedLabReferenceFromReadyStatus(referenceSignature, referenceRequest.requestId, referenceInspection, referenceReadyStatus);
+        if (nextCache) referencePreviewCacheRef.current = nextCache;
       }
       while (!['completed', 'failed', 'canceled'].includes(operation.status)) {
         await abortableLabFidelityDelay(2_000, signal);
@@ -1401,10 +1508,17 @@ export function ProfileLabPage() {
         variables.conversion.previewNormalization ?? 'normalize_bt709',
         variables.conversion.profile ?? videoDraft,
       );
+      const activeRun = labFidelityRunIdentityRef.current;
       if (
         variables.signal?.aborted ||
         variables.conversion.path !== assetPath ||
-        operationSignature !== currentVideoRequestSignature
+        operationSignature !== currentVideoRequestSignatureRef.current ||
+        !activeRun ||
+        inspection.operationId !== activeRun.operationId ||
+        inspection.primaryRequestId !== activeRun.primaryRequestId ||
+        inspection.primaryArtifactId !== activeRun.primaryArtifactId ||
+        inspection.primaryGeneration !== activeRun.primaryGeneration ||
+        inspection.materialSignature !== activeRun.materialSignature
       ) return;
       setLastFidelityInspection(inspection);
       setProcessedReferencePreviewRequestId(inspection.referenceRequestId);
@@ -1763,6 +1877,7 @@ export function ProfileLabPage() {
       void api.cancelLabFidelityOperation(labFidelityOperation.id).catch(() => undefined);
     }
     labFidelityOperationRef.current = null;
+    labFidelityRunIdentityRef.current = null;
     setLabFidelityOperation(null);
     fidelityInspection.reset();
     setLastFidelityInspection(null);
@@ -2552,6 +2667,42 @@ export function ProfileLabPage() {
     scrollToPreviews();
   }
 
+  function applyLabFidelityProgress(
+    operation: LabFidelityOperation,
+    controller: AbortController,
+    localRequestSignature: string,
+    path: string,
+    draft: ProfileInput,
+    referenceSignature: string,
+  ) {
+    if (controller.signal.aborted || currentVideoRequestSignatureRef.current !== localRequestSignature) return;
+    let run = labFidelityRunIdentityRef.current;
+    if (!run) {
+      if (!operation.id || !operation.primaryRequestId || !operation.primaryArtifactId || !operation.primaryGeneration || !operation.materialSignature) return;
+      run = {
+        operationId: operation.id,
+        primaryRequestId: operation.primaryRequestId,
+        primaryArtifactId: operation.primaryArtifactId,
+        primaryGeneration: operation.primaryGeneration,
+        materialSignature: operation.materialSignature,
+        localRequestSignature,
+      };
+      labFidelityRunIdentityRef.current = run;
+    }
+    if (!labFidelityOperationMatchesRun(operation, run) || run.localRequestSignature !== localRequestSignature) return;
+    labFidelityOperationRef.current = operation;
+    setLabFidelityOperation(operation);
+    const inspection = labInspectionFromOperation(operation, {
+      assetPath: path,
+      draftSignature: JSON.stringify(draft),
+      requestSignature: localRequestSignature,
+      reference: referencePreviewCacheRef.current?.signature === referenceSignature ? referencePreviewCacheRef.current.inspection : undefined,
+    });
+    if (inspection && inspection.operationId === run.operationId && inspection.materialSignature === run.materialSignature) {
+      setLastFidelityInspection(inspection);
+    }
+  }
+
   function processVideoPreview() {
     if (!assetPath || !isValidPreviewStart(start)) return;
 
@@ -2565,6 +2716,7 @@ export function ProfileLabPage() {
       void api.cancelLabFidelityOperation(labFidelityOperation.id).catch(() => undefined);
     }
     labFidelityOperationRef.current = null;
+    labFidelityRunIdentityRef.current = null;
     setLabFidelityOperation(null);
     const controller = new AbortController();
     fidelityAbortRef.current = controller;
@@ -2612,18 +2764,7 @@ export function ProfileLabPage() {
           previewNormalization,
           profile: videoDraft,
         },
-        onProgress: (operation) => {
-          if (controller.signal.aborted) return;
-          labFidelityOperationRef.current = operation;
-          setLabFidelityOperation(operation);
-          const inspection = labInspectionFromOperation(operation, {
-            assetPath,
-            draftSignature: JSON.stringify(videoDraft),
-            requestSignature: currentVideoRequestSignature,
-            reference: referencePreviewCacheRef.current?.signature === currentReferenceRequestSignature ? referencePreviewCacheRef.current.inspection : undefined,
-          });
-          if (inspection) setLastFidelityInspection(inspection);
-        },
+        onProgress: (operation) => applyLabFidelityProgress(operation, controller, currentVideoRequestSignature, assetPath, videoDraft, currentReferenceRequestSignature),
         signal: controller.signal,
         onPrepared: (referenceRequestId, conversionRequestId) => {
           if (controller.signal.aborted) return;
@@ -2701,6 +2842,7 @@ export function ProfileLabPage() {
     setProcessedVideoRequestSignature('');
     fidelityInspection.reset();
     labFidelityOperationRef.current = null;
+    labFidelityRunIdentityRef.current = null;
     setLabFidelityOperation(null);
   }
 
@@ -2711,6 +2853,7 @@ export function ProfileLabPage() {
     fidelityAbortRef.current = controller;
     setVideoPreviewSignal(controller.signal);
     labFidelityOperationRef.current = null;
+    labFidelityRunIdentityRef.current = null;
     setLabFidelityOperation(null);
     fidelityInspection.reset();
     fidelityInspection.mutate({
@@ -2739,18 +2882,7 @@ export function ProfileLabPage() {
         profile: videoDraft,
       },
       signal: controller.signal,
-      onProgress: (operation) => {
-        if (controller.signal.aborted) return;
-        labFidelityOperationRef.current = operation;
-        setLabFidelityOperation(operation);
-        const inspection = labInspectionFromOperation(operation, {
-          assetPath,
-          draftSignature: JSON.stringify(videoDraft),
-          requestSignature: currentVideoRequestSignature,
-          reference: referencePreviewCacheRef.current?.signature === currentReferenceRequestSignature ? referencePreviewCacheRef.current.inspection : undefined,
-        });
-        if (inspection) setLastFidelityInspection(inspection);
-      },
+      onProgress: (operation) => applyLabFidelityProgress(operation, controller, currentVideoRequestSignature, assetPath, videoDraft, currentReferenceRequestSignature),
       onPrepared: () => {
         primaryPreviewReadyRef.current = true;
         setVideoPreviewStatus('ready');

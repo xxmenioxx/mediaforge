@@ -1941,6 +1941,14 @@ export type CompatiblePreviewRequest = {
   cacheIdentity: string;
   expiresInSeconds: number;
   path: string;
+  artifactId?: string;
+  sourceRevision?: Record<string, unknown>;
+  start?: string;
+  seconds?: number;
+  normalization?: Record<string, unknown>;
+  canonicalEncodeSignature?: string;
+  generationToken?: string;
+  generationVersion?: number;
 };
 
 export type CompatiblePreviewLifecycleState = 'idle' | 'generating' | 'ready' | 'failed' | 'canceled' | 'interrupted' | 'stale' | 'expired' | 'unknown';
@@ -1948,6 +1956,14 @@ export type CompatiblePreviewLifecycleState = 'idle' | 'generating' | 'ready' | 
 export type CompatiblePreviewLifecycleResponse = {
   requestId: string;
   artifactId?: string;
+  path?: string;
+  sourceRevision?: Record<string, unknown>;
+  start?: string;
+  seconds?: number;
+  normalization?: Record<string, unknown>;
+  canonicalEncodeSignature?: string;
+  generationToken?: string;
+  generationVersion?: number;
   code: string;
   state: CompatiblePreviewLifecycleState | string;
   retryable?: boolean;
@@ -2033,6 +2049,9 @@ export type LabFidelityOperation = {
   frozenPlan?: Record<string, unknown>;
   planSignature?: string;
   materialSignature?: string;
+  clientCorrelationSignature?: string;
+  samplingPolicyVersion?: string;
+  samplingPolicy?: Record<string, unknown>;
   completedWindows: number;
   totalWindows: number;
   currentStart?: number;

@@ -34,8 +34,9 @@ work.
 - Consume the canonical #3 source/expected/actual/field-verdict evaluator;
   preserve current SSIM/PSNR thresholds and make canonical mismatches visible
   even when visual metrics are strong.
-- Preserve the source/reference cache by material signature and make source
-  reference evidence independent of processed-profile changes.
+- Preserve the source/reference cache by backend-authoritative material identity
+  (including source revision and Compatible Preview artifact generation) and
+  make source reference evidence independent of processed-profile changes.
 - Add deterministic coverage for preview-first readiness, one primary encode,
   sequential windows, evidence reuse, cancellation, retry, stale signatures,
   restart behavior, cache invalidation, and canonical mismatch reporting.
