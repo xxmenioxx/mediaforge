@@ -80,6 +80,18 @@ type SubtitleStylePolicy struct {
 	Role     SubtitleSemanticRole    `json:"-"`
 }
 
+func cloneSubtitleStylePolicy(policy SubtitleStylePolicy) SubtitleStylePolicy {
+	clone := policy
+	clone.Settings.BuiltInOverrides = make(map[string]SubtitleStylePreset, len(policy.Settings.BuiltInOverrides))
+	for id, preset := range policy.Settings.BuiltInOverrides {
+		clone.Settings.BuiltInOverrides[id] = preset
+	}
+	clone.Settings.CustomPresets = append([]SubtitleStylePreset(nil), policy.Settings.CustomPresets...)
+	clone.Settings.SavedColors = append([]string(nil), policy.Settings.SavedColors...)
+	clone.Settings.RecentColors = append([]string(nil), policy.Settings.RecentColors...)
+	return clone
+}
+
 func subtitleStylePolicyWithRole(policy SubtitleStylePolicy, role SubtitleSemanticRole) SubtitleStylePolicy {
 	policy.Role = role
 	return policy

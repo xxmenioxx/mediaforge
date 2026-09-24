@@ -2,12 +2,14 @@ package handlers
 
 import (
 	"context"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/gin-gonic/gin"
 )
 
 func testEnabledSubtitleStylePolicy() SubtitleStylePolicy {
@@ -97,6 +99,27 @@ func TestSubtitlePaletteNormalizationIsBoundedAndDeterministic(t *testing.T) {
 	}
 }
 
+func TestSubtitleEligibilityIsBackendAuthoritativeAndBounded(t *testing.T) {
+	policy := defaultSubtitleStylePolicy()
+	ass := subtitleExternalEligibility(ExternalSubtitle{Path: "/library/episode.eng.ass", Format: "ass", SourceRevision: "ass-revision"}, policy)
+	if !ass.Restyle.Eligible || !ass.ReplaceEligible || ass.NativeOverrideEligible || ass.SourceIdentity != "external:/library/episode.eng.ass" {
+		t.Fatalf("native ASS eligibility=%#v", ass)
+	}
+	srt := subtitleExternalEligibility(ExternalSubtitle{Path: "/library/episode.eng.srt", Format: "srt", SourceRevision: "srt-revision"}, policy)
+	if !srt.SRTToASS.Eligible || srt.ReplaceEligible || srt.Restyle.Eligible {
+		t.Fatalf("SRT eligibility=%#v", srt)
+	}
+	stream := FFProbeStream{Index: 4, CodecType: "subtitle", CodecName: "hdmv_pgs_subtitle"}
+	embedded := subtitleEmbeddedEligibility("/library/episode.mkv", stream, "media-revision", policy)
+	if !embedded.Regenerate.Eligible || embedded.StreamIndex == nil || *embedded.StreamIndex != 4 || embedded.SourceIdentity != "embedded:/library/episode.mkv#stream=4" {
+		t.Fatalf("bitmap eligibility=%#v", embedded)
+	}
+	unknown := subtitleEmbeddedEligibility("/library/episode.mkv", FFProbeStream{Index: 9, CodecType: "subtitle", CodecName: "dvb_subtitle"}, "media-revision", policy)
+	if unknown.Regenerate.Eligible || unknown.Regenerate.Reason == "" {
+		t.Fatalf("unsupported eligibility=%#v", unknown)
+	}
+}
+
 func TestSubtitleResolverKeepsRoleGeometryAndExplicitPositionSeparate(t *testing.T) {
 	policy := testEnabledSubtitleStylePolicy()
 	resolution := resolveSubtitleStyle(policy, subtitleStyleResolutionInput{Role: SubtitleRoleSigns, Geometry: &bitmapCueGeometry{CanvasWidth: 1920, CanvasHeight: 1080, BitmapX: 600, BitmapY: 850, BitmapWidth: 720, BitmapHeight: 130}})
@@ -179,6 +202,58 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 	}
 }
 
+func TestNativeASSFullPreservationFixtureAndMVFCollision(t *testing.T) {
+	source := `[Script Info]
+Title: full preservation fixture
+ScriptType: v4.00+
+X-Unknown: retain-me
+
+; source comment line
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: MVF_Default,Arial,20,&H00112233,&H00445566,&H00778899,&H00AABBCC,0,0,1,2,1,2,11,12,13,1
+Style: MVF_Top,Arial,24,&H00ABCDEF,&H00123456,&H00654321,&H00010203,-1,0,1,3,2,8,14,15,16,1
+Style: Native,Arial,18,&H00FEDCBA,&H00000000,&H00101010,&H00202020,0,0,1,1,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Comment: 7,0:00:00.00,0:00:01.00,Native,,1,2,3,comment,{\an7}comment line
+Dialogue: 3,0:00:01.00,0:00:03.00,MVF_Default,Actor,011,022,033,fx,{\an8\pos(100,200)\move(100,200,120,220,0,100)\k20}Hello\Nworld
+Dialogue: 1,0:00:03.00,0:00:04.00,MVF_Top,,004,005,006,,{\p1}m 0 0 l 100 0 100 100 0 100
+`
+	policy := testEnabledSubtitleStylePolicy()
+	defaultOutput, err := restyleSourcePreservingASS([]byte(source), "ass", policy, SubtitleRoleFull, "full-fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(defaultOutput) != source {
+		t.Fatalf("default native processing changed protected fixture:\n%s", defaultOutput)
+	}
+
+	policy.Settings.OverrideExistingASSStyles = true
+	override, err := restyleSourcePreservingASS([]byte(source), "ass", policy, SubtitleRoleFull, "full-fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(override)
+	for _, protected := range []string{
+		"X-Unknown: retain-me", "; source comment line", "Style: MVF_Default,Arial,20,&H00112233",
+		"Style: MVF_Top,Arial,24,&H00ABCDEF", "Comment: 7,0:00:00.00,0:00:01.00,Native,,1,2,3,comment",
+		`{\an8\pos(100,200)\move(100,200,120,220,0,100)\k20}Hello\Nworld`,
+		`{\p1}m 0 0 l 100 0 100 100 0 100`,
+	} {
+		if !strings.Contains(text, protected) {
+			t.Fatalf("override removed protected native structure %q from %q", protected, text)
+		}
+	}
+	if strings.Contains(text, "Dialogue: 3,0:00:01.00,0:00:03.00,MVF_Default,") || strings.Contains(text, "Dialogue: 1,0:00:03.00,0:00:04.00,MVF_Top,") {
+		t.Fatal("explicit override did not change eligible base event style assignments")
+	}
+	if !strings.Contains(text, "Style: MVF_MVF_Default_Generated") {
+		t.Fatalf("override did not append collision-safe generated styles: %s", text)
+	}
+}
+
 func TestSubtitleSettingsUpdateIsAtomicAndCustomIdentityIsStable(t *testing.T) {
 	value := models.JSONMap{"generateSRTFallbackForASS": true, "subtitleStyling": map[string]any{
 		"enabled": true,
@@ -208,6 +283,9 @@ func TestSubtitleRestyleUsesExactSourceAndNonDestructiveSiblingPublication(t *te
 	sourcePath := filepath.Join(root, "source.ass")
 	targetPath := filepath.Join(root, "source.styled.ass")
 	workspace := filepath.Join(root, "operation")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -251,6 +329,103 @@ func TestSubtitleRestyleUsesExactSourceAndNonDestructiveSiblingPublication(t *te
 	}
 }
 
+func TestSubtitleSRTToASSUsesStyledSiblingWithoutChangingSRT(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "source.srt")
+	targetPath := filepath.Join(root, "source.styled.ass")
+	source := "1\n00:00:01,000 --> 00:00:02,000\nDialogue\n"
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := mediaFileFingerprint(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := testEnabledSubtitleStylePolicy()
+	workspace := filepath.Join(root, "operation")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	operationID := "subtitle-test-srt-to-ass"
+	subtitleExtractionOperations.Lock()
+	subtitleExtractionOperations.items[operationID] = &subtitleExtractionOperation{ID: operationID, Kind: "restyle", Status: "running", publicationCommittedCh: make(chan struct{})}
+	subtitleExtractionOperations.Unlock()
+	defer func() {
+		subtitleExtractionOperations.Lock()
+		delete(subtitleExtractionOperations.items, operationID)
+		subtitleExtractionOperations.Unlock()
+	}()
+	runSubtitleRestyleOperation(context.Background(), operationID, workspace, subtitleRestyleRequest{Mode: "srt_to_ass", SourcePath: sourcePath, SourceRevision: revision, TargetPath: targetPath, Representation: "srt", Policy: policy})
+	gotSource, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotASS, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotSource) != source || !strings.Contains(string(gotASS), "MVF_") || strings.Contains(string(gotASS), "\\an") == false {
+		t.Fatalf("unexpected SRT sibling output: source=%q ASS=%q", gotSource, gotASS)
+	}
+}
+
+func TestSubtitleRestyleFailureCleansStagingAndReplaceRequiresExplicitOptIn(t *testing.T) {
+	root := t.TempDir()
+	missingSource := filepath.Join(root, "missing.ass")
+	missingWorkspace := filepath.Join(root, "failed-workspace")
+	missingID := "subtitle-test-restyle-failure-cleanup"
+	missingRequest := subtitleRestyleRequest{Mode: "restyle", SourcePath: missingSource, SourceRevision: "missing-revision", TargetPath: filepath.Join(root, "missing.styled.ass"), Representation: "ass", Policy: defaultSubtitleStylePolicy()}
+	subtitleExtractionOperations.Lock()
+	subtitleExtractionOperations.items[missingID] = &subtitleExtractionOperation{ID: missingID, Kind: "restyle", Status: "running", publicationCommittedCh: make(chan struct{})}
+	subtitleExtractionOperations.Unlock()
+	if err := os.MkdirAll(missingWorkspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runSubtitleRestyleOperation(context.Background(), missingID, missingWorkspace, missingRequest)
+	subtitleExtractionOperations.RLock()
+	failed := cloneSubtitleExtractionOperationSnapshot(subtitleExtractionOperations.items[missingID])
+	subtitleExtractionOperations.RUnlock()
+	if failed.Status != "error" || !failed.Retryable {
+		t.Fatalf("failed restyle was not retryable: %#v", failed)
+	}
+	if _, err := os.Stat(missingWorkspace); !os.IsNotExist(err) {
+		t.Fatalf("failed restyle left staging workspace: %v", err)
+	}
+	if _, err := os.Stat(missingRequest.TargetPath); !os.IsNotExist(err) {
+		t.Fatalf("failed restyle published output: %v", err)
+	}
+
+	sourcePath := filepath.Join(root, "replace.ass")
+	source := "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Native,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,1,2,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Native,,0,0,0,,Replace me\n"
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := mediaFileFingerprint(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := testEnabledSubtitleStylePolicy()
+	policy.Settings.OverrideExistingASSStyles = true
+	policy.Version = subtitleStylePolicyHash(policy.Settings)
+	replaceID := "subtitle-test-restyle-replace-opt-in"
+	subtitleExtractionOperations.Lock()
+	subtitleExtractionOperations.items[replaceID] = &subtitleExtractionOperation{ID: replaceID, Kind: "restyle", Status: "running", publicationCommittedCh: make(chan struct{})}
+	subtitleExtractionOperations.Unlock()
+	workspace := filepath.Join(root, "replace-workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runSubtitleRestyleOperation(context.Background(), replaceID, workspace, subtitleRestyleRequest{Mode: "restyle", SourcePath: sourcePath, SourceRevision: revision, TargetPath: sourcePath, Representation: "ass", Replace: true, Policy: policy})
+	got, err := os.ReadFile(sourcePath)
+	if err != nil || !strings.Contains(string(got), "MVF_") || string(got) == source {
+		t.Fatalf("explicit replacement did not publish the authorized restyle: err=%v content=%q", err, got)
+	}
+	subtitleExtractionOperations.Lock()
+	delete(subtitleExtractionOperations.items, missingID)
+	delete(subtitleExtractionOperations.items, replaceID)
+	subtitleExtractionOperations.Unlock()
+}
+
 func TestSubtitleRestyleRejectsStaleSourceAndCancellationBeforePublication(t *testing.T) {
 	root := t.TempDir()
 	sourcePath := filepath.Join(root, "source.ssa")
@@ -283,5 +458,161 @@ func TestSubtitleRestyleRejectsStaleSourceAndCancellationBeforePublication(t *te
 	cancel()
 	if err := publishSubtitleRestyleStage(canceled, "subtitle-test-canceled", workspace, subtitleRestyleRequest{SourcePath: sourcePath, SourceRevision: "", TargetPath: targetPath, Replace: false}, stagePath); err == nil {
 		t.Fatal("canceled publication was accepted")
+	}
+}
+
+func TestSubtitleRestyleCancellationSignalsBeforePublicationMutex(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "source.ass")
+	targetPath := filepath.Join(root, "source.styled.ass")
+	source := "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,1,2,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Hello\n"
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := mediaFileFingerprint(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(root, "workspace")
+	operationID := "subtitle-test-restyle-cancel-barrier"
+	workCtx, cancel := context.WithCancel(context.Background())
+	operation := &subtitleExtractionOperation{ID: operationID, Kind: "restyle", Status: "running", publicationCommittedCh: make(chan struct{}), cancel: cancel}
+	request := subtitleRestyleRequest{Mode: "restyle", SourcePath: sourcePath, SourceRevision: revision, TargetPath: targetPath, Representation: "ass", Policy: defaultSubtitleStylePolicy()}
+	operation.restyleRequest = &request
+	subtitleExtractionOperations.Lock()
+	subtitleExtractionOperations.items[operationID] = operation
+	subtitleExtractionOperations.Unlock()
+	defer func() {
+		subtitleExtractionOperations.Lock()
+		delete(subtitleExtractionOperations.items, operationID)
+		subtitleExtractionOperations.Unlock()
+	}()
+
+	publicationEntered := make(chan struct{})
+	subtitlePublicationBeforeLockHook = func() { close(publicationEntered) }
+	defer func() { subtitlePublicationBeforeLockHook = nil }()
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stagePath := filepath.Join(workspace, "subtitle-output.ass")
+	if err := os.WriteFile(stagePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	subtitlePublicationMu.Lock()
+	publishDone := make(chan struct{})
+	go func() {
+		err := publishSubtitleRestyleStage(workCtx, operationID, workspace, request, stagePath)
+		if err != nil {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "cancelled"
+				operation.Phase = "cancelled"
+				operation.Message = "Subtitle restyle cancelled"
+			})
+		}
+		close(publishDone)
+	}()
+	<-publicationEntered
+
+	cancelDone := make(chan struct{})
+	go func() {
+		recorder := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(recorder)
+		context.Params = gin.Params{{Key: "id", Value: operationID}}
+		(&AssetHandler{}).CancelSubtitleExtractionOperation(context)
+		close(cancelDone)
+	}()
+	<-workCtx.Done()
+	subtitlePublicationMu.Unlock()
+	<-publishDone
+	<-cancelDone
+
+	subtitleExtractionOperations.RLock()
+	snapshot := cloneSubtitleExtractionOperationSnapshot(subtitleExtractionOperations.items[operationID])
+	subtitleExtractionOperations.RUnlock()
+	if snapshot.Status != "cancelled" {
+		t.Fatalf("restyle cancellation did not win publication barrier: %#v", snapshot)
+	}
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("canceled restyle published target: %v", err)
+	}
+	cleanupSubtitleOperationWorkspace(workspace)
+	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+		t.Fatalf("canceled restyle left workspace: %v", err)
+	}
+}
+
+func TestSubtitleRestyleCommittedPublicationIsNotCanceledOrRolledBack(t *testing.T) {
+	operationID := "subtitle-test-restyle-committed"
+	cancelCalled := false
+	subtitleExtractionOperations.Lock()
+	subtitleExtractionOperations.items[operationID] = &subtitleExtractionOperation{
+		ID: operationID, Kind: "restyle", Status: "running", publicationCommitted: true,
+		cancel: func() { cancelCalled = true }, publicationCommittedCh: make(chan struct{}),
+	}
+	subtitleExtractionOperations.Unlock()
+	defer func() {
+		subtitleExtractionOperations.Lock()
+		delete(subtitleExtractionOperations.items, operationID)
+		subtitleExtractionOperations.Unlock()
+	}()
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Params = gin.Params{{Key: "id", Value: operationID}}
+	(&AssetHandler{}).CancelSubtitleExtractionOperation(context)
+	if cancelCalled {
+		t.Fatal("cancel request rolled back or canceled a committed publication")
+	}
+	subtitleExtractionOperations.RLock()
+	status := subtitleExtractionOperations.items[operationID].Status
+	subtitleExtractionOperations.RUnlock()
+	if status != "running" {
+		t.Fatalf("committed publication changed terminal state: %q", status)
+	}
+}
+
+func TestSubtitleRestyleFreezesPolicySnapshotForRunningWork(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "source.srt")
+	if err := os.WriteFile(sourcePath, []byte("1\n00:00:01,000 --> 00:00:02,000\nFrozen\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := mediaFileFingerprint(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyA := testEnabledSubtitleStylePolicy()
+	defaultPreset := policyA.Settings.BuiltInOverrides[SubtitleStyleDefault]
+	defaultPreset.PrimaryColor = "#FF0000"
+	defaultPreset.Opacity = 100
+	policyA.Settings.BuiltInOverrides[SubtitleStyleDefault] = defaultPreset
+	policyA.Version = subtitleStylePolicyHash(policyA.Settings)
+	policyB := cloneSubtitleStylePolicy(policyA)
+	defaultPreset.PrimaryColor = "#0000FF"
+	policyB.Settings.BuiltInOverrides[SubtitleStyleDefault] = defaultPreset
+	policyB.Version = subtitleStylePolicyHash(policyB.Settings)
+	request := subtitleRestyleRequest{Mode: "srt_to_ass", SourcePath: sourcePath, SourceRevision: revision, TargetPath: filepath.Join(root, "source.styled.ass"), Representation: "srt", Policy: policyA}
+	operationID, err := startSubtitleRestyleOperation(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Policy = policyB
+	defer func() {
+		subtitleExtractionOperations.Lock()
+		delete(subtitleExtractionOperations.items, operationID)
+		subtitleExtractionOperations.Unlock()
+	}()
+	completed := waitForSubtitleOperationStatus(t, operationID, "completed")
+	if completed.StylePolicyVersion != policyA.Version {
+		t.Fatalf("operation version=%q want frozen policy A=%q", completed.StylePolicyVersion, policyA.Version)
+	}
+	output, err := os.ReadFile(request.TargetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "&H000000FF&") || strings.Contains(string(output), "&H00FF0000&") {
+		t.Fatalf("frozen policy output did not use policy A red: %q", output)
+	}
+	if policyB.Version == policyA.Version {
+		t.Fatal("policy mutation did not produce a new version")
 	}
 }

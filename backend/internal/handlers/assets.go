@@ -53,18 +53,19 @@ type SubtitleExtractionInput struct {
 }
 
 type ExternalSubtitle struct {
-	Path                 string    `json:"path"`
-	FileName             string    `json:"fileName"`
-	Format               string    `json:"format"`
-	Language             string    `json:"language,omitempty"`
-	Default              bool      `json:"default"`
-	Forced               bool      `json:"forced"`
-	SizeBytes            int64     `json:"sizeBytes"`
-	ModifiedAt           time.Time `json:"modifiedAt"`
-	OCRManaged           bool      `json:"ocrManaged,omitempty"`
-	OCRAnalysisAvailable bool      `json:"ocrAnalysisAvailable,omitempty"`
-	LogicalTransformKey  string    `json:"logicalTransformKey,omitempty"`
-	SourceRevision       string    `json:"sourceRevision,omitempty"`
+	Path                 string                     `json:"path"`
+	FileName             string                     `json:"fileName"`
+	Format               string                     `json:"format"`
+	Language             string                     `json:"language,omitempty"`
+	Default              bool                       `json:"default"`
+	Forced               bool                       `json:"forced"`
+	SizeBytes            int64                      `json:"sizeBytes"`
+	ModifiedAt           time.Time                  `json:"modifiedAt"`
+	OCRManaged           bool                       `json:"ocrManaged,omitempty"`
+	OCRAnalysisAvailable bool                       `json:"ocrAnalysisAvailable,omitempty"`
+	LogicalTransformKey  string                     `json:"logicalTransformKey,omitempty"`
+	SourceRevision       string                     `json:"sourceRevision,omitempty"`
+	Eligibility          *SubtitleSourceEligibility `json:"eligibility,omitempty"`
 }
 
 type ExternalSubtitleUpdateInput struct {
@@ -104,10 +105,12 @@ type subtitleExtractionOperation struct {
 	Translation            *subtitleTranslationOperationView `json:"translation,omitempty"`
 	QualityReport          *subtitleOCRQualityReport         `json:"qualityReport,omitempty"`
 	Error                  string                            `json:"error,omitempty"`
+	Retryable              bool                              `json:"retryable,omitempty"`
 	CreatedAt              time.Time                         `json:"createdAt"`
 	UpdatedAt              time.Time                         `json:"updatedAt"`
 	StylePolicyVersion     string                            `json:"stylePolicyVersion,omitempty"`
 	translationRequest     *subtitleTranslationOperationRequest
+	restyleRequest         *subtitleRestyleRequest
 	cancel                 context.CancelFunc
 	publicationCommitted   bool
 	publicationCommittedCh chan struct{}
@@ -1377,6 +1380,11 @@ func (h AssetHandler) ExternalSubtitles(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	policy := subtitleStylingPolicyFromDB(h.db)
+	for index := range values {
+		eligibility := subtitleExternalEligibility(values[index], policy)
+		values[index].Eligibility = &eligibility
 	}
 	c.JSON(http.StatusOK, values)
 }

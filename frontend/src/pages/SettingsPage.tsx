@@ -2017,6 +2017,18 @@ export function subtitleStylingValue(value: Record<string, unknown> | undefined)
   };
 }
 
+export function subtitleNormalizeHexColor(value: string): string | null {
+  const trimmed = value.trim().toUpperCase();
+  if (/^#[0-9A-F]{3}$/.test(trimmed)) {
+    return `#${trimmed.slice(1).split('').map((digit) => `${digit}${digit}`).join('')}`;
+  }
+  return /^#[0-9A-F]{6}$/.test(trimmed) ? trimmed : null;
+}
+
+export function subtitleHexError(value: string): string {
+  return subtitleNormalizeHexColor(value) ? '' : 'Use a valid HEX color (#RRGGBB or #RGB).';
+}
+
 function subtitlePresetValue(settings: SubtitleStylingSettings, id: string): SubtitleStylePresetSettings {
   const base = subtitleStyleDefaults.find((preset) => preset.id === id) ?? settings.customPresets.find((preset) => preset.id === id) ?? subtitleStyleDefaults[0];
   const override = settings.builtInOverrides[id] ?? {};
@@ -2057,6 +2069,13 @@ export function SubtitleStylingCard({ value, saving, onSave }: { value: Subtitle
     setSelectedID(id);
   };
   const selectPaletteColor = (color: string) => updatePreset('primaryColor', color);
+  const saveSelectedColor = () => {
+    const color = subtitleNormalizeHexColor(preset.primaryColor);
+    if (!color) return;
+    setDraft((current) => ({ ...current, savedColors: [color, ...current.savedColors.filter((item) => item !== color)].slice(0, 32) }));
+  };
+  const colorFields = (['primaryColor', 'outlineColor', 'shadowBackColor'] as const);
+  const hasInvalidColor = colorFields.some((key) => Boolean(subtitleHexError(preset[key])));
   const previewStyle = preset as SubtitleStylePresetSettings;
   return (
     <Card>
@@ -2078,9 +2097,12 @@ export function SubtitleStylingCard({ value, saving, onSave }: { value: Subtitle
           <Button variant="outlined" onClick={addCustomPreset}>Add custom style</Button>
           <Grid container spacing={1.5}>
             {selectedID.startsWith('custom_') ? <Grid size={{ xs: 12, md: 4 }}><TextField label="Display name" value={preset.displayName} onChange={(event) => updatePreset('displayName', event.target.value)} fullWidth /></Grid> : null}
-            {(['primaryColor', 'outlineColor', 'shadowBackColor'] as const).map((key) => (
+            {colorFields.map((key) => (
               <Grid key={key} size={{ xs: 12, md: 4 }}>
-                <TextField type="color" label={key === 'primaryColor' ? 'Primary color' : key === 'outlineColor' ? 'Outline color' : 'Shadow/back color'} value={preset[key]} onChange={(event) => updatePreset(key, event.target.value)} fullWidth InputLabelProps={{ shrink: true }} helperText="HEX #RRGGBB; backend normalizes and validates" />
+                <Stack spacing={0.75}>
+                  <TextField type="color" label={key === 'primaryColor' ? 'Primary color' : key === 'outlineColor' ? 'Outline color' : 'Shadow/back color'} value={subtitleNormalizeHexColor(preset[key]) || '#000000'} onChange={(event) => updatePreset(key, event.target.value)} fullWidth InputLabelProps={{ shrink: true }} />
+                  <TextField label="HEX" value={preset[key]} onChange={(event) => updatePreset(key, event.target.value)} error={Boolean(subtitleHexError(preset[key]))} helperText={subtitleHexError(preset[key]) || 'Normalized as #RRGGBB'} fullWidth />
+                </Stack>
               </Grid>
             ))}
             <Grid size={{ xs: 12, md: 4 }}><TextField label="Opacity" type="number" inputProps={{ min: 0, max: 100 }} value={preset.opacity} onChange={(event) => updatePreset('opacity', Math.max(0, Math.min(100, Number(event.target.value))))} fullWidth /></Grid>
@@ -2090,13 +2112,19 @@ export function SubtitleStylingCard({ value, saving, onSave }: { value: Subtitle
           <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
             {subtitleStylePalette.map((color) => <Button key={color} size="small" variant="outlined" onClick={() => selectPaletteColor(color)} sx={{ minWidth: 42, bgcolor: color, color: '#111' }} aria-label={`Use ${color}`}>{color.slice(1)}</Button>)}
           </Stack>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Button size="small" variant="outlined" onClick={saveSelectedColor} disabled={hasInvalidColor}>Save current color</Button>
+            <Typography variant="caption" color="text.secondary">Saved colors ({draft.savedColors.length}/32)</Typography>
+            {draft.savedColors.map((color) => <Button key={`saved-${color}`} size="small" aria-label={`Use saved ${color}`} onClick={() => selectPaletteColor(color)} sx={{ minWidth: 42, bgcolor: color, color: '#111' }}>{color.slice(1)}</Button>)}
+          </Stack>
+          <Typography variant="caption" color="text.secondary">Recent colors ({draft.recentColors.length}/12): {draft.recentColors.join(', ') || 'none'}</Typography>
           <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: '#16181d', color: '#fff' }}>
             <Typography variant="caption" color="inherit">Preview · browser approximation (font availability, libass metrics, outline scaling may differ)</Typography>
             <Stack spacing={1} sx={{ mt: 1 }}>
-              {['Top note', 'Dialogue', 'Lyrics / sign'].map((label, index) => <Box key={label} sx={{ p: 1, bgcolor: index === 1 ? '#f0f0f0' : index === 2 ? '#8b806c' : '#16181d', color: previewStyle.primaryColor, textShadow: `1px 1px 0 ${previewStyle.outlineColor}, 2px 2px 0 ${previewStyle.shadowBackColor}`, textAlign: index === 0 ? 'center' : 'left' }}>{label}</Box>)}
+              {(['Dark background', 'Light background', 'Mixed background'] as const).map((background, backgroundIndex) => <Box key={background} sx={{ p: 1, bgcolor: backgroundIndex === 0 ? '#16181d' : backgroundIndex === 1 ? '#f0f0f0' : '#8b806c', color: previewStyle.primaryColor, textShadow: `1px 1px 0 ${previewStyle.outlineColor}, 2px 2px 0 ${previewStyle.shadowBackColor}` }}><Typography variant="caption" color="inherit">{background}</Typography><Stack direction="row" spacing={1} sx={{ mt: 0.5 }}><span>Top note</span><span>Dialogue</span><span>Lyrics</span><span>Sign</span></Stack></Box>)}
             </Stack>
           </Box>
-          <Button startIcon={<SaveIcon />} variant="contained" onClick={() => onSave(draft)} disabled={saving} sx={{ alignSelf: 'flex-start' }}>Save Subtitle Styling</Button>
+          <Button startIcon={<SaveIcon />} variant="contained" onClick={() => onSave(draft)} disabled={saving || hasInvalidColor} sx={{ alignSelf: 'flex-start' }}>Save Subtitle Styling</Button>
         </Stack>
       </CardContent>
     </Card>

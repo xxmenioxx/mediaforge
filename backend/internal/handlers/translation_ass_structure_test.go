@@ -76,6 +76,41 @@ Dialogue: Marked=0,0:00:01.00,0:00:02.00,Default,Speaker,0,0,0,,Hello, SSA, comm
 	}
 }
 
+func TestTranslationConsumesGenericASSBoundaryWithoutStructuralChange(t *testing.T) {
+	source := `[Script Info]
+Title: generic boundary regression
+Unknown: preserved
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Native,Arial,20,&H00112233,&H00445566,&H00778899,&H00AABBCC,0,0,1,2,1,2,10,20,30,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Comment: 4,0:00:00.00,0:00:01.00,Native,,1,2,3,comment,protected comment
+Dialogue: 2,0:00:01.00,0:00:03.00,Native,Actor,10,20,30,fx,{\an8\pos(10,20)\k20}Hello\Nworld
+`
+	generic, err := parseASSDocument("ass", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	translation, err := parseTranslationASSDocument("ass", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generic.Representation != translation.Representation || len(generic.Events) != len(translation.Events) {
+		t.Fatalf("translation adapter diverged from generic document: generic=%#v translation=%#v", generic, translation)
+	}
+	if got, err := translation.ReconstructDialogueSegments(map[int][]string{0: translation.Events[0].Dialogue.OriginalTextSegments()}); err != nil || got != source {
+		t.Fatalf("translation generic boundary no-op changed structure: err=%v got=%q", err, got)
+	}
+	provider := strings.Replace(translation.Events[0].Dialogue.TranslatableText(), "Hello", "Hola", 1)
+	got, err := translation.ReconstructDialogueProviderTexts(map[int]string{0: provider})
+	if err != nil || !strings.Contains(got, "{\\an8\\pos(10,20)\\k20}Hola\\Nworld") || !strings.Contains(got, "Unknown: preserved") || !strings.Contains(got, "Comment: 4,") {
+		t.Fatalf("translation changed protected generic structure: err=%v got=%q", err, got)
+	}
+}
+
 func TestTranslationASSSourceCuesFeedNeutralEnvelopeWithoutProviderStructure(t *testing.T) {
 	source := "[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,{\\pos(10,20)}Hello\n"
 	document, err := parseTranslationASSDocument("ass", source)

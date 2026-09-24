@@ -36,7 +36,7 @@
 
 - [x] 6.1 Add the Settings subtitle styling card using the existing AppSetting mutation/query invalidation flow; verify built-in/custom preset editing, palette bounds, preservation defaults, and explicit override warning.
 - [x] 6.2 Add immediate dark/light/mixed browser preview examples for top note, dialogue, lyrics, and sign; verify color-picker changes do not invoke FFmpeg, OCR, or a subtitle operation and display approximation caveats.
-- [ ] 6.3 Add focused frontend tests for HEX normalization/error display, palette deduplication/bounds, preview rendering, default source preservation, and override warning.
+- [x] 6.3 Add focused frontend tests for HEX normalization/error display, palette deduplication/bounds, preview rendering, default source preservation, and override warning.
 
 ## 7. Asset Info Restyle / Regenerate backend
 
@@ -44,26 +44,26 @@
 - [x] 7.2 Implement ASS/SSA restyle using the existing source-preserving document path without OCR/provider work; verify default preservation and explicit override behavior.
 - [x] 7.3 Implement selected SRT-to-ASS sibling generation through the canonical cue/style path while leaving source SRT unchanged; verify output eligibility and exact artifact identity.
 - [x] 7.4 Implement provenance-authorized embedded/bitmap regeneration by delegating to the existing canonical extraction/OCR lifecycle; verify no duplicate OCR or regeneration pipeline is introduced.
-- [ ] 7.5 Add backend operation tests for restyle, SRT sibling, and canonical bitmap regeneration modes, including unsupported/missing provenance failures.
+- [x] 7.5 Add backend operation tests for restyle, SRT sibling, and canonical bitmap regeneration modes, including unsupported/missing provenance failures.
 
 ## 8. Asset Info modal/UI
 
-- [ ] 8.1 Add Restyle / Regenerate mode selection to the existing Asset Info subtitle actions for backend-authorized exact sources; verify the UI displays source identity, representation, role, current policy, and mode eligibility without client-side inference.
+- [x] 8.1 Add Restyle / Regenerate mode selection to the existing Asset Info subtitle actions for backend-authorized exact sources; verify the UI displays source identity, representation, role, current policy, and mode eligibility without client-side inference.
 - [x] 8.2 Add explicit replacement opt-in and a native-style override warning; verify sibling-by-default behavior and that unavailable/stale sources are not offered as valid targets.
-- [ ] 8.3 Add focused frontend lifecycle tests for mode eligibility, exact identity display, override confirmation, progress, terminal cancellation, failure, and retry.
+- [x] 8.3 Add focused frontend lifecycle tests for mode eligibility, exact identity display, override confirmation, progress, terminal cancellation, failure, and retry.
 
 ## 9. Cancellation, publication, and provenance
 
 - [x] 9.1 Reuse the existing subtitle operation registry/status/poll/cancel/retry/context path for Restyle / Regenerate; verify lightweight restyle does not start OCR and cancellation reaches a terminal cancelled-equivalent state after cleanup.
 - [x] 9.2 Reuse operation-owned staging, validation, source revision recheck, publication mutex, atomic sibling/replacement publication, rollback, and bounded cleanup; verify failure/cancel preserves source/current sidecars and replacement is opt-in.
 - [x] 9.3 Record bounded style-policy/source identity provenance and verify no full settings payload, credentials, or unbounded cue content is persisted.
-- [ ] 9.4 Add deterministic stale-revision, cancellation, failure-cleanup, atomic-publication, and replace-opt-in regressions.
+- [x] 9.4 Add deterministic stale-revision, cancellation, failure-cleanup, atomic-publication, and replace-opt-in regressions.
 
 ## 10. Deterministic regressions
 
-- [ ] 10.1 Add backend color, settings-enable-gate, resolver, native ASS/SSA, generated ASS, bitmap geometry, `both`, font-boundary, and collision fixtures described by the subtitle delta spec.
-- [ ] 10.2 Add source-style preservation fixtures with multiple styles, custom colors, karaoke, inline override tags, explicit positioning, layers, margins, drawing mode, comments, and unknown preserved lines; verify default processing does not flatten them and enabled override changes only permitted base Style assignments.
-- [ ] 10.3 Run Translation ASS/SSA regression fixtures before and after generic document-boundary extraction and verify the same structural output, protected-dialogue behavior, and representation; also repeat operation lifecycle tests for source conflicts, cancellation during staging/OCR, failed validation, retry identity, and Settings mutation during frozen execution.
+- [x] 10.1 Add backend color, settings-enable-gate, resolver, native ASS/SSA, generated ASS, bitmap geometry, `both`, font-boundary, and collision fixtures described by the subtitle delta spec.
+- [x] 10.2 Add source-style preservation fixtures with multiple styles, custom colors, karaoke, inline override tags, explicit positioning, layers, margins, drawing mode, comments, and unknown preserved lines; verify default processing does not flatten them and enabled override changes only permitted base Style assignments.
+- [x] 10.3 Run Translation ASS/SSA regression fixtures before and after generic document-boundary extraction and verify the same structural output, protected-dialogue behavior, and representation; also repeat operation lifecycle tests for source conflicts, cancellation during staging/OCR, failed validation, retry identity, and Settings mutation during frozen execution.
 - [x] 10.4 Add focused frontend tests for Settings preview/palette and Asset Info Restyle / Regenerate controls without changing the known global lint baseline.
 
 ## 11. OpenSpec and full verifier

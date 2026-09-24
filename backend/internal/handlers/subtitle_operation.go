@@ -78,6 +78,7 @@ func (h AssetHandler) startSubtitleExtractionOperation(
 	now := time.Now()
 	operation := &subtitleExtractionOperation{
 		ID:                     operationID,
+		Kind:                   "extraction",
 		Status:                 "running",
 		Phase:                  "preparing",
 		Progress:               1,
@@ -644,13 +645,12 @@ func (h *AssetHandler) CancelSubtitleExtractionOperation(c *gin.Context) {
 		return
 	}
 
-	// Translation publication waits on subtitlePublicationMu and checks its
-	// context before the final source recheck. Signal translation cancellation
-	// before taking that mutex so a queued publisher cannot pass the barrier
-	// merely because the cancel request was waiting behind it. Extraction and
-	// OCR operations retain their existing lock ordering below.
+	// Every subtitle publisher waits on subtitlePublicationMu and checks its
+	// context before the final source recheck. Signal cancellation before taking
+	// that mutex so a queued publisher cannot pass the barrier merely because
+	// the cancel request was waiting behind it.
 	subtitleExtractionOperations.RLock()
-	if operation, exists := subtitleExtractionOperations.items[id]; exists && operation.Kind == subtitleTranslationOperationKind && operation.Status == "running" && !operation.publicationCommitted && operation.cancel != nil {
+	if operation, exists := subtitleExtractionOperations.items[id]; exists && operation.Status == "running" && !operation.publicationCommitted && operation.cancel != nil {
 		operation.cancel()
 	}
 	subtitleExtractionOperations.RUnlock()

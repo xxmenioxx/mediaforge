@@ -316,6 +316,32 @@ export type ExternalSubtitle = {
   ocrAnalysisAvailable?: boolean;
   logicalTransformKey?: string;
   sourceRevision?: string;
+  eligibility?: SubtitleSourceEligibility;
+};
+
+export type SubtitleModeEligibility = {
+  eligible: boolean;
+  reason?: string;
+};
+
+export type SubtitleSourceEligibility = {
+  restyle: SubtitleModeEligibility;
+  srtToAss: SubtitleModeEligibility;
+  regenerate: SubtitleModeEligibility;
+  replaceEligible: boolean;
+  nativeOverrideEligible: boolean;
+  sourceIdentity: string;
+  sourceRevision: string;
+  representation: string;
+  role: SubtitleSemanticRole;
+  roleProvenance: string;
+  streamIndex?: number;
+  policyVersion: string;
+};
+
+export type SubtitleEligibilityResponse = {
+  external: ExternalSubtitle[];
+  embedded: SubtitleSourceEligibility[];
 };
 
 export type SubtitleTranslationSourceSelector =
@@ -2119,6 +2145,7 @@ export type SubtitleExtractionOperation = {
   message?: string;
   result?: SubtitleExtractionResult;
   error?: string;
+  retryable?: boolean;
   kind?: 'extraction' | 'ocr_analysis' | 'ocr_correction' | 'translation' | string;
   translation?: {
     provider?: string;

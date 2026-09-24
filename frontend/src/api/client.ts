@@ -62,6 +62,7 @@ import type {
   SubtitleExtractionOperation,
   SubtitleExtractionOperationList,
   SubtitleRestyleInput,
+  SubtitleEligibilityResponse,
   SubtitleExtractionResult,
   SubtitleTranslationCapability,
   SubtitleTranslationCapabilityInput,
@@ -334,6 +335,17 @@ export const api = {
     request<{ operation: SubtitleExtractionOperation }>(
       `/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/retry`,
       { method: 'POST' },
+    ),
+
+  retrySubtitleOperation: (operationId: string) =>
+    request<{ operation: SubtitleExtractionOperation }>(
+      `/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/retry`,
+      { method: 'POST' },
+    ),
+
+  subtitleEligibility: (path: string) =>
+    request<SubtitleEligibilityResponse>(
+      `/api/assets/subtitle-eligibility?path=${encodeURIComponent(path)}`,
     ),
 
   subtitleTranslationCapability: (input: SubtitleTranslationCapabilityInput) =>

@@ -39,6 +39,10 @@ type subtitleRestyleRequest struct {
 	Policy         SubtitleStylePolicy
 }
 
+// Tests replace this with a deterministic barrier to prove cancellation is
+// signalled before the shared publication mutex is acquired.
+var subtitlePublicationBeforeLockHook func()
+
 func (h AssetHandler) RestyleSubtitle(c *gin.Context) {
 	var input subtitleRestyleInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -139,23 +143,38 @@ func (h AssetHandler) RestyleSubtitle(c *gin.Context) {
 		policy.Settings.OverrideExistingASSStyles = true
 	}
 	target := subtitleRestyleSiblingPath(validated, representation, mode, input.Replace)
-	workspace, workspaceErr := os.MkdirTemp(filepath.Dir(validated), ".mvforge-subtitle-operation-*")
-	if workspaceErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": workspaceErr.Error()})
+	request := subtitleRestyleRequest{Mode: mode, SourcePath: validated, SourceRevision: input.SourceRevision, TargetPath: target, Representation: representation, Role: normalizeSubtitleSemanticRole(string(input.Role)), Replace: input.Replace, Policy: policy}
+	operationID, startErr := startSubtitleRestyleOperation(request)
+	if startErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": startErr.Error()})
 		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"operationId": operationID, "status": "running", "phase": "preparing", "progress": 1, "format": representation})
+}
+
+func startSubtitleRestyleOperation(request subtitleRestyleRequest) (string, error) {
+	workspace, err := os.MkdirTemp(filepath.Dir(request.SourcePath), ".mvforge-subtitle-operation-*")
+	if err != nil {
+		return "", err
 	}
 	operationID := fmt.Sprintf("subtitle-%d", time.Now().UnixNano())
 	workCtx, cancel := context.WithTimeout(context.Background(), subtitleOperationTimeout)
-	operation := &subtitleExtractionOperation{ID: operationID, Kind: "restyle", Status: "running", Phase: "preparing", Progress: 1, StreamIndex: -1, Format: representation, AssetPath: mediaPath, StylePolicyVersion: policy.Version, CreatedAt: time.Now(), UpdatedAt: time.Now(), cancel: cancel, publicationCommittedCh: make(chan struct{})}
+	snapshot := request
+	snapshot.Policy = cloneSubtitleStylePolicy(request.Policy)
+	operation := &subtitleExtractionOperation{
+		ID: operationID, Kind: "restyle", Status: "running", Phase: "preparing", Progress: 1,
+		StreamIndex: -1, Format: request.Representation, AssetPath: request.SourcePath,
+		StylePolicyVersion: request.Policy.Version, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		restyleRequest: &snapshot, cancel: cancel, publicationCommittedCh: make(chan struct{}),
+	}
 	subtitleExtractionOperations.Lock()
 	subtitleExtractionOperations.items[operationID] = operation
 	subtitleExtractionOperations.Unlock()
-	request := subtitleRestyleRequest{Mode: mode, SourcePath: validated, SourceRevision: input.SourceRevision, TargetPath: target, Representation: representation, Role: normalizeSubtitleSemanticRole(string(input.Role)), Replace: input.Replace, Policy: policy}
 	go func() {
 		defer cancel()
-		runSubtitleRestyleOperation(workCtx, operationID, workspace, request)
+		runSubtitleRestyleOperation(workCtx, operationID, workspace, snapshot)
 	}()
-	c.JSON(http.StatusAccepted, gin.H{"operationId": operationID, "status": "running", "phase": "preparing", "progress": 1, "format": representation})
+	return operationID, nil
 }
 
 func subtitleRestyleSiblingPath(source, representation, mode string, replace bool) string {
@@ -219,6 +238,7 @@ func runSubtitleRestyleOperation(ctx context.Context, operationID, workspace str
 		}
 		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
 			operation.Status = status
+			operation.Retryable = true
 			operation.Phase = phase
 			operation.Message = message
 			operation.Error = err.Error()
@@ -227,6 +247,7 @@ func runSubtitleRestyleOperation(ctx context.Context, operationID, workspace str
 	}
 	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
 		operation.Status = "completed"
+		operation.Retryable = false
 		operation.Phase = "completed"
 		operation.Progress = 100
 		operation.Message = "Subtitle restyle completed"
@@ -255,6 +276,9 @@ func publishSubtitleRestyleStage(ctx context.Context, operationID, workspace str
 	fingerprint, err := mediaFileFingerprint(request.SourcePath)
 	if err != nil || fingerprint != request.SourceRevision {
 		return fmt.Errorf("subtitle source became stale before publication")
+	}
+	if subtitlePublicationBeforeLockHook != nil {
+		subtitlePublicationBeforeLockHook()
 	}
 	subtitlePublicationMu.Lock()
 	defer subtitlePublicationMu.Unlock()
