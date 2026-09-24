@@ -12,14 +12,18 @@ defines that missing contract now that #70 is authoritative for window selection
   candidate/output, frozen plan/window identities, runtime capability and metric
   provenance, per-window results, deterministic aggregates, warnings, and
   unavailable capabilities.
+- Make candidate coverage explicit so a Compatible Preview or Test Encode
+  reports which frozen windows it physically represents; uncovered windows stay
+  traceable and are not treated as metric failures or filled by new encodes.
 - Extend the existing LAB Fidelity evidence boundary so perceptual analysis
   consumes ready Compatible Preview/Test Encode/final-output artifacts and
   never encodes a sample solely to measure it.
 - Define one canonical reference adapter from the resolved/frozen video plan
   and existing preview normalization, including transform identity/version,
   frame/time alignment, source revision, and non-comparable behavior.
-- Support capability-driven VMAF, XPSNR, SSIM, optional MS-SSIM, and diagnostic
-  PSNR without assuming any optional FFmpeg filter or model is installed.
+- Support logical VMAF, XPSNR, SSIM, optional MS-SSIM, and diagnostic PSNR via
+  explicit runtime provider contracts, without assuming a same-named FFmpeg
+  filter, optional library, or model is installed.
 - Make #70 frozen windows the only evaluation windows for LAB, Test Encode, and
   final Validation; consumers may filter them but cannot select replacements.
 - Replace canonical quality interpretation with evidence-first semantics. The

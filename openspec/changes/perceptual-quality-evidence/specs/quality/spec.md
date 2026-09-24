@@ -22,7 +22,8 @@ new scene.
   revision, frozen `SamplingPlan`, candidate generation, reference identity,
   runtime capability identity, and metric/model versions
 - **THEN** they SHALL address the same `PlanIdentity` and window identities, and
-  SHALL produce the same evidence identity for every common comparable window
+  SHALL produce the same evidence identity for every candidate-covered common
+  comparable window
 
 #### Scenario: A consumer requests a role that is not frozen
 
@@ -39,6 +40,54 @@ new scene.
   provenance, SHALL not reinterpret it as hard-scene evidence, and SHALL either
   evaluate only its frozen intervals or report perceptual evidence unavailable
   when the required identities cannot be proven
+
+### Requirement: Candidate coverage SHALL be explicit for every frozen window
+
+Every candidate SHALL expose a bounded `CandidateCoverage` contract containing
+the source start, source duration, covered frozen window identities, and a
+versioned segment/timeline mapping identity. The evidence set SHALL distinguish
+the total frozen windows, candidate-covered windows, measured/comparable
+windows, and frozen windows not represented by that candidate. A window that is
+not represented SHALL use an explicit coverage state such as `not_covered` with
+a bounded reason; it SHALL NOT be converted into a metric failure or an
+unavailable metric result.
+
+#### Scenario: A Test Encode covers only the primary window
+
+- **WHEN** a frozen `SamplingPlan` contains six windows but a Test Encode
+  candidate represents only the primary source segment
+- **THEN** candidate coverage SHALL list only the primary window identity, and
+  the evidence set SHALL report five frozen windows as `not_covered` while
+  retaining their start, duration, roles, reasons, and identities
+
+#### Scenario: Test Encode measures only represented windows
+
+- **WHEN** a Test Encode has a proven source start/duration mapping for one
+  frozen window
+- **THEN** only that covered window MAY produce metric measurements, and the
+  other frozen windows SHALL not be read from the candidate as though they were
+  present
+
+#### Scenario: Uncovered windows do not fail Test Encode quality evidence
+
+- **WHEN** unrelated frozen windows are outside the Test Encode segment
+- **THEN** they SHALL remain traceable as `not_covered`, SHALL be excluded from
+  comparable/metric failure counts and aggregates, and SHALL not be replaced by
+  a selector or another encode
+
+#### Scenario: Final output proves full coverage
+
+- **WHEN** final output source-to-candidate timeline identity proves that the
+  complete output represents all frozen source windows
+- **THEN** candidate coverage MAY list all frozen window identities and the same
+  window identities MAY later produce comparable final-output evidence
+
+#### Scenario: Candidate mapping changes
+
+- **WHEN** a Test Encode starts at a different source time, has a different
+  duration, or otherwise changes its segment mapping
+- **THEN** its candidate coverage identity SHALL change and previously persisted
+  evidence SHALL become stale even if the output path is unchanged
 
 ### Requirement: The reference SHALL be canonical, lossless with respect to the evaluated transform, and authority-bound
 
@@ -106,6 +155,8 @@ duplicated, or unmatched frame count SHALL be bounded provenance.
 The candidate identity SHALL include the candidate kind, canonical output path
 or artifact identity, source/job/test identity where available, output revision
 or artifact generation token/version, and frozen effective execution identity.
+It SHALL also include the segment/coverage mapping identity and the covered
+frozen window identities.
 The comparable-pair/evidence identity SHALL include candidate identity,
 reference identity, `SamplingPlan` identity, window identity, metric contract
 version, metric/model versions, and runtime capability identity. Evidence SHALL
@@ -135,16 +186,30 @@ candidate generation/output, metric/model, or capability identity changes.
 
 ### Requirement: Metric collection SHALL be capability-driven and evidence-first
 
-The initial metric set SHALL support VMAF, XPSNR, SSIM, optional MS-SSIM, and
-diagnostic PSNR. Runtime availability SHALL be discovered from the actual MVForge
-FFmpeg runtime and any required model, not inferred from a Docker image or a
-hardcoded build assumption. Capability provenance SHALL include a stable
-capability identity/version and the metric filter/model contract used.
+The initial logical metric set SHALL support VMAF, XPSNR, SSIM, optional
+MS-SSIM, and diagnostic PSNR. Each logical metric SHALL resolve through an
+explicit runtime provider contract containing the logical metric, provider,
+provider version, invocation contract, model identity when applicable,
+availability, and bounded reason. A provider MAY be a standalone FFmpeg
+filter, a feature exposed by another filter/library such as libvmaf, or another
+existing canonical runtime mechanism; the logical metric name SHALL NOT be
+treated as its provider name. Runtime availability SHALL be discovered from the
+actual MVForge FFmpeg runtime and any required model, not inferred from a
+Docker image or a hardcoded build assumption. Capability provenance SHALL
+include a stable capability identity/version and the resolved provider/model
+contract. The metric identity used for evidence hashing SHALL include the
+logical metric contract, actual provider, provider/filter/library contract
+version, model identity when applicable, and runtime capability identity.
 
 Each metric result SHALL distinguish at least `available`, `unsupported`,
 `unavailable`, `failed_measurement`, and `non_comparable`; absent values SHALL
 not be encoded as zero. A missing optional metric SHALL not make the complete
-evidence set fail when other metrics can be measured.
+evidence set fail when other metrics can be measured. Capability discovery SHALL
+occur once for the runtime/evidence operation and SHALL not be repeated once
+per frozen window. Initial metric execution SHALL be sequential under existing
+LAB heavy-work ownership unless one verified provider invocation safely returns
+multiple logical metrics; no unconstrained one-process-per-metric/window
+execution is permitted.
 
 #### Scenario: VMAF is absent but other metrics are usable
 
@@ -153,11 +218,21 @@ evidence set fail when other metrics can be measured.
 - **THEN** VMAF SHALL be `unavailable` with capability provenance, and each
   other usable metric SHALL be measured and reported independently
 
-#### Scenario: The runtime supports MS-SSIM only on some builds
+#### Scenario: A logical metric is exposed through a verified provider
 
-- **WHEN** the runtime capability probe reports MS-SSIM unsupported
-- **THEN** the evidence SHALL preserve that capability state, SHALL not invoke
-  an unsupported filter for every window, and SHALL continue supported metrics
+- **WHEN** the runtime exposes a verified provider/invocation contract for
+  logical MS-SSIM even though no standalone filter named `ms_ssim` exists
+- **THEN** MS-SSIM SHALL be `available` with that provider, provider version,
+  invocation contract, and runtime capability identity, and SHALL not be
+  rejected merely because the provider name differs from the logical metric
+
+#### Scenario: The runtime does not expose a logical metric provider
+
+- **WHEN** the runtime capability probe cannot verify a provider/invocation for
+  MS-SSIM or cannot verify a usable VMAF model/provider
+- **THEN** that logical metric SHALL be `unsupported` or `unavailable` with a
+  bounded reason, SHALL not be invoked for every window, and SHALL not affect
+  the other metrics
 
 #### Scenario: A metric process fails after another metric succeeds
 
@@ -167,16 +242,42 @@ evidence set fail when other metrics can be measured.
   diagnostics, the successful metric SHALL remain available, and the window or
   operation SHALL not convert the successful result to zero
 
+#### Scenario: Provider identity changes
+
+- **WHEN** a logical metric resolves to a different provider, provider
+  invocation contract, provider version, or model identity
+- **THEN** its metric identity and the containing evidence identity SHALL
+  change, and a previous result SHALL not be reused as current evidence
+
 ### Requirement: Per-window evidence SHALL preserve metric semantics and provenance
 
 Every window record SHALL include the frozen `SamplingWindow.Identity`,
-start/duration, primary flag, inherited roles/reasons, reference identity,
-candidate identity, alignment identity, and a bounded result for each requested
-metric. A metric result SHALL retain its direction/semantics (for example,
-higher-is-better), implementation/filter contract, model/version when
-applicable, units/range when defined, status, value when available, and a
+start/duration, primary flag, inherited roles/reasons, coverage state,
+reference identity, candidate identity, alignment identity, and a bounded
+result for each requested metric. A metric result SHALL retain its
+direction/semantics (for example, higher-is-better), logical metric contract,
+resolved provider/invocation contract, model/version when applicable,
+units/range when defined, status, canonical value when available, and a
 bounded reason or warning. VMAF, XPSNR, SSIM, MS-SSIM, and PSNR SHALL remain
 distinct metrics and SHALL not be treated as interchangeable.
+
+The canonical serialized metric value SHALL be a tagged value, for example:
+
+```text
+MetricValue {
+    kind: finite | positive_infinity
+    value?: number
+}
+```
+
+`kind: finite` SHALL include `value` as a bounded JSON number;
+`kind: positive_infinity` SHALL omit a numeric value. Finite values SHALL
+serialize as bounded JSON numbers. A valid positive-infinite
+PSNR result SHALL serialize as `kind: positive_infinity` without emitting a raw
+IEEE `+Inf` token. `NaN` SHALL never be a successful value; a parser/process
+NaN SHALL become `failed_measurement` or `unavailable` with a bounded reason.
+The tagged representation SHALL be used by API/frontend serialization and
+canonical identity hashing.
 
 #### Scenario: A window is non-comparable because geometry differs
 
@@ -190,26 +291,58 @@ distinct metrics and SHALL not be treated as interchangeable.
 
 - **WHEN** the runtime reports a mathematically infinite diagnostic PSNR for an
   otherwise comparable pair
-- **THEN** the contract SHALL preserve the metric's defined representation and
-  semantics, rather than silently treating it as unavailable or a zero
+- **THEN** the contract SHALL preserve it as `MetricValue.kind:
+  positive_infinity`, rather than silently treating it as unavailable or zero,
+  and normal JSON encoding SHALL succeed
+
+#### Scenario: A metric process returns NaN
+
+- **WHEN** a metric parser receives `NaN` or another non-finite value that is
+  not the explicitly supported positive-infinite PSNR result
+- **THEN** the metric SHALL be `failed_measurement` or `unavailable` with a
+  bounded reason, SHALL omit a successful `MetricValue`, and SHALL not enter
+  numeric aggregates
+
+#### Scenario: Metric values round-trip through JSON
+
+- **WHEN** a finite metric value and a positive-infinite PSNR value are encoded,
+  decoded, and hashed
+- **THEN** finite values SHALL remain ordinary JSON numbers, the infinite value
+  SHALL retain its tagged representation, no raw `Inf`/`NaN` token SHALL be
+  emitted, and equivalent canonical representations SHALL produce the same
+  identity
 
 ### Requirement: Aggregation SHALL be deterministic, bounded, and traceable
 
 Per-window evidence SHALL remain canonical. For each metric, the bounded
-aggregate SHALL retain comparable-window count, non-comparable/unavailable/
-failed counts, median/typical value, lower-percentile evidence, worst measured
-value, the metric's semantics, and the identity of the worst measured window.
-Unavailable, unsupported, failed, and non-comparable windows SHALL be excluded
-from numeric aggregates and SHALL remain visible in their counts/reasons.
+aggregate SHALL retain total frozen-window count, candidate-covered-window
+count, measured/comparable-window count, frozen-not-covered count,
+non-comparable/unavailable/unsupported/failed counts, median/typical value,
+lower-percentile evidence, worst measured value, the metric's semantics, and
+the identity of the worst measured window. Uncovered, unavailable, unsupported,
+failed, and non-comparable windows SHALL be excluded from numeric aggregates
+and SHALL remain visible in their counts/reasons.
 
 The aggregate policy SHALL be versioned and deterministic: comparable values
-are ordered by metric value and then `SamplingWindow.Identity`; median uses the
-middle value or the arithmetic mean of the two middle values; the initial
-lower-percentile evidence is p10 using nearest-rank selection; and worst means
-the lowest value for the initial higher-is-better metrics. A percentile with
-fewer than the policy's minimum evidence count SHALL retain the deterministic
-nearest-rank value while marking degraded percentile provenance. No aggregate
-field SHALL itself imply pass/fail.
+are ordered by metric value and then `SamplingWindow.Identity`; for
+higher-is-better metrics, finite values sort before `positive_infinity`; median
+uses the middle value for an odd count, the arithmetic mean when both middle
+values are finite for an even count, and tagged `positive_infinity` when either
+middle value is positive infinity; the initial lower-percentile evidence is p10
+using nearest-rank selection; and worst means the lowest value for the initial
+higher-is-better metrics. If all comparable PSNR values are positive infinity,
+worst, median, and p10 are all the tagged positive-infinite value. A percentile
+with fewer than the policy's minimum evidence count SHALL retain the
+deterministic nearest-rank value while marking degraded percentile provenance.
+No aggregate field SHALL itself imply pass/fail.
+
+#### Scenario: Capability probing is reused across windows
+
+- **WHEN** one evidence operation evaluates multiple frozen windows with the
+  same runtime
+- **THEN** each logical metric's provider capability SHALL be resolved once,
+  reused by the windows, and included in evidence identity without spawning a
+  new capability probe per window
 
 #### Scenario: Unavailable windows are mixed with comparable windows
 
@@ -218,6 +351,15 @@ field SHALL itself imply pass/fail.
 - **THEN** the SSIM aggregate SHALL count two comparable windows, exclude the
   other two from median/p10/worst numeric values, and retain both exclusion
   counts and reasons
+
+#### Scenario: Positive-infinite PSNR participates in aggregation
+
+- **WHEN** comparable PSNR values contain finite values and one or more tagged
+  `positive_infinity` values
+- **THEN** positive infinity SHALL be ordered after finite values for the
+  higher-is-better metric, SHALL remain valid in median/p10 when selected by
+  nearest rank, and SHALL not become zero, unavailable, or a non-serializable
+  raw number
 
 #### Scenario: Two windows tie for worst value
 
@@ -239,10 +381,11 @@ LAB perceptual evidence SHALL attach beside existing size, bitrate, effective
 encoder, speed, and canonical Frame Fidelity evidence. It SHALL consume the
 frozen #70 plan and ready Compatible Preview artifacts/generation identities;
 the primary artifact SHALL be reused and SHALL not be encoded again for metrics.
-Additional planned windows SHALL remain bounded and sequential under existing
-LAB/Compatible Preview ownership. Perceptual analysis SHALL not create a second
-operation state machine, a second selector, or a hidden recomputation caused by
-tab changes or read-only rendering.
+Each Compatible Preview artifact SHALL represent only its corresponding frozen
+window. Additional planned windows SHALL remain bounded and sequential under
+existing LAB/Compatible Preview ownership. Perceptual analysis SHALL not create
+a second operation state machine, a second selector, or a hidden recomputation
+caused by tab changes or read-only rendering.
 
 The operation SHALL expose queued/running/completed/failed/canceled state,
 bounded progress by frozen window identity, cancellation, retryable stale or
@@ -271,22 +414,36 @@ quality mismatch.
   SHALL be released, the primary ready artifact SHALL remain usable, and no
   partial result SHALL be presented as a final quality verdict
 
+#### Scenario: LAB does not fill uncovered windows from a candidate
+
+- **WHEN** a LAB operation has not materialized a ready artifact for a frozen
+  additional window
+- **THEN** that window SHALL remain traceable as not covered by the current
+  candidate, and perceptual analysis SHALL not start a metrics-only encode to
+  fill the gap
+
 ### Requirement: Test Encode and final Validation SHALL reuse the same contract
 
 Test Encode SHALL expose the canonical `PerceptualEvidenceSet` when a compatible
-encoded output artifact and frozen `SamplingPlan` exist. Final Validation SHALL
-consume the plan and evaluate the same reference/candidate contract against the
-final output, retaining expected/reference-to-actual provenance. Neither surface
-SHALL reinterpret or reselect scenes. The same source, plan, window, reference,
-candidate, capability, and metric identities SHALL address the same evidence
-identity across surfaces.
+encoded output artifact and frozen `SamplingPlan` exist, but SHALL measure only
+the frozen windows proven by its `CandidateCoverage` segment mapping. A normal
+Test Encode covers its frozen primary/segment, not every SamplingPlan window.
+Final Validation SHALL consume the plan and evaluate the same
+reference/candidate contract against the final output, retaining
+expected/reference-to-actual provenance; it MAY cover all frozen windows only
+when its full-output timeline identity proves that coverage. Neither surface
+SHALL reinterpret or reselect scenes. The same source, plan, covered window,
+reference, candidate, capability, and metric identities SHALL address the same
+evidence identity across surfaces.
 
 #### Scenario: Test Encode has a compatible output and frozen plan
 
 - **WHEN** a completed Test Encode has a validated output identity and its
   frozen plan contains selected windows
 - **THEN** Test Encode SHALL expose per-window and aggregate perceptual evidence
-  using the shared contract, not a Test-Encode-specific metric schema
+  only for the covered frozen window(s), SHALL retain other frozen windows as
+  `not_covered`, and SHALL use the shared contract rather than a Test-Encode-
+  specific metric schema
 
 #### Scenario: Final Validation consumes Queue windows
 
@@ -302,6 +459,20 @@ identity across surfaces.
 - **THEN** Validation SHALL retain the partial canonical evidence and degrade
   capability reporting safely without turning metric absence into a failed
   output or an invented score
+
+#### Scenario: Test Encode does not start another encode for uncovered windows
+
+- **WHEN** a Test Encode covers only its primary window but the frozen plan has
+  additional hard-scene windows
+- **THEN** only the primary SHALL be measured, additional windows SHALL remain
+  traceable as `not_covered`, and no selector or additional encode SHALL start
+
+#### Scenario: Final Validation later covers the same frozen windows
+
+- **WHEN** a final output has a proven full-output source-to-candidate timeline
+  mapping for windows previously not covered by a Test Encode
+- **THEN** final Validation SHALL measure those same frozen window identities
+  using the shared contract rather than selecting replacement windows
 
 ### Requirement: Structured artifact-regression evidence SHALL remain separate from quality metrics
 

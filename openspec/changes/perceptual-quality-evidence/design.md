@@ -162,6 +162,7 @@ PerceptualEvidenceSet {
     samplingPlan: { schemaVersion, policyVersion, planIdentity }
     reference: ReferenceIdentity
     candidate: CandidateIdentity
+    coverage: CandidateCoverage
     sourceRevision
     runtime: { capabilityIdentity, ffmpegVersion, metrics }
     metricContracts: MetricDescriptor[]
@@ -172,6 +173,13 @@ PerceptualEvidenceSet {
     unavailableCapabilities
     provenance
 }
+
+CandidateCoverage {
+    sourceStart
+    sourceDuration
+    coveredWindowIdentities[]
+    segmentMappingIdentity
+}
 ```
 
 `ReferenceIdentity` contains source revision, source stream, plan/window
@@ -180,9 +188,14 @@ normalization, and source-reference materialization revision when one exists.
 `CandidateIdentity` contains candidate kind (`compatible_preview`,
 `test_encode`, or `final_output`), artifact/output identity, canonical path
 identity, output revision, generation token/version where available, frozen
-execution identity, and segment mapping. The pair identity hashes canonical
-serialized versions of these fields plus metric/model and runtime capability
-identities. It does not use a path alone.
+execution identity, and segment mapping. `CandidateCoverage` is derived from
+that segment mapping and explicitly names the frozen window identities
+physically represented by the candidate. A Compatible Preview normally covers
+one corresponding window; a Test Encode normally covers its frozen primary
+segment; a final output can cover all windows only after full-output timeline
+proof. The pair identity hashes canonical serialized versions of these fields,
+including coverage, plus metric/model and runtime capability identities. It
+does not use a path alone.
 
 The model distinguishes these invalidation causes: source replacement, plan or
 window replacement, frozen transform/reference replacement, candidate artifact
@@ -212,6 +225,13 @@ will factor the current boundaries as follows:
   the artifact is ready and the existing artifact-use protection is held.
 - `labFidelityOperationResult` publishes the bounded evidence set/aggregate
   beside the existing size, bitrate, encoder, speed, and Frame Fidelity fields.
+
+The provider creates a `CandidateCoverage` entry before metric execution. A
+Compatible Preview descriptor covers only the frozen window represented by its
+own source interval and generation. A LAB result can therefore contain the
+full frozen plan manifest while marking windows without a ready corresponding
+artifact as `not_covered`; it does not read a primary artifact for an unrelated
+window.
 
 For additional #70 windows, the existing LAB/Compatible Preview operation may
 materialize a planned preview artifact as part of its preview-first workflow,
@@ -270,7 +290,11 @@ as LAB. The candidate side uses a `final_output` identity tied to the verified
 Queue execution artifact and its output revision. Existing
 `validateJobFrameFidelity` remains the structural authority and receives the
 same frozen authority; the perceptual evidence is attached as a separate
-report section and does not turn metric absence into a validation failure.
+report section. Validation may mark all frozen windows as covered only after
+the final-output timeline mapping proves that the complete output represents
+each source interval; otherwise it records the uncovered windows explicitly.
+Uncovered windows do not become metric failures, and optional metric absence
+does not turn the evidence or output into a validation failure.
 
 For older Queue jobs, the existing legacy plan adapter may expose frozen
 distributed windows when it can prove their identity. If no plan/source/output
@@ -288,11 +312,15 @@ hash, effective execution identity, and segment mapping. The existing
 evidence set; it is not a new metric schema.
 
 Test Encode evidence requests accept the completed artifact/output identity and
-the frozen plan. They reuse the same reference adapter, capability snapshot,
-metric descriptors, per-window result model, and aggregation code used by LAB
-and Validation. If the Test Encode output is not compatible with the frozen
+the frozen plan plus an explicit `CandidateCoverage`. They reuse the same
+reference adapter, capability snapshot, metric descriptors, per-window result
+model, and aggregation code used by LAB and Validation. A normal Test Encode
+candidate exposes only its frozen primary/segment window as covered; other
+frozen windows remain traceable as `not_covered` and are not read from the
+segment. If the Test Encode output is not compatible with its covered
 window/reference contract, it reports `non_comparable` or unavailable rather
-than silently measuring a different interval.
+than silently measuring a different interval. No evidence request starts an
+additional encode to create coverage.
 
 The same logical source and candidate with identical identities may reuse LAB
 or Validation evidence only when all identity fields match. Surface labels and
@@ -302,13 +330,37 @@ operation IDs do not affect the evidence identity.
 
 The existing `backend/internal/capabilities` package will gain a metric
 capability snapshot adjacent to encoder capability evidence. A runtime probe
-will inspect the actual FFmpeg executable used by MVForge for:
+will inspect the actual FFmpeg executable used by MVForge for logical metrics
+and their providers:
 
 - FFmpeg executable/version/build identity;
-- filter availability and help/contract signature for `libvmaf`, `xpsnr`,
-  `ssim`, `ms_ssim`, and `psnr`;
-- required VMAF model identity/version or a bounded model-unavailable reason;
+- verified provider/invocation availability and help/contract signature for
+  VMAF, XPSNR, SSIM, MS-SSIM, and PSNR. A provider may be a standalone FFmpeg
+  filter, a feature exposed through another filter/library such as libvmaf, or
+  another existing canonical runtime mechanism;
+- actual VMAF provider and usable model identity/version, or a bounded
+  model/provider-unavailable reason;
 - supported input/format constraints needed by the canonical comparison domain.
+
+The capability record is explicitly logical-to-provider rather than
+metric-to-filter:
+
+```text
+MetricCapability {
+    metric                  // logical VMAF/XPSNR/SSIM/MS-SSIM/PSNR
+    provider
+    providerVersion
+    invocationContract
+    modelIdentity?
+    availability
+    reason?
+}
+```
+
+MS-SSIM is `available` only when a provider and invocation have been verified;
+the absence of a standalone `ms_ssim` filter is not itself decisive. VMAF is
+available only when the provider and required model identity are usable in the
+actual runtime.
 
 The probe is injectable in tests and cached once per runtime snapshot/evidence
 operation, never once per window. The immutable runtime snapshot pattern from
@@ -325,6 +377,15 @@ results inherit that status without repeatedly spawning capability probes.
 Available metric processes use `exec.CommandContext`-style cancellation and
 argument arrays; all output/error parsing is bounded and injectable.
 
+Metric processes are bounded separately from capability probing. The initial
+implementation runs metric work sequentially under the existing LAB heavy-work
+ownership: one active metric invocation per owned window, with no unconstrained
+FFmpeg process per metric/window. A single verified invocation may collect more
+than one logical metric only when its provider contract and parser prove the
+identity of every returned metric. Any future parallelism requires an explicit
+versioned resource policy and capacity test; it cannot be introduced by a UI
+loop or a per-window goroutine.
+
 An alternative was to assume `libvmaf` because the development container has
 it, or to make all metrics mandatory. Both fail on constrained NAS runtimes and
 would make optional absence an application failure, so they are rejected.
@@ -338,7 +399,9 @@ MetricDescriptor {
     key: vmaf | xpsnr | ssim | ms_ssim | psnr
     direction: higher_is_better
     unit/range
-    filterContractVersion
+    provider
+    providerVersion
+    invocationContract
     modelIdentity/version
     capabilityIdentity
 }
@@ -346,32 +409,45 @@ MetricDescriptor {
 MetricResult {
     status: available | unsupported | unavailable |
             failed_measurement | non_comparable
-    value
+    value: MetricValue
     reason
     metric descriptor identity
+}
+
+MetricValue {
+    kind: finite | positive_infinity
+    value?: number
 }
 ```
 
 The initial metrics are higher-is-better, but direction remains explicit so a
 future metric cannot be compared by name alone. The provider records a numeric
-value only for `available`; infinite PSNR is represented according to the
-diagnostic metric contract. The canonical set has no threshold/verdict field.
+value only for `available`. `kind: finite` requires a normal bounded JSON
+number, while `kind: positive_infinity` omits a numeric value. Raw IEEE `+Inf`
+and `NaN` never cross the JSON or identity boundary. A parser NaN is
+`failed_measurement` or `unavailable`, not a successful metric. The canonical
+set has no threshold/verdict field.
 
-For each metric, aggregation filters to `available` values only. It sorts
-values ascending by metric value and then by `SamplingWindow.Identity`.
-Median is the middle value for an odd count or the arithmetic mean of the two
-middle values for an even count. The policy-versioned lower percentile is p10
-using nearest rank `ceil(0.10*n)`, clamped to the available count. `worst` is
-the first sorted value for higher-is-better metrics; direction generalizes that
-choice later. If fewer than three comparable windows support p10, the value is
-still the deterministic nearest-rank value but the aggregate marks
-`lowerPercentileDegraded` and records the requested minimum. There is no zero
-padding and no aggregate pass/fail.
+For each metric, aggregation filters to `available` values from candidate-
+covered windows only. It sorts finite values ascending and places tagged
+`positive_infinity` after finite values for higher-is-better metrics; ties are
+broken by `SamplingWindow.Identity`. Median is the middle value for an odd
+count, the arithmetic mean only when both middle values are finite for an even
+count, and the tagged positive-infinite value when either middle value is
+positive infinity. The policy-versioned lower percentile is p10 using nearest
+rank `ceil(0.10*n)`, clamped to the available count. `worst` is the first
+sorted value for higher-is-better metrics; direction generalizes that choice
+later. If fewer than three comparable windows support p10, the value is still
+the deterministic nearest-rank value but the aggregate marks
+`lowerPercentileDegraded` and records the requested minimum. If all comparable
+PSNR values are positive infinity, worst, median, and p10 are tagged positive
+infinity. There is no zero padding and no aggregate pass/fail.
 
-The aggregate retains comparable count, total frozen count, unavailable,
-unsupported, failed, and non-comparable counts, median, p10, worst value,
-metric-specific status, degraded provenance, and `worstWindowIdentity`. Ties
-cannot depend on map order, filesystem order, or goroutine completion.
+The aggregate retains total frozen-window count, candidate-covered-window
+count, measured/comparable count, not-covered count, unavailable, unsupported,
+failed, and non-comparable counts, median, p10, worst value, metric-specific
+status, degraded provenance, and `worstWindowIdentity`. Ties cannot depend on
+map order, filesystem order, or goroutine completion.
 
 The existing LAB `visualAggregate` and its `metricVerdict` threshold are kept
 as a compatibility projection for old clients until a separately versioned
@@ -389,6 +465,9 @@ Persisted bounded evidence:
 - LAB returns it in the bounded operation snapshot/result and reuses valid
   process-local evidence through the existing LAB cache; a process restart may
   recompute evidence from the ready artifact without re-encoding it.
+- Persisted coverage includes total frozen, candidate-covered, measured, and
+  not-covered window identities/counts, so a partial Test Encode result cannot
+  be mistaken for a six-window result.
 - Queue/Test Encode snapshots persist the frozen SamplingPlan and candidate
   execution identity required to decide whether a stored set is still current.
 
