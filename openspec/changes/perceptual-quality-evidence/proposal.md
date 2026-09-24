@@ -8,10 +8,11 @@ defines that missing contract now that #70 is authoritative for window selection
 
 ## What Changes
 
-- Add a versioned, bounded `PerceptualEvidenceSet` containing source/reference,
-  candidate/output, frozen plan/window identities, runtime capability and metric
-  provenance, per-window results, deterministic aggregates, warnings, and
-  unavailable capabilities.
+- Add a versioned, bounded `PerceptualEvidenceSet` containing a canonical
+  ordered collection of exact per-window reference/candidate comparison pairs,
+  bounded manifests, frozen plan/window identities, runtime capability and
+  metric provenance, deterministic aggregates, warnings, and unavailable
+  capabilities.
 - Make candidate coverage explicit so a Compatible Preview or Test Encode
   reports which frozen windows it physically represents; uncovered windows stay
   traceable and are not treated as metric failures or filled by new encodes.
@@ -30,9 +31,10 @@ defines that missing contract now that #70 is authoritative for window selection
   contract will not add an arbitrary universal VMAF/SSIM pass threshold; the
   existing LAB visual verdict remains a compatibility projection until a future
   policy such as #53 owns interpretation.
-- Define bounded, identity-sensitive caching, cancellation, sequential work,
-  and deterministic tests for source replacement, artifact generation
-  replacement, optional capability absence, and aggregate traceability.
+- Define bounded, identity-sensitive caching at candidate, reference, metric,
+  and set levels, plus cancellation, sequential work, and deterministic tests
+  for source replacement, per-window artifact generation replacement,
+  optional capability absence, and aggregate traceability.
 
 Out of scope: a new scene selector/analyzer, full-file sampling by default,
 duplicate encode or general media cache, new cadence/crop/scale/color policy,

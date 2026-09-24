@@ -44,8 +44,9 @@ new scene.
 ### Requirement: Candidate coverage SHALL be explicit for every frozen window
 
 Every candidate SHALL expose a bounded `CandidateCoverage` contract containing
-the source start, source duration, covered frozen window identities, and a
-versioned segment/timeline mapping identity. The evidence set SHALL distinguish
+its own `coverageIdentity`, source start, source duration, covered frozen
+window identities, and a versioned segment/timeline mapping identity. The
+evidence set SHALL distinguish
 the total frozen windows, candidate-covered windows, measured/comparable
 windows, and frozen windows not represented by that candidate. A window that is
 not represented SHALL use an explicit coverage state such as `not_covered` with
@@ -88,6 +89,99 @@ unavailable metric result.
   duration, or otherwise changes its segment mapping
 - **THEN** its candidate coverage identity SHALL change and previously persisted
   evidence SHALL become stale even if the output path is unchanged
+
+### Requirement: Multi-window evidence SHALL own exact per-window comparison pairs
+
+`PerceptualEvidenceSet` SHALL represent a bounded collection of
+`PerceptualWindowEvidence` entries in the canonical frozen `SamplingPlan`
+window order; it SHALL NOT use one top-level `reference`, `candidate`, or
+`coverage` identity as a substitute for those entries. The set MAY use bounded
+`candidateManifest[]` and `referenceManifest[]` entries to deduplicate
+provenance. Each covered window entry SHALL independently expose or resolve
+its `windowIdentity`, `referenceIdentity`, `candidateIdentity`,
+`coverageIdentity`, and `pairIdentity`, plus its metric results and state.
+
+The `pairIdentity` SHALL bind exactly the material comparison inputs:
+`SamplingPlan.PlanIdentity`, `SamplingWindow.Identity`, complete
+`ReferenceIdentity`, complete `CandidateIdentity`,
+`CandidateCoverage`/segment-mapping identity, runtime capability identity, and
+the logical metric/provider/model contract. It SHALL exclude operation ID, UI
+order, map iteration order, filesystem enumeration order, and a path used as a
+substitute for artifact/output identity. A candidate-covered window SHALL
+prove membership in its referenced `CandidateCoverage.coveredWindowIdentities`.
+
+A `not_covered` window SHALL remain in the ordered window ledger with its
+frozen interval, roles/reasons, and bounded reason, but SHALL have no candidate
+manifest reference, coverage identity, or pair identity. A candidate identity
+MAY be referenced by multiple windows, while each window retains its own
+reference, alignment, and pair identity. The set identity SHALL be derived
+from schema/policy versions, `SamplingPlan` identity, source revision, runtime
+and capability contract, metric contracts, and the canonical ordered window
+ledger containing pair identities for covered windows and explicit
+`not_covered` markers for uncovered slots. It SHALL not depend on map,
+goroutine, UI, filesystem, or operation ordering.
+
+#### Scenario: LAB has distinct Compatible Preview generations per window
+
+- **WHEN** a frozen plan has windows A, B, and C and LAB has ready Compatible
+  Preview artifacts with distinct artifact/generation identities for each
+- **THEN** the evidence SHALL contain three candidate manifest entries and
+  three per-window comparison pairs, each bound to its corresponding artifact
+  and window, with no singular candidate identity standing for all three
+
+#### Scenario: Replacing only LAB window B invalidates only B and the set
+
+- **WHEN** the Compatible Preview generation for window B is replaced while
+  the source, reference, and candidate identities for window A remain valid
+- **THEN** B's candidate/pair evidence and the containing set identity SHALL
+  become stale, while A's reusable reference and metric evidence MAY remain
+  valid when its exact identities still match
+
+#### Scenario: One final output candidate covers several windows
+
+- **WHEN** final-output timeline proof shows that one output revision covers
+  windows A, B, and C
+- **THEN** the set MAY reference one deduplicated final-output candidate entry
+  from all three windows, but SHALL retain distinct reference, alignment,
+  coverage-membership, and pair identities for A, B, and C without duplicating
+  or re-encoding the final output
+
+#### Scenario: Test Encode creates a pair only for primary coverage
+
+- **WHEN** a frozen multi-window plan is evaluated against a Test Encode
+  segment whose `CandidateCoverage` lists only the primary window
+- **THEN** only the primary window SHALL receive a candidate reference and
+  comparison pair; every other frozen window SHALL remain `not_covered` and
+  shall not be read from the segment as if it contained that window
+
+#### Scenario: Not-covered windows never receive a fake pair
+
+- **WHEN** a frozen window is absent from a candidate's covered-window list
+- **THEN** its evidence entry SHALL expose `not_covered` and a bounded reason,
+  SHALL be excluded from pair/metric aggregates, and SHALL not contain a
+  synthesized candidate or pair identity
+
+#### Scenario: Set identity is independent of map or goroutine order
+
+- **WHEN** the same material per-window pairs are collected through different
+  map iteration, filesystem enumeration, or goroutine completion orders
+- **THEN** the frozen plan window order SHALL produce the same manifest order,
+  ordered pair ledger, set identity, aggregates, and worst-window identity
+
+#### Scenario: Retrying an operation preserves material evidence identity
+
+- **WHEN** an operation is retried with a different operation ID but the same
+  source, plan, window, reference, candidate, coverage, capability, and metric
+  identities
+- **THEN** the pair identities and set identity SHALL remain unchanged and
+  bounded cached evidence MAY be reused
+
+#### Scenario: Candidate revision invalidates every referencing pair
+
+- **WHEN** a final-output or other shared candidate revision/generation changes
+- **THEN** every per-window pair referencing that candidate SHALL become stale,
+  while unrelated candidates and their exact reference/metric evidence MAY
+  remain reusable
 
 ### Requirement: The reference SHALL be canonical, lossless with respect to the evaluated transform, and authority-bound
 
@@ -162,6 +256,14 @@ reference identity, `SamplingPlan` identity, window identity, metric contract
 version, metric/model versions, and runtime capability identity. Evidence SHALL
 become stale when any relevant source, plan, window, transform/reference,
 candidate generation/output, metric/model, or capability identity changes.
+
+Cache and reuse SHALL respect identity granularity: candidate/global probes MAY
+reuse a complete candidate identity; reference materialization SHALL be keyed
+by the exact window-bearing reference identity; metric results SHALL be keyed
+by exact `pairIdentity` plus metric/provider/model identity; and a complete
+evidence set SHALL be keyed by its set contract plus canonical ordered pair
+and coverage ledger. No level SHALL use a path, operation ID, or UI request as
+its sole key.
 
 #### Scenario: The same path is replaced
 
@@ -473,6 +575,33 @@ evidence identity across surfaces.
   mapping for windows previously not covered by a Test Encode
 - **THEN** final Validation SHALL measure those same frozen window identities
   using the shared contract rather than selecting replacement windows
+
+### Requirement: Read-only API projections SHALL expose per-window ownership
+
+The read-only API SHALL expose the `PerceptualEvidenceSet` identity, bounded
+candidate/reference manifests, and ordered per-window entries sufficient to
+answer which candidate artifact/output and reference produced each measured
+window, which coverage mapping proved it, and which pair identity was used.
+Manifest references MAY avoid repeating bounded provenance, but the API SHALL
+make each identity resolvable without filesystem enumeration, UI order, or
+operation history. A `not_covered` entry SHALL expose its frozen window
+identity, coverage state, and bounded reason while omitting a fake
+candidate/pair identity. Frontend consumers SHALL render these explicit
+relationships and SHALL NOT reconstruct them heuristically from paths, names,
+array position, or metric availability.
+
+#### Scenario: API explains distinct LAB window artifacts
+
+- **WHEN** three LAB windows use three Compatible Preview artifact generations
+- **THEN** the read-only response SHALL expose the candidate/reference/pair
+  identity for each window so a consumer can distinguish all three artifacts
+
+#### Scenario: API explains an uncovered Test Encode window
+
+- **WHEN** a Test Encode covers only the frozen primary window
+- **THEN** the response SHALL expose the other frozen window identities as
+  `not_covered` with their bounded reasons and SHALL not make the frontend
+  infer a candidate pair for them
 
 ### Requirement: Structured artifact-regression evidence SHALL remain separate from quality metrics
 

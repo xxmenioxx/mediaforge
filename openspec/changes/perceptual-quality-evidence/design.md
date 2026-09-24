@@ -158,14 +158,13 @@ The proposed internal model is bounded and serializable:
 PerceptualEvidenceSet {
     schemaVersion: "perceptual-evidence/v1"
     policyVersion: "perceptual-evidence-policy/v1"
-    evidenceIdentity
+    evidenceIdentity                 // deterministic set identity
     samplingPlan: { schemaVersion, policyVersion, planIdentity }
-    reference: ReferenceIdentity
-    candidate: CandidateIdentity
-    coverage: CandidateCoverage
     sourceRevision
     runtime: { capabilityIdentity, ffmpegVersion, metrics }
     metricContracts: MetricDescriptor[]
+    candidateManifest: CandidateManifestEntry[]
+    referenceManifest: ReferenceManifestEntry[]
     windows: PerceptualWindowEvidence[]
     aggregates: MetricAggregate[]
     artifactEvidence: ArtifactEvidenceSet
@@ -175,27 +174,75 @@ PerceptualEvidenceSet {
 }
 
 CandidateCoverage {
+    coverageIdentity
     sourceStart
     sourceDuration
     coveredWindowIdentities[]
     segmentMappingIdentity
+}
+
+CandidateManifestEntry {
+    candidateIdentity: CandidateIdentity
+    coverage: CandidateCoverage
+}
+
+ReferenceManifestEntry {
+    referenceIdentity: ReferenceIdentity
+}
+
+PerceptualWindowEvidence {
+    windowIdentity
+    referenceManifestIdentity?
+    candidateManifestIdentity?
+    coverageIdentity?
+    pairIdentity?
+    state: comparable | not_covered | non_comparable | unavailable
+    metrics: MetricResult[]
 }
 ```
 
 `ReferenceIdentity` contains source revision, source stream, plan/window
 identity, transform/version, alignment version, comparison-domain
 normalization, and source-reference materialization revision when one exists.
+There is one reference manifest entry for each distinct bounded reference
+identity; because the reference identity includes the `SamplingWindow`, a
+multi-window set cannot represent all references with one top-level reference.
 `CandidateIdentity` contains candidate kind (`compatible_preview`,
 `test_encode`, or `final_output`), artifact/output identity, canonical path
 identity, output revision, generation token/version where available, frozen
-execution identity, and segment mapping. `CandidateCoverage` is derived from
-that segment mapping and explicitly names the frozen window identities
-physically represented by the candidate. A Compatible Preview normally covers
-one corresponding window; a Test Encode normally covers its frozen primary
-segment; a final output can cover all windows only after full-output timeline
-proof. The pair identity hashes canonical serialized versions of these fields,
-including coverage, plus metric/model and runtime capability identities. It
-does not use a path alone.
+execution identity, and segment mapping. A candidate manifest entry is
+deduplicated by its complete candidate identity and owns its
+`CandidateCoverage`. A Compatible Preview normally has one manifest entry for
+one corresponding window, LAB windows may therefore have different artifact
+generations, a Test Encode normally covers its frozen primary segment, and a
+final output may have one manifest entry referenced by many windows only after
+full-output timeline proof.
+
+Each `PerceptualWindowEvidence` independently resolves its reference,
+candidate, and coverage manifest identities. A candidate-covered window MUST
+prove that its `windowIdentity` is a member of the referenced
+`CandidateCoverage.coveredWindowIdentities`; this is not inferred from a
+set-level statement. A `not_covered` window has no candidate manifest
+reference, coverage identity, or pair identity, so it cannot receive a fake
+comparison pair. A covered window may retain a pair identity even when an
+individual metric is unavailable or the aligned measurement is
+non-comparable; the metric status remains explicit.
+
+The canonical `pairIdentity` binds exactly the material comparison inputs:
+`SamplingPlan.PlanIdentity`, `SamplingWindow.Identity`, complete
+`ReferenceIdentity`, complete `CandidateIdentity`, `CandidateCoverage`/
+segment-mapping identity, runtime capability identity, and the logical
+metric/provider/model contract. It excludes operation ID, UI order, map
+iteration order, filesystem enumeration order, and display paths used alone.
+The set identity is derived from schema/policy versions, plan identity, source
+revision, runtime/capability contract, metric contracts, and a canonical
+ordered window ledger. The ledger follows the frozen `SamplingPlan` order
+(primary first); each covered slot contains its `pairIdentity`, while an
+uncovered slot contains a canonical `not_covered` marker bound to the window
+and coverage reason. Thus the covered portion is an ordered list of exact
+pair identities, and a coverage change also changes the set identity without
+creating a pair for an uncovered window. Manifest entries are ordered by first
+appearance in that same frozen window order, never by map or goroutine order.
 
 The model distinguishes these invalidation causes: source replacement, plan or
 window replacement, frozen transform/reference replacement, candidate artifact
@@ -226,12 +273,14 @@ will factor the current boundaries as follows:
 - `labFidelityOperationResult` publishes the bounded evidence set/aggregate
   beside the existing size, bitrate, encoder, speed, and Frame Fidelity fields.
 
-The provider creates a `CandidateCoverage` entry before metric execution. A
-Compatible Preview descriptor covers only the frozen window represented by its
-own source interval and generation. A LAB result can therefore contain the
-full frozen plan manifest while marking windows without a ready corresponding
-artifact as `not_covered`; it does not read a primary artifact for an unrelated
-window.
+The provider creates a deduplicated candidate-manifest entry and its
+`CandidateCoverage` before metric execution. A Compatible Preview descriptor
+covers only the frozen window represented by its own source interval and
+generation, so each LAB window receives its own candidate manifest reference
+and pair identity. A LAB result can therefore contain the full frozen plan
+window ledger while marking windows without a ready corresponding artifact as
+`not_covered`; it does not read a primary artifact for an unrelated window or
+pretend that one candidate identity covers every window.
 
 For additional #70 windows, the existing LAB/Compatible Preview operation may
 materialize a planned preview artifact as part of its preview-first workflow,
@@ -258,18 +307,26 @@ remain the retention authority.
 The current process-local LAB evidence cache is extended, not replaced:
 
 ```text
+candidate/global probe  -> candidate identity + output revision/generation
 source probe cache       -> source path + source revision + stream identity
-artifact evidence cache  -> artifact ID + generation token/version
-reference cache          -> reference identity + alignment identity
-metric result cache      -> pair identity + metric/model/capability identity
+reference cache          -> exact reference identity + alignment identity
+metric result cache      -> exact pair identity + metric/provider/model identity
+evidence-set cache       -> set identity + ordered window ledger/set contract
 ```
 
 The old `labPreviewEvidenceCacheKey` is therefore expanded or wrapped so a
 source path, artifact path, or request ID alone can never hit a perceptual
-result. The source-global probe may be shared across windows when its source
-revision matches; interval/reference/metric evidence always includes window,
-normalization, and transform identities. These are bounded entries under the
-existing LAB retention/max-item discipline, not a second general media cache.
+result. Candidate/global probes may be reused by the complete candidate
+identity; reference materialization is keyed by the exact window-bearing
+reference identity; metric results are keyed by the exact pair plus logical
+metric/provider/model contract; and a complete evidence set is keyed by its
+ordered pair/coverage ledger and set contract. Replacing only LAB window B's
+generation invalidates B's reference/metric pair and the containing set, but
+does not invalidate unrelated valid A reference evidence. Replacing a final
+output revision invalidates every pair that references that candidate. Adding
+or removing a covered Test Encode window changes coverage, pair, and set
+identity. These are bounded entries under the existing LAB retention/max-item
+discipline, not a second general media cache.
 
 The ready primary preview is joined by artifact/generation identity. A primary
 request or playback tab cannot cause a second generation merely because
@@ -286,15 +343,18 @@ provider. It will not ask the current scanner, current Profile, or current
 Asset Override to select or reinterpret windows.
 
 The source/reference side uses the same `canonicalPerceptualReference` adapter
-as LAB. The candidate side uses a `final_output` identity tied to the verified
-Queue execution artifact and its output revision. Existing
-`validateJobFrameFidelity` remains the structural authority and receives the
-same frozen authority; the perceptual evidence is attached as a separate
-report section. Validation may mark all frozen windows as covered only after
-the final-output timeline mapping proves that the complete output represents
-each source interval; otherwise it records the uncovered windows explicitly.
-Uncovered windows do not become metric failures, and optional metric absence
-does not turn the evidence or output into a validation failure.
+as LAB. The candidate side has one deduplicated `final_output` manifest entry
+tied to the verified Queue execution artifact and its output revision. Each
+covered window still receives its own reference manifest reference, alignment,
+coverage membership proof, and pair identity; the shared candidate entry is
+not duplicated or re-encoded. Existing `validateJobFrameFidelity` remains the
+structural authority and receives the same frozen authority; the perceptual
+evidence is attached as a separate report section. Validation may mark all
+frozen windows as covered only after the final-output timeline mapping proves
+that the complete output represents each source interval; otherwise it records
+the uncovered windows explicitly without creating candidate pairs. Uncovered
+windows do not become metric failures, and optional metric absence does not
+turn the evidence or output into a validation failure.
 
 For older Queue jobs, the existing legacy plan adapter may expose frozen
 distributed windows when it can prove their identity. If no plan/source/output
@@ -314,17 +374,20 @@ evidence set; it is not a new metric schema.
 Test Encode evidence requests accept the completed artifact/output identity and
 the frozen plan plus an explicit `CandidateCoverage`. They reuse the same
 reference adapter, capability snapshot, metric descriptors, per-window result
-model, and aggregation code used by LAB and Validation. A normal Test Encode
-candidate exposes only its frozen primary/segment window as covered; other
-frozen windows remain traceable as `not_covered` and are not read from the
-segment. If the Test Encode output is not compatible with its covered
-window/reference contract, it reports `non_comparable` or unavailable rather
-than silently measuring a different interval. No evidence request starts an
-additional encode to create coverage.
+model, manifest/deduplication rules, and aggregation code used by LAB and
+Validation. A normal Test Encode candidate exposes only its frozen
+primary/segment window as covered and creates one candidate manifest entry;
+other frozen windows remain traceable as `not_covered`, with no candidate or
+pair identity, and are not read from the segment. If the Test Encode output is
+not compatible with its covered window/reference contract, it reports
+`non_comparable` or unavailable rather than silently measuring a different
+interval. No evidence request starts an additional encode to create coverage.
 
 The same logical source and candidate with identical identities may reuse LAB
-or Validation evidence only when all identity fields match. Surface labels and
-operation IDs do not affect the evidence identity.
+or Validation evidence only when all identity fields match. A retry with a new
+operation ID preserves pair/set identity when the material identities and
+canonical window order are unchanged; operation IDs and surface labels do not
+affect evidence identity.
 
 ### 8. FFmpeg metric capabilities are detected from the actual runtime once
 
@@ -455,7 +518,21 @@ policy replaces it. The new `PerceptualEvidenceSet` and Validation SHALL NOT
 derive a universal quality verdict from that legacy field or introduce a new
 threshold. #53 owns future advisory/gating interpretation.
 
-### 10. Persisted/recomputed boundaries and deferred concerns are explicit
+### 10. Read-only projections expose the per-window ownership graph
+
+The read-only API projection returns the set identity and bounded candidate and
+reference manifests together with the ordered `PerceptualWindowEvidence`
+entries. Each covered entry exposes its resolved candidate artifact/output
+identity, reference identity, `coverageIdentity`, `pairIdentity`, and metric
+statuses; each `not_covered` entry exposes its frozen window identity, coverage
+state, and bounded reason while omitting a candidate/pair identity. The API
+may use manifest references to avoid repeating provenance, but clients can
+resolve every reference without inspecting filesystem paths or operation
+history. Frontend components render these explicit relationships and never
+infer a candidate, reference, coverage, or window association from array
+position, UI order, or matching names.
+
+### 11. Persisted/recomputed boundaries and deferred concerns are explicit
 
 Persisted bounded evidence:
 
