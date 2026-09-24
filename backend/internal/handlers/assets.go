@@ -3664,7 +3664,12 @@ func (h AssetHandler) servePreparedCompatiblePreview(c *gin.Context, descriptor 
 
 	inspectPreview := operation == "inspect"
 	if operation == "metrics" {
-		metrics, metricsErr := generatePreviewFrameMetrics(c.Request.Context(), path, start, normalization.Filter, cachePath)
+		evidence, evidenceErr := labCollectPreviewEvidence(c.Request.Context(), descriptor)
+		if evidenceErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "frame fidelity evidence failed: " + evidenceErr.Error()})
+			return
+		}
+		metrics, metricsErr := labGeneratePreviewFrameMetrics(c.Request.Context(), descriptor, evidence)
 		if metricsErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "frame fidelity metrics failed: " + metricsErr.Error()})
 			return
@@ -3696,41 +3701,15 @@ func (h AssetHandler) servePreparedCompatiblePreview(c *gin.Context, descriptor 
 	}
 
 	if inspectPreview {
-		source, sourceErr := probePreviewCharacteristics(path)
-		if sourceErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "source preview validation failed: " + sourceErr.Error()})
+		evidence, evidenceErr := labCollectPreviewEvidence(c.Request.Context(), descriptor)
+		if evidenceErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "preview evidence validation failed: " + evidenceErr.Error()})
 			return
 		}
-		output, outputErr := probePreviewCharacteristics(cachePath)
-		if outputErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "generated preview validation failed: " + outputErr.Error()})
-			return
-		}
-		var hevcBitstreamEvidence models.JSONMap
-		var measuredHEVC HEVCBitstreamStructure
-		var measuredHEVCError error
-		if strings.EqualFold(output.Codec, "hevc") {
-			measuredHEVC, measuredHEVCError = measureHEVCBitstreamStructure(c.Request.Context(), cachePath)
-			hevcBitstreamEvidence = hevcBitstreamEvidenceFromStructure(measuredHEVC, measuredHEVCError)
-			hevcBitstreamEvidence["stream"] = "0:v:0"
-			hevcBitstreamEvidence["probe"] = "ffmpeg_trace_headers"
-		}
-
-		sourceFrameStructure, sourceFrameErr := analyzeVideoFrameStructureInterval(c.Request.Context(), path, fmt.Sprintf("%d%%+%d", previewTimestampSeconds(start), seconds))
-		if sourceFrameErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "source frame structure analysis failed: " + sourceFrameErr.Error(),
-			})
-			return
-		}
-
-		outputFrameStructure, outputFrameErr := analyzeVideoFrameStructureInterval(c.Request.Context(), cachePath, fmt.Sprintf("%%+%d", seconds))
-		if outputFrameErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "output frame structure analysis failed: " + outputFrameErr.Error(),
-			})
-			return
-		}
+		source, output := evidence.Source, evidence.Output
+		hevcBitstreamEvidence := evidence.HEVC
+		measuredHEVC, measuredHEVCError := evidence.HEVCStructure, evidence.HEVCError
+		sourceFrameStructure, outputFrameStructure := evidence.SourceFrames, evidence.OutputFrames
 
 		qsvFrameWarnings := []string{}
 		qsvFeatureStatus := QSVFeatureStatus{}

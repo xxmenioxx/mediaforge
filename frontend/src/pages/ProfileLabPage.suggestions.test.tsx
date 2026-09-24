@@ -5,7 +5,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Asset, AssetInventory, ProfileSuggestion, ScanResult } from '../api/types';
+import type { Asset, AssetInventory, PreviewInspection, ProfileSuggestion, ScanResult } from '../api/types';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -26,6 +26,9 @@ vi.mock('../api/client', async (importOriginal) => {
       createCompatiblePreviewRequest: vi.fn(),
       inspectCompatibleAssetPreview: vi.fn(),
       compatibleAssetFrameMetrics: vi.fn(),
+      startLabFidelityOperation: vi.fn(),
+      labFidelityOperation: vi.fn(),
+      cancelLabFidelityOperation: vi.fn(),
       recommendEncoderQuality: vi.fn(),
     },
   };
@@ -199,7 +202,7 @@ const previewInspection = {
   requestedEncoder: 'libx265', effectiveEncoder: 'libx265', requestedQSVRateControl: '', effectiveQSVRateControl: '',
   frameStructureRecommendation,
   ffmpegArgs: ['-vf', 'scale=960:720'],
-} as never;
+} as unknown as PreviewInspection;
 
 afterEach(cleanup);
 
@@ -224,6 +227,55 @@ describe('Profile Lab Process Asset suggestions', () => {
     vi.mocked(api.createCompatiblePreviewRequest).mockImplementation(async (options) => ({ requestId: `${String(options.start ?? 'base').replaceAll(':', '')}-${JSON.stringify(options.profile ?? {}).length}`, cacheIdentity: 'cache', expiresInSeconds: 7200, path: options.path }));
     vi.mocked(api.inspectCompatibleAssetPreview).mockResolvedValue(previewInspection);
     vi.mocked(api.compatibleAssetFrameMetrics).mockResolvedValue({ comparable: true, reason: '', sourceDimensions: '960x720', outputDimensions: '960x720', ssim: 0.99, psnr: 42 });
+    vi.mocked(api.startLabFidelityOperation).mockImplementation(async ({ primaryRequestId, referenceRequestId }) => ({
+      id: 'lab-fidelity-test',
+      status: 'completed',
+      phase: 'aggregate',
+      primaryRequestId,
+      completedWindows: 1,
+      totalWindows: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      result: {
+        assetPath,
+        source: previewInspection.source,
+        reference: previewInspection.source,
+        conversion: previewInspection.output,
+        sourceFrameStructure: previewInspection.sourceFrameStructure,
+        outputFrameStructure: previewInspection.outputFrameStructure,
+        qsvFrameWarnings: [],
+        qsvFeatureStatus: {},
+        frameRecommendation: frameStructureRecommendation,
+        frameValidation: { verdict: 'safe', confidence: 'high', reasons: [] },
+        hevcLevelValidation: { verdict: 'safe', status: 'validated', reason: '' },
+        requestedEncoder: previewInspection.requestedEncoder,
+        effectiveEncoder: previewInspection.effectiveEncoder,
+        requestedQSVRateControl: '',
+        effectiveQSVRateControl: '',
+        referenceEncoder: 'source',
+        ffmpegArgs: previewInspection.ffmpegArgs,
+        normalization: previewInspection.normalization,
+        metrics: { comparable: true, reason: '', sourceDimensions: '960x720', outputDimensions: '960x720', ssim: 0.99, psnr: 42 },
+        referenceRequestId,
+        conversionRequestId: primaryRequestId,
+        fidelityWindows: [{
+          position: 0.5,
+          startSeconds: 0,
+          durationSeconds: 20,
+          source: previewInspection.source,
+          output: previewInspection.output,
+          metrics: { comparable: true, reason: '', sourceDimensions: '960x720', outputDimensions: '960x720', ssim: 0.99, psnr: 42 },
+          requestId: primaryRequestId,
+          canonicalFidelity: { status: 'passed', fields: {} },
+        }],
+        canonicalFidelity: { status: 'passed', fields: {} },
+        canonicalStatus: 'passed',
+        aggregateStatus: 'completed',
+        completedAt: Date.now(),
+      },
+    } as never));
+    vi.mocked(api.labFidelityOperation).mockResolvedValue({ status: 'completed' } as never);
+    vi.mocked(api.cancelLabFidelityOperation).mockResolvedValue({ status: 'canceled' } as never);
     vi.mocked(api.recommendEncoderQuality).mockResolvedValue(undefined as never);
   });
 

@@ -39,6 +39,19 @@ function inspection(source: PreviewVideoCharacteristics, output: PreviewVideoCha
   } as unknown as Parameters<typeof FrameFidelityComparison>[0]['inspection'];
 }
 
+function canonicalInspection(status: 'passed' | 'mismatch' | 'unverified', aggregateStatus = 'completed') {
+  return {
+    ...inspection(characteristics(1920, 1080, '16:9'), characteristics(1920, 1080, '16:9')),
+    canonicalStatus: status,
+    aggregateStatus,
+    canonicalFidelity: {
+      fields: {
+        frameRate: { status },
+      },
+    },
+  } as unknown as Parameters<typeof FrameFidelityComparison>[0]['inspection'];
+}
+
 describe('LAB fidelity comparison geometry', () => {
   beforeEach(() => {
     vi.spyOn(api, 'compatibleAssetFrameUrl').mockImplementation((requestId, kind) => `/frames/${requestId}/${kind}`);
@@ -106,6 +119,27 @@ describe('LAB fidelity comparison geometry', () => {
     await waitFor(() => expect(screen.getByTestId('lab-comparison-video').getAttribute('src')).toBe('/preview.mp4'));
     expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.getByTestId('lab-comparison-video').getAttribute('crossorigin')).toBe('anonymous');
+  });
+
+  it('keeps an authoritative canonical mismatch above high visual metrics', () => {
+    render(<FrameFidelityComparison inspection={canonicalInspection('mismatch')} />);
+
+    expect(screen.getByText('Overall · Reject')).toBeTruthy();
+    expect(screen.getByText(/authoritative output mismatch/i)).toBeTruthy();
+  });
+
+  it('does not expose a final aggregate while windows are still partial', () => {
+    render(<FrameFidelityComparison inspection={canonicalInspection('passed', 'analysis_in_progress')} />);
+
+    expect(screen.getByText('Overall · Analyzing')).toBeTruthy();
+    expect(screen.getByText(/aggregate remains in progress/i)).toBeTruthy();
+  });
+
+  it('keeps canonical unverified results out of Safe', () => {
+    render(<FrameFidelityComparison inspection={canonicalInspection('unverified')} />);
+
+    expect(screen.getByText('Overall · Review')).toBeTruthy();
+    expect(screen.getByText(/cannot be marked Safe/i)).toBeTruthy();
   });
 
   it('does not fetch or build a media element before a request ID is available', async () => {

@@ -2004,6 +2004,47 @@ export type ProfileSampleEstimateOperation = {
   updatedAt: string;
 };
 
+export type LabFidelityOperationWindow = {
+  position: number;
+  startSeconds: number;
+  durationSeconds: number;
+  source?: PreviewVideoCharacteristics;
+  output?: PreviewVideoCharacteristics;
+  metrics?: PreviewFrameMetrics;
+  requestId: string;
+  artifactId?: string;
+  generationToken?: string;
+  generationVersion?: number;
+  status: string;
+  canonicalFidelity?: Record<string, unknown>;
+};
+
+export type LabFidelityOperation = {
+  id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled' | string;
+  phase: string;
+  primaryRequestId: string;
+  primaryArtifactId?: string;
+  primaryGeneration?: string;
+  sourceRevision?: Record<string, unknown>;
+  primaryStart?: number;
+  primaryDuration?: number;
+  normalization?: Record<string, unknown>;
+  frozenPlan?: Record<string, unknown>;
+  planSignature?: string;
+  materialSignature?: string;
+  completedWindows: number;
+  totalWindows: number;
+  currentStart?: number;
+  currentDuration?: number;
+  windows?: LabFidelityOperationWindow[];
+  result?: Record<string, unknown>;
+  error?: string;
+  retryable?: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type EncoderRecommendation = {
   encoder: string;
   requestedRateControl: string;
