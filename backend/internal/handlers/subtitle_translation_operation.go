@@ -182,6 +182,26 @@ func cloneSubtitleExtractionOperationSnapshot(operation *subtitleExtractionOpera
 		request.Policy = cloneSubtitleStylePolicy(request.Policy)
 		snapshot.restyleRequest = &request
 	}
+	if operation.compositionRequest != nil {
+		request := cloneSubtitleCompositionOperationRequest(*operation.compositionRequest)
+		snapshot.compositionRequest = &request
+	}
+	if operation.Composition != nil {
+		composition := *operation.Composition
+		composition.Sources = append([]SubtitleCompositionSource(nil), operation.Composition.Sources...)
+		composition.AttachmentRefs = append([]subtitleCompositionAttachmentRef(nil), operation.Composition.AttachmentRefs...)
+		composition.Provenance.SourceIdentities = append([]string(nil), operation.Composition.Provenance.SourceIdentities...)
+		composition.Provenance.SourceRevisions = append([]string(nil), operation.Composition.Provenance.SourceRevisions...)
+		composition.Provenance.Languages = append([]string(nil), operation.Composition.Provenance.Languages...)
+		composition.Provenance.Roles = append([]SubtitleSemanticRole(nil), operation.Composition.Provenance.Roles...)
+		composition.Provenance.Classes = append([]CompositionCueClass(nil), operation.Composition.Provenance.Classes...)
+		composition.Provenance.Conflicts = append([]string(nil), operation.Composition.Provenance.Conflicts...)
+		composition.Provenance.AttachmentNotes = append([]string(nil), operation.Composition.Provenance.AttachmentNotes...)
+		composition.Provenance.AttachmentDecisions = append([]SubtitleCompositionAttachmentDecision(nil), operation.Composition.Provenance.AttachmentDecisions...)
+		composition.Provenance.Decisions = append([]SubtitleCompositionDecision(nil), operation.Composition.Provenance.Decisions...)
+		composition.Provenance.Counts = cloneCompositionCounts(operation.Composition.Provenance.Counts)
+		snapshot.Composition = &composition
+	}
 	if operation.Result != nil {
 		result := *operation.Result
 		result.Created = append([]string(nil), operation.Result.Created...)

@@ -209,6 +209,10 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 	}
 	defaultAudio := resolveDefaultAudioTrack(profile, audio)
 	defaultSubtitle := resolveDefaultSubtitleTrack(profile, subtitles)
+	composition, err := resolveSubtitleCompositionPlan(scan, profile, subtitles)
+	if err != nil {
+		return ResolvedTrackPlan{}, err
+	}
 	return ResolvedTrackPlan{
 		RoleClassifierVersion: subtitleSemanticRoleClassifierVersion,
 		VideoStreams:          video, AudioStreams: audio, RemovedAudioStreams: removedAudio, AudioSelectionExplicit: audioSelectionExplicit, SubtitleStreams: subtitles,
@@ -219,6 +223,7 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		SidecarOutputs: sidecars, Warnings: warnings,
 		DefaultAudio:    defaultAudio,
 		DefaultSubtitle: defaultSubtitle,
+		Composition:     composition,
 	}, nil
 }
 

@@ -286,25 +286,26 @@ type ResolvedDefaultTrack struct {
 // ResolvedTrackPlan freezes semantic Track Profile rules into per-asset stream
 // decisions. Task 2 wires this model into Queue snapshots and execution plans.
 type ResolvedTrackPlan struct {
-	RoleClassifierVersion      string                     `json:"roleClassifierVersion,omitempty"`
-	VideoStreams               []ResolvedTrackStream      `json:"videoStreams"`
-	AudioStreams               []ResolvedTrackStream      `json:"audioStreams"`
-	RemovedAudioStreams        []ResolvedTrackStream      `json:"removedAudioStreams"`
-	AudioSelectionExplicit     bool                       `json:"audioSelectionExplicit"`
-	SubtitleStreams            []ResolvedSubtitleTrack    `json:"subtitleStreams"`
-	AttachmentPolicy           AttachmentPolicy           `json:"attachmentPolicy"`
-	AttachmentsKept            bool                       `json:"attachmentsKept"`
-	AttachmentReason           string                     `json:"attachmentReason"`
-	AttachmentStreams          []ResolvedAttachmentStream `json:"attachmentStreams"`
-	FontAttachmentExportPolicy FontAttachmentExportPolicy `json:"fontAttachmentExportPolicy"`
-	FontAttachments            []ResolvedFontAttachment   `json:"fontAttachments"`
-	FontAttachmentsExported    bool                       `json:"fontAttachmentsExported"`
-	ChapterPolicy              ChapterPolicy              `json:"chapterPolicy"`
-	ChaptersKept               bool                       `json:"chaptersKept"`
-	SidecarOutputs             []ResolvedTrackSidecar     `json:"sidecarOutputs"`
-	Warnings                   []string                   `json:"warnings,omitempty"`
-	DefaultAudio               ResolvedDefaultTrack       `json:"defaultAudio"`
-	DefaultSubtitle            ResolvedDefaultTrack       `json:"defaultSubtitle"`
+	RoleClassifierVersion      string                       `json:"roleClassifierVersion,omitempty"`
+	VideoStreams               []ResolvedTrackStream        `json:"videoStreams"`
+	AudioStreams               []ResolvedTrackStream        `json:"audioStreams"`
+	RemovedAudioStreams        []ResolvedTrackStream        `json:"removedAudioStreams"`
+	AudioSelectionExplicit     bool                         `json:"audioSelectionExplicit"`
+	SubtitleStreams            []ResolvedSubtitleTrack      `json:"subtitleStreams"`
+	AttachmentPolicy           AttachmentPolicy             `json:"attachmentPolicy"`
+	AttachmentsKept            bool                         `json:"attachmentsKept"`
+	AttachmentReason           string                       `json:"attachmentReason"`
+	AttachmentStreams          []ResolvedAttachmentStream   `json:"attachmentStreams"`
+	FontAttachmentExportPolicy FontAttachmentExportPolicy   `json:"fontAttachmentExportPolicy"`
+	FontAttachments            []ResolvedFontAttachment     `json:"fontAttachments"`
+	FontAttachmentsExported    bool                         `json:"fontAttachmentsExported"`
+	ChapterPolicy              ChapterPolicy                `json:"chapterPolicy"`
+	ChaptersKept               bool                         `json:"chaptersKept"`
+	SidecarOutputs             []ResolvedTrackSidecar       `json:"sidecarOutputs"`
+	Warnings                   []string                     `json:"warnings,omitempty"`
+	DefaultAudio               ResolvedDefaultTrack         `json:"defaultAudio"`
+	DefaultSubtitle            ResolvedDefaultTrack         `json:"defaultSubtitle"`
+	Composition                *ResolvedSubtitleComposition `json:"composition,omitempty"`
 }
 
 const resolvedTrackPlanSnapshotKey = "resolvedTrackPlan"

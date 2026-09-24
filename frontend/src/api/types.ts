@@ -333,15 +333,79 @@ export type SubtitleSourceEligibility = {
   sourceIdentity: string;
   sourceRevision: string;
   representation: string;
+  language?: string;
   role: SubtitleSemanticRole;
   roleProvenance: string;
+  roleConfidence?: string;
+  roleClassifierVersion?: string;
+  roleOverrideState?: string;
   streamIndex?: number;
   policyVersion: string;
+  compositionClass?: 'dialogue' | 'sign' | 'lyrics' | 'commentary' | 'unknown' | string;
+};
+
+export type SubtitleCompositionCandidate = {
+  sourceIdentity: string;
+  sourceRevision: string;
+  representation: string;
+  language: string;
+  role: SubtitleSemanticRole;
+  compositionClass: string;
+  roleProvenance?: string;
+  roleConfidence?: string;
+  roleClassifierVersion?: string;
+  roleOverrideState?: string;
+  streamIndex?: number;
+  sourceType: 'embedded' | 'external' | string;
+  sourcePath?: string;
+  canonicalOcrArtifactIdentity?: string;
+  canonicalOcrArtifactRevision?: string;
+  canonicalOcrArtifactPath?: string;
+  canonicalOcrLogicalTransform?: string;
+  eligible: boolean;
+  reason?: string;
+};
+
+export type SubtitleCompositionEligibility = {
+  eligible: boolean;
+  reason?: string;
+  policyVersion: string;
+  maxSupplementals: number;
+  primaryCandidates: SubtitleCompositionCandidate[];
+  supplementalCandidates: SubtitleCompositionCandidate[];
+  crossLanguageExplicit: boolean;
 };
 
 export type SubtitleEligibilityResponse = {
   external: ExternalSubtitle[];
   embedded: SubtitleSourceEligibility[];
+  composition?: SubtitleCompositionEligibility;
+};
+
+export type SubtitleCompositionSourceRequest = {
+  identity?: string;
+  revision?: string;
+  representation: 'srt' | 'ass' | 'ssa';
+  language: string;
+  role: SubtitleSemanticRole;
+  cueClass: string;
+  roleProvenance?: string;
+  roleConfidence?: string;
+  roleClassifierVersion?: string;
+  roleOverrideState?: string;
+  sourcePath: string;
+  canonicalOcrArtifactIdentity?: string;
+  canonicalOcrArtifactRevision?: string;
+  canonicalOcrArtifactPath?: string;
+  canonicalOcrLogicalTransform?: string;
+};
+
+export type SubtitleCompositionInput = {
+  path: string;
+  primary: SubtitleCompositionSourceRequest;
+  supplementals: SubtitleCompositionSourceRequest[];
+  observedRevisions: Record<string, string>;
+  publicationMode?: string;
 };
 
 export type SubtitleTranslationSourceSelector =
@@ -2192,6 +2256,7 @@ export type SubtitleExtractionOperation = {
     | 'analyzing'
     | 'extracting'
     | 'ocr'
+    | 'reconciliation'
     | 'cleanup'
     | 'publishing'
     | 'completed'
@@ -2207,6 +2272,13 @@ export type SubtitleExtractionOperation = {
   error?: string;
   retryable?: boolean;
   kind?: 'extraction' | 'ocr_analysis' | 'ocr_correction' | 'translation' | string;
+  composition?: {
+    sources: Array<Record<string, unknown>>;
+    policy: Record<string, unknown>;
+    outputIdentity: string;
+    outputPath: string;
+    provenance?: Record<string, unknown>;
+  };
   translation?: {
     provider?: string;
     model?: string;

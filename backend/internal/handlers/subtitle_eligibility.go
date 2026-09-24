@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -16,34 +17,78 @@ type SubtitleModeEligibility struct {
 }
 
 type SubtitleSourceEligibility struct {
-	Restyle                SubtitleModeEligibility `json:"restyle"`
-	SRTToASS               SubtitleModeEligibility `json:"srtToAss"`
-	Regenerate             SubtitleModeEligibility `json:"regenerate"`
-	ReplaceEligible        bool                    `json:"replaceEligible"`
-	NativeOverrideEligible bool                    `json:"nativeOverrideEligible"`
-	SourceIdentity         string                  `json:"sourceIdentity"`
-	SourceRevision         string                  `json:"sourceRevision"`
-	Representation         string                  `json:"representation"`
-	Role                   SubtitleSemanticRole    `json:"role"`
-	RoleProvenance         string                  `json:"roleProvenance"`
-	StreamIndex            *int                    `json:"streamIndex,omitempty"`
-	PolicyVersion          string                  `json:"policyVersion"`
+	Restyle                      SubtitleModeEligibility `json:"restyle"`
+	SRTToASS                     SubtitleModeEligibility `json:"srtToAss"`
+	Regenerate                   SubtitleModeEligibility `json:"regenerate"`
+	ReplaceEligible              bool                    `json:"replaceEligible"`
+	NativeOverrideEligible       bool                    `json:"nativeOverrideEligible"`
+	SourceIdentity               string                  `json:"sourceIdentity"`
+	SourceRevision               string                  `json:"sourceRevision"`
+	Representation               string                  `json:"representation"`
+	Language                     string                  `json:"language"`
+	Role                         SubtitleSemanticRole    `json:"role"`
+	RoleProvenance               string                  `json:"roleProvenance"`
+	RoleConfidence               string                  `json:"roleConfidence,omitempty"`
+	RoleClassifierVersion        string                  `json:"roleClassifierVersion,omitempty"`
+	RoleOverrideState            string                  `json:"roleOverrideState,omitempty"`
+	StreamIndex                  *int                    `json:"streamIndex,omitempty"`
+	PolicyVersion                string                  `json:"policyVersion"`
+	CompositionClass             CompositionCueClass     `json:"compositionClass,omitempty"`
+	CanonicalOCRArtifactIdentity string                  `json:"canonicalOcrArtifactIdentity,omitempty"`
+	CanonicalOCRArtifactRevision string                  `json:"canonicalOcrArtifactRevision,omitempty"`
+	CanonicalOCRArtifactPath     string                  `json:"canonicalOcrArtifactPath,omitempty"`
+	CanonicalOCRLogicalTransform string                  `json:"canonicalOcrLogicalTransform,omitempty"`
+}
+
+type SubtitleCompositionCandidate struct {
+	SourceIdentity               string               `json:"sourceIdentity"`
+	SourceRevision               string               `json:"sourceRevision"`
+	Representation               string               `json:"representation"`
+	Language                     string               `json:"language"`
+	Role                         SubtitleSemanticRole `json:"role"`
+	CompositionClass             CompositionCueClass  `json:"compositionClass"`
+	RoleProvenance               string               `json:"roleProvenance,omitempty"`
+	RoleConfidence               string               `json:"roleConfidence,omitempty"`
+	RoleClassifierVersion        string               `json:"roleClassifierVersion,omitempty"`
+	RoleOverrideState            string               `json:"roleOverrideState,omitempty"`
+	StreamIndex                  *int                 `json:"streamIndex,omitempty"`
+	SourceType                   string               `json:"sourceType"`
+	SourcePath                   string               `json:"sourcePath,omitempty"`
+	CanonicalOCRArtifactIdentity string               `json:"canonicalOcrArtifactIdentity,omitempty"`
+	CanonicalOCRArtifactRevision string               `json:"canonicalOcrArtifactRevision,omitempty"`
+	CanonicalOCRArtifactPath     string               `json:"canonicalOcrArtifactPath,omitempty"`
+	CanonicalOCRLogicalTransform string               `json:"canonicalOcrLogicalTransform,omitempty"`
+	Eligible                     bool                 `json:"eligible"`
+	Reason                       string               `json:"reason,omitempty"`
+}
+
+type SubtitleCompositionEligibility struct {
+	Eligible               bool                           `json:"eligible"`
+	Reason                 string                         `json:"reason,omitempty"`
+	PolicyVersion          string                         `json:"policyVersion"`
+	MaxSupplementals       int                            `json:"maxSupplementals"`
+	PrimaryCandidates      []SubtitleCompositionCandidate `json:"primaryCandidates"`
+	SupplementalCandidates []SubtitleCompositionCandidate `json:"supplementalCandidates"`
+	CrossLanguageExplicit  bool                           `json:"crossLanguageExplicit"`
 }
 
 type SubtitleEligibilityResponse struct {
-	External []ExternalSubtitle          `json:"external"`
-	Embedded []SubtitleSourceEligibility `json:"embedded"`
+	External    []ExternalSubtitle              `json:"external"`
+	Embedded    []SubtitleSourceEligibility     `json:"embedded"`
+	Composition *SubtitleCompositionEligibility `json:"composition,omitempty"`
 }
 
 func subtitleExternalEligibility(sidecar ExternalSubtitle, policy SubtitleStylePolicy) SubtitleSourceEligibility {
 	representation := strings.ToLower(strings.TrimSpace(sidecar.Format))
 	identity := "external:" + sidecar.Path
 	eligibleRevision := strings.TrimSpace(sidecar.SourceRevision) != ""
+	role, roleProvenance := externalSubtitleCompositionRole(sidecar)
 	result := SubtitleSourceEligibility{
 		SourceIdentity: identity, SourceRevision: sidecar.SourceRevision,
-		Representation: representation, Role: SubtitleRoleUnknown,
-		RoleProvenance: "external-sidecar", PolicyVersion: policy.Version,
+		Representation: representation, Language: normalizedTrackLanguage(sidecar.Language), Role: role,
+		RoleProvenance: roleProvenance, PolicyVersion: policy.Version,
 	}
+	result.CompositionClass = compositionClassForTrack(nil, result.Role)
 	switch representation {
 	case "ass", "ssa":
 		result.Restyle = SubtitleModeEligibility{Eligible: eligibleRevision, Reason: eligibilityReason(eligibleRevision, "exact source revision is unavailable")}
@@ -63,6 +108,19 @@ func subtitleExternalEligibility(sidecar ExternalSubtitle, policy SubtitleStyleP
 	return result
 }
 
+func externalSubtitleCompositionRole(sidecar ExternalSubtitle) (SubtitleSemanticRole, string) {
+	base := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(sidecar.FileName)), filepath.Ext(strings.TrimSpace(sidecar.FileName)))
+	for _, token := range strings.Split(base, ".") {
+		if role := normalizeSubtitleSemanticRole(token); role != SubtitleRoleUnknown {
+			return role, "external-sidecar-filename"
+		}
+	}
+	if sidecar.Forced {
+		return SubtitleRoleForced, "external-sidecar-disposition"
+	}
+	return SubtitleRoleFull, "external-sidecar-default"
+}
+
 func eligibilityReason(eligible bool, reason string) string {
 	if eligible {
 		return ""
@@ -72,22 +130,28 @@ func eligibilityReason(eligible bool, reason string) string {
 
 func subtitleEmbeddedEligibility(path string, stream FFProbeStream, revision string, policy SubtitleStylePolicy) SubtitleSourceEligibility {
 	representation := subtitleRepresentationForCodec(stream.CodecName)
+	role := classifyEmbeddedSubtitleRole(path, stream)
 	result := SubtitleSourceEligibility{
 		SourceIdentity: fmt.Sprintf("embedded:%s#stream=%d", path, stream.Index),
 		SourceRevision: revision, Representation: representation,
-		Role: SubtitleRoleUnknown, RoleProvenance: "embedded-stream; semantic role resolved at execution", PolicyVersion: policy.Version,
+		Language: normalizedTrackLanguage(stream.Tags["language"]),
+		Role:     role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence,
+		RoleClassifierVersion: role.ClassifierVersion, RoleOverrideState: role.OverrideState, PolicyVersion: policy.Version,
 	}
+	result.CompositionClass = compositionClassForTrack(stream.Tags, result.Role)
 	streamIndex := stream.Index
 	result.StreamIndex = &streamIndex
-	for _, key := range []string{"role", "semanticRole", "subtitleRole"} {
-		if role := normalizeSubtitleSemanticRole(stream.Tags[key]); role != "" {
-			result.Role = role
-			result.RoleProvenance = "metadata"
-			break
-		}
-	}
 	if representation == "" {
 		result.Regenerate = SubtitleModeEligibility{Reason: "embedded subtitle codec is unsupported"}
+		return result
+	}
+	if representation == "bitmap" {
+		// Generic embedded regeneration remains eligible here for the existing
+		// subtitle workflow. Composition applies the stricter canonical-OCR
+		// boundary in SubtitleEligibility below.
+		result.Regenerate = SubtitleModeEligibility{Eligible: true}
+		result.Restyle = SubtitleModeEligibility{Reason: "embedded subtitles use canonical regeneration"}
+		result.SRTToASS = SubtitleModeEligibility{Reason: "embedded subtitles use canonical regeneration"}
 		return result
 	}
 	if strings.TrimSpace(revision) == "" {
@@ -108,7 +172,7 @@ func subtitleRepresentationForCodec(codec string) string {
 	case "subrip", "srt":
 		return "srt"
 	case "hdmv_pgs_subtitle", "pgs", "dvd_subtitle", "vobsub":
-		return "ass"
+		return "bitmap"
 	default:
 		return ""
 	}
@@ -145,7 +209,92 @@ func (h AssetHandler) SubtitleEligibility(c *gin.Context) {
 		if strings.ToLower(strings.TrimSpace(stream.CodecType)) != "subtitle" {
 			continue
 		}
-		embedded = append(embedded, subtitleEmbeddedEligibility(mediaPath, stream, revision, policy))
+		eligibility := subtitleEmbeddedEligibility(mediaPath, stream, revision, policy)
+		if eligibility.Representation == "bitmap" {
+			if artifact, found := findPublishedCanonicalOCRArtifactForEmbeddedSource(mediaPath, stream); found {
+				eligibility.Representation = artifact.Format
+				eligibility.Regenerate = SubtitleModeEligibility{Eligible: true}
+				eligibility.CanonicalOCRArtifactIdentity = artifact.Identity
+				eligibility.CanonicalOCRArtifactRevision = artifact.Revision
+				eligibility.CanonicalOCRArtifactPath = artifact.Path
+				eligibility.CanonicalOCRLogicalTransform = artifact.LogicalTransform
+			} else {
+				eligibility.Regenerate = SubtitleModeEligibility{Reason: "current canonical OCR result for the exact source revision is required"}
+			}
+		}
+		embedded = append(embedded, eligibility)
 	}
-	c.JSON(http.StatusOK, SubtitleEligibilityResponse{External: external, Embedded: embedded})
+	c.JSON(http.StatusOK, SubtitleEligibilityResponse{External: external, Embedded: embedded, Composition: subtitleCompositionEligibility(external, embedded, policy)})
+}
+
+func subtitleCompositionEligibility(external []ExternalSubtitle, embedded []SubtitleSourceEligibility, style SubtitleStylePolicy) *SubtitleCompositionEligibility {
+	result := &SubtitleCompositionEligibility{PolicyVersion: compositionPolicyVersion, MaxSupplementals: compositionMaxSupplementals, PrimaryCandidates: []SubtitleCompositionCandidate{}, SupplementalCandidates: []SubtitleCompositionCandidate{}}
+	add := func(candidate SubtitleCompositionCandidate) {
+		if candidate.Language == "" || candidate.Language == "und" {
+			return
+		}
+		if candidate.Role == SubtitleRoleFull {
+			result.PrimaryCandidates = appendBoundedCompositionCandidate(result.PrimaryCandidates, candidate)
+		}
+		if candidate.SourceIdentity != "" {
+			result.SupplementalCandidates = appendBoundedCompositionCandidate(result.SupplementalCandidates, candidate)
+		}
+	}
+	for _, sidecar := range external {
+		eligibility := sidecar.Eligibility
+		if eligibility == nil {
+			continue
+		}
+		candidate := SubtitleCompositionCandidate{SourceIdentity: eligibility.SourceIdentity, SourceRevision: eligibility.SourceRevision, Representation: eligibility.Representation, Language: normalizedTrackLanguage(sidecar.Language), Role: eligibility.Role, CompositionClass: eligibility.CompositionClass, SourceType: "external", SourcePath: sidecar.Path}
+		candidate.Eligible = candidate.SourceRevision != "" && candidate.Language != "" && candidate.Language != "und" && candidate.Role != SubtitleRoleUnknown && (candidate.Representation == "ass" || candidate.Representation == "ssa" || candidate.Representation == "srt")
+		if !candidate.Eligible {
+			candidate.Reason = "exact language, revision, and supported representation are required"
+		}
+		add(candidate)
+	}
+	for _, eligibility := range embedded {
+		candidate := SubtitleCompositionCandidate{SourceIdentity: eligibility.SourceIdentity, SourceRevision: eligibility.SourceRevision, Representation: eligibility.Representation, Language: normalizedTrackLanguage(eligibility.Language), Role: eligibility.Role, RoleProvenance: eligibility.RoleProvenance, RoleConfidence: eligibility.RoleConfidence, RoleClassifierVersion: eligibility.RoleClassifierVersion, RoleOverrideState: eligibility.RoleOverrideState, CompositionClass: eligibility.CompositionClass, StreamIndex: eligibility.StreamIndex, SourceType: "embedded", CanonicalOCRArtifactIdentity: eligibility.CanonicalOCRArtifactIdentity, CanonicalOCRArtifactRevision: eligibility.CanonicalOCRArtifactRevision, CanonicalOCRArtifactPath: eligibility.CanonicalOCRArtifactPath, CanonicalOCRLogicalTransform: eligibility.CanonicalOCRLogicalTransform}
+		candidate.Eligible = eligibility.Regenerate.Eligible && candidate.Representation != "bitmap" && candidate.Language != "" && candidate.Language != "und" && candidate.Role != SubtitleRoleUnknown
+		if !candidate.Eligible {
+			candidate.Reason = eligibility.Regenerate.Reason
+			if candidate.Representation == "bitmap" && candidate.Reason == "" {
+				candidate.Reason = "current canonical OCR result for the exact source revision is required"
+			}
+			if candidate.Reason == "" {
+				candidate.Reason = "backend role/language resolution or canonical source revision is unavailable"
+			}
+		}
+		add(candidate)
+	}
+	hasEligiblePrimary := false
+	for _, candidate := range result.PrimaryCandidates {
+		if candidate.Eligible {
+			hasEligiblePrimary = true
+			break
+		}
+	}
+	if !hasEligiblePrimary {
+		result.Reason = "a resolved full-dialogue primary source is required"
+		return result
+	}
+	hasEligibleSupplemental := false
+	for _, candidate := range result.SupplementalCandidates {
+		if candidate.Eligible {
+			hasEligibleSupplemental = true
+			break
+		}
+	}
+	result.Eligible = hasEligibleSupplemental
+	if !result.Eligible {
+		result.Reason = "no compatible supplemental source is currently eligible"
+	}
+	_ = style // style version is carried by the existing eligibility response.
+	return result
+}
+
+func appendBoundedCompositionCandidate(values []SubtitleCompositionCandidate, candidate SubtitleCompositionCandidate) []SubtitleCompositionCandidate {
+	if len(values) >= compositionMaxSupplementals+1 {
+		return values
+	}
+	return append(values, candidate)
 }

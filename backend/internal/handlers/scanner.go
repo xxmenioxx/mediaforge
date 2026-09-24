@@ -1643,6 +1643,7 @@ func streamSummaries(streams []FFProbeStream, codecType string) models.JSONList 
 			"default":         dispositionValue(stream.Disposition, "default") == 1,
 			"forced":          dispositionValue(stream.Disposition, "forced") == 1,
 			"comment":         dispositionValue(stream.Disposition, "comment") == 1,
+			"commentary":      dispositionValue(stream.Disposition, "comment") == 1,
 			"hearingImpaired": dispositionValue(stream.Disposition, "hearing_impaired") == 1,
 		}
 
