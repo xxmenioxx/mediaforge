@@ -11,7 +11,7 @@
 - [x] 2.3 Share generic structured probe, measured FPS, frame-structure, frame-reference, and metrics evidence only where the evidence semantics match; verify generic ffprobe evidence does not satisfy a specialized HEVC `trace_headers` request.
 - [x] 2.4 Make comparison-frame access a read-only artifact/evidence consumer and preserve source-backed frame generation without creating a processed artifact for Sample A; verify frame requests do not trigger a second Compatible Preview encode.
 - [x] 2.5 Protect every bounded ready-artifact evidence read with the existing #1 serving/analysis consumer mechanism or canonical equivalent, releasing it on completion, failure, or cancellation; do not add a second lease, generation consumer, generating state, or indefinite retention; verify cleanup cannot race an active read and later cleanup remains normal.
-- [x] 2.6 Preserve and strengthen the source/reference cache signature with backend-authoritative request/artifact/generation identity, source revision, normalized time interval, and normalization while excluding the processed Profile; verify profile-only edits reuse the reference, same-path source replacement rejects the old identity, and source/interval/normalization changes invalidate it.
+- [x] 2.6 Preserve and strengthen the source/reference cache signature with backend-authoritative request/artifact/generation identity, source revision, normalized time interval, and normalization while excluding the processed Profile; verify every reuse re-registers the canonical request, compares `requestId` plus `cacheIdentity`, profile-only edits reuse the reference without another generation, and same-path source replacement rejects the old identity.
 
 ## 3. Implement the bounded backend Fidelity operation
 
@@ -54,7 +54,7 @@
 - [x] 7.5 Add cancellation, retry, background-failure, and shared-consumer tests; verify cancel preserves a ready primary, retry makes no primary generation call, and additional infrastructure failure is retryable without changing Preview Ready.
 - [x] 7.6 Add restart-boundary tests for process-local operation loss and #14 primary artifact reuse; verify a new operation can retry the primary without re-encoding it.
 - [x] 7.7 Add canonical #3 adapter and aggregation tests for intentional transformations, unverified evidence, high-SSIM canonical mismatch, and visual-threshold compatibility.
-- [x] 7.8 Add focused frontend tests for independent state rendering, polling lifecycle, backend operation/material-identity stale-result protection, cancel/retry controls, same-path source-revision cache invalidation, the pre-#15 existing-transport/post-#15 adapter boundary, and no hidden tab-triggered work.
+- [x] 7.8 Add focused frontend tests for independent state rendering, polling lifecycle, backend operation/material-identity stale-result protection, cancel/retry controls, canonical Sample A re-registration with `cacheIdentity` comparison for unchanged and same-path-replaced sources, the pre-#15 existing-transport/post-#15 adapter boundary, and no hidden tab-triggered work.
 
 ## 8. Validate and hand off the implementation plan
 

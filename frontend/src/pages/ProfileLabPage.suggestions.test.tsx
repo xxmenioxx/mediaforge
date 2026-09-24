@@ -236,7 +236,10 @@ describe('Profile Lab Process Asset suggestions', () => {
     vi.mocked(api.workerNodes).mockResolvedValue([]);
     vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: scan, status: 'current', requiresAnalysis: false, staleComponents: [] });
     vi.mocked(api.suggestProfile).mockResolvedValue(nullableSuggestion);
-    vi.mocked(api.createCompatiblePreviewRequest).mockImplementation(async (options) => ({ requestId: `${String(options.start ?? 'base').replaceAll(':', '')}-${JSON.stringify(options.profile ?? {}).length}`, cacheIdentity: 'cache', expiresInSeconds: 7200, path: options.path }));
+    vi.mocked(api.createCompatiblePreviewRequest).mockImplementation(async (options) => {
+      const requestId = `${String(options.start ?? 'base').replaceAll(':', '')}-${JSON.stringify(options.profile ?? {}).length}`;
+      return { requestId, cacheIdentity: `artifact-${requestId}`, expiresInSeconds: 7200, path: options.path };
+    });
     vi.mocked(api.compatiblePreviewStatus).mockImplementation(async (requestId) => ({
       requestId,
       artifactId: `artifact-${requestId}`,
@@ -334,7 +337,7 @@ describe('Profile Lab Process Asset suggestions', () => {
   }
 
   it(
-    'reuses Sample A when Process Video runs again with the same reference inputs',
+    'reuses Sample A across a processed Profile-only change',
     async () => {
       vi.mocked(api.profiles).mockResolvedValue([
         qsvSavedProfile,
@@ -396,6 +399,9 @@ describe('Profile Lab Process Asset suggestions', () => {
         ).toBe(false),
       );
 
+      const profileName = screen.getByLabelText('New video profile name');
+      await userEvent.clear(profileName);
+      await userEvent.type(profileName, 'changed processed draft');
       const requestCountAfterFirstProcess =
         vi.mocked(
           api.createCompatiblePreviewRequest,
@@ -413,9 +419,8 @@ describe('Profile Lab Process Asset suggestions', () => {
         ),
       );
 
-      expect(
-        referencePreviewRequests(),
-      ).toHaveLength(1);
+      expect(referencePreviewRequests()).toHaveLength(2);
+      expect(vi.mocked(api.inspectCompatibleAssetPreview)).toHaveBeenCalledTimes(1);
     },
     20_000,
   );
@@ -441,12 +446,18 @@ describe('Profile Lab Process Asset suggestions', () => {
       generationVersion: 2, sourceRevision: revisionB, start: '00:00:00', seconds: 20,
       normalization: { mode: 'normalize_bt709', applied: true, sarPreserved: true }, state: 'ready', code: 'ready',
     } as never;
-    vi.mocked(api.compatiblePreviewStatus).mockResolvedValue(readyB);
+    vi.mocked(api.createCompatiblePreviewRequest).mockImplementationOnce(async (options) => ({
+      requestId: 'revision-b-reference',
+      cacheIdentity: 'artifact-revision-b',
+      expiresInSeconds: 7200,
+      path: options.path,
+    }));
     vi.mocked(waitForCompatiblePreviewReady).mockResolvedValue(readyB);
 
     await userEvent.click(processVideo);
     await waitFor(() => expect(referencePreviewRequests()).toHaveLength(2), { timeout: 12_000 });
     expect(vi.mocked(api.inspectCompatibleAssetPreview)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.compatiblePreviewStatus)).toHaveBeenCalledTimes(0);
   }, 20_000);
 
   it('publishes a playable primary preview before Fidelity completes and cancels only Fidelity', async () => {
@@ -531,7 +542,10 @@ describe('Profile Lab Process Asset suggestions', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Retry Fidelity' }));
     await waitFor(() => expect(api.startLabFidelityOperation).toHaveBeenCalledTimes(2), { timeout: 12_000 });
     expect(vi.mocked(api.startLabFidelityOperation).mock.calls[1]?.[0].primaryRequestId).toBe(primaryRequestId);
-    expect(vi.mocked(api.createCompatiblePreviewRequest).mock.calls.length).toBe(previewGenerationRequests);
+    // Retry re-registers the canonical Sample A request so the backend can
+    // validate the physical source revision. Registration is not generation;
+    // the cached inspection remains reusable.
+    expect(vi.mocked(api.createCompatiblePreviewRequest).mock.calls.length).toBe(previewGenerationRequests + 1);
   }, 20_000);
 
   it('maps a lost process-local operation to retryable Fidelity without changing Preview Ready', async () => {

@@ -1396,49 +1396,45 @@ export function ProfileLabPage() {
       onProgress?: (operation: LabFidelityOperation) => void;
     }): Promise<LabFidelityInspection> => {
 
-      let cachedReference =
+      const cachedReferenceCandidate =
         referencePreviewCacheRef.current?.signature === referenceSignature
           ? referencePreviewCacheRef.current
           : null;
-      if (cachedReference && !primaryRequestId) {
+      // Registration is the authoritative source-revision validation seam. It
+      // is intentionally cheap and does not start generation; GET /status is
+      // observational and only describes the descriptor already stored for a
+      // request, so it cannot validate a same-path source replacement by
+      // itself.
+      const referenceRequest = await api.createCompatiblePreviewRequest(reference, signal);
+      let cachedReference: CachedLabReferencePreview | null = null;
+      let cachedReferenceStatus: CompatiblePreviewLifecycleResponse | null = null;
+      if (
+        cachedReferenceCandidate &&
+        referenceRequest.requestId === cachedReferenceCandidate.requestId &&
+        referenceRequest.cacheIdentity === cachedReferenceCandidate.artifactId
+      ) {
         try {
-          const cachedStatus = await api.compatiblePreviewStatus(cachedReference.requestId, signal);
-          if (!labReferenceStatusMatchesCache(cachedReference, cachedStatus)) {
-            cachedReference = null;
-            referencePreviewCacheRef.current = null;
+          const status = await api.compatiblePreviewStatus(referenceRequest.requestId, signal);
+          if (labReferenceStatusMatchesCache(cachedReferenceCandidate, status)) {
+            cachedReference = cachedReferenceCandidate;
+            cachedReferenceStatus = status;
           }
         } catch (error) {
           if (signal?.aborted) throw error;
-          cachedReference = null;
-          referencePreviewCacheRef.current = null;
         }
       }
-      const referenceRequestPromise = cachedReference
-        ? Promise.resolve({ requestId: cachedReference.requestId })
-        : api.createCompatiblePreviewRequest(reference, signal);
+      if (!cachedReference) referencePreviewCacheRef.current = null;
       const conversionRequest = primaryRequestId
         ? { requestId: primaryRequestId }
         : await api.createCompatiblePreviewRequest(conversion, signal);
       const referenceReady = cachedReference
-        ? Promise.resolve<CompatiblePreviewLifecycleResponse>({
-            requestId: cachedReference.requestId,
-            artifactId: cachedReference.artifactId,
-            generationToken: cachedReference.generationToken,
-            generationVersion: cachedReference.generationVersion,
-            sourceRevision: cachedReference.sourceRevision,
-            start: cachedReference.start,
-            seconds: cachedReference.seconds,
-            normalization: cachedReference.normalization,
-            state: 'ready',
-            code: 'ready',
-          })
-        : waitForCompatiblePreviewReady((await referenceRequestPromise).requestId, signal, createCompatiblePreviewOwnerId());
+        ? Promise.resolve(cachedReferenceStatus as CompatiblePreviewLifecycleResponse)
+        : waitForCompatiblePreviewReady(referenceRequest.requestId, signal, createCompatiblePreviewOwnerId());
 
       // The primary request is the only processed request started before the
       // background operation. Preview Ready is emitted at this barrier; the
       // operation owns all subsequent Fidelity windows and evidence work.
       await waitForCompatiblePreviewReady(conversionRequest.requestId, signal, createCompatiblePreviewOwnerId());
-      const referenceRequest = await referenceRequestPromise;
       onPrepared?.(referenceRequest.requestId, conversionRequest.requestId);
 
       const started = await api.startLabFidelityOperation({

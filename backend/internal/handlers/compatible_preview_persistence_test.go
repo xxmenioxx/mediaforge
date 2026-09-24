@@ -110,6 +110,94 @@ func TestCompatiblePreviewReadyArtifactReconcilesWithoutEncode(t *testing.T) {
 	lease.release()
 }
 
+func TestCompatiblePreviewRegistrationReResolvesSamePathSourceReplacement(t *testing.T) {
+	resetCompatiblePreviewRuntimeForReconcile()
+	t.Cleanup(resetCompatiblePreviewRuntimeForReconcile)
+	db := compatiblePreviewPersistenceDB(t)
+	root := filepath.Join(t.TempDir(), "preview-cache")
+	t.Setenv("MVFORGE_COMPATIBLE_PREVIEW_CACHE_ROOT", root)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(source, []byte("revision-a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.Library{Name: "fixture", SourcePath: filepath.Dir(source), DestinationPath: filepath.Dir(source), Type: "library"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	installFakeFFmpeg(t, `echo encode >> "$FFMPEG_COUNTER"; printf artifact`)
+	counter := filepath.Join(t.TempDir(), "ffmpeg-count")
+	t.Setenv("FFMPEG_COUNTER", counter)
+
+	request := compatiblePreviewRequest{Path: source, Start: "00:00:00", Seconds: 2, Mode: "quality", PreviewNormalization: "normalize_bt709"}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.POST("/requests", AssetHandler{db: db}.CreateCompatiblePreviewRequest)
+	create := func() struct {
+		RequestID     string `json:"requestId"`
+		CacheIdentity string `json:"cacheIdentity"`
+	} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/requests", strings.NewReader(string(body))))
+		if response.Code != http.StatusCreated {
+			t.Fatalf("registration status=%d body=%s", response.Code, response.Body.String())
+		}
+		var created struct {
+			RequestID     string `json:"requestId"`
+			CacheIdentity string `json:"cacheIdentity"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+
+	first := create()
+	entry, _, ok := compatiblePreviewRequestLookup(first.RequestID, time.Now())
+	if !ok || entry == nil {
+		t.Fatal("first canonical request was not registered")
+	}
+	entry.mu.RLock()
+	firstDescriptor := entry.Descriptor
+	entry.mu.RUnlock()
+	if firstDescriptor == nil || firstDescriptor.ArtifactID != first.CacheIdentity {
+		t.Fatalf("first descriptor/cache identity mismatch: descriptor=%#v response=%#v", firstDescriptor, first)
+	}
+	if _, lease, err := acquireCompatiblePreviewArtifact(context.Background(), firstDescriptor); err != nil || lease == nil {
+		t.Fatalf("first reference artifact did not become ready: lease=%v err=%v", lease, err)
+	} else {
+		lease.release()
+	}
+
+	if err := os.WriteFile(source, []byte("revision-b-replaced-at-same-path"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := create()
+	if second.RequestID != first.RequestID {
+		t.Fatalf("canonical request identity changed for same logical request: first=%q second=%q", first.RequestID, second.RequestID)
+	}
+	if second.CacheIdentity == first.CacheIdentity {
+		t.Fatalf("stale Sample A artifact was returned after source replacement: identity=%q", second.CacheIdentity)
+	}
+	entry, _, ok = compatiblePreviewRequestLookup(second.RequestID, time.Now())
+	if !ok || entry == nil {
+		t.Fatal("replacement canonical request was not registered")
+	}
+	entry.mu.RLock()
+	secondDescriptor := entry.Descriptor
+	entry.mu.RUnlock()
+	if secondDescriptor == nil || secondDescriptor.ArtifactID != second.CacheIdentity || secondDescriptor.SourceRevision.matches(source) == false {
+		t.Fatalf("replacement descriptor did not resolve the current source: %#v", secondDescriptor)
+	}
+	if encoded, err := os.ReadFile(counter); err != nil || strings.Count(string(encoded), "encode") != 1 {
+		t.Fatalf("registration unexpectedly generated another reference artifact: count=%q err=%v", string(encoded), err)
+	}
+}
+
 func TestCompatiblePreviewSharedArtifactRestoresOnce(t *testing.T) {
 	db := compatiblePreviewPersistenceDB(t)
 	requestA, normalized, descriptor, now := compatiblePreviewPersistentFixture(t, db, "artifact-shared")

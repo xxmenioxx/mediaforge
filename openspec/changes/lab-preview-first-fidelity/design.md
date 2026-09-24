@@ -13,10 +13,13 @@ sequence is:
 1. `Process Video` validates the asset and `Start`, aborts the previous
    Fidelity and video controllers, resets the inspection, and records the
    current profile/request signatures.
-2. It creates a browser-compatible source/reference request unless
-   `referencePreviewCacheRef` has the same frontend signature, and creates one
-   processed conversion request. These POSTs register frozen Compatible
-   Preview requests; they do not themselves encode media.
+2. It registers a browser-compatible source/reference request on every run,
+   even when `referencePreviewCacheRef` has the same frontend signature. The
+   registration is the backend-authoritative source-revision validation seam;
+   it is cheap and does not itself encode media. The returned `requestId` and
+   `cacheIdentity` are compared with the cached request/artifact identity
+   before any cached Sample A inspection is reused. It also creates one
+   processed conversion request.
 3. `onPrepared` stores both request IDs and mounts the processed video request.
    The current `VideoPreviewRequest` fetches the video response into a Blob;
    the backend resource call may be waiting for the artifact while the
@@ -396,12 +399,19 @@ to obtain Sample A's source frame.
 
 The cache signature currently represented by
 `labReferenceRequestSignature(path,start,seconds,normalization)` remains a
-small frontend reuse hint, but reuse is validated against the authoritative
-#14/#15 ready status. `CachedLabReferencePreview` retains request ID, artifact
-ID, generation token/version, source revision, normalized interval, and
-normalization alongside bounded inspection evidence. The processed Profile is
-excluded. A profile-only edit therefore keeps the reference cache; a same-path
-source revision, interval, or normalization change rejects it before reuse.
+small frontend reuse hint. Every attempted reuse first re-registers the
+canonical reference request through #1/#14; the returned request ID and
+`cacheIdentity` (canonical artifact ID) must match the cached request ID and
+artifact ID. Only then may the observational #15 status response confirm the
+frozen ready generation, interval, source revision, and normalization.
+`CachedLabReferencePreview` retains request ID, artifact ID, generation
+token/version, source revision, normalized interval, and normalization
+alongside bounded inspection evidence. The processed Profile is excluded. A
+profile-only edit therefore performs another cheap registration but reuses the
+reference artifact and inspection; a same-path source replacement, interval,
+or normalization change resolves a new canonical identity and inspects it
+once. Registration count and actual artifact generation count are separate
+accounting dimensions.
 
 ### 10. Keep the frontend states independent and read-only outside orchestration
 

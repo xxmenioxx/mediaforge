@@ -460,8 +460,18 @@ revision, `Start`, `Seconds`, or normalization change SHALL invalidate it.
 
 - **WHEN** `/media/movie.mkv` has source revision A when reference evidence is
   cached and the same path later resolves to source revision B
-- **THEN** cached evidence for A SHALL be rejected and the canonical reference
-  identity for B SHALL be resolved
+- **THEN** Process Video SHALL register the canonical reference request again,
+  the backend SHALL resolve revision B without starting generation, the
+  returned `cacheIdentity` SHALL differ from A, and cached evidence for A
+  SHALL be rejected in favor of the canonical reference identity for B
+
+#### Scenario: Unchanged source registration reuses Sample A
+
+- **WHEN** the same source revision, interval, and normalization are registered
+  again, including after a processed Profile-only edit
+- **THEN** the backend SHALL return the same canonical request/artifact
+  identity, the existing ready Sample A inspection SHALL remain reusable, and
+  the additional registration SHALL not start another artifact generation
 
 ### Requirement: The #15 integration SHALL be an adapter, not a duplicate lifecycle
 
