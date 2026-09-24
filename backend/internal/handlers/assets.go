@@ -4010,15 +4010,26 @@ func (h AssetHandler) CompatiblePreviewMetrics(c *gin.Context) {
 }
 
 type previewFrameMetrics struct {
-	Comparable       bool    `json:"comparable"`
-	Reason           string  `json:"reason"`
-	SourceDimensions string  `json:"sourceDimensions"`
-	OutputDimensions string  `json:"outputDimensions"`
-	SSIM             float64 `json:"ssim,omitempty"`
-	PSNR             float64 `json:"psnr,omitempty"`
+	Comparable       bool         `json:"comparable"`
+	DomainComparable bool         `json:"domainComparable,omitempty"`
+	SSIMAvailable    bool         `json:"ssimAvailable,omitempty"`
+	PSNRAvailable    bool         `json:"psnrAvailable,omitempty"`
+	SSIMReason       string       `json:"ssimReason,omitempty"`
+	PSNRReason       string       `json:"psnrReason,omitempty"`
+	SSIMValue        *MetricValue `json:"-"`
+	PSNRValue        *MetricValue `json:"-"`
+	Reason           string       `json:"reason"`
+	SourceDimensions string       `json:"sourceDimensions"`
+	OutputDimensions string       `json:"outputDimensions"`
+	SSIM             float64      `json:"ssim,omitempty"`
+	PSNR             float64      `json:"psnr,omitempty"`
 }
 
 func generatePreviewFrameMetrics(ctx context.Context, sourcePath string, sourceStart string, sourceFilter string, outputPath string) (previewFrameMetrics, error) {
+	return generatePreviewFrameMetricsAt(ctx, sourcePath, sourceStart, sourceFilter, outputPath, "0")
+}
+
+func generatePreviewFrameMetricsAt(ctx context.Context, sourcePath string, sourceStart string, sourceFilter string, outputPath string, outputStart string) (previewFrameMetrics, error) {
 	source, err := probePreviewCharacteristics(sourcePath)
 	if err != nil {
 		return previewFrameMetrics{}, err
@@ -4039,22 +4050,44 @@ func generatePreviewFrameMetrics(ctx context.Context, sourcePath string, sourceS
 	}
 	sourceFilter = joinPreviewFilters(sourceFilter, squarePixelFrameFilter(source), "format=yuv420p")
 	outputFilter := joinPreviewFilters(squarePixelFrameFilter(output), "format=yuv420p")
-	ssim, err := runPreviewFrameMetric(ctx, sourcePath, sourceStart, sourceFilter, outputPath, outputFilter, "ssim")
-	if err != nil {
-		if strings.Contains(err.Error(), "did not report SSIM") {
-			result.Reason = "Frame geometry is comparable, but FFmpeg did not provide SSIM for the selected decoded frame. Fidelity validation continued without this optional metric."
-			return result, nil
+	result.DomainComparable = true
+	ssimValue, ssimErr := runPreviewFrameMetricValueAtWithRunner(ctx, sourcePath, sourceStart, sourceFilter, outputPath, outputStart, outputFilter, "ssim", defaultPreviewMetricProcessRunner)
+	if ssimErr == nil {
+		result.SSIMValue = &ssimValue
+		if value, ok := ssimValue.Float64(); ok {
+			result.SSIMAvailable, result.SSIM = true, value
+			if math.IsInf(value, 1) {
+				result.SSIM = 100
+			}
+		} else {
+			ssimErr = fmt.Errorf("FFmpeg returned an invalid SSIM value")
 		}
-		return previewFrameMetrics{}, err
 	}
-	psnr, err := runPreviewFrameMetric(ctx, sourcePath, sourceStart, sourceFilter, outputPath, outputFilter, "psnr")
-	if err != nil {
-		return previewFrameMetrics{}, err
+	if ssimErr != nil {
+		result.SSIMReason = ssimErr.Error()
 	}
-	result.Comparable = true
+	psnrValue, psnrErr := runPreviewFrameMetricValueAtWithRunner(ctx, sourcePath, sourceStart, sourceFilter, outputPath, outputStart, outputFilter, "psnr", defaultPreviewMetricProcessRunner)
+	if psnrErr == nil {
+		result.PSNRValue = &psnrValue
+		if value, ok := psnrValue.Float64(); ok {
+			result.PSNRAvailable, result.PSNR = true, value
+			if math.IsInf(value, 1) {
+				result.PSNR = 100
+			}
+		} else {
+			psnrErr = fmt.Errorf("FFmpeg returned an invalid PSNR value")
+		}
+	}
+	if psnrErr != nil {
+		result.PSNRReason = psnrErr.Error()
+	}
+	// Legacy LAB presentation treats SSIM as its comparable visual metric;
+	// canonical evidence records PSNR independently below.
+	result.Comparable = result.SSIMAvailable
 	result.Reason = "Both decoded frames were compared in the same color domain, pixel format, and square-pixel geometry."
-	result.SSIM = ssim
-	result.PSNR = psnr
+	if !result.Comparable {
+		result.Reason = "Frame geometry is comparable, but one or more optional frame metrics could not be measured."
+	}
 	return result, nil
 }
 
@@ -4101,20 +4134,9 @@ func (h AssetHandler) previewCadenceResolution(path string) (CadenceAnalysis, Ca
 	return fallback, fallbackRecommendation
 }
 
-func runPreviewFrameMetric(ctx context.Context, sourcePath string, sourceStart string, sourceFilter string, outputPath string, outputFilter string, metric string) (float64, error) {
-	args := []string{"-hide_banner", "-loglevel", "info"}
-	if sourceStart != "" && sourceStart != "0" && sourceStart != "00:00:00" {
-		args = append(args, "-ss", sourceStart)
-	}
-	args = append(args,
-		"-i", sourcePath,
-		"-i", outputPath,
-		"-filter_complex", fmt.Sprintf("[0:v:0]%s[reference];[1:v:0]%s[conversion];[reference][conversion]%s", sourceFilter, outputFilter, metric),
-		"-frames:v", "1",
-		"-an", "-sn", "-dn",
-		"-f", "null",
-		"-",
-	)
+type previewMetricProcessRunner func(context.Context, []string) (string, error)
+
+func defaultPreviewMetricProcessRunner(ctx context.Context, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -4123,24 +4145,125 @@ func runPreviewFrameMetric(ctx context.Context, sourcePath string, sourceStart s
 		if message == "" {
 			message = err.Error()
 		}
-		return 0, fmt.Errorf("%s", message)
+		return message, fmt.Errorf("%s", message)
 	}
-	pattern := `All:([0-9.]+)`
-	if metric == "psnr" {
-		pattern = `average:([0-9.]+|inf)`
-	}
-	match := regexp.MustCompile(pattern).FindStringSubmatch(stderr.String())
-	if len(match) != 2 {
-		return 0, fmt.Errorf("FFmpeg did not report %s for the selected frame", strings.ToUpper(metric))
-	}
-	if match[1] == "inf" {
-		return 100, nil
-	}
-	value, err := strconv.ParseFloat(match[1], 64)
+	return stderr.String(), nil
+}
+
+func runPreviewFrameMetric(ctx context.Context, sourcePath string, sourceStart string, sourceFilter string, outputPath string, outputFilter string, metric string) (float64, error) {
+	value, err := runPreviewFrameMetricValueAtWithRunner(ctx, sourcePath, sourceStart, sourceFilter, outputPath, "0", outputFilter, metric, defaultPreviewMetricProcessRunner)
 	if err != nil {
 		return 0, err
 	}
-	return value, nil
+	result, ok := value.Float64()
+	if !ok {
+		return 0, fmt.Errorf("FFmpeg reported an invalid %s value", strings.ToUpper(metric))
+	}
+	if math.IsInf(result, 1) {
+		// The legacy float field is JSON-facing. Keep the historical bounded
+		// projection while canonical evidence retains the tagged infinity.
+		return 100, nil
+	}
+	return result, nil
+}
+
+func runPreviewFrameMetricValueWithRunner(ctx context.Context, sourcePath string, sourceStart string, sourceFilter string, outputPath string, outputFilter string, metric string, runner previewMetricProcessRunner) (MetricValue, error) {
+	return runPreviewFrameMetricValueAtWithRunner(ctx, sourcePath, sourceStart, sourceFilter, outputPath, "0", outputFilter, metric, runner)
+}
+
+func runPreviewFrameMetricValueAtWithRunner(ctx context.Context, sourcePath string, sourceStart string, sourceFilter string, outputPath string, outputStart string, outputFilter string, metric string, runner previewMetricProcessRunner) (MetricValue, error) {
+	args := previewMetricArgs(sourcePath, sourceStart, sourceFilter, outputPath, outputStart, outputFilter, metric)
+	output, err := runner(ctx, args)
+	if err != nil {
+		return MetricValue{}, err
+	}
+	pattern := `(?i)All:([0-9]+(?:\.[0-9]+)?|inf|nan)`
+	if metric == "psnr" {
+		pattern = `(?i)average:([0-9]+(?:\.[0-9]+)?|inf|nan)`
+	}
+	match := regexp.MustCompile(pattern).FindStringSubmatch(output)
+	if len(match) != 2 {
+		return MetricValue{}, fmt.Errorf("FFmpeg did not report %s for the selected frame", strings.ToUpper(metric))
+	}
+	if strings.EqualFold(match[1], "inf") {
+		if metric != "psnr" {
+			return MetricValue{}, fmt.Errorf("FFmpeg reported positive infinity for unsupported %s", strings.ToUpper(metric))
+		}
+		return NewPositiveInfinityMetricValue(), nil
+	}
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return MetricValue{}, err
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return MetricValue{}, fmt.Errorf("FFmpeg reported non-finite %s", strings.ToUpper(metric))
+	}
+	return NewFiniteMetricValue(value)
+}
+
+func previewMetricArgs(sourcePath, sourceStart, sourceFilter, outputPath, outputStart, outputFilter, metricFilter string) []string {
+	args := []string{"-hide_banner", "-loglevel", "info"}
+	if sourceStart != "" && sourceStart != "0" && sourceStart != "00:00:00" {
+		args = append(args, "-ss", sourceStart)
+	}
+	args = append(args, "-i", sourcePath)
+	if outputStart != "" && outputStart != "0" && outputStart != "00:00:00" {
+		args = append(args, "-ss", outputStart)
+	}
+	return append(args,
+		"-i", outputPath,
+		"-filter_complex", fmt.Sprintf("[0:v:0]%s[reference];[1:v:0]%s[conversion];[reference][conversion]%s", sourceFilter, outputFilter, metricFilter),
+		"-frames:v", "1", "-an", "-sn", "-dn", "-f", "null", "-",
+	)
+}
+
+func runPreviewLogicalMetricValueAtWithRunner(ctx context.Context, sourcePath, sourceStart, sourceFilter, outputPath, outputStart, outputFilter string, capability MetricCapability, runner previewMetricProcessRunner) (MetricValue, error) {
+	filter, err := previewMetricProviderFilter(capability)
+	if err != nil {
+		return MetricValue{}, err
+	}
+	output, runErr := runner(ctx, previewMetricArgs(sourcePath, sourceStart, sourceFilter, outputPath, outputStart, outputFilter, filter))
+	if runErr != nil {
+		return MetricValue{}, runErr
+	}
+	patterns := map[PerceptualMetric]string{
+		PerceptualMetricVMAF:   `(?i)VMAF(?:\s+score)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)`,
+		PerceptualMetricXPSNR:  `(?i)XPSNR(?:_avg|\s+average)?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)`,
+		PerceptualMetricMSSSIM: `(?i)(?:MS-SSIM|ms_ssim|msssim)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)`,
+	}
+	pattern, ok := patterns[capability.Metric]
+	if !ok {
+		return MetricValue{}, fmt.Errorf("no verified invocation parser for %s", capability.Metric)
+	}
+	match := regexp.MustCompile(pattern).FindStringSubmatch(output)
+	if len(match) != 2 {
+		return MetricValue{}, fmt.Errorf("FFmpeg provider %s did not report %s", capability.Provider, capability.Metric)
+	}
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return MetricValue{}, fmt.Errorf("FFmpeg provider %s reported invalid %s", capability.Provider, capability.Metric)
+	}
+	return NewFiniteMetricValue(value)
+}
+
+func previewMetricProviderFilter(capability MetricCapability) (string, error) {
+	switch capability.Metric {
+	case PerceptualMetricXPSNR:
+		return "xpsnr", nil
+	case PerceptualMetricVMAF:
+		modelPath := strings.TrimSpace(os.Getenv("MVFORGE_VMAF_MODEL"))
+		if modelPath == "" {
+			modelPath = strings.TrimSpace(os.Getenv("MVFORGE_VMAF_MODEL_PATH"))
+		}
+		if modelPath == "" {
+			return "libvmaf", nil
+		}
+		return "libvmaf=model_path=" + strings.ReplaceAll(modelPath, ":", `\:`), nil
+	case PerceptualMetricMSSSIM:
+		return "libvmaf=feature=name=ms_ssim", nil
+	default:
+		return "", fmt.Errorf("logical metric %s does not have a secondary provider", capability.Metric)
+	}
 }
 
 func generatePreviewFrame(ctx context.Context, path string, start string, baseFilter string) ([]byte, error) {

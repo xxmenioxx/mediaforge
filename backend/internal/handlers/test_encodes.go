@@ -708,6 +708,27 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 			report["samplingPolicyVersion"] = samplingPlan.PolicyVersion
 			report["samplingWindows"] = samplingPlan.SelectedWindows
 			report["samplingFallback"] = samplingPlan.Fallback
+			sourceRevision := test.SourceFingerprint
+			if currentRevision, revisionErr := mediaFileFingerprint(test.SourcePath); revisionErr == nil && currentRevision != sourceRevision {
+				// The output was produced from a different source revision. Keep the
+				// validation report, but do not create a comparison pair for stale
+				// material.
+				report["perceptualEvidenceWarning"] = "source revision changed before perceptual analysis; evidence was not reused"
+			} else if candidateRevision, revisionErr := mediaFileFingerprint(output); revisionErr == nil {
+				evidence, evidenceErr := collectPerceptualEvidenceUnderHeavySlot(ctx, samplingPlan, resolved.profile, perceptualArtifactInput{
+					SourcePath: test.SourcePath, CandidatePath: output, SourceRevision: sourceRevision,
+					CandidateRevision: candidateRevision, CandidateKind: "test_encode", CandidateArtifactID: fmt.Sprintf("test-encode:%d", id),
+					ConfigurationIdentity: test.ConfigurationHash,
+					GenerationToken:       fmt.Sprintf("test-encode:%d", id), GenerationVersion: 1,
+					SegmentStartSeconds: test.StartSeconds, SegmentDuration: float64(test.DurationSeconds),
+					CandidateDuration: float64(test.DurationSeconds), FullOutput: false,
+				})
+				if evidenceErr != nil {
+					report["perceptualEvidenceWarning"] = evidenceErr.Error()
+				} else {
+					report["perceptualEvidence"] = evidence
+				}
+			}
 		}
 	}
 	completed := time.Now()

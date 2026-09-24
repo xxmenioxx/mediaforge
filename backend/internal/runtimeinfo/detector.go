@@ -2,6 +2,7 @@ package runtimeinfo
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -55,7 +56,7 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 	snapshot := models.RuntimeSnapshot{
 		DetectedAt: time.Now(), OS: runtime.GOOS, Architecture: runtime.GOARCH,
 		Container: detectContainer(), CPUCores: runtime.NumCPU(),
-		Disks: models.JSONMap{}, Encoders: models.JSONMap{}, Warnings: models.JSONList{}, SelectionReasons: models.JSONList{},
+		Disks: models.JSONMap{}, Encoders: models.JSONMap{}, MetricCapabilities: models.JSONMap{}, Warnings: models.JSONList{}, SelectionReasons: models.JSONList{},
 	}
 	snapshot.TotalMemoryBytes, snapshot.AvailableMemoryBytes = detectMemory()
 	snapshot.CPULoad1 = detectCPULoad1()
@@ -111,6 +112,9 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 			"reason": capability.Reason,
 		}
 	}
+	metricSnapshot := capabilities.ProbeMetricCapabilities(context.Background())
+	encodedMetricSnapshot, _ := json.Marshal(metricSnapshot)
+	_ = json.Unmarshal(encodedMetricSnapshot, &snapshot.MetricCapabilities)
 	snapshot.RecommendedProfile, snapshot.SelectionReasons = SelectProfile(snapshot)
 	effective, err := ResolveEffectiveRuntimePolicy(db, snapshot.RecommendedProfile)
 	if err != nil {

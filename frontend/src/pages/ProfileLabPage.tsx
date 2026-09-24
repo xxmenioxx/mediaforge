@@ -65,6 +65,7 @@ import type {
   QualityRecommendationResponse,
   PreviewVideoCharacteristics,
   PreviewInspection,
+  PerceptualEvidenceSet,
   EffectiveVideoDecision,
   HEVCBitstreamEvidence,
   PreviewFrameMetrics,
@@ -277,6 +278,7 @@ type LabFidelityInspection = {
   };
   overallVerdict?: 'Safe' | 'Review' | 'Reject' | string;
   temporalExperiment?: QSVTemporalExperimentSummary;
+  perceptualEvidence?: PerceptualEvidenceSet;
 };
 
 type CachedLabReferencePreview = {
@@ -500,6 +502,7 @@ function labInspectionFromOperation(
     visualAggregate: (result.visualAggregate ?? undefined) as LabFidelityInspection['visualAggregate'],
     overallVerdict: typeof result.overallVerdict === 'string' ? result.overallVerdict : undefined,
     temporalExperiment: (result.qsvTemporalExperiment ?? undefined) as QSVTemporalExperimentSummary | undefined,
+    perceptualEvidence: (result.perceptualEvidence ?? undefined) as PerceptualEvidenceSet | undefined,
   };
 }
 

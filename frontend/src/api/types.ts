@@ -1051,6 +1051,7 @@ export type RuntimeSnapshot = {
   onBattery: boolean;
   disks: Record<string, unknown>;
   encoders: Record<string, { listed: boolean; usable: boolean; reason: string; main10?: boolean; icq?: boolean; lowPower?: boolean; lookAhead?: boolean; extendedBrc?: boolean; adaptiveI?: boolean; adaptiveB?: boolean; qsvFullCombination?: boolean; qsvIcqMain8?: boolean; qsvIcqMain10?: boolean; qsvLaIcqMain8?: boolean; qsvLaIcqMain10?: boolean; qsvCqpMain8?: boolean; qsvCqpMain10?: boolean; qsvVbrMain8?: boolean; qsvVbrMain10?: boolean; qsvCbrMain8?: boolean; qsvCbrMain10?: boolean; qsvLowPowerMain10?: boolean; qsvAdaptiveIMain8?: boolean; qsvAdaptiveBMain8?: boolean; qsvAdaptiveIMain10?: boolean; qsvAdaptiveBMain10?: boolean; qsvVbrExtBrcMain8?: boolean; qsvVbrExtBrcMain10?: boolean; qsvVbrLookAheadMain8?: boolean; qsvVbrLookAheadMain10?: boolean; qsvCbrExtBrcMain8?: boolean; qsvCbrExtBrcMain10?: boolean; qsvCbrLookAheadMain8?: boolean; qsvCbrLookAheadMain10?: boolean; videoToolboxMain?: boolean; videoToolboxMain10?: boolean; videoToolboxBFrames?: boolean; videoToolboxBFramesVerified?: boolean; videoToolboxBFramesDisabled?: boolean; videoToolboxObservedBFrames?: number; videoToolboxPowerEfficient?: boolean; testedModes?: Record<string, boolean>; modeReasons?: Record<string, string> }>;
+  metricCapabilities?: Record<string, unknown>;
   recommendedProfile: string;
   selectedProfile: string;
   preferredProfile: string;
@@ -1984,6 +1985,58 @@ export type PreviewFrameMetrics = {
   psnr?: number;
 };
 
+export type PerceptualMetricValue = {
+  kind: 'finite' | 'positive_infinity';
+  value?: number;
+};
+
+export type PerceptualMetricResult = {
+  identity: {
+    identity: string;
+    pairIdentity: string;
+    metric: Record<string, unknown>;
+  };
+  status: 'available' | 'unsupported' | 'unavailable' | 'failed_measurement' | 'non_comparable' | string;
+  value?: PerceptualMetricValue;
+  reason?: string;
+};
+
+export type PerceptualWindowEvidence = {
+  windowIdentity: string;
+  startSeconds: number;
+  durationSeconds: number;
+  primary: boolean;
+  roles?: string[];
+  reasons?: string[];
+  evidenceRefs?: string[];
+  status: string;
+  reference?: Record<string, unknown>;
+  candidate?: Record<string, unknown>;
+  coverage?: Record<string, unknown>;
+  pairIdentity?: Record<string, unknown>;
+  metrics?: PerceptualMetricResult[];
+  comparableReason?: string;
+};
+
+export type PerceptualEvidenceSet = {
+  schemaVersion: string;
+  policyVersion: string;
+  identity: string;
+  samplingPlanIdentity: string;
+  sourceRevision: string;
+  runtimeCapabilityIdentity: string;
+  requestedMetrics: Array<Record<string, unknown>>;
+  candidateManifest?: Array<Record<string, unknown>>;
+  referenceManifest?: Array<Record<string, unknown>>;
+  windows: PerceptualWindowEvidence[];
+  aggregates?: Array<Record<string, unknown>>;
+  capabilities?: Array<Record<string, unknown>>;
+  warnings?: string[];
+  unavailableCapabilities?: string[];
+  artifactEvidence?: Array<Record<string, unknown>>;
+  provenance?: Record<string, unknown>;
+};
+
 export type CompatiblePreviewOptions = {
   path: string;
   profileId?: number;
@@ -2127,6 +2180,7 @@ export type LabFidelityOperationWindow = {
   generationVersion?: number;
   status: string;
   canonicalFidelity?: Record<string, unknown>;
+  perceptualWindowEvidence?: PerceptualWindowEvidence;
 };
 
 export type QSVTemporalVariantRequest = {
