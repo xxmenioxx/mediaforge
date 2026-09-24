@@ -616,3 +616,24 @@ func TestSubtitleRestyleFreezesPolicySnapshotForRunningWork(t *testing.T) {
 		t.Fatal("policy mutation did not produce a new version")
 	}
 }
+
+func TestSubtitleQueueUsesFrozenStylePolicySnapshotAndVersion(t *testing.T) {
+	policyA := testEnabledSubtitleStylePolicy()
+	defaultPreset := defaultSubtitleStylePresets()[SubtitleStyleDefault]
+	defaultPreset.PrimaryColor = "#FF0000"
+	policyA.Settings.BuiltInOverrides[SubtitleStyleDefault] = defaultPreset
+	policyA.Version = subtitleStylePolicyHash(policyA.Settings)
+	job := models.QueueJob{TrackProfileSnapshot: models.JSONMap{subtitleStylingPolicyKey: subtitleStylingSettingsMap(policyA.Settings)}}
+	resolved := subtitleStylePolicyForQueueJob(job)
+	if resolved.Version != policyA.Version || resolved.Settings.BuiltInOverrides[SubtitleStyleDefault].PrimaryColor != "#FF0000" {
+		t.Fatalf("queue did not use frozen style policy: got=%#v want=%#v", resolved, policyA)
+	}
+	policyB := cloneSubtitleStylePolicy(policyA)
+	defaultPreset = policyB.Settings.BuiltInOverrides[SubtitleStyleDefault]
+	defaultPreset.PrimaryColor = "#0000FF"
+	policyB.Settings.BuiltInOverrides[SubtitleStyleDefault] = defaultPreset
+	policyB.Version = subtitleStylePolicyHash(policyB.Settings)
+	if resolved.Version == policyB.Version || resolved.Settings.BuiltInOverrides[SubtitleStyleDefault].PrimaryColor == "#0000FF" {
+		t.Fatal("mutating future Settings policy changed the Queue snapshot")
+	}
+}
