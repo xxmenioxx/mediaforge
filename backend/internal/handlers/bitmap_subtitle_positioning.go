@@ -38,6 +38,7 @@ type canonicalBitmapSubtitleCue struct {
 	SourceOrdinal    int
 	TimingProvenance subtitleTimingProvenance
 	Geometry         *bitmapCueGeometry
+	Role             SubtitleSemanticRole
 }
 
 func normalizeBitmapTiming(value float64, provenance subtitleTimingProvenance, preparationStart float64) (float64, bool) {
@@ -494,30 +495,47 @@ func subtitleCueIntervalsOverlap(startA, endA, startB, endB float64) bool {
 }
 
 func bitmapASSAlignment(cue canonicalBitmapSubtitleCue) int {
-	if cue.Geometry == nil {
-		return 2
-	}
-	geometry := cue.Geometry
-	centerX := float64(geometry.BitmapX+geometry.BitmapWidth/2) / float64(geometry.CanvasWidth)
-	centerY := float64(geometry.BitmapY+geometry.BitmapHeight/2) / float64(geometry.CanvasHeight)
-	column := 1
-	if centerX < 1.0/3.0 {
-		column = 0
-	} else if centerX >= 2.0/3.0 {
-		column = 2
-	}
-	row := 2
-	if centerY < 1.0/3.0 {
-		row = 0
-	} else if centerY < 2.0/3.0 {
-		row = 1
-	}
-	return [3][3]int{{7, 8, 9}, {4, 5, 6}, {1, 2, 3}}[row][column]
+	return bitmapASSAlignmentForGeometry(cue.Geometry)
 }
 
 func renderBitmapASSCues(cues []canonicalBitmapSubtitleCue) []byte {
+	return renderBitmapASSCuesWithPolicy(cues, defaultSubtitleStylePolicy())
+}
+
+// renderBitmapASSCuesWithPolicy is the single generated-cue ASS serializer.
+// A disabled policy deliberately emits the pre-#123 legacy Default style.
+func renderBitmapASSCuesWithPolicy(cues []canonicalBitmapSubtitleCue, policy SubtitleStylePolicy) []byte {
+	return renderBitmapASSCuesWithPolicyAndRole(cues, policy, SubtitleRoleUnknown)
+}
+
+func renderBitmapASSCuesWithPolicyAndRole(cues []canonicalBitmapSubtitleCue, policy SubtitleStylePolicy, role SubtitleSemanticRole) []byte {
 	var builder strings.Builder
 	builder.WriteString("[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, TertiaryColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, AlphaLevel, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,1,2,0,2,10,10,10,0,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+	styleNames := map[string]string{}
+	existingStyleNames := map[string]struct{}{}
+	if policy.Settings.Enabled && policy.Settings.ApplyToGeneratedASS {
+		for _, id := range sortedSubtitleStyleIDs(policy) {
+			preset, ok := subtitleStylePresetForID(policy, id)
+			if !ok {
+				continue
+			}
+			name := generatedSubtitleStyleName(preset, existingStyleNames, policy.Version)
+			styleNames[id] = name
+			existingStyleNames[name] = struct{}{}
+			primary, _ := subtitleASSColor(preset.PrimaryColor, preset.Opacity)
+			outline, _ := subtitleASSColor(preset.OutlineColor, preset.Opacity)
+			shadow, _ := subtitleASSColor(preset.ShadowBackColor, preset.Opacity)
+			bold := 0
+			if preset.Bold {
+				bold = -1
+			}
+			fontSize := preset.FontSize
+			if preset.AutoFontSize || fontSize == 0 {
+				fontSize = 20
+			}
+			builder.WriteString(fmt.Sprintf("Style: %s,%s,%d,%s,%s,%s,%s,%d,0,1,%d,%d,%d,10,10,10,0,1\n", name, fallback(preset.FontFamily, "Arial"), fontSize, primary, primary, outline, shadow, bold, preset.OutlineWidth, preset.ShadowDepth, subtitleAlignmentForBehavior(preset.AlignmentBehavior)))
+		}
+	}
 	for _, cue := range cues {
 		text := strings.ReplaceAll(strings.ReplaceAll(cue.Text, "\r\n", "\n"), "\n", "\\N")
 		text = strings.ReplaceAll(text, "{\\an1}", "")
@@ -529,7 +547,21 @@ func renderBitmapASSCues(cues []canonicalBitmapSubtitleCue) []byte {
 		text = strings.ReplaceAll(text, "{\\an7}", "")
 		text = strings.ReplaceAll(text, "{\\an8}", "")
 		text = strings.ReplaceAll(text, "{\\an9}", "")
-		builder.WriteString(fmt.Sprintf("Dialogue: 0,%s,%s,Default,,0,0,0,,{\\an%d}%s\n", formatASSTimestamp(cue.Start), formatASSTimestamp(cue.End), bitmapASSAlignment(cue), text))
+		styleName := "Default"
+		alignment := bitmapASSAlignment(cue)
+		if policy.Settings.Enabled && policy.Settings.ApplyToGeneratedASS {
+			cueRole := cue.Role
+			if cueRole == "" {
+				cueRole = role
+			}
+			resolution := resolveSubtitleStyle(policy, subtitleStyleResolutionInput{Role: cueRole, Geometry: cue.Geometry})
+			styleName = styleNames[resolution.StyleID]
+			if styleName == "" {
+				styleName = "Default"
+			}
+			alignment = resolution.Alignment
+		}
+		builder.WriteString(fmt.Sprintf("Dialogue: 0,%s,%s,%s,,0,0,0,,{\\an%d}%s\n", formatASSTimestamp(cue.Start), formatASSTimestamp(cue.End), styleName, alignment, text))
 	}
 	return []byte(builder.String())
 }

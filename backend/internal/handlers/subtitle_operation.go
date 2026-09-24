@@ -27,11 +27,13 @@ const (
 var subtitlePublicationMu sync.Mutex
 
 type subtitleExtractionTarget struct {
-	plan      subtitleExtractionPlan
-	stream    FFProbeStream
-	finalPath string
-	stagePath string
-	artifact  SubtitleArtifact
+	plan           subtitleExtractionPlan
+	stream         FFProbeStream
+	finalPath      string
+	stagePath      string
+	artifact       SubtitleArtifact
+	styling        SubtitleStylePolicy
+	sourceRevision string
 }
 
 func (h AssetHandler) startSubtitleExtractionOperation(
@@ -76,12 +78,14 @@ func (h AssetHandler) startSubtitleExtractionOperation(
 	now := time.Now()
 	operation := &subtitleExtractionOperation{
 		ID:                     operationID,
+		Kind:                   "extraction",
 		Status:                 "running",
 		Phase:                  "preparing",
 		Progress:               1,
 		StreamIndex:            streamIndex,
 		Format:                 format,
 		AssetPath:              sourceMediaPath,
+		StylePolicyVersion:     input.SubtitleStyling.Version,
 		Message:                "Preparing subtitle conversion",
 		CreatedAt:              now,
 		UpdatedAt:              now,
@@ -117,10 +121,12 @@ func prepareSubtitleExtractionTargets(
 	for _, plan := range streamPlans {
 		stream := FFProbeStream{Index: plan.StreamIndex, CodecName: plan.Decision.Codec, CodecType: "subtitle", Tags: map[string]string{"language": plan.Decision.Language}}
 		target := subtitleExtractionTarget{
-			plan:      plan,
-			stream:    stream,
-			finalPath: plan.OutputPath,
-			artifact:  subtitleExtractionArtifact(plan, plan.OutputPath),
+			plan:           plan,
+			stream:         stream,
+			finalPath:      plan.OutputPath,
+			artifact:       subtitleExtractionArtifact(plan, plan.OutputPath),
+			styling:        input.SubtitleStyling,
+			sourceRevision: input.SourceRevision,
 		}
 		if info, statErr := os.Stat(target.finalPath); statErr == nil && !info.IsDir() {
 			target.artifact.Status = "existing"
@@ -176,7 +182,7 @@ func prepareSubtitleExtractionTargets(
 		}
 		appendTarget := func(plan subtitleExtractionPlan) error {
 			target := subtitleExtractionTarget{
-				plan: plan, stream: stream, finalPath: plan.OutputPath,
+				plan: plan, stream: stream, finalPath: plan.OutputPath, styling: input.SubtitleStyling, sourceRevision: input.SourceRevision,
 				artifact: subtitleExtractionArtifact(plan, plan.OutputPath),
 			}
 			if info, statErr := os.Stat(target.finalPath); statErr == nil && !info.IsDir() {
@@ -240,6 +246,14 @@ func runSubtitleExtractionOperation(
 	targets []subtitleExtractionTarget,
 ) {
 	created, createdPaths, err := executeSubtitleExtractionTargets(ctx, operationID, workspace, sourceMediaPath, targets)
+	if err == nil && ctx.Err() == nil {
+		if len(targets) > 0 && targets[0].sourceRevision != "" {
+			fingerprint, fingerprintErr := mediaFileFingerprint(sourceMediaPath)
+			if fingerprintErr != nil || fingerprint != targets[0].sourceRevision {
+				err = fmt.Errorf("subtitle source became stale before publication")
+			}
+		}
+	}
 	if err == nil && ctx.Err() == nil {
 		created, createdPaths, err = publishSubtitleExtractionTargets(operationID, ctx, targets, created, createdPaths)
 	}
@@ -359,6 +373,7 @@ func executeSingleSubtitleTarget(
 	})
 	plan := MediaJobPlan{InputPath: sourceMediaPath}
 	var args []string
+	generatedASS := false
 	if target.plan.Mode == "original" {
 		sourceCodec := strings.TrimSpace(target.plan.Decision.Codec)
 		if sourceCodec == "" {
@@ -375,7 +390,7 @@ func executeSingleSubtitleTarget(
 			op.Progress = 20
 			op.Message = "Running OCR"
 		})
-		ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, sourceMediaPath, target.stream, target.plan.Format, target.plan.Decision.OCRLanguage, target.plan.Decision.OCRMode, target.stagePath, 0, 0, subtitleOCRProgress(operationID))
+		ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, sourceMediaPath, target.stream, target.plan.Format, target.plan.Decision.OCRLanguage, target.plan.Decision.OCRMode, target.stagePath, 0, 0, subtitleOCRProgress(operationID), subtitleStylePolicyWithRole(target.styling, target.plan.Decision.Role))
 		if err != nil {
 			return target.artifact, err
 		}
@@ -383,11 +398,20 @@ func executeSingleSubtitleTarget(
 		target.artifact.CanonicalEvidence = ocrResult.Evidence
 		return validateStagedSubtitleArtifact(target)
 	} else {
-		args = textSubtitleExtractionArgs(plan, target.plan.StreamIndex, target.plan.Format, target.stagePath)
+		if strings.EqualFold(target.plan.Format, "ass") && target.styling.Settings.Enabled && target.styling.Settings.ApplyToGeneratedASS {
+			if err := renderTextSubtitleASSFromSource(ctx, sourceMediaPath, target.plan.StreamIndex, target.stagePath, target.styling, target.plan.Decision.Role); err != nil {
+				return target.artifact, err
+			}
+			generatedASS = true
+		} else {
+			args = textSubtitleExtractionArgs(plan, target.plan.StreamIndex, target.plan.Format, target.stagePath)
+		}
 	}
-	var stderr bytes.Buffer
-	if err := runSubtitleCommand(ctx, "ffmpeg", args, nil, &stderr); err != nil {
-		return target.artifact, fmt.Errorf("subtitle stream %d extraction failed: %s", target.plan.StreamIndex, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+	if !generatedASS {
+		var stderr bytes.Buffer
+		if err := runSubtitleCommand(ctx, "ffmpeg", args, nil, &stderr); err != nil {
+			return target.artifact, fmt.Errorf("subtitle stream %d extraction failed: %s", target.plan.StreamIndex, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+		}
 	}
 	return validateStagedSubtitleArtifact(target)
 }
@@ -416,7 +440,7 @@ func executeBothSubtitleTargets(
 			op.Progress = 20
 			op.Message = "Running OCR"
 		})
-		ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, sourceMediaPath, stream, "srt", targets[0].plan.Decision.OCRLanguage, targets[0].plan.Decision.OCRMode, canonicalPath, 0, 0, subtitleOCRProgress(operationID))
+		ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, sourceMediaPath, stream, "srt", targets[0].plan.Decision.OCRLanguage, targets[0].plan.Decision.OCRMode, canonicalPath, 0, 0, subtitleOCRProgress(operationID), subtitleStylePolicyWithRole(targets[0].styling, targets[0].plan.Decision.Role))
 		if err != nil {
 			return nil, err
 		}
@@ -453,8 +477,16 @@ func executeBothSubtitleTargets(
 				op.Message = "Rendering ASS from shared subtitle result"
 			})
 			var stderr bytes.Buffer
-			if len(bitmapOCR.Geometry) > 0 && len(bitmapOCR.Cues) > 0 {
-				if err := os.WriteFile(target.stagePath, renderBitmapASSCues(bitmapOCR.Cues), 0o644); err != nil {
+			if len(bitmapOCR.Cues) > 0 && (len(bitmapOCR.Geometry) > 0 || (target.styling.Settings.Enabled && target.styling.Settings.ApplyToGeneratedASS)) {
+				if err := os.WriteFile(target.stagePath, renderBitmapASSCuesWithPolicyAndRole(bitmapOCR.Cues, target.styling, target.plan.Decision.Role), 0o644); err != nil {
+					return created, err
+				}
+			} else if target.styling.Settings.Enabled && target.styling.Settings.ApplyToGeneratedASS {
+				styled, styleErr := styledASSFromCanonicalSRTWithRole(canonicalContent, target.styling, target.plan.Decision.Role)
+				if styleErr != nil {
+					return created, styleErr
+				}
+				if err := os.WriteFile(target.stagePath, styled, 0o644); err != nil {
 					return created, err
 				}
 			} else if err := runSubtitleCommand(ctx, "ffmpeg", subtitleCueRenderArgs(canonicalPath, "ass", target.stagePath), nil, &stderr); err != nil {
@@ -613,13 +645,12 @@ func (h *AssetHandler) CancelSubtitleExtractionOperation(c *gin.Context) {
 		return
 	}
 
-	// Translation publication waits on subtitlePublicationMu and checks its
-	// context before the final source recheck. Signal translation cancellation
-	// before taking that mutex so a queued publisher cannot pass the barrier
-	// merely because the cancel request was waiting behind it. Extraction and
-	// OCR operations retain their existing lock ordering below.
+	// Every subtitle publisher waits on subtitlePublicationMu and checks its
+	// context before the final source recheck. Signal cancellation before taking
+	// that mutex so a queued publisher cannot pass the barrier merely because
+	// the cancel request was waiting behind it.
 	subtitleExtractionOperations.RLock()
-	if operation, exists := subtitleExtractionOperations.items[id]; exists && operation.Kind == subtitleTranslationOperationKind && operation.Status == "running" && !operation.publicationCommitted && operation.cancel != nil {
+	if operation, exists := subtitleExtractionOperations.items[id]; exists && operation.Status == "running" && !operation.publicationCommitted && operation.cancel != nil {
 		operation.cancel()
 	}
 	subtitleExtractionOperations.RUnlock()

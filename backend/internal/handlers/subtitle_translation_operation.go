@@ -177,6 +177,11 @@ func cloneSubtitleExtractionOperationSnapshot(operation *subtitleExtractionOpera
 		translation := *operation.Translation
 		snapshot.Translation = &translation
 	}
+	if operation.restyleRequest != nil {
+		request := *operation.restyleRequest
+		request.Policy = cloneSubtitleStylePolicy(request.Policy)
+		snapshot.restyleRequest = &request
+	}
 	if operation.Result != nil {
 		result := *operation.Result
 		result.Created = append([]string(nil), operation.Result.Created...)

@@ -905,6 +905,7 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	plan.SubtitleStyling = subtitleStylePolicyForQueueJob(job)
 	applyEpisodeVideoTrackTitle(h.db, &plan, job, library)
 	args := FFmpegCommandBuilder{}.Build(plan)
 	command := dryRunCommandFromArgs(args)
@@ -1107,6 +1108,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if err != nil {
 		return job, http.StatusInternalServerError, err
 	}
+	plan.SubtitleStyling = subtitleStylePolicyForQueueJob(job)
 	if err := freezeQueuePreparedProfileSnapshot(h.db, &job, plan.Profile); err != nil {
 		return job, http.StatusInternalServerError, fmt.Errorf("persist prepared HEVC Level/Tier decision: %w", err)
 	}
