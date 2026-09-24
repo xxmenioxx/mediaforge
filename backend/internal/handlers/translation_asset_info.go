@@ -274,7 +274,7 @@ func (h AssetHandler) StartSubtitleTranslation(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"operation": operation})
 }
 
-func (h AssetHandler) RetrySubtitleTranslation(c *gin.Context) {
+func (h AssetHandler) retrySubtitleTranslation(c *gin.Context) {
 	operationID := strings.TrimSpace(c.Param("id"))
 	if operationID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "operation id is required"})

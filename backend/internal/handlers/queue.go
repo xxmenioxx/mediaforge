@@ -1442,6 +1442,9 @@ func (h QueueHandler) captureSupplementalProfilesWithSettings(job *models.QueueJ
 		if versionErr != nil {
 			return fmt.Errorf("track profile: %w", versionErr)
 		}
+		if applyCurrentSubtitleSettings {
+			resolved = applyPersistedSubtitleStylingSettings(resolved, subtitleStylingPolicyFromDB(h.db))
+		}
 		if !canonical {
 			job.TrackProfileSnapshot = models.JSONMap(resolved)
 			return nil

@@ -262,7 +262,7 @@ type bitmapSubtitleOCRResult struct {
 	Evidence          *canonicalOCREvidence
 }
 
-func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, ocrMode string, outputPath string, segmentStart float64, segmentDuration int, onProgress OCRProgressFunc) (bitmapSubtitleOCRResult, error) {
+func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath string, stream FFProbeStream, format string, ocrLanguage string, ocrMode string, outputPath string, segmentStart float64, segmentDuration int, onProgress OCRProgressFunc, policies ...SubtitleStylePolicy) (bitmapSubtitleOCRResult, error) {
 	result := bitmapSubtitleOCRResult{}
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format != "srt" && format != "ass" {
@@ -281,9 +281,14 @@ func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath strin
 	result.Cues = cloneCanonicalCues(evidence.Cues)
 	result.Geometry = append([]bitmapCueGeometry(nil), evidence.Geometry...)
 	result.Evidence = cloneCanonicalOCREvidence(evidence)
+	stylePolicy := defaultSubtitleStylePolicy()
+	if len(policies) > 0 {
+		stylePolicy = policies[0]
+	}
+	role := stylePolicy.Role
 	var content []byte
 	if format == "ass" {
-		content = renderBitmapASSCues(evidence.Cues)
+		content = renderBitmapASSCuesWithPolicyAndRole(evidence.Cues, stylePolicy, role)
 	} else {
 		content = renderBitmapSRTCues(evidence.Cues)
 	}

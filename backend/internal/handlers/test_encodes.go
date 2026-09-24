@@ -57,12 +57,13 @@ type testEncodeRequest struct {
 }
 
 type resolvedTestEncode struct {
-	job       models.QueueJob
-	profile   models.Profile
-	audio     *audioEnhancementProfile
-	override  AssetConversionOverrideState
-	library   models.Library
-	requested models.JSONMap
+	job             models.QueueJob
+	profile         models.Profile
+	audio           *audioEnhancementProfile
+	override        AssetConversionOverrideState
+	library         models.Library
+	requested       models.JSONMap
+	subtitleStyling SubtitleStylePolicy
 }
 
 var testEncodeProcesses = struct {
@@ -353,6 +354,7 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		requested["profileResolution"] = job.ProfileResolution
 	}
 	worker := WorkerHandler{db: h.db}
+	subtitleStyling := subtitleStylingPolicyFromDB(h.db)
 	profile, err := worker.profileForJob(job)
 	if err != nil {
 		return resolvedTestEncode{}, err
@@ -371,9 +373,10 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		return resolvedTestEncode{}, err
 	}
 	requested["sourceConfigurationHash"] = configurationHash(models.JSONMap{
-		"profile": profile, "audio": audio, "override": override, "profileResolution": job.ProfileResolution,
+		"profile": profile, "audio": audio, "override": override, "profileResolution": job.ProfileResolution, "subtitleStylePolicyVersion": subtitleStyling.Version,
 	})
-	return resolvedTestEncode{job: job, profile: profile, audio: audio, override: override, library: library, requested: requested}, nil
+	requested["subtitleStylePolicyVersion"] = subtitleStyling.Version
+	return resolvedTestEncode{job: job, profile: profile, audio: audio, override: override, library: library, requested: requested, subtitleStyling: subtitleStyling}, nil
 }
 
 func resolveTestEncodeVideoProfile(db *gorm.DB, path string, job models.QueueJob, profile models.Profile, override AssetConversionOverrideState) (models.Profile, error) {
@@ -419,6 +422,7 @@ func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONM
 		resolved["subtitleRoleOverrides"] = bindSubtitleRoleOverrides(scan, explicit.SubtitleRoleOverrides)
 	}
 	resolved = applyPersistedSubtitleSettings(resolved, generateSRTFallbackForASSSetting(db))
+	resolved = applyPersistedSubtitleStylingSettings(resolved, subtitleStylingPolicyFromDB(db))
 	trackPlan, err := resolveTrackPlan(scan, resolved)
 	if err != nil {
 		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: resolve track plan: %w", err)
@@ -585,6 +589,7 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		return
 	}
 	plan.SourceAssetPath = resolved.job.MediaPath
+	plan.SubtitleStyling = resolved.subtitleStyling
 	applyEpisodeVideoTrackTitle(h.db, &plan, resolved.job, resolved.library)
 	plan.SegmentStartSeconds, plan.SegmentDurationSeconds = test.StartSeconds, test.DurationSeconds
 	plan.IndependentSubtitleArtifacts = true

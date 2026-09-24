@@ -203,13 +203,18 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 			if strings.TrimSpace(ocrLanguage) == "" {
 				ocrLanguage = transform.Language
 			}
-			ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, plan.InputPath, bitmapStream, transform.Format, ocrLanguage, transform.OCRMode, stagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil)
+			ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, plan.InputPath, bitmapStream, transform.Format, ocrLanguage, transform.OCRMode, stagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil, plan.SubtitleStyling)
 			if err != nil {
 				return nil, err
 			}
 			effectiveOCRLanguage = ocrResult.EffectiveLanguage
 		} else if !subtitleCanConvertText(stream.Codec) {
 			return nil, fmt.Errorf("subtitle stream %d (%s) cannot be converted to %s", stream.Index, stream.Codec, strings.ToUpper(transform.Format))
+		} else if transform.Format == "ass" && plan.SubtitleStyling.Settings.Enabled && plan.SubtitleStyling.Settings.ApplyToGeneratedASS {
+			if err := renderTextSubtitleASSFromSource(ctx, plan.InputPath, stream.Index, stagedPath, plan.SubtitleStyling); err != nil {
+				_ = os.Remove(stagedPath)
+				return nil, fmt.Errorf("subtitle stream %d styled extraction failed: %w", stream.Index, err)
+			}
 		} else {
 			args := textSubtitleExtractionArgs(plan, stream.Index, transform.Format, stagedPath)
 			var stderr bytes.Buffer
@@ -356,7 +361,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			if strings.EqualFold(strings.TrimSpace(ocrLanguage), "auto") {
 				ocrLanguage = ""
 			}
-			ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, plan.InputPath, bitmapStream, format, ocrLanguage, decision.OCRMode, current.StagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil)
+			ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, plan.InputPath, bitmapStream, format, ocrLanguage, decision.OCRMode, current.StagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil, subtitleStylePolicyWithRole(plan.SubtitleStyling, decision.Role))
 			if err != nil {
 				current.Status, current.Error = "failed", err.Error()
 				if progress != nil {
@@ -373,16 +378,44 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 				_, muxer, _ := originalSubtitleExtractionFormat(stream.Codec)
 				args = originalSubtitleExtractionArgs(plan, stream.Index, muxer, current.StagedPath)
 			} else {
-				args = textSubtitleExtractionArgs(plan, stream.Index, format, current.StagedPath)
-			}
-			var stderr bytes.Buffer
-			if err := runSubtitleCommand(ctx, "ffmpeg", args, nil, &stderr); err != nil {
-				current.Status = "failed"
-				current.Error = fmt.Sprintf("subtitle stream %d extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
-				if progress != nil {
-					progress(*current)
+				if format == "ass" && plan.SubtitleStyling.Settings.Enabled && plan.SubtitleStyling.Settings.ApplyToGeneratedASS {
+					canonicalFile, tempErr := os.CreateTemp(filepath.Dir(current.StagedPath), ".mvforge-generated-subtitle-*.srt")
+					if tempErr != nil {
+						return artifacts, tempErr
+					}
+					canonicalPath := canonicalFile.Name()
+					_ = canonicalFile.Close()
+					defer os.Remove(canonicalPath)
+					args = textSubtitleExtractionArgs(plan, stream.Index, "srt", canonicalPath)
+					var stderr bytes.Buffer
+					if err := runSubtitleCommand(ctx, "ffmpeg", args, nil, &stderr); err != nil {
+						return artifacts, fmt.Errorf("subtitle stream %d extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+					}
+					canonicalContent, readErr := os.ReadFile(canonicalPath)
+					if readErr != nil {
+						return artifacts, readErr
+					}
+					styled, styleErr := styledASSFromCanonicalSRTWithRole(canonicalContent, plan.SubtitleStyling, decision.Role)
+					if styleErr != nil {
+						return artifacts, styleErr
+					}
+					if writeErr := os.WriteFile(current.StagedPath, styled, 0o644); writeErr != nil {
+						return artifacts, writeErr
+					}
+				} else {
+					args = textSubtitleExtractionArgs(plan, stream.Index, format, current.StagedPath)
 				}
-				return artifacts, fmt.Errorf("%s", current.Error)
+			}
+			if _, styledAlready := os.Stat(current.StagedPath); styledAlready != nil {
+				var stderr bytes.Buffer
+				if err := runSubtitleCommand(ctx, "ffmpeg", args, nil, &stderr); err != nil {
+					current.Status = "failed"
+					current.Error = fmt.Sprintf("subtitle stream %d extraction failed: %s", stream.Index, fallback(strings.TrimSpace(stderr.String()), err.Error()))
+					if progress != nil {
+						progress(*current)
+					}
+					return artifacts, fmt.Errorf("%s", current.Error)
+				}
 			}
 		}
 		info, err := os.Stat(current.StagedPath)
@@ -465,7 +498,7 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 		if strings.EqualFold(strings.TrimSpace(ocrLanguage), "auto") {
 			ocrLanguage = ""
 		}
-		ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, plan.InputPath, bitmapStream, "srt", ocrLanguage, decisions[0].OCRMode, canonicalPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil)
+		ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, plan.InputPath, bitmapStream, "srt", ocrLanguage, decisions[0].OCRMode, canonicalPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil, subtitleStylePolicyWithRole(plan.SubtitleStyling, decisions[0].Role))
 		if err != nil {
 			return markSharedSubtitleFailure(artifacts, err)
 		}
@@ -504,8 +537,16 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 			}
 		} else {
 			var stderr bytes.Buffer
-			if len(bitmapOCR.Geometry) > 0 && len(bitmapOCR.Cues) > 0 {
-				if err := os.WriteFile(artifact.StagedPath, renderBitmapASSCues(bitmapOCR.Cues), 0o644); err != nil {
+			if len(bitmapOCR.Cues) > 0 && (len(bitmapOCR.Geometry) > 0 || (plan.SubtitleStyling.Settings.Enabled && plan.SubtitleStyling.Settings.ApplyToGeneratedASS)) {
+				if err := os.WriteFile(artifact.StagedPath, renderBitmapASSCuesWithPolicyAndRole(bitmapOCR.Cues, plan.SubtitleStyling, artifact.Role), 0o644); err != nil {
+					return markSharedSubtitleFailure(artifacts, err)
+				}
+			} else if plan.SubtitleStyling.Settings.Enabled && plan.SubtitleStyling.Settings.ApplyToGeneratedASS {
+				styled, styleErr := styledASSFromCanonicalSRTWithRole(canonicalContent, plan.SubtitleStyling, artifact.Role)
+				if styleErr != nil {
+					return markSharedSubtitleFailure(artifacts, styleErr)
+				}
+				if err := os.WriteFile(artifact.StagedPath, styled, 0o644); err != nil {
 					return markSharedSubtitleFailure(artifacts, err)
 				}
 			} else if err := runSubtitleCommand(ctx, "ffmpeg", subtitleCueRenderArgs(canonicalPath, "ass", artifact.StagedPath), nil, &stderr); err != nil {

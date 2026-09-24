@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
 type SettingsHandler struct {
@@ -30,7 +31,7 @@ func generateSRTFallbackForASSValue(value models.JSONMap) bool {
 
 func generateSRTFallbackForASSSetting(db *gorm.DB) bool {
 	var setting models.AppSetting
-	if err := db.First(&setting, "key = ?", subtitleSettingsKey).Error; err != nil {
+	if err := db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)}).First(&setting, "key = ?", subtitleSettingsKey).Error; err != nil {
 		return false
 	}
 	return generateSRTFallbackForASSValue(setting.Value)
@@ -107,6 +108,14 @@ func (h SettingsHandler) Update(c *gin.Context) {
 	}
 	if key == translationSettingsKey {
 		normalized, err := translationSettingsForUpdate(h.db, input.Value)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		input.Value = normalized
+	}
+	if key == subtitleSettingsKey {
+		normalized, err := normalizeSubtitleSettingsForUpdate(input.Value)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return

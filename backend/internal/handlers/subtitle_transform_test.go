@@ -115,6 +115,8 @@ func TestGenerateResolvedBitmapOCRArtifactsForPGSAndVobSub(t *testing.T) {
 func TestGenerateResolvedBitmapBothUsesOneOCRAndRendersBothArtifacts(t *testing.T) {
 	bin := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "ocr.log")
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(t.TempDir(), "ocr-cache"))
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", filepath.Join(t.TempDir(), "ocr-persistent"))
 	scripts := map[string]string{
 		"ffprobe":   "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":4,\"codec_type\":\"subtitle\",\"codec_name\":\"dvd_subtitle\",\"tags\":{\"language\":\"spa\"}}]}'\n",
 		"seconv":    "#!/bin/sh\nprintf 'seconv\\n' >> \"$MVFORGE_OCR_BOTH_LOG\"\noutput=\"\"\nfor argument do case \"$argument\" in --output-filename:*) output=\"${argument#--output-filename:}\" ;; esac; done\nprintf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola OCR' > \"$output\"\n",
@@ -129,9 +131,10 @@ func TestGenerateResolvedBitmapBothUsesOneOCRAndRendersBothArtifacts(t *testing.
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("MVFORGE_OCR_BOTH_LOG", logPath)
 	plan := MediaJobPlan{
-		InputPath:  "/raw/Episode.mkv",
-		OutputPath: filepath.Join(t.TempDir(), "Episode.mkv"),
-		Streams:    MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: "dvd_subtitle", Language: "spa"}}},
+		InputPath:       "/raw/Episode.mkv",
+		OutputPath:      filepath.Join(t.TempDir(), "Episode.mkv"),
+		SubtitleStyling: testEnabledSubtitleStylePolicy(),
+		Streams:         MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: "dvd_subtitle", Language: "spa"}}},
 		ResolvedTracks: &ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{
 			{StreamIndex: 4, Codec: "dvd_subtitle", SourceType: "bitmap", Language: "spa", Format: "srt", RequestedFormat: "both", Mode: "converted", OCRRequired: true, OCRLanguage: "spa", OCRMode: "raw", LogicalTransformKey: "subtitle:4:converted:both"},
 			{StreamIndex: 4, Codec: "dvd_subtitle", SourceType: "bitmap", Language: "spa", Format: "ass", RequestedFormat: "both", Mode: "converted", OCRRequired: true, OCRLanguage: "spa", OCRMode: "raw", LogicalTransformKey: "subtitle:4:converted:both"},
@@ -150,12 +153,20 @@ func TestGenerateResolvedBitmapBothUsesOneOCRAndRendersBothArtifacts(t *testing.
 			t.Fatalf("bitmap both artifact=%#v content=%q err=%v", artifact, content, readErr)
 		}
 	}
+	srtContent, _ := os.ReadFile(artifacts[0].StagedPath)
+	assContent, _ := os.ReadFile(artifacts[1].StagedPath)
+	if strings.Contains(string(srtContent), "\\an") || strings.Contains(string(srtContent), "MVF_") {
+		t.Fatalf("bitmap both SRT was not text/timing-neutral: %q", srtContent)
+	}
+	if !strings.Contains(string(assContent), "MVF_") {
+		t.Fatalf("bitmap both ASS did not consume configured style authority: %q", assContent)
+	}
 	log, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Split(strings.TrimSpace(string(log)), "\n"); len(got) != 2 || got[0] != "seconv" || got[1] != "ffmpeg" {
-		t.Fatalf("bitmap both did not OCR once and render once: %q", log)
+	if got := strings.Split(strings.TrimSpace(string(log)), "\n"); len(got) != 1 || got[0] != "seconv" {
+		t.Fatalf("bitmap both did not invoke the canonical OCR lifecycle exactly once: %q", log)
 	}
 }
 

@@ -65,7 +65,7 @@ import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -2571,6 +2571,8 @@ function AssetRow({
   const [subtitleGenerations, setSubtitleGenerations] = useState<Record<string, SubtitleGenerationState>>({});
   const [subtitleQualityReports, setSubtitleQualityReports] = useState<Record<string, SubtitleOCRQualityReport>>({});
   const [subtitleQualityMessages, setSubtitleQualityMessages] = useState<Record<string, string>>({});
+  const [subtitleRestyleMessages, setSubtitleRestyleMessages] = useState<Record<string, string>>({});
+  const [subtitleRestyleOperations, setSubtitleRestyleOperations] = useState<Record<string, SubtitleRestyleOperationState>>({});
   const [translationSource, setTranslationSource] = useState<SubtitleTranslationSourceSelector | null>(null);
   const subtitleOperationPollers = useRef<Set<string>>(new Set());
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
@@ -2670,6 +2672,11 @@ function AssetRow({
     queryKey: ['externalSubtitles', asset.path],
     queryFn: () => api.externalAssetSubtitles(asset.path),
     enabled: showSnapshotDialog && asset.status !== 'archive' && !asset.missing,
+  });
+  const subtitleEligibility = useQuery({
+    queryKey: ['subtitleEligibility', asset.path],
+    queryFn: () => api.subtitleEligibility(asset.path),
+    enabled: showSnapshotDialog && !asset.missing,
   });
   const advisor = useQuery({
     queryKey: ['advisor', 'asset-row', asset.path, effectiveProfileId],
@@ -3108,12 +3115,14 @@ function AssetRow({
     });
   }
 
- async function waitForSubtitleOperation(
-  operationId: string,
-  key: string,
-  streamIndex: number,
-  format: 'original' | 'srt' | 'ass',
-) {
+  async function waitForSubtitleOperation(
+    operationId: string,
+    key: string,
+    streamIndex: number,
+    format: 'original' | 'srt' | 'ass',
+    onUpdate?: (operation: SubtitleExtractionOperation) => void,
+    readOperation: (operationId: string) => Promise<SubtitleExtractionOperation> = api.subtitleExtractionOperation,
+  ) {
   if (subtitleOperationPollers.current.has(operationId)) {
     return;
   }
@@ -3122,8 +3131,8 @@ function AssetRow({
 
   try {
     while (true) {
-      const operation =
-        await api.subtitleExtractionOperation(operationId);
+      const operation = await readOperation(operationId);
+      onUpdate?.(operation);
 
       setSubtitleGenerations((current) => ({
         ...current,
@@ -3394,6 +3403,111 @@ async function generateExternalSubtitle(
       }
     } catch (error) {
       setSubtitleQualityMessages((current) => ({ ...current, [key]: error instanceof Error ? error.message : 'OCR analysis failed.' }));
+    }
+  }
+
+  async function restyleExternalSubtitle(sidecar: ExternalSubtitle, mode: 'restyle' | 'srt_to_ass', options: { replace?: boolean; overrideExistingASSStyles?: boolean } = {}) {
+    const eligibility = sidecar.eligibility;
+    const allowed = mode === 'restyle' ? eligibility?.restyle : eligibility?.srtToAss;
+    if (eligibility && !allowed?.eligible) {
+      setSubtitleRestyleMessages((current) => ({ ...current, [sidecar.path]: allowed?.reason || 'This subtitle operation is not eligible.' }));
+      return;
+    }
+    if (!sidecar.sourceRevision) {
+      setSubtitleRestyleMessages((current) => ({ ...current, [sidecar.path]: 'Source identity is unavailable; refresh Asset Info before restyling.' }));
+      return;
+    }
+    const messageKey = sidecar.path;
+    try {
+      const started = await api.restyleSubtitle({
+        path: asset.path,
+        sourcePath: sidecar.path,
+        sourceRevision: sidecar.sourceRevision,
+        representation: sidecar.format,
+        language: sidecar.language,
+        mode,
+        replace: options.replace,
+        overrideExistingASSStyles: options.overrideExistingASSStyles,
+      });
+      setSubtitleRestyleOperations((current) => ({
+        ...current,
+        [messageKey]: { operationId: started.operationId, status: 'running', progress: started.progress, phase: started.phase, message: 'Preparing subtitle restyle…' },
+      }));
+      await waitForSubtitleOperation(started.operationId, `restyle:${messageKey}`, -1, 'ass', (operation) => {
+        setSubtitleRestyleOperations((current) => ({
+          ...current,
+          [messageKey]: {
+            operationId: started.operationId,
+            status: operation.status === 'completed' ? 'completed' : operation.status === 'cancelled' ? 'cancelled' : operation.status === 'error' ? 'failed' : 'running',
+            progress: operation.progress,
+            phase: operation.phase,
+            message: operation.message,
+            error: operation.error,
+            retryable: operation.retryable ?? Boolean(operation.status === 'error' || operation.status === 'cancelled'),
+          },
+        }));
+      }, api.subtitleOperation);
+      const final = await api.subtitleOperation(started.operationId);
+      if (final.status === 'completed') {
+        setSubtitleRestyleMessages((current) => ({ ...current, [messageKey]: 'Styled sibling published.' }));
+        await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+      }
+    } catch (error) {
+      setSubtitleRestyleOperations((current) => ({ ...current, [messageKey]: { operationId: current[messageKey]?.operationId, status: 'failed', progress: current[messageKey]?.progress ?? 0, phase: 'error', error: error instanceof Error ? error.message : 'Subtitle restyle failed.', retryable: true } }));
+    }
+  }
+
+  async function cancelExternalRestyle(sidecar: ExternalSubtitle) {
+    const current = subtitleRestyleOperations[sidecar.path];
+    if (!current?.operationId || current.status !== 'running') return;
+    try {
+      const operation = await api.cancelSubtitleOperation(current.operationId);
+      setSubtitleRestyleOperations((state) => ({ ...state, [sidecar.path]: { ...state[sidecar.path], status: operation.status === 'cancelled' ? 'cancelled' : 'running', phase: operation.phase, progress: operation.progress, message: operation.message, retryable: operation.status === 'cancelled' } }));
+    } catch (error) {
+      setSubtitleRestyleOperations((state) => ({ ...state, [sidecar.path]: { ...state[sidecar.path], status: 'failed', error: error instanceof Error ? error.message : 'Unable to cancel subtitle restyle.', retryable: true } }));
+    }
+  }
+
+  async function retryExternalRestyle(sidecar: ExternalSubtitle) {
+    const current = subtitleRestyleOperations[sidecar.path];
+    if (!current?.operationId || !current.retryable) return;
+    try {
+      const started = await api.retrySubtitleOperation(current.operationId);
+      setSubtitleRestyleOperations((state) => ({ ...state, [sidecar.path]: { operationId: started.operation.id, status: 'running', progress: started.operation.progress, phase: started.operation.phase, message: 'Retrying subtitle operation…' } }));
+      await waitForSubtitleOperation(started.operation.id, `restyle:${sidecar.path}:retry`, -1, 'ass', (operation) => {
+        setSubtitleRestyleOperations((state) => ({ ...state, [sidecar.path]: { operationId: started.operation.id, status: operation.status === 'completed' ? 'completed' : operation.status === 'cancelled' ? 'cancelled' : operation.status === 'error' ? 'failed' : 'running', progress: operation.progress, phase: operation.phase, message: operation.message, error: operation.error, retryable: operation.retryable ?? (operation.status === 'error' || operation.status === 'cancelled') } }));
+      }, api.subtitleOperation);
+      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+    } catch (error) {
+      setSubtitleRestyleOperations((state) => ({ ...state, [sidecar.path]: { ...state[sidecar.path], status: 'failed', error: error instanceof Error ? error.message : 'Subtitle retry failed.', retryable: true } }));
+    }
+  }
+
+  async function regenerateEmbeddedSubtitle(streamIndex: number) {
+    const key = subtitleGenerationKey(streamIndex, 'ass');
+    setSubtitleGenerations((current) => ({
+      ...current,
+      [key]: { status: 'running', streamIndex, format: 'ass', progress: 1, phase: 'preparing', processed: 0, total: 0, message: 'Preparing exact subtitle regeneration' },
+    }));
+    try {
+      const started = await api.restyleSubtitle({
+        path: asset.path,
+        sourcePath: asset.path,
+        representation: 'ass',
+        mode: 'regenerate',
+        streamIndex,
+      });
+      const result = await waitForSubtitleOperation(started.operationId, key, streamIndex, 'ass');
+      setSubtitleGenerations((current) => ({
+        ...current,
+        [key]: { ...current[key], status: 'success', progress: 100, phase: 'completed', message: result?.created?.length ? 'Regenerated styled ASS sidecar.' : 'ASS sidecar already exists.' },
+      }));
+      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+    } catch (error) {
+      setSubtitleGenerations((current) => ({
+        ...current,
+        [key]: { ...current[key], status: 'error', message: error instanceof Error ? error.message : 'Subtitle regeneration failed.' },
+      }));
     }
   }
 
@@ -4194,9 +4308,11 @@ async function generateExternalSubtitle(
                     ) : null}
                     <EmbeddedSubtitleActions
                       streams={snapshotData.subtitleStreams}
+                      eligibility={subtitleEligibility.data?.embedded}
                       generations={subtitleGenerations}
 			 srtFallbackEnabled={srtFallbackEnabled}
                       onGenerate={generateExternalSubtitle}
+                      onRegenerate={regenerateEmbeddedSubtitle}
                       onCancel={cancelExternalSubtitle}
                       disabled={hasOpenJob}
                       translationDisabled={rowLocked}
@@ -4204,7 +4320,7 @@ async function generateExternalSubtitle(
                     />
                     {!isArchive ? (
                       <ExternalSubtitleList
-                        values={externalSubtitles.data ?? []}
+                        values={subtitleEligibility.data?.external ?? externalSubtitles.data ?? []}
                         loading={externalSubtitles.isLoading}
                         deleting={deleteExternalSubtitle.isPending}
                         renaming={renameExternalSubtitle.isPending}
@@ -4214,8 +4330,13 @@ async function generateExternalSubtitle(
                         onAnalyze={analyzeExternalSubtitle}
                         qualityReports={subtitleQualityReports}
                         qualityMessages={subtitleQualityMessages}
+                        restyleMessages={subtitleRestyleMessages}
+                        restyleOperations={subtitleRestyleOperations}
+                        onCancelRestyle={cancelExternalRestyle}
+                        onRetryRestyle={retryExternalRestyle}
                         onApplyCorrection={applyExternalSubtitleCorrection}
                         onApplyCorrections={applyExternalSubtitleCorrections}
+                        onRestyle={restyleExternalSubtitle}
                         onRename={(subtitle) => {
                           setRenamingSubtitle(subtitle);
                           setSubtitleFileName(subtitle.fileName);
@@ -4612,8 +4733,10 @@ function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; a
 
 export function EmbeddedSubtitleActions({
   streams,
+  eligibility,
   generations,
   onGenerate,
+  onRegenerate,
   onCancel,
   onTranslate,
   srtFallbackEnabled = false,
@@ -4621,6 +4744,7 @@ export function EmbeddedSubtitleActions({
   translationDisabled = false,
 }: {
   streams: MediaStreamInfo[];
+  eligibility?: SubtitleSourceEligibility[];
   generations: Record<string, SubtitleGenerationState>;
   onGenerate: (
     streamIndex: number,
@@ -4628,6 +4752,7 @@ export function EmbeddedSubtitleActions({
     ocrLanguage?: string,
     ocrMode?: 'raw' | 'clean' | 'accurate',
   ) => void;
+  onRegenerate?: (streamIndex: number) => void;
   onCancel: (
     streamIndex: number,
     format: 'original' | 'srt' | 'ass',
@@ -4650,6 +4775,8 @@ export function EmbeddedSubtitleActions({
         {streams.length === 0 ? <Alert severity="info">This asset has no embedded subtitle tracks.</Alert> : null}
         {streams.map((stream) => {
           const bitmap = isBitmapSubtitleCodec(stream.codec);
+          const sourceEligibility = eligibility?.find((value) => value.streamIndex === stream.index);
+          const regenerateAllowed = sourceEligibility ? sourceEligibility.regenerate.eligible : true;
            const originalStyledFormat =
             stream.codec.toLowerCase() === 'ssa'
               ? 'SSA'
@@ -4669,6 +4796,7 @@ export function EmbeddedSubtitleActions({
                 <Stack sx={{ minWidth: 0 }}>
                   <Typography fontWeight={700}>#{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()}</Typography>
                   {stream.title ? <Typography color="text.secondary" variant="body2">{stream.title}</Typography> : null}
+                  {sourceEligibility ? <Typography color="text.secondary" variant="caption" sx={{ overflowWrap: 'anywhere' }}>Identity: {sourceEligibility.sourceIdentity} · Revision: {sourceEligibility.sourceRevision || 'unavailable'} · Role: {sourceEligibility.role} ({sourceEligibility.roleProvenance})</Typography> : null}
                   {bitmap ? <Typography color="warning.main" variant="caption">Bitmap track: generation runs local OCR and may require text corrections afterward.</Typography> : null}
                 </Stack>
                 <Stack direction="row" spacing={1}>
@@ -4710,6 +4838,7 @@ export function EmbeddedSubtitleActions({
                   ) : null}
                   <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running' } onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
                   <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
+                  {onRegenerate && regenerateAllowed ? <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onRegenerate(stream.index)}>Regenerate styled ASS</Button> : null}
                   {onTranslate ? <Button size="small" variant="outlined" aria-label={`Translate subtitle stream ${stream.index}`} disabled={translationDisabled} onClick={() => onTranslate(stream.index)}>Translate...</Button> : null}
                   {originalStyledFormat ? (
                     <Button
@@ -4726,6 +4855,7 @@ export function EmbeddedSubtitleActions({
                   ) : null}
                 </Stack>
               </Stack>
+              {sourceEligibility && !sourceEligibility.regenerate.eligible ? <Typography variant="caption" color="text.secondary">{sourceEligibility.regenerate.reason || 'Regeneration is unavailable for this source.'}</Typography> : null}
               {streamGenerations.map((generation) => (
                 <Box key={subtitleGenerationKey(stream.index, generation.format)}>
                   {generation.status === 'running' ? (
@@ -4812,6 +4942,16 @@ type SubtitleGenerationState = {
   total?: number;
 };
 
+type SubtitleRestyleOperationState = {
+  operationId?: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  progress: number;
+  phase?: string;
+  message?: string;
+  error?: string;
+  retryable?: boolean;
+};
+
 export function subtitleOperationStopsPolling(
   status: 'running' | 'completed' | 'cancelled' | 'error',
 ) {
@@ -4844,7 +4984,7 @@ export function subtitleOCRSidecarSelection(values: ExternalSubtitle[], sidecar:
       return { sidecarPaths: [srt.path, ass.path], format: 'both' as const };
     }
   }
-  return { sidecarPaths: [sidecar.path], format: sidecar.format };
+  return { sidecarPaths: [sidecar.path], format: sidecar.format === 'ssa' ? 'ass' : sidecar.format };
 }
 
 export function ExternalSubtitleList({
@@ -4861,8 +5001,13 @@ export function ExternalSubtitleList({
   onAnalyze,
   qualityReports = {},
   qualityMessages = {},
+  restyleMessages = {},
+  restyleOperations = {},
+  onCancelRestyle,
+  onRetryRestyle,
   onApplyCorrection,
   onApplyCorrections,
+  onRestyle,
 }: {
   values: ExternalSubtitle[];
   loading: boolean;
@@ -4877,11 +5022,25 @@ export function ExternalSubtitleList({
   onAnalyze?: (subtitle: ExternalSubtitle) => void;
   qualityReports?: Record<string, SubtitleOCRQualityReport>;
   qualityMessages?: Record<string, string>;
+  restyleMessages?: Record<string, string>;
+  restyleOperations?: Record<string, SubtitleRestyleOperationState>;
+  onCancelRestyle?: (subtitle: ExternalSubtitle) => void;
+  onRetryRestyle?: (subtitle: ExternalSubtitle) => void;
   onApplyCorrection?: (subtitle: ExternalSubtitle, report: SubtitleOCRQualityReport, finding: SubtitleOCRQualityFinding, text: string) => void;
   onApplyCorrections?: (subtitle: ExternalSubtitle, report: SubtitleOCRQualityReport, corrections: Array<{ cueId: number; suggestion: string }>) => void;
+  onRestyle?: (subtitle: ExternalSubtitle, mode: 'restyle' | 'srt_to_ass', options?: { replace?: boolean; overrideExistingASSStyles?: boolean }) => void;
 }) {
   const [correctionText, setCorrectionText] = useState<Record<string, string>>({});
+  const [restyleTarget, setRestyleTarget] = useState<{ subtitle: ExternalSubtitle; mode: 'restyle' | 'srt_to_ass' } | null>(null);
+  const [replace, setReplace] = useState(false);
+  const [overrideExistingASSStyles, setOverrideExistingASSStyles] = useState(false);
+  const openRestyleDialog = (subtitle: ExternalSubtitle, mode: 'restyle' | 'srt_to_ass') => {
+    setReplace(false);
+    setOverrideExistingASSStyles(false);
+    setRestyleTarget({ subtitle, mode });
+  };
   return (
+    <>
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
       <Stack spacing={1.25}>
         <Typography variant="h3">External SRT / ASS files</Typography>
@@ -4891,6 +5050,10 @@ export function ExternalSubtitleList({
           const reviewKey = subtitleOCRReviewKey(subtitle);
           const report = qualityReports[reviewKey] ?? qualityReports[subtitle.path];
           const message = qualityMessages[reviewKey] ?? qualityMessages[subtitle.path];
+          const eligibility = subtitle.eligibility;
+          const restyleAllowed = eligibility ? eligibility.restyle.eligible : true;
+          const srtToAssAllowed = eligibility ? eligibility.srtToAss.eligible : true;
+          const restyleOperation = restyleOperations[subtitle.path];
           const logicalSiblings = subtitle.logicalTransformKey
             ? values.filter((candidate) => candidate.logicalTransformKey === subtitle.logicalTransformKey)
             : [];
@@ -4916,6 +5079,8 @@ export function ExternalSubtitleList({
                 </Stack>
               </Stack>
               <Stack direction="row" spacing={0.5}>
+                {onRestyle && restyleAllowed ? <Button size="small" variant="outlined" disabled={disabled || restyleOperation?.status === 'running'} onClick={() => openRestyleDialog(subtitle, 'restyle')}>Restyle</Button> : null}
+                {onRestyle && srtToAssAllowed ? <Button size="small" variant="outlined" disabled={disabled || restyleOperation?.status === 'running'} onClick={() => openRestyleDialog(subtitle, 'srt_to_ass')}>Generate ASS</Button> : null}
                 {onAnalyze && subtitle.ocrAnalysisAvailable ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onAnalyze(subtitle)}>Analyze OCR</Button> : null}
                 {onTranslate ? <Button size="small" variant="outlined" aria-label={`Translate ${subtitle.fileName}`} disabled={translationDisabled} onClick={() => onTranslate(subtitle)}>Translate...</Button> : null}
                 <Tooltip title="Rename subtitle file">
@@ -4930,6 +5095,15 @@ export function ExternalSubtitleList({
               </Stack>
             </Stack>
             {message && !showReport ? <Alert severity="info" sx={{ py: 0 }}>{message}</Alert> : null}
+            {restyleMessages[subtitle.path] ? <Alert severity="info" sx={{ py: 0 }}>{restyleMessages[subtitle.path]}</Alert> : null}
+            {eligibility && !restyleAllowed && !srtToAssAllowed ? <Typography variant="caption" color="text.secondary">{eligibility.restyle.reason || eligibility.srtToAss.reason || eligibility.regenerate.reason || 'No subtitle styling operation is available for this source.'}</Typography> : null}
+            {restyleOperation ? <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 1 }}>
+              {restyleOperation.status === 'running' ? <Stack spacing={0.5}>
+                <Stack direction="row" justifyContent="space-between"><Typography variant="caption">{restyleOperation.message || restyleOperation.phase || 'Subtitle operation running'}</Typography><Typography variant="caption">{Math.round(restyleOperation.progress)}%</Typography></Stack>
+                <LinearProgress variant="determinate" value={restyleOperation.progress} aria-label={`Subtitle operation for ${subtitle.fileName}`} />
+                {onCancelRestyle ? <Button size="small" color="warning" variant="outlined" disabled={disabled} onClick={() => onCancelRestyle(subtitle)}>Cancel</Button> : null}
+              </Stack> : <Stack direction="row" spacing={1} alignItems="center"><Alert severity={restyleOperation.status === 'completed' ? 'success' : restyleOperation.status === 'cancelled' ? 'info' : 'warning'} sx={{ py: 0, flex: 1 }}>{restyleOperation.error || restyleOperation.message || (restyleOperation.status === 'completed' ? 'Subtitle operation completed.' : 'Subtitle operation failed.')}</Alert>{restyleOperation.retryable && onRetryRestyle ? <Button size="small" variant="outlined" onClick={() => onRetryRestyle(subtitle)}>Retry</Button> : null}</Stack>}
+            </Box> : null}
             {showReport && report ? <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 1 }}>
               <Typography variant="subtitle2">OCR quality</Typography>
               <Typography variant="caption" color="text.secondary">{report.cleanCount} clean · {report.suspiciousCount} suspicious · {report.reviewCount} review</Typography>
@@ -4950,6 +5124,31 @@ export function ExternalSubtitleList({
         })}
       </Stack>
     </Box>
+    <Dialog open={Boolean(restyleTarget)} onClose={() => setRestyleTarget(null)} maxWidth="sm" fullWidth>
+      <DialogTitle>{restyleTarget?.mode === 'srt_to_ass' ? 'Generate styled ASS sibling' : 'Restyle ASS / SSA sidecar'}</DialogTitle>
+      <DialogContent dividers>
+        {restyleTarget ? <Stack spacing={1.5}>
+          <Typography variant="body2">The backend will use this exact source identity; it will not guess another same-language sidecar.</Typography>
+          <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>Source: {restyleTarget.subtitle.path}</Typography>
+          <Typography variant="body2">Identity: {restyleTarget.subtitle.eligibility?.sourceIdentity || `external:${restyleTarget.subtitle.path}`}</Typography>
+          <Typography variant="body2">Revision: {restyleTarget.subtitle.eligibility?.sourceRevision || restyleTarget.subtitle.sourceRevision || 'unavailable'}</Typography>
+          <Typography variant="body2">Representation: {(restyleTarget.subtitle.eligibility?.representation || restyleTarget.subtitle.format).toUpperCase()} · Role: {restyleTarget.subtitle.eligibility?.role || 'unknown'} · Provenance: {restyleTarget.subtitle.eligibility?.roleProvenance || 'backend-resolved'} · Policy: {restyleTarget.subtitle.eligibility?.policyVersion || 'current snapshot'}</Typography>
+          {!restyleTarget.subtitle.sourceRevision ? <Alert severity="warning">Refresh Asset Info before starting; the exact source revision is unavailable.</Alert> : null}
+          <FormControlLabel control={<Switch checked={replace} disabled={restyleTarget.subtitle.eligibility ? !restyleTarget.subtitle.eligibility.replaceEligible : false} onChange={(event) => setReplace(event.target.checked)} />} label="Replace the selected sidecar (explicit opt-in)" />
+          {restyleTarget.mode === 'restyle' ? <FormControlLabel control={<Switch checked={overrideExistingASSStyles} disabled={restyleTarget.subtitle.eligibility ? !restyleTarget.subtitle.eligibility.nativeOverrideEligible : false} onChange={(event) => setOverrideExistingASSStyles(event.target.checked)} />} label="Override eligible native ASS styles for this operation" /> : null}
+          {overrideExistingASSStyles ? <Alert severity="warning">Only eligible base Style assignments may change. Text, timing, karaoke, positioning, layers, margins, and source definitions remain protected.</Alert> : null}
+        </Stack> : null}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => setRestyleTarget(null)}>Cancel</Button>
+        <Button variant="contained" disabled={!restyleTarget?.subtitle.sourceRevision || !onRestyle} onClick={() => {
+          if (!restyleTarget || !onRestyle) return;
+          onRestyle(restyleTarget.subtitle, restyleTarget.mode, { replace, overrideExistingASSStyles });
+          setRestyleTarget(null);
+        }}>{restyleTarget?.mode === 'srt_to_ass' ? 'Generate sibling' : 'Start restyle'}</Button>
+      </DialogActions>
+    </Dialog>
+    </>
   );
 }
 

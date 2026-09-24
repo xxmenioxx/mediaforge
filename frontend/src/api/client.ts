@@ -61,6 +61,8 @@ import type {
   HousekeepingReport,
   SubtitleExtractionOperation,
   SubtitleExtractionOperationList,
+  SubtitleRestyleInput,
+  SubtitleEligibilityResponse,
   SubtitleExtractionResult,
   SubtitleTranslationCapability,
   SubtitleTranslationCapabilityInput,
@@ -317,6 +319,12 @@ export const api = {
       `/api/assets/subtitle-operations?path=${encodeURIComponent(path)}`,
     ),
 
+  restyleSubtitle: (input: SubtitleRestyleInput) =>
+    request<{ operationId: string; status: 'running'; phase: string; progress: number; format: string }>(
+      '/api/assets/subtitle-restyle',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+
   cancelSubtitleOperation: (operationId: string) =>
     request<SubtitleExtractionOperation>(
       `/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/cancel`,
@@ -327,6 +335,17 @@ export const api = {
     request<{ operation: SubtitleExtractionOperation }>(
       `/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/retry`,
       { method: 'POST' },
+    ),
+
+  retrySubtitleOperation: (operationId: string) =>
+    request<{ operation: SubtitleExtractionOperation }>(
+      `/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/retry`,
+      { method: 'POST' },
+    ),
+
+  subtitleEligibility: (path: string) =>
+    request<SubtitleEligibilityResponse>(
+      `/api/assets/subtitle-eligibility?path=${encodeURIComponent(path)}`,
     ),
 
   subtitleTranslationCapability: (input: SubtitleTranslationCapabilityInput) =>
