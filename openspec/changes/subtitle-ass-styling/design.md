@@ -8,8 +8,8 @@ inspection shows that the implementation currently separates:
 - canonical bitmap OCR evidence and retained geometry in
   `generateBitmapSubtitleAtPathWithResult` / `generateSharedConvertedSubtitleArtifacts`;
 - generated bitmap ASS output at the existing `renderBitmapASSCues` seam;
-- native ASS/SSA structure parsing and source-preserving reconstruction at
-  `parseTranslationASSDocument` / `ReconstructDialogueProviderTexts`;
+- the current Translation-specific ASS/SSA structure parser/reconstructor,
+  whose behavior must be factored into a shared source-preserving boundary;
 - Asset Info's `subtitleExtractionOperation` registry, operation cancellation,
   staging, validation, cleanup, and publication barriers; and
 - `AppSetting` list/upsert/validation through the existing settings handler.
@@ -66,6 +66,8 @@ subtitleSettings: {
   generateSRTFallbackForASS: <existing field>,
   subtitleStyling: {
     version: 1,
+    enabled: false,
+    applyToGeneratedASS: true,
     preserveSourceStyles: true,
     overrideExistingASSStyles: false,
     builtInOverrides: { ... },
@@ -80,6 +82,24 @@ This extends the existing `subtitleSettings` AppSetting rather than adding a
 table. The settings handler validates and normalizes the whole styling object
 before the existing upsert. A missing nested object is equivalent to defaults;
 the existing SRT fallback field remains independently backward compatible.
+
+The four policy controls have non-overlapping meanings:
+
+| Control | Meaning |
+| --- | --- |
+| `enabled` | Master gate. When false, #123 never mutates generated or native appearance; the other styling flags are inert until enabled. |
+| `applyToGeneratedASS` | When `enabled=true`, controls whether generated ASS consumes the configured style resolver. False preserves the legacy generated-ASS behavior. It has no effect on native ASS/SSA. |
+| `preserveSourceStyles` | Native-document safety policy. True keeps source styles and event assignments source-owned unless explicit native override is authorized. It does not control generated ASS. |
+| `overrideExistingASSStyles` | Explicit authorization for eligible native event base-Style reassignment. It is effective only when `enabled=true`; inline tags and source definitions remain protected. |
+
+The normalized validator rejects an enabled policy with
+`preserveSourceStyles=false` and `overrideExistingASSStyles=false`, because
+that combination requests neither a preservation nor an authorized restyle
+behavior. With `enabled=false`, the stored flags may preserve the user's future
+intent, but effective output is always legacy/no-#123 behavior. The Settings UI
+labels `enabled=true`, `applyToGeneratedASS=true`, `preserveSourceStyles=true`,
+and `overrideExistingASSStyles=false` as “Style generated subtitles only”; it
+does not infer that mode from unrelated flags.
 
 ### 2. Canonical color boundary is backend-only
 
@@ -125,48 +145,77 @@ semantic role or erase a valid explicit `\\pos`, `\\move`, or alignment override
 `MVF_Top` is therefore a stable selectable preset and explicit policy target,
 not a second classifier.
 
-### 4. Extend the existing ASS serializer seams, never create a parallel one
+### 4. Establish one generic source-preserving ASS/SSA document boundary
 
-There are two existing responsibilities to preserve:
+The current `translationASSDocument` and `parseTranslationASSDocument` behavior
+is the evidence-backed starting point, not the public ownership boundary for
+#123. During implementation, factor its structural parser/reconstructor into
+repository-appropriate generic concepts such as `assDocument`, `assEvent`, and
+protected dialogue/event structure. Exact names may differ, but the shared
+boundary must be independent of Translation provider batches, source-language
+selection, or translated-cue metadata.
 
-- `translationASSDocument` parses ASS/SSA Events and reconstructs only allowed
-  dialogue text changes against the original source string. This is the native
-  source-preserving document boundary and remains the path for native restyle.
-- `renderBitmapASSCues` renders canonical bitmap cues with existing #26 coarse
-  geometry. This is the generated ASS rendering seam and should be generalized
-  or extended to consume the existing canonical cue representation plus a
-  resolved style, rather than adding `subtitle_style_serializer.go` or another
-  ASS document model.
+The generic document must preserve the source representation and reconstruct
+from the original source string while retaining script/style sections, style
+definitions, event Style assignment, layer, timing, margins, effect, override
+tags, `\\an`, `\\pos`, `\\move`, karaoke, drawing mode, line breaks, and
+comments/unknown lines where the current implementation supports them. A
+Translation adapter may expose only protected translatable dialogue text and
+continue to enforce Translation's text-only mutation contract. Styling may use
+the same document boundary to append deterministic generated style definitions
+and change eligible base event Style assignments only under explicit policy.
+Future #131 Composition may consume the same structural boundary without
+importing Translation-specific types.
 
-For SRT-to-ASS, the implementation must route the existing canonical text cue
-result through that same generated ASS rendering seam (or its current shared
-equivalent) when configurable styling is requested. FFmpeg remains an external
-conversion tool where the canonical plan requires it, but it must not become a
-second source of style policy. The SRT serializer remains text/timing-only.
+This is a refactor of one structural path, not a second ASS document model or
+serializer. Existing Translation tests must prove a before/after structural
+round trip is equivalent after extraction.
 
-Generated styles are emitted once per distinct stable style snapshot and events
-refer to deterministic namespaced names. Native source style blocks are copied
-unchanged by default. Explicit override may append generated definitions and
-change only eligible event style assignments; it never deletes or redefines
-source styles and never rewrites inline structural tags.
+### 5. Keep generated ASS rendering separate from native documents
 
-### 5. Preserve source styles by policy, not by accidental parser behavior
+`renderBitmapASSCues`, or the current shared generated-ASS renderer it is
+factored into, remains the generated-cue rendering seam. It accepts the
+existing canonical cue representation, #26 geometry/layout evidence, and the
+resolved style snapshot. Native ASS/SSA is never flattened into this renderer.
 
-The persisted defaults are `preserveSourceStyles=true` and
-`overrideExistingASSStyles=false`. Native ASS/SSA restyle first validates the
-selected exact document, captures its source revision, and uses the existing
-parser/reconstructor so custom style names, event assignments, karaoke,
-override tags, margins, layers, drawing mode, positioning, timing, and order
-survive.
+The distinct flows are:
 
-When override is enabled, the resolver computes event assignments from the
-canonical role/policy. It appends collision-safe generated style definitions
-under a namespaced name derived from stable preset and artifact identity. A
-source style called `MVF_Default` remains source-owned; a configured MVForge
-`MVF_Default` never changes its meaning. Inline `\\r` reset tags and other
-override blocks are preserved even when the event's base Style field changes.
+```text
+SRT -> canonical text cues -> shared generated ASS renderer
+                         -> configured styles only when enabled
 
-### 6. Keep `both` as one canonical transformation
+bitmap -> one canonical OCR result + #26 geometry
+       -> shared generated ASS renderer + configured styles when enabled
+
+native ASS/SSA -> generic source-preserving ASS document
+               -> source-owned by default
+               -> narrow explicit restyle when authorized
+```
+
+When `enabled=false` or `applyToGeneratedASS=false`, generated ASS uses the
+existing legacy behavior and does not acquire configured #123 appearance. The
+SRT serializer remains text/timing-only. Generated styles are emitted once per
+distinct stable style snapshot and events refer to deterministic namespaced
+names; native source style blocks are copied unchanged by default.
+
+### 6. Preserve source styles by policy, not by accidental parser behavior
+
+The effective defaults are `enabled=false`, `applyToGeneratedASS=true`,
+`preserveSourceStyles=true`, and `overrideExistingASSStyles=false`. Native
+ASS/SSA restyle first validates the selected exact document, captures its source
+revision, and uses the generic source-preserving document boundary so custom
+style names, event assignments, karaoke, override tags, margins, layers,
+drawing mode, positioning, timing, and order survive.
+
+When enabled override is explicitly authorized, the resolver computes event
+assignments from canonical role/policy. It appends collision-safe generated
+style definitions under a namespaced name derived from stable preset and
+artifact identity. A source style called `MVF_Default` remains source-owned; a
+configured MVForge `MVF_Default` never changes its meaning. Inline `\\r` reset
+tags and other override blocks are preserved even when the event's base Style
+field changes.
+
+### 7. Keep `both` as one canonical transformation
 
 The existing `generateSharedConvertedSubtitleArtifacts` path already creates
 one canonical SRT staging result, performs bitmap OCR once when required, and
@@ -175,7 +224,7 @@ style snapshot only at ASS serialization. Geometry, canonical OCR evidence,
 role metadata, and cue IDs are reused; no serializer starts OCR or parses a
 second cue stream. A style edit never touches SRT bytes.
 
-### 7. Use one versioned setting snapshot for mutable policy
+### 8. Use one versioned setting snapshot for mutable policy
 
 At operation start, the backend reads and normalizes styling once, resolves a
 bounded canonical policy snapshot, and records a version/hash in the operation
@@ -184,7 +233,7 @@ freeze boundary and stores it with the immutable resolved subtitle plan. Worker
 execution never rereads mutable Settings. Snapshot data includes normalized
 preset definitions and policy flags, not arbitrary UI payloads or secrets.
 
-### 8. Asset Info is a single-sidecar adapter over the existing operation
+### 9. Asset Info is a single-sidecar adapter over the existing operation
 
 The new entry point extends the existing Asset Info subtitle action surface and
 uses the existing `subtitleExtractionOperation` status/cancel/poll contract.
@@ -209,7 +258,7 @@ evidence/lifecycle only when its provenance says the source can be recomputed.
 The initial operation is one selected sidecar. Batch restyling is deliberately
 not an implied extension of this API.
 
-### 9. Stage, validate, recheck, then publish a sibling
+### 10. Stage, validate, recheck, then publish a sibling
 
 Each operation writes only to operation-owned staging, validates the exact
 representation and canonical style/structure, and makes the result inspectable
@@ -224,7 +273,7 @@ subtitle operations. Cancellation is signaled through the existing context,
 staging is cleaned with the existing bounded cleanup path, and a failed/cancelled
 operation cannot remove source or previously published sidecars.
 
-### 10. Reuse existing font attachment behavior
+### 11. Reuse existing font attachment behavior
 
 Native ASS/SSA attachment extraction/publication remains the sole font path.
 Preserved native artifacts retain their attachment metadata. A custom generated
@@ -232,7 +281,7 @@ style stores only a font name and can show an evidence-based availability
 warning; it does not download, bundle, or invent a fallback font. The browser
 preview uses available browser fonts only as an approximation.
 
-### 11. Settings UI is a local approximation
+### 12. Settings UI is a local approximation
 
 Add a subtitle styling card alongside the existing subtitle compatibility and
 translation settings. It edits presets, palette values, preservation/override
@@ -247,7 +296,7 @@ representations and displays the source identity, current policy, mode, and
 override warning. Frontend eligibility is a projection of backend metadata; it
 does not infer roles, source revisions, or output formats.
 
-### 12. Keep #131 future-compatible without implementing it
+### 13. Keep #131 future-compatible without implementing it
 
 The resolver API accepts stable style IDs and canonical role/layout inputs, and
 the output style names are namespaced deterministically. Track Profiles are not

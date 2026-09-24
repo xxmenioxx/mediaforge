@@ -35,14 +35,30 @@ a backend-generated collision-safe stable ID independent of their display name.
 ### Requirement: Subtitle style settings use the existing settings contract
 
 The system SHALL persist versioned subtitle styling settings through the
-existing AppSetting infrastructure. The setting SHALL contain built-in role
-overrides, custom presets, the preserve-source-style policy, the explicit native
-style-override policy, the preset palette, and bounded saved/recent color state.
+existing AppSetting infrastructure. The normalized `subtitleStyling` object
+SHALL contain `version`, `enabled`, `applyToGeneratedASS`,
+`preserveSourceStyles`, `overrideExistingASSStyles`, built-in role overrides,
+custom presets, the preset palette, and bounded saved/recent color state.
+`enabled` SHALL be the master gate for every #123 appearance mutation.
+`applyToGeneratedASS` SHALL control only generated ASS when styling is enabled;
+`preserveSourceStyles` SHALL control the native-document safety default; and
+`overrideExistingASSStyles` SHALL be the explicit authorization for eligible
+native base-event Style reassignment. Native restyle SHALL require the master
+gate and explicit override authorization. Generated ASS SHALL require both the
+master gate and `applyToGeneratedASS=true`.
+
+When `enabled=false`, no #123 appearance mutation SHALL occur regardless of the
+other stored flags, and existing generated ASS, native ASS/SSA, and SRT
+behavior SHALL remain unchanged. When styling is enabled, the combination
+`preserveSourceStyles=false` and `overrideExistingASSStyles=false` SHALL be
+rejected as ambiguous; a native mutation requires explicit override. A missing
+#123 configuration SHALL resolve to `enabled=false`,
+`applyToGeneratedASS=true`, `preserveSourceStyles=true`, and
+`overrideExistingASSStyles=false` without a noisy missing-record failure.
 Built-in definitions MAY be represented by only their overrides; missing
-overrides SHALL resolve to the documented built-in defaults. A missing #123
-configuration SHALL resolve to safe defaults without a noisy missing-record
-failure and SHALL leave existing SRT, OCR, native ASS/SSA, translation, and
-fallback behavior unchanged.
+overrides SHALL resolve to the documented built-in defaults. Missing #123 data
+SHALL leave existing SRT, OCR, native ASS/SSA, translation, and fallback
+behavior unchanged.
 
 Backend validation SHALL normalize accepted values before storage and reject
 invalid or structurally unsafe values. The setting version SHALL support
@@ -53,9 +69,46 @@ new styling fields while retaining safe defaults for output.
 #### Scenario: Existing installation has no styling setting
 
 - **WHEN** settings are loaded from an installation without #123 data
-- **THEN** the backend returns `preserveSourceStyles=true`,
+- **THEN** the backend returns `enabled=false`,
+  `applyToGeneratedASS=true`, `preserveSourceStyles=true`,
   `overrideExistingASSStyles=false`, the four documented built-ins, and empty
   bounded custom/palette state without a record-not-found error
+
+#### Scenario: Styling is disabled
+
+- **WHEN** a user saves `enabled=false` with any other styling flags present
+- **THEN** generated ASS, native ASS/SSA, and SRT follow their pre-#123
+  behavior, and no configured color, style, or position-aware mapping is
+  applied
+
+#### Scenario: Generated-only styling is explicit
+
+- **WHEN** a user saves `enabled=true`, `applyToGeneratedASS=true`,
+  `preserveSourceStyles=true`, and `overrideExistingASSStyles=false`
+- **THEN** generated SRT-to-ASS, bitmap OCR-to-ASS, and other generated
+  canonical ASS use the configured resolver while native ASS/SSA remains
+  source-owned
+
+#### Scenario: Native preservation is explicit
+
+- **WHEN** styling is enabled but `applyToGeneratedASS=false`,
+  `preserveSourceStyles=true`, and `overrideExistingASSStyles=false`
+- **THEN** generated ASS keeps legacy appearance and native ASS/SSA preserves
+  source styles and event assignments
+
+#### Scenario: Explicit native override is gated
+
+- **WHEN** a user saves `enabled=true` and `overrideExistingASSStyles=true`
+  for an eligible native operation
+- **THEN** only the explicitly authorized eligible native base Style assignments
+  may use configured styles; protected source structure remains preserved
+
+#### Scenario: Ambiguous native policy is rejected
+
+- **WHEN** styling is enabled with `preserveSourceStyles=false` and
+  `overrideExistingASSStyles=false`
+- **THEN** backend validation rejects the setting instead of guessing whether
+  native source styles should be preserved or mutated
 
 #### Scenario: Invalid setting update is rejected atomically
 
@@ -126,11 +179,13 @@ is not required for this capability.
 
 ### Requirement: Generated ASS style resolution is canonical and deterministic
 
-For generated ASS, the canonical resolver SHALL resolve style selection in this
-order: an explicit operation style selection or eligible canonical semantic
-role mapping, then a canonical layout/style hint when one exists, then
-`MVF_Default`. Existing canonical semantic-role authority SHALL remain the
-source of role decisions: `signs` MAY select `MVF_Sign`, while `full`, `forced`,
+When `enabled=true` and `applyToGeneratedASS=true`, the canonical resolver SHALL
+resolve style selection in this order: an explicit operation style selection or
+eligible canonical semantic role mapping, then a canonical layout/style hint
+when one exists, then `MVF_Default`. When either gate is false, generated ASS
+SHALL use its existing legacy appearance and SHALL NOT consult the #123 style
+mapping. Existing canonical semantic-role authority SHALL remain the source of
+role decisions: `signs` MAY select `MVF_Sign`, while `full`, `forced`,
 `commentary`, `sdh`, and `unknown` SHALL use their configured mapping or fall
 back to `MVF_Default`. A role of `unknown` SHALL NOT be silently reclassified
 as a top note from geometry. `MVF_Top` SHALL be selectable by an explicit
@@ -186,16 +241,23 @@ event-level positioning metadata.
   evidence to ASS serialization without adding geometry to SRT or creating a
   second OCR/cue path
 
+#### Scenario: Disabled generated styling preserves legacy output
+
+- **WHEN** a generated ASS request runs with `enabled=false` or
+  `applyToGeneratedASS=false`
+- **THEN** the configured MVF colors and style mappings are not emitted and the
+  existing generated ASS appearance remains authoritative
+
 ### Requirement: Native ASS and SSA preserve source styles by default
 
-The default policy SHALL be `preserveSourceStyles=true` and
-`overrideExistingASSStyles=false`. Native ASS/SSA processing SHALL preserve
-source style definitions, event style assignments, karaoke timing/tokens, inline
-override tags, `\an`, `\pos`, `\move`, margins, layers, drawing mode, text,
-timing, cue order, and representation. Restyle SHALL reuse the existing
-source-preserving ASS/SSA parser/serializer boundary and SHALL NOT rerun OCR or
-flatten a native document into MVForge built-ins. SRT behavior SHALL remain
-unchanged.
+The default policy SHALL be `enabled=false`,
+`preserveSourceStyles=true`, and `overrideExistingASSStyles=false`. Native
+ASS/SSA processing SHALL preserve source style definitions, event style
+assignments, karaoke timing/tokens, inline override tags, `\an`, `\pos`,
+`\move`, margins, layers, drawing mode, text, timing, cue order, and
+representation. Restyle SHALL reuse the generic canonical source-preserving
+ASS/SSA document boundary and SHALL NOT rerun OCR or flatten a native document
+into MVForge built-ins. SRT behavior SHALL remain unchanged.
 
 #### Scenario: Styled native ASS round trip is unchanged by default
 
@@ -212,23 +274,105 @@ unchanged.
 - **THEN** its SSA representation and source style/event structure remain
   preserved and no ASS-to-SSA or SSA-to-ASS conversion is introduced
 
+### Requirement: ASS/SSA source preservation is a generic canonical boundary
+
+The system SHALL provide one shared source-preserving ASS/SSA structural
+parser/reconstructor for Translation, Styling, and future subtitle composition.
+The boundary SHALL be independent of Translation-specific provider or
+translatable-text models. It SHALL preserve representation, script/style
+sections, style definitions, event Style assignment, layer, timing, margins,
+effect, override tags, `\an`, `\pos`, `\move`, karaoke, drawing mode, line
+breaks, and comments or unknown preserved lines where supported by the current
+document behavior. The reconstruction SHALL retain source structure and SHALL
+not flatten native documents into generated canonical-cue output.
+
+Translation MAY use an adapter that exposes only protected translatable dialogue
+text and SHALL remain limited to text mutation. Styling MAY append deterministic
+generated style definitions and change eligible base event Style assignments
+only under its explicit policy. Future #131 Composition MAY consume the same
+boundary without importing Translation-specific concepts. Refactoring this
+boundary SHALL preserve existing Translation behavior and tests.
+
+#### Scenario: Shared parser preserves a styled native document
+
+- **WHEN** a native ASS/SSA document with multiple styles, comments, unknown
+  lines, karaoke, inline tags, explicit positioning, margins, layers, and
+  drawing events passes through the shared boundary without an authorized
+  mutation
+- **THEN** representation and supported source structure are retained without
+  flattening or style reinterpretation
+
+#### Scenario: Translation adapter remains text-only
+
+- **WHEN** Translation supplies replacement dialogue text through the generic
+  document boundary
+- **THEN** only the protected translatable text changes and timing, style,
+  events, tags, karaoke, positioning, and other structural fields remain equal
+
+#### Scenario: Styling uses the same boundary narrowly
+
+- **WHEN** enabled native override is authorized for eligible events
+- **THEN** Styling may append deterministic generated definitions and change the
+  eligible base Style assignment while preserving source definitions and all
+  protected event structure
+
+#### Scenario: Generic extraction retains Translation behavior
+
+- **WHEN** the current Translation ASS/SSA fixtures are run before and after
+  structural behavior is extracted from Translation-specific naming
+- **THEN** the structural output and protected-dialogue validation results are
+  equivalent, with no Translation behavior change introduced by #123
+
+### Requirement: Generated ASS rendering remains separate from native documents
+
+Generated SRT-to-ASS and bitmap-OCR-to-ASS SHALL flow from canonical text or
+bitmap cues through the existing/shared generated ASS renderer. Bitmap output
+SHALL use one canonical OCR result plus retained #26 geometry. Native ASS/SSA
+SHALL flow through the generic source-preserving document boundary and SHALL
+not be flattened into the generated-cue renderer. Generated style serialization
+helpers MAY be shared, but generated-cue rendering and native-document
+reconstruction SHALL remain distinct authorities.
+
+#### Scenario: SRT uses the generated-cue path
+
+- **WHEN** a selected SRT is converted to styled ASS with both styling gates
+  enabled
+- **THEN** canonical text cues feed the shared generated ASS renderer and the
+  source SRT remains text/timing-only and unchanged
+
+#### Scenario: Bitmap uses the same generated style authority
+
+- **WHEN** a bitmap subtitle is OCR-converted to ASS
+- **THEN** OCR runs once, canonical bitmap cues and #26 geometry feed the same
+  generated ASS style authority, and no native-document parser is used to
+  flatten the OCR result
+
+#### Scenario: Native ASS does not use generated flattening
+
+- **WHEN** a native ASS/SSA source is preserved or explicitly restyled
+- **THEN** the generic source-preserving document boundary retains native
+  sections and structure instead of routing the document through the generated
+  cue renderer
+
 ### Requirement: Explicit native override is opt-in and structurally conservative
 
-When a user explicitly enables `overrideExistingASSStyles`, the operation SHALL
-map only eligible dialogue event style assignments to the selected MVForge style
-IDs or resolved role mappings. It SHALL preserve source style definitions rather
-than silently redefining them, and SHALL preserve text, timing, cue order, layer,
-margins, valid positioning/movement, karaoke timing/tokens, drawing mode, and
-inline override tags. Inline reset/style tags SHALL NOT be rewritten as an
-incidental consequence of changing the event style field. The UI SHALL warn that
-native appearance can change and SHALL require the explicit opt-in for this
-behavior. Comments, malformed events, and events outside the operation's
-eligibility set SHALL remain untouched.
+When a user explicitly enables `enabled=true` and
+`overrideExistingASSStyles=true`, the operation SHALL map only eligible
+dialogue event style assignments to the selected MVForge style IDs or resolved
+role mappings. `overrideExistingASSStyles=true` while the master gate is false
+SHALL have no output effect. The operation SHALL preserve source style
+definitions rather than silently redefining them, and SHALL preserve text,
+timing, cue order, layer, margins, valid positioning/movement, karaoke
+timing/tokens, drawing mode, and inline override tags. Inline reset/style tags
+SHALL NOT be rewritten as an incidental consequence of changing the event style
+field. The UI SHALL warn that native appearance can change and SHALL require
+the explicit opt-in for this behavior. Comments, malformed events, and events
+outside the operation's eligibility set SHALL remain untouched.
 
 #### Scenario: Override changes assignment but not structure
 
 - **WHEN** a user explicitly enables override for a native ASS with dialogue
-  events using source styles
+  events using source styles and the master styling gate is enabled
 - **THEN** eligible event assignments resolve to collision-safe generated MVF
   style names while source definitions and protected event structure remain
   available and unchanged
@@ -238,6 +382,12 @@ eligibility set SHALL remain untouched.
 - **WHEN** a user customizes `MVF_Default` but leaves native override disabled
 - **THEN** native ASS/SSA output continues to use its source style definitions
   and event references
+
+#### Scenario: Native override cannot bypass the master gate
+
+- **WHEN** `overrideExistingASSStyles=true` is stored while `enabled=false`
+- **THEN** native ASS/SSA remains source-owned and no configured style is
+  appended or assigned
 
 ### Requirement: Generated and native style names never collide semantically
 

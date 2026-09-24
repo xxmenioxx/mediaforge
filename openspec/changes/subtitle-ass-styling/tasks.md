@@ -1,8 +1,8 @@
 ## 1. Canonical style/settings model
 
-- [ ] 1.1 Define the backend `SubtitleStylePreset` contract, immutable built-in IDs, collision-safe custom identity, provenance, and versioned `subtitleSettings.subtitleStyling`; verify missing settings resolve to safe defaults and existing fallback fields remain compatible.
+- [ ] 1.1 Define the backend `SubtitleStylePreset` contract, immutable built-in IDs, collision-safe custom identity, provenance, and versioned `subtitleSettings.subtitleStyling` with `enabled=false`, `applyToGeneratedASS=true`, `preserveSourceStyles=true`, and `overrideExistingASSStyles=false`; verify the master gate, generated-only mode, native-preservation mode, and ambiguous-policy rejection are explicit and deterministic.
 - [ ] 1.2 Add normalized style-policy snapshot/version hashing and carry it through canonical resolved subtitle decisions, operation requests, Queue freeze metadata, and bounded artifact provenance; verify Settings edits do not affect a running/frozen operation.
-- [ ] 1.3 Add focused backend tests for built-in immutability, custom ID/display-name independence, missing-setting defaults, backward-compatible reads, unknown-version safe fallback, and atomic invalid updates.
+- [ ] 1.3 Add focused backend tests for built-in immutability, custom ID/display-name independence, legacy/missing-setting defaults, disabled styling, generated-only styling, native preservation, explicit native override, backward-compatible reads, unknown-version safe fallback, and atomic invalid updates.
 
 ## 2. Validation and color conversion
 
@@ -18,17 +18,19 @@
 
 ## 4. ASS serializer integration
 
-- [ ] 4.1 Extend the existing generated ASS rendering seam (`renderBitmapASSCues` or its shared canonical equivalent) to consume resolved style definitions while preserving the existing canonical cue/OCR evidence boundary; verify generated ASS has deterministic style definitions and event assignments.
+- [ ] 4.1 Extend the existing generated ASS rendering seam (`renderBitmapASSCues` or its shared canonical equivalent) to consume resolved style definitions only when both styling gates are enabled, while preserving the existing canonical cue/OCR evidence boundary; verify disabled/gated output remains legacy and enabled output has deterministic style definitions and event assignments.
 - [ ] 4.2 Route generated SRT-to-ASS output through the same canonical style-aware ASS seam without adding a second subtitle cue model or serializer; verify SRT remains text/timing-only.
 - [ ] 4.3 Preserve logical `both` fan-out so one text normalization/OCR result feeds unchanged SRT and styled ASS serializers; verify OCR invocation/evidence identity is single-use.
 - [ ] 4.4 Add focused generated-output tests for styled SRT-to-ASS, bitmap OCR-to-ASS with geometry, and SRT/ASS `both` output parity.
 
-## 5. Native source preservation and collision handling
+## 5. Generic ASS/SSA boundary, native preservation, and collision handling
 
-- [ ] 5.1 Integrate the style policy with the existing ASS/SSA source-preserving parser/reconstructor; verify native style blocks, event references, representation, karaoke, inline tags, positions, margins, layers, drawing mode, text, timing, and order are unchanged by default.
-- [ ] 5.2 Implement explicit override as eligible event-style assignment to deterministic namespaced generated styles while preserving source definitions and structural/inline tags; verify override requires the policy flag and does not rewrite protected fields.
-- [ ] 5.3 Add collision regressions for source styles named `MVF_Default`/`MVF_Top`, different configured definitions, duplicate visible names, and deterministic generated naming.
-- [ ] 5.4 Verify existing font attachment extraction/publishing remains the only attachment path and native attachments survive default preservation/restyle.
+- [ ] 5.1 Extract the existing Translation ASS/SSA structural parser/reconstructor into repository-appropriate generic canonical document/event concepts without adding a second serializer or subtitle model; verify representation, script/style sections, style definitions, event assignments, layer, timing, margins, effect, override tags, `\\an`, `\\pos`, `\\move`, karaoke, drawing mode, line breaks, and supported comments/unknown lines remain representable.
+- [ ] 5.2 Keep Translation behind a narrow adapter that exposes only protected translatable dialogue text; run the existing Translation ASS/SSA fixtures before and after extraction and verify identical structural output, protected-anchor validation, and representation behavior.
+- [ ] 5.3 Integrate the enabled style policy with the generic source-preserving boundary; verify native style blocks, event references, representation, karaoke, inline tags, positions, margins, layers, drawing mode, text, timing, and order are unchanged by default.
+- [ ] 5.4 Implement explicit enabled override as eligible event-style assignment to deterministic namespaced generated styles while preserving source definitions and structural/inline tags; verify disabled override has no effect and protected fields remain unchanged.
+- [ ] 5.5 Add collision regressions for source styles named `MVF_Default`/`MVF_Top`, different configured definitions, duplicate visible names, and deterministic generated naming.
+- [ ] 5.6 Verify existing font attachment extraction/publishing remains the only attachment path and native attachments survive default preservation/restyle.
 
 ## 6. Settings UI and live preview
 
@@ -59,9 +61,9 @@
 
 ## 10. Deterministic regressions
 
-- [ ] 10.1 Add backend color, settings, resolver, native ASS/SSA, generated ASS, bitmap geometry, `both`, font-boundary, and collision test fixtures described by the subtitle delta spec.
-- [ ] 10.2 Add source-style preservation fixtures with multiple styles, custom colors, karaoke, inline override tags, explicit positioning, layers, margins, and drawing mode; verify default processing does not flatten them.
-- [ ] 10.3 Repeat operation lifecycle tests for source conflicts, cancellation during staging/OCR, failed validation, retry identity, and Settings mutation during frozen execution.
+- [ ] 10.1 Add backend color, settings-enable-gate, resolver, native ASS/SSA, generated ASS, bitmap geometry, `both`, font-boundary, and collision fixtures described by the subtitle delta spec.
+- [ ] 10.2 Add source-style preservation fixtures with multiple styles, custom colors, karaoke, inline override tags, explicit positioning, layers, margins, drawing mode, comments, and unknown preserved lines; verify default processing does not flatten them and enabled override changes only permitted base Style assignments.
+- [ ] 10.3 Run Translation ASS/SSA regression fixtures before and after generic document-boundary extraction and verify the same structural output, protected-dialogue behavior, and representation; also repeat operation lifecycle tests for source conflicts, cancellation during staging/OCR, failed validation, retry identity, and Settings mutation during frozen execution.
 - [ ] 10.4 Add focused frontend tests for Settings preview/palette and Asset Info Restyle / Regenerate controls without changing the known global lint baseline.
 
 ## 11. OpenSpec and full verifier

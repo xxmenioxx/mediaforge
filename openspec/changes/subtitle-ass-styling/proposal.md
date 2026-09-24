@@ -10,13 +10,21 @@ without losing source structure, rerunning OCR unnecessarily, or changing SRT.
 
 - Add a versioned, backend-validated subtitle styling setting in the existing
   AppSetting infrastructure.
+- Add an explicit, disabled-by-default `Enable position-aware styling` gate
+  and independent generated/native application controls so upgrading MVForge
+  cannot mutate existing or future ASS appearance implicitly.
 - Define immutable stable MVForge preset IDs (`MVF_Default`, `MVF_Top`,
   `MVF_Lyrics`, and `MVF_Sign`) plus collision-safe custom preset IDs.
 - Add a canonical resolver that selects a configured style from canonical role
   and layout evidence while keeping role, style, alignment, and exact position
   as separate data.
-- Apply configured styling to generated SRT-to-ASS and bitmap-OCR-to-ASS
-  output through the existing canonical cue and ASS rendering paths.
+- When explicitly enabled, apply configured styling to generated SRT-to-ASS,
+  bitmap-OCR-to-ASS, and other generated canonical ASS output through the
+  existing canonical cue and generated-ASS rendering paths.
+- Factor the existing source-preserving ASS/SSA structural behavior out of the
+  Translation-specific domain boundary so Translation, Styling, and future
+  #131 Composition share one parser/reconstructor without creating another
+  ASS serializer or subtitle model.
 - Preserve native ASS/SSA style definitions, event references, karaoke, inline
   tags, positioning, margins, and layers by default; make explicit restyling
   opt-in and structurally conservative.
@@ -52,7 +60,9 @@ Settings preview.
   provenance, and staged sidecar publication.
 - Settings and Asset Info React surfaces, with backend-authoritative eligibility
   and operation state.
-- No new database/table, OCR engine, provider, public subtitle cue model, or
-  font-attachment subsystem. Existing `AppSetting`, canonical OCR evidence,
-  subtitle operation registry, staging, validation, cancellation, and atomic
-  publication remain authoritative.
+- No new database/table, OCR engine, provider, public subtitle cue model,
+  parallel ASS serializer, or font-attachment subsystem. Existing
+  `AppSetting`, canonical OCR evidence, subtitle operation registry, staging,
+  validation, cancellation, and atomic publication remain authoritative. The
+  current Translation parser/reconstructor becomes a shared structural boundary
+  with a Translation adapter rather than a Styling dependency.
