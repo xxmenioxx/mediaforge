@@ -5,13 +5,24 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Asset, AssetInventory, ProfileSuggestion, ScanResult } from '../api/types';
+import type { Asset, AssetInventory, PreviewInspection, ProfileSuggestion, ScanResult } from '../api/types';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return {
     ...actual,
-    waitForCompatiblePreviewReady: vi.fn().mockResolvedValue({ state: 'ready', code: 'ready' }),
+    waitForCompatiblePreviewReady: vi.fn().mockImplementation(async (requestId: string) => ({
+      requestId,
+      artifactId: `artifact-${requestId}`,
+      generationToken: `generation-${requestId}`,
+      generationVersion: 1,
+      sourceRevision: { size: 1024, modifiedAtNS: 1, mode: 0o600 },
+      start: '00:00:00',
+      seconds: 20,
+      normalization: { mode: 'normalize_bt709', applied: true, sarPreserved: true },
+      state: 'ready',
+      code: 'ready',
+    })),
     api: {
       ...actual.api,
       assets: vi.fn(),
@@ -24,14 +35,18 @@ vi.mock('../api/client', async (importOriginal) => {
       latestSnapshot: vi.fn(),
       suggestProfile: vi.fn(),
       createCompatiblePreviewRequest: vi.fn(),
+      compatiblePreviewStatus: vi.fn(),
       inspectCompatibleAssetPreview: vi.fn(),
       compatibleAssetFrameMetrics: vi.fn(),
+      startLabFidelityOperation: vi.fn(),
+      labFidelityOperation: vi.fn(),
+      cancelLabFidelityOperation: vi.fn(),
       recommendEncoderQuality: vi.fn(),
     },
   };
 });
 
-import { api } from '../api/client';
+import { ApiRequestError, api, waitForCompatiblePreviewReady } from '../api/client';
 import { ProfileLabPage } from './ProfileLabPage';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 
@@ -199,7 +214,7 @@ const previewInspection = {
   requestedEncoder: 'libx265', effectiveEncoder: 'libx265', requestedQSVRateControl: '', effectiveQSVRateControl: '',
   frameStructureRecommendation,
   ffmpegArgs: ['-vf', 'scale=960:720'],
-} as never;
+} as unknown as PreviewInspection;
 
 afterEach(cleanup);
 
@@ -221,9 +236,88 @@ describe('Profile Lab Process Asset suggestions', () => {
     vi.mocked(api.workerNodes).mockResolvedValue([]);
     vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: scan, status: 'current', requiresAnalysis: false, staleComponents: [] });
     vi.mocked(api.suggestProfile).mockResolvedValue(nullableSuggestion);
-    vi.mocked(api.createCompatiblePreviewRequest).mockImplementation(async (options) => ({ requestId: `${String(options.start ?? 'base').replaceAll(':', '')}-${JSON.stringify(options.profile ?? {}).length}`, cacheIdentity: 'cache', expiresInSeconds: 7200, path: options.path }));
+    vi.mocked(api.createCompatiblePreviewRequest).mockImplementation(async (options) => {
+      const requestId = `${String(options.start ?? 'base').replaceAll(':', '')}-${JSON.stringify(options.profile ?? {}).length}`;
+      return { requestId, cacheIdentity: `artifact-${requestId}`, expiresInSeconds: 7200, path: options.path };
+    });
+    vi.mocked(api.compatiblePreviewStatus).mockImplementation(async (requestId) => ({
+      requestId,
+      artifactId: `artifact-${requestId}`,
+      generationToken: `generation-${requestId}`,
+      generationVersion: 1,
+      sourceRevision: { size: 1024, modifiedAtNS: 1, mode: 0o600 },
+      start: '00:00:00',
+      seconds: 20,
+      normalization: { mode: 'normalize_bt709', applied: true, sarPreserved: true },
+      state: 'ready',
+      code: 'ready',
+    }));
     vi.mocked(api.inspectCompatibleAssetPreview).mockResolvedValue(previewInspection);
     vi.mocked(api.compatibleAssetFrameMetrics).mockResolvedValue({ comparable: true, reason: '', sourceDimensions: '960x720', outputDimensions: '960x720', ssim: 0.99, psnr: 42 });
+    vi.mocked(api.startLabFidelityOperation).mockImplementation(async ({ primaryRequestId, referenceRequestId }) => ({
+      id: 'lab-fidelity-test',
+      status: 'completed',
+      phase: 'aggregate',
+      primaryRequestId,
+      primaryArtifactId: `artifact-${primaryRequestId}`,
+      primaryGeneration: `generation-${primaryRequestId}:1`,
+      materialSignature: `material-${primaryRequestId}`,
+      completedWindows: 1,
+      totalWindows: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      result: {
+        assetPath,
+        source: previewInspection.source,
+        reference: previewInspection.source,
+        conversion: previewInspection.output,
+        sourceFrameStructure: previewInspection.sourceFrameStructure,
+        outputFrameStructure: previewInspection.outputFrameStructure,
+        qsvFrameWarnings: [],
+        qsvFeatureStatus: {},
+        frameRecommendation: { targetGopFrames: 19, targetGopSeconds: 19 / (24000 / 1001), maxBFrames: 2, confidence: 'high', reasons: [] },
+        frameValidation: { verdict: 'safe', confidence: 'high', reasons: [] },
+        hevcLevelValidation: { verdict: 'safe', status: 'validated', reason: '' },
+        requestedEncoder: previewInspection.requestedEncoder,
+        effectiveEncoder: previewInspection.effectiveEncoder,
+        requestedQSVRateControl: '',
+        effectiveQSVRateControl: '',
+        referenceEncoder: 'source',
+        ffmpegArgs: previewInspection.ffmpegArgs,
+        normalization: previewInspection.normalization,
+        metrics: { comparable: true, reason: '', sourceDimensions: '960x720', outputDimensions: '960x720', ssim: 0.99, psnr: 42 },
+        referenceRequestId,
+        conversionRequestId: primaryRequestId,
+        fidelityWindows: [{
+          position: 0.5,
+          startSeconds: 0,
+          durationSeconds: 20,
+          source: previewInspection.source,
+          output: previewInspection.output,
+          metrics: { comparable: true, reason: '', sourceDimensions: '960x720', outputDimensions: '960x720', ssim: 0.99, psnr: 42 },
+          requestId: primaryRequestId,
+          canonicalFidelity: { status: 'passed', fields: {} },
+        }],
+        canonicalFidelity: { status: 'passed', fields: {} },
+        canonicalStatus: 'passed',
+        aggregateStatus: 'completed',
+        visualAggregate: {
+          comparableCount: 1,
+          totalCount: 1,
+          averageSSIM: 0.99,
+          minimumSSIM: 0.99,
+          averagePSNR: 42,
+          minimumPSNR: 42,
+          worstWindowIndex: 0,
+          worstPosition: 0.5,
+          metricVerdict: 'Safe',
+        },
+        overallVerdict: 'Safe',
+        completedAt: Date.now(),
+      },
+    } as never));
+    vi.mocked(api.labFidelityOperation).mockResolvedValue({ status: 'completed' } as never);
+    vi.mocked(api.cancelLabFidelityOperation).mockResolvedValue({ status: 'canceled' } as never);
     vi.mocked(api.recommendEncoderQuality).mockResolvedValue(undefined as never);
   });
 
@@ -243,7 +337,7 @@ describe('Profile Lab Process Asset suggestions', () => {
   }
 
   it(
-    'reuses Sample A when Process Video runs again with the same reference inputs',
+    'reuses Sample A across a processed Profile-only change',
     async () => {
       vi.mocked(api.profiles).mockResolvedValue([
         qsvSavedProfile,
@@ -305,6 +399,9 @@ describe('Profile Lab Process Asset suggestions', () => {
         ).toBe(false),
       );
 
+      const profileName = screen.getByLabelText('New video profile name');
+      await userEvent.clear(profileName);
+      await userEvent.type(profileName, 'changed processed draft');
       const requestCountAfterFirstProcess =
         vi.mocked(
           api.createCompatiblePreviewRequest,
@@ -322,12 +419,277 @@ describe('Profile Lab Process Asset suggestions', () => {
         ),
       );
 
-      expect(
-        referencePreviewRequests(),
-      ).toHaveLength(1);
+      expect(referencePreviewRequests()).toHaveLength(2);
+      expect(vi.mocked(api.inspectCompatibleAssetPreview)).toHaveBeenCalledTimes(1);
     },
     20_000,
   );
+
+  it('rejects a same-path Sample A cache when the backend source revision changes', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+    await waitFor(() => expect(referencePreviewRequests()).toHaveLength(1), { timeout: 12_000 });
+
+    const revisionB = { size: 2048, modifiedAtNS: 2, mode: 0o600 };
+    const readyB = {
+      requestId: 'revision-b-reference', artifactId: 'artifact-revision-b', generationToken: 'generation-revision-b',
+      generationVersion: 2, sourceRevision: revisionB, start: '00:00:00', seconds: 20,
+      normalization: { mode: 'normalize_bt709', applied: true, sarPreserved: true }, state: 'ready', code: 'ready',
+    } as never;
+    vi.mocked(api.createCompatiblePreviewRequest).mockImplementationOnce(async (options) => ({
+      requestId: 'revision-b-reference',
+      cacheIdentity: 'artifact-revision-b',
+      expiresInSeconds: 7200,
+      path: options.path,
+    }));
+    vi.mocked(waitForCompatiblePreviewReady).mockResolvedValue(readyB);
+
+    await userEvent.click(processVideo);
+    await waitFor(() => expect(referencePreviewRequests()).toHaveLength(2), { timeout: 12_000 });
+    expect(vi.mocked(api.inspectCompatibleAssetPreview)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.compatiblePreviewStatus)).toHaveBeenCalledTimes(0);
+  }, 20_000);
+
+  it('publishes a playable primary preview before Fidelity completes and cancels only Fidelity', async () => {
+    vi.mocked(api.startLabFidelityOperation).mockImplementationOnce(async ({ primaryRequestId }) => ({
+      id: 'lab-fidelity-running',
+      status: 'running',
+      phase: 'additional_window_encode',
+      primaryRequestId,
+      primaryArtifactId: `artifact-${primaryRequestId}`,
+      primaryGeneration: `generation-${primaryRequestId}:1`,
+      materialSignature: `material-${primaryRequestId}`,
+      completedWindows: 1,
+      totalWindows: 5,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never));
+    vi.mocked(api.labFidelityOperation).mockImplementation(() => new Promise(() => undefined) as never);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+
+    await waitFor(() => expect(api.startLabFidelityOperation).toHaveBeenCalled(), { timeout: 12_000 });
+    expect(await screen.findByText('Video draft')).toBeTruthy();
+    expect(await screen.findByText(/Analyzing Fidelity window 2 of 5/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Process Video' })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Frame Fidelity' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel Fidelity' }));
+    await waitFor(() => expect(api.cancelLabFidelityOperation).toHaveBeenCalledWith('lab-fidelity-running'));
+    expect(screen.getByText(/Fidelity canceled\. Sample B remains ready and playable/i)).toBeTruthy();
+    await userEvent.click(screen.getByRole('tab', { name: 'A/B Previews' }));
+    expect(screen.getByText('Video draft')).toBeTruthy();
+  }, 20_000);
+
+  it('retries Fidelity with the existing primary request and stops polling for terminal results', async () => {
+    vi.mocked(api.startLabFidelityOperation).mockResolvedValueOnce({
+      id: 'lab-fidelity-failed',
+      status: 'failed',
+      phase: 'additional_window_metrics',
+      primaryRequestId: 'will-be-replaced-by-mock',
+      primaryArtifactId: 'artifact-will-be-replaced-by-mock',
+      primaryGeneration: 'generation-will-be-replaced-by-mock:1',
+      materialSignature: 'material-will-be-replaced-by-mock',
+      completedWindows: 1,
+      totalWindows: 5,
+      error: 'additional evidence failed',
+      retryable: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+    await screen.findByText('Video draft');
+    await userEvent.click(screen.getByRole('tab', { name: 'Frame Fidelity' }));
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Frame Fidelity' }).getAttribute('aria-selected')).toBe('true'));
+    await waitFor(() => expect(screen.getByText(/additional evidence failed/i)).toBeTruthy(), { timeout: 12_000 });
+    expect(api.labFidelityOperation).not.toHaveBeenCalled();
+
+    const primaryRequestId = vi.mocked(api.startLabFidelityOperation).mock.calls[0]?.[0].primaryRequestId;
+    const previewGenerationRequests = vi.mocked(api.createCompatiblePreviewRequest).mock.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: 'Retry Fidelity' }));
+    await waitFor(() => expect(api.startLabFidelityOperation).toHaveBeenCalledTimes(2), { timeout: 12_000 });
+    expect(vi.mocked(api.startLabFidelityOperation).mock.calls[1]?.[0].primaryRequestId).toBe(primaryRequestId);
+    // Retry re-registers the canonical Sample A request so the backend can
+    // validate the physical source revision. Registration is not generation;
+    // the cached inspection remains reusable.
+    expect(vi.mocked(api.createCompatiblePreviewRequest).mock.calls.length).toBe(previewGenerationRequests + 1);
+  }, 20_000);
+
+  it('maps a lost process-local operation to retryable Fidelity without changing Preview Ready', async () => {
+    vi.mocked(api.startLabFidelityOperation).mockImplementationOnce(async ({ primaryRequestId }) => ({
+      id: 'lab-fidelity-restarted',
+      status: 'running',
+      phase: 'primary_evidence',
+      primaryRequestId,
+      primaryArtifactId: `artifact-${primaryRequestId}`,
+      primaryGeneration: `generation-${primaryRequestId}:1`,
+      materialSignature: `material-${primaryRequestId}`,
+      completedWindows: 0,
+      totalWindows: 5,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never));
+    vi.mocked(api.labFidelityOperation).mockRejectedValueOnce(new ApiRequestError('unknown operation', 404, { code: 'unknown_operation' }));
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+    await waitFor(() => expect(api.labFidelityOperation).toHaveBeenCalled(), { timeout: 6_000 });
+    await userEvent.click(screen.getByRole('tab', { name: 'Frame Fidelity' }));
+    expect(await screen.findByText(/after the backend restart/i)).toBeTruthy();
+    await userEvent.click(screen.getByRole('tab', { name: 'A/B Previews' }));
+    expect(screen.getByText('Video draft')).toBeTruthy();
+  }, 20_000);
+
+  it('ignores a late Fidelity result after the material signature changes', async () => {
+    let resolvePoll: ((operation: unknown) => void) | undefined;
+    vi.mocked(api.startLabFidelityOperation).mockImplementationOnce(async ({ primaryRequestId }) => ({
+      id: 'lab-fidelity-signature-a',
+      status: 'running',
+      phase: 'additional_window_encode',
+      primaryRequestId,
+      primaryArtifactId: `artifact-${primaryRequestId}`,
+      primaryGeneration: `generation-${primaryRequestId}:1`,
+      materialSignature: `material-${primaryRequestId}`,
+      completedWindows: 1,
+      totalWindows: 5,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as never));
+    vi.mocked(api.labFidelityOperation).mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePoll = resolve;
+    }) as never);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+    await waitFor(() => expect(api.labFidelityOperation).toHaveBeenCalled(), { timeout: 6_000 });
+    await userEvent.click(screen.getByRole('tab', { name: 'Frame Fidelity' }));
+    const startInput = screen.getByLabelText('Start');
+    await userEvent.clear(startInput);
+    await userEvent.type(startInput, '00:00:05');
+    expect((startInput as HTMLInputElement).value).toBe('00:00:05');
+    await waitFor(() => expect(api.cancelLabFidelityOperation).toHaveBeenCalledWith('lab-fidelity-signature-a'));
+
+    const primaryRequestIdA = vi.mocked(api.startLabFidelityOperation).mock.calls[0]?.[0].primaryRequestId ?? '';
+    resolvePoll?.({
+      id: 'lab-fidelity-signature-a',
+      status: 'completed',
+      phase: 'aggregate',
+      primaryRequestId: primaryRequestIdA,
+      primaryArtifactId: `artifact-${primaryRequestIdA}`,
+      primaryGeneration: `generation-${primaryRequestIdA}:1`,
+      materialSignature: `material-${primaryRequestIdA}`,
+      completedWindows: 1,
+      totalWindows: 1,
+      result: {
+        fidelityWindows: [{
+          position: 0.5,
+          startSeconds: 0,
+          durationSeconds: 20,
+          source: previewInspection.source,
+          output: previewInspection.output,
+          metrics: { comparable: true, ssim: 0.99, psnr: 42 },
+          requestId: primaryRequestIdA,
+          canonicalFidelity: { status: 'passed' },
+        }],
+        source: previewInspection.source,
+        reference: previewInspection.source,
+        conversion: previewInspection.output,
+        normalization: previewInspection.normalization,
+        referenceRequestId: 'reference-a',
+        conversionRequestId: primaryRequestIdA,
+        canonicalStatus: 'passed',
+        aggregateStatus: 'completed',
+        visualAggregate: { comparableCount: 1, totalCount: 1, averageSSIM: 0.99, minimumSSIM: 0.99, metricVerdict: 'Safe' },
+        overallVerdict: 'Safe',
+      },
+    });
+    await waitFor(() => expect(screen.queryByText('Overall · Safe')).toBeNull());
+    expect(api.startLabFidelityOperation).toHaveBeenCalledTimes(1);
+  }, 20_000);
+
+  it('keeps Fidelity results and media evidence read-only when switching tabs', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
+          <ProfileLabPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
+    await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(processVideo);
+    await waitFor(() => expect(api.startLabFidelityOperation).toHaveBeenCalled(), { timeout: 12_000 });
+    const counts = {
+      previews: vi.mocked(api.createCompatiblePreviewRequest).mock.calls.length,
+      probes: vi.mocked(api.inspectCompatibleAssetPreview).mock.calls.length,
+      metrics: vi.mocked(api.compatibleAssetFrameMetrics).mock.calls.length,
+      fidelity: vi.mocked(api.startLabFidelityOperation).mock.calls.length,
+    };
+
+    for (const tab of ['Technical Snapshot', 'Frame Fidelity', 'Characteristics', 'Warnings & Guidance', 'A/B Previews']) {
+      await userEvent.click(screen.getByRole('tab', { name: tab }));
+    }
+
+    expect(vi.mocked(api.createCompatiblePreviewRequest).mock.calls.length).toBe(counts.previews);
+    expect(vi.mocked(api.inspectCompatibleAssetPreview).mock.calls.length).toBe(counts.probes);
+    expect(vi.mocked(api.compatibleAssetFrameMetrics).mock.calls.length).toBe(counts.metrics);
+    expect(vi.mocked(api.startLabFidelityOperation).mock.calls.length).toBe(counts.fidelity);
+  }, 20_000);
 
   it('keeps Lab mounted and opens Suggestions when legacy collection fields are null', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });

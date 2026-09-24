@@ -47,6 +47,7 @@ import type {
   CompatiblePreviewLifecycleResponse,
   ProfileSampleEstimate,
   ProfileSampleEstimateOperation,
+  LabFidelityOperation,
   QualityRecommendationResponse,
   PreviewInspection,
   PreviewFrameMetrics,
@@ -715,6 +716,12 @@ export const api = {
     request<ProfileSampleEstimateOperation>(`/api/assets/preview/estimate/operations/${encodeURIComponent(operationId)}`),
   cancelProfileSampleEstimateOperation: (operationId: string) =>
     request<ProfileSampleEstimateOperation>(`/api/assets/preview/estimate/operations/${encodeURIComponent(operationId)}/cancel`, { method: 'POST', body: JSON.stringify({}) }),
+  startLabFidelityOperation: (input: { primaryRequestId: string; referenceRequestId?: string; durationSeconds?: number; clientCorrelationSignature?: string; materialSignature?: string; draftSignature?: string }, signal?: AbortSignal) =>
+    request<LabFidelityOperation>('/api/lab/fidelity/operations', { method: 'POST', body: JSON.stringify(input), signal }),
+  labFidelityOperation: (operationId: string, signal?: AbortSignal) =>
+    request<LabFidelityOperation>(`/api/lab/fidelity/operations/${encodeURIComponent(operationId)}`, { signal }),
+  cancelLabFidelityOperation: (operationId: string, signal?: AbortSignal) =>
+    request<LabFidelityOperation>(`/api/lab/fidelity/operations/${encodeURIComponent(operationId)}/cancel`, { method: 'POST', body: JSON.stringify({}), signal }),
   recommendEncoderQuality: ({ signal, ...input }: { path?: string; profile: ProfileInput; signal?: AbortSignal }) =>
     request<QualityRecommendationResponse>('/api/assets/quality-recommendation', { method: 'POST', body: JSON.stringify(input), signal }),
   audioPreviewUrl: ({

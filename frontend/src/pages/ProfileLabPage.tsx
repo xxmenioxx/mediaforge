@@ -42,7 +42,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import ScienceIcon from '@mui/icons-material/Science';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, ApiRequestError, createCompatiblePreviewOwnerId, waitForCompatiblePreviewReady } from '../api/client';
 import { compatiblePreviewRecoveryMessage, isCompatiblePreviewRecoveryError } from '../api/compatible-preview-recovery';
@@ -56,6 +56,8 @@ import type {
   Profile,
   ProfileInput,
   ProfileSampleEstimateOperation,
+  LabFidelityOperation,
+  CompatiblePreviewLifecycleResponse,
   ProfileSuggestion,
   AdvisorFinding,
 	RestorationRecommendationPlan,
@@ -193,6 +195,11 @@ type LabSettingsProfileSave = {
 };
 
 type LabFidelityInspection = {
+  operationId?: string;
+  materialSignature?: string;
+  primaryRequestId?: string;
+  primaryArtifactId?: string;
+  primaryGeneration?: string;
   assetPath: string;
   draftSignature: string;
   requestSignature: string;
@@ -211,6 +218,7 @@ type LabFidelityInspection = {
   measuredHEVCTier?: string;
   hevcBitstreamEvidence?: HEVCBitstreamEvidence;
   hevcLevelValidation: { verdict: 'safe' | 'review' | 'reject'; status: 'validated' | 'mismatch' | 'unavailable' | 'unverified'; reason: string };
+  canonicalFidelity?: Record<string, unknown>;
   requestedEncoder: string;
   effectiveEncoder: string;
   requestedQSVRateControl: string;
@@ -237,17 +245,174 @@ type LabFidelityInspection = {
     source: PreviewVideoCharacteristics;
     output: PreviewVideoCharacteristics;
     metrics: PreviewFrameMetrics;
-    options: CompatiblePreviewOptions;
     requestId: string;
+    artifactId?: string;
+    generationToken?: string;
+    generationVersion?: number;
+    status: string;
+    canonicalFidelity?: Record<string, unknown>;
   }>;
   completedAt: number;
+  canonicalStatus?: string;
+  aggregateStatus?: string;
+  visualAggregate?: {
+    comparableCount: number;
+    totalCount: number;
+    averageSSIM?: number;
+    minimumSSIM?: number;
+    averagePSNR?: number;
+    minimumPSNR?: number;
+    worstWindowIndex?: number;
+    worstPosition?: number;
+    metricVerdict?: 'Safe' | 'Review' | 'Reject' | string;
+  };
+  overallVerdict?: 'Safe' | 'Review' | 'Reject' | string;
 };
 
 type CachedLabReferencePreview = {
   signature: string;
   requestId: string;
+  artifactId: string;
+  generationToken: string;
+  generationVersion: number;
+  sourceRevision: Record<string, unknown>;
+  start: string;
+  seconds: number;
+  normalization: Record<string, unknown>;
   inspection: PreviewInspection;
 };
+
+type LabFidelityRunIdentity = {
+  operationId: string;
+  primaryRequestId: string;
+  primaryArtifactId: string;
+  primaryGeneration: string;
+  materialSignature: string;
+  localRequestSignature: string;
+};
+
+function labFidelityOperationMatchesRun(operation: LabFidelityOperation, run: LabFidelityRunIdentity) {
+  return operation.id === run.operationId &&
+    operation.primaryRequestId === run.primaryRequestId &&
+    operation.primaryArtifactId === run.primaryArtifactId &&
+    operation.primaryGeneration === run.primaryGeneration &&
+    operation.materialSignature === run.materialSignature;
+}
+
+function labReferenceStatusMatchesCache(cache: CachedLabReferencePreview, status: CompatiblePreviewLifecycleResponse) {
+  return status.state === 'ready' &&
+    status.requestId === cache.requestId &&
+    status.artifactId === cache.artifactId &&
+    status.generationToken === cache.generationToken &&
+    status.generationVersion === cache.generationVersion &&
+    JSON.stringify(status.sourceRevision ?? {}) === JSON.stringify(cache.sourceRevision) &&
+    String(status.start ?? '') === cache.start &&
+    Number(status.seconds ?? 0) === cache.seconds &&
+    JSON.stringify(status.normalization ?? {}) === JSON.stringify(cache.normalization);
+}
+
+function cachedLabReferenceFromReadyStatus(
+  signature: string,
+  requestId: string,
+  inspection: PreviewInspection,
+  status: CompatiblePreviewLifecycleResponse,
+): CachedLabReferencePreview | null {
+  if (
+    status.state !== 'ready' ||
+    !status.artifactId ||
+    !status.generationToken ||
+    typeof status.generationVersion !== 'number' ||
+    !status.sourceRevision ||
+    !status.start ||
+    typeof status.seconds !== 'number' ||
+    !status.normalization
+  ) return null;
+  return {
+    signature,
+    requestId,
+    artifactId: status.artifactId,
+    generationToken: status.generationToken,
+    generationVersion: status.generationVersion,
+    sourceRevision: status.sourceRevision,
+    start: status.start,
+    seconds: status.seconds,
+    normalization: status.normalization,
+    inspection,
+  };
+}
+
+function labInspectionFromOperation(
+  operation: LabFidelityOperation,
+  fallback: { assetPath: string; draftSignature: string; requestSignature: string; reference?: PreviewInspection },
+): LabFidelityInspection | null {
+  const result = operation.result;
+  if (!result || typeof result !== 'object') return null;
+  const windows = Array.isArray(result.fidelityWindows) ? result.fidelityWindows : [];
+  if (!windows.length) return null;
+  return {
+    ...result,
+    operationId: operation.id,
+    materialSignature: operation.materialSignature,
+    primaryRequestId: operation.primaryRequestId,
+    primaryArtifactId: operation.primaryArtifactId,
+    primaryGeneration: operation.primaryGeneration,
+    assetPath: typeof result.assetPath === 'string' ? result.assetPath : fallback.assetPath,
+    draftSignature: typeof result.draftSignature === 'string' ? result.draftSignature : fallback.draftSignature,
+    requestSignature: typeof result.requestSignature === 'string' && result.requestSignature ? result.requestSignature : fallback.requestSignature,
+    source: (result.source ?? fallback.reference?.source) as PreviewVideoCharacteristics,
+    reference: (result.reference ?? fallback.reference?.output ?? result.source) as PreviewVideoCharacteristics,
+    conversion: result.conversion as PreviewVideoCharacteristics,
+    sourceFrameStructure: (result.sourceFrameStructure ?? {}) as QSVFrameStructureAnalysis,
+    outputFrameStructure: (result.outputFrameStructure ?? {}) as QSVFrameStructureAnalysis,
+    qsvFrameWarnings: Array.isArray(result.qsvFrameWarnings) ? result.qsvFrameWarnings as string[] : [],
+    qsvFeatureStatus: (result.qsvFeatureStatus ?? {}) as QSVFeatureStatus,
+    frameRecommendation: (result.frameRecommendation ?? { targetGopFrames: 0, targetGopSeconds: 0, maxBFrames: 0, confidence: 'unverified', reasons: [] }) as LabFidelityInspection['frameRecommendation'],
+    frameValidation: (result.frameValidation ?? { verdict: 'review', confidence: 'unverified', reasons: [] }) as LabFidelityInspection['frameValidation'],
+    hevcLevelValidation: (result.hevcLevelValidation ?? { verdict: 'review', status: 'unverified', reason: 'Canonical validation is still being collected.' }) as LabFidelityInspection['hevcLevelValidation'],
+    canonicalFidelity: (result.canonicalFidelity ?? {}) as Record<string, unknown>,
+    requestedEncoder: String(result.requestedEncoder ?? ''),
+    effectiveEncoder: String(result.effectiveEncoder ?? ''),
+    requestedQSVRateControl: String(result.requestedQSVRateControl ?? ''),
+    effectiveQSVRateControl: String(result.effectiveQSVRateControl ?? ''),
+    referenceEncoder: String(result.referenceEncoder ?? 'source'),
+    ffmpegArgs: Array.isArray(result.ffmpegArgs) ? result.ffmpegArgs as string[] : [],
+    normalization: result.normalization as LabFidelityInspection['normalization'],
+    metrics: (result.metrics ?? {}) as PreviewFrameMetrics,
+    referenceRequestId: String(result.referenceRequestId ?? ''),
+    conversionRequestId: String(result.conversionRequestId ?? operation.primaryRequestId),
+    fidelityWindows: windows.map((window) => ({
+      position: Number(window.position ?? 0),
+      startSeconds: Number(window.startSeconds ?? 0),
+      durationSeconds: Number(window.durationSeconds ?? 0),
+      source: window.source as PreviewVideoCharacteristics,
+      output: window.output as PreviewVideoCharacteristics,
+      metrics: window.metrics as PreviewFrameMetrics,
+      requestId: String(window.requestId ?? ''),
+      artifactId: typeof window.artifactId === 'string' ? window.artifactId : undefined,
+      generationToken: typeof window.generationToken === 'string' ? window.generationToken : undefined,
+      generationVersion: typeof window.generationVersion === 'number' ? window.generationVersion : undefined,
+      status: String(window.status ?? 'completed'),
+      canonicalFidelity: (window.canonicalFidelity ?? {}) as Record<string, unknown>,
+    })),
+    completedAt: Number(result.completedAt ?? 0),
+    canonicalStatus: typeof result.canonicalStatus === 'string' ? result.canonicalStatus : undefined,
+    aggregateStatus: typeof result.aggregateStatus === 'string' ? result.aggregateStatus : undefined,
+    visualAggregate: (result.visualAggregate ?? undefined) as LabFidelityInspection['visualAggregate'],
+    overallVerdict: typeof result.overallVerdict === 'string' ? result.overallVerdict : undefined,
+  };
+}
+
+function abortableLabFidelityDelay(milliseconds: number, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+  return new Promise<void>((resolve, reject) => {
+    const timer = globalThis.setTimeout(resolve, milliseconds);
+    const onAbort = () => {
+      globalThis.clearTimeout(timer);
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 const languageOptions = [
   { value: 'jpn', label: 'Japanese' },
@@ -777,6 +942,14 @@ export function ProfileLabPage() {
   const [fidelityOpen, setFidelityOpen] = useState(true);
   const [fidelityTab, setFidelityTab] = useState<'previews' | 'technical' | 'frames' | 'characteristics' | 'warnings'>('previews');
   const [lastFidelityInspection, setLastFidelityInspection] = useState<LabFidelityInspection | null>(null);
+  const [labFidelityOperation, setLabFidelityOperation] = useState<LabFidelityOperation | null>(null);
+  const labFidelityOperationRef = useRef<LabFidelityOperation | null>(null);
+  const labFidelityRunIdentityRef = useRef<LabFidelityRunIdentity | null>(null);
+  const currentVideoRequestSignatureRef = useRef('');
+  const primaryPreviewReadyRef = useRef(false);
+  const processedVideoStatusChange = useCallback((status: 'idle' | 'loading' | 'ready' | 'error') => {
+    setVideoPreviewStatus((current) => current === 'ready' && status === 'loading' ? current : status);
+  }, []);
   const [recommendationReport, setRecommendationReport] = useState<LabRecommendationReport | null>(null);
   const [recommendationSuggestion, setRecommendationSuggestion] = useState<ProfileSuggestion | null>(null);
   const [recommendationOpen, setRecommendationOpen] = useState(false);
@@ -901,6 +1074,7 @@ export function ProfileLabPage() {
       previewNormalization,
       videoDraft,
     );
+  currentVideoRequestSignatureRef.current = currentVideoRequestSignature;
 
   const videoPreviewStale = videoPreviewNonce > 0 && videoPreviewStatus !== 'loading' && (
     processedPreviewNormalization !== previewNormalization ||
@@ -914,8 +1088,15 @@ export function ProfileLabPage() {
       setProcessedReferencePreviewRequestId('');
     }
     if (processedVideoRequestSignature && processedVideoRequestSignature !== currentVideoRequestSignature) {
+      const activeFidelityOperation = labFidelityOperationRef.current ?? labFidelityOperation;
+      if (activeFidelityOperation && ['queued', 'running'].includes(activeFidelityOperation.status)) {
+        void api.cancelLabFidelityOperation(activeFidelityOperation.id).catch(() => undefined);
+      }
       fidelityAbortRef.current?.abort();
       videoPreviewCancelRef.current?.abort();
+      labFidelityOperationRef.current = null;
+      labFidelityRunIdentityRef.current = null;
+      setLabFidelityOperation(null);
       setProcessedVideoPreviewRequestId('');
       setVideoPreviewNonce(0);
       setVideoPreviewStatus('idle');
@@ -1201,120 +1382,107 @@ export function ProfileLabPage() {
       reference,
       referenceSignature,
       conversion,
+      primaryRequestId,
       signal,
       onPrepared,
+      onProgress,
     }: {
       reference: CompatiblePreviewOptions;
       referenceSignature: string;
       conversion: CompatiblePreviewOptions;
+      primaryRequestId?: string;
       signal?: AbortSignal;
       onPrepared?: (referenceRequestId: string, conversionRequestId: string) => void;
+      onProgress?: (operation: LabFidelityOperation) => void;
     }): Promise<LabFidelityInspection> => {
 
-      const cachedReference =
-        referencePreviewCacheRef.current?.signature ===
-        referenceSignature
+      const cachedReferenceCandidate =
+        referencePreviewCacheRef.current?.signature === referenceSignature
           ? referencePreviewCacheRef.current
           : null;
-
-      const referenceRequestPromise = cachedReference
-        ? Promise.resolve({
-            requestId: cachedReference.requestId,
-          })
-        : api.createCompatiblePreviewRequest(
-            reference,
-            signal,
-          );
-
-      const conversionRequestPromise =
-        api.createCompatiblePreviewRequest(
-          conversion,
-          signal,
-        );
-
-      const [referenceRequest, conversionRequest] =
-        await Promise.all([
-          referenceRequestPromise,
-          conversionRequestPromise,
-        ]);
-
-      const conversionOwnerId = createCompatiblePreviewOwnerId();
-      if (!cachedReference) {
-        await waitForCompatiblePreviewReady(referenceRequest.requestId, signal, createCompatiblePreviewOwnerId());
-      }
-      await waitForCompatiblePreviewReady(conversionRequest.requestId, signal, conversionOwnerId);
-
-      onPrepared?.(
-        referenceRequest.requestId,
-        conversionRequest.requestId,
-      );
-
-      let referenceInspection: PreviewInspection;
-
-      if (cachedReference) {
-        referenceInspection =
-          cachedReference.inspection;
-      } else {
-        referenceInspection =
-          await api.inspectCompatibleAssetPreview(
-            referenceRequest.requestId,
-            signal,
-          );
-
-        if (!signal?.aborted) {
-          referencePreviewCacheRef.current = {
-            signature: referenceSignature,
-            requestId: referenceRequest.requestId,
-            inspection: referenceInspection,
-          };
+      // Registration is the authoritative source-revision validation seam. It
+      // is intentionally cheap and does not start generation; GET /status is
+      // observational and only describes the descriptor already stored for a
+      // request, so it cannot validate a same-path source replacement by
+      // itself.
+      const referenceRequest = await api.createCompatiblePreviewRequest(reference, signal);
+      let cachedReference: CachedLabReferencePreview | null = null;
+      let cachedReferenceStatus: CompatiblePreviewLifecycleResponse | null = null;
+      if (
+        cachedReferenceCandidate &&
+        referenceRequest.requestId === cachedReferenceCandidate.requestId &&
+        referenceRequest.cacheIdentity === cachedReferenceCandidate.artifactId
+      ) {
+        try {
+          const status = await api.compatiblePreviewStatus(referenceRequest.requestId, signal);
+          if (labReferenceStatusMatchesCache(cachedReferenceCandidate, status)) {
+            cachedReference = cachedReferenceCandidate;
+            cachedReferenceStatus = status;
+          }
+        } catch (error) {
+          if (signal?.aborted) throw error;
         }
       }
+      if (!cachedReference) referencePreviewCacheRef.current = null;
+      const conversionRequest = primaryRequestId
+        ? { requestId: primaryRequestId }
+        : await api.createCompatiblePreviewRequest(conversion, signal);
+      const referenceReady = cachedReference
+        ? Promise.resolve(cachedReferenceStatus as CompatiblePreviewLifecycleResponse)
+        : waitForCompatiblePreviewReady(referenceRequest.requestId, signal, createCompatiblePreviewOwnerId());
 
-      const duration = selectedAssetSnapshot?.duration ?? 0;
-      const sampling = labFrameSamplingPolicy(settings.data, duration);
-      const { windowSeconds, positions } = sampling;
-      const conversionInspections: Array<{ inspection: PreviewInspection; metrics: PreviewFrameMetrics; options: CompatiblePreviewOptions; requestId: string; position: number; startSeconds: number }> = [];
-      for (const position of positions) {
-        const startSeconds = Math.max(0, Math.min(Math.max(0, duration - windowSeconds), duration * position - windowSeconds / 2));
-        const options = { ...conversion, start: String(Math.floor(startSeconds)), seconds: Math.round(windowSeconds), ephemeral: false };
-        const previewRequest = await api.createCompatiblePreviewRequest(options, signal);
-        await waitForCompatiblePreviewReady(previewRequest.requestId, signal, createCompatiblePreviewOwnerId());
-        const inspection = await api.inspectCompatibleAssetPreview(previewRequest.requestId, signal);
-        const metrics = await api.compatibleAssetFrameMetrics(previewRequest.requestId, signal).catch((error: unknown) => ({
-          comparable: false,
-          reason: error instanceof Error ? error.message : 'Frame fidelity metrics were not available for this region.',
-          sourceDimensions: '',
-          outputDimensions: '',
-        }));
-        conversionInspections.push({ inspection, metrics, options, requestId: previewRequest.requestId, position, startSeconds });
+      // The primary request is the only processed request started before the
+      // background operation. Preview Ready is emitted at this barrier; the
+      // operation owns all subsequent Fidelity windows and evidence work.
+      await waitForCompatiblePreviewReady(conversionRequest.requestId, signal, createCompatiblePreviewOwnerId());
+      onPrepared?.(referenceRequest.requestId, conversionRequest.requestId);
+
+      const started = await api.startLabFidelityOperation({
+        primaryRequestId: conversionRequest.requestId,
+        referenceRequestId: referenceRequest.requestId,
+        durationSeconds: selectedAssetSnapshot?.duration ?? 0,
+        clientCorrelationSignature: labOperationSignature(labVideoRequestSignature(
+          conversion.path,
+          String(conversion.start ?? '00:00:00'),
+          Number(conversion.seconds ?? 20),
+          conversion.previewNormalization ?? 'normalize_bt709',
+          conversion.profile ?? videoDraft,
+        )),
+        draftSignature: labOperationSignature(JSON.stringify(conversion.profile ?? videoDraft)),
+      }, signal);
+      onProgress?.(started);
+      let operation = started;
+      let referenceInspection: PreviewInspection | undefined = cachedReference?.inspection;
+      const referenceReadyStatus = await referenceReady;
+      if (!cachedReference && !signal?.aborted) {
+        referenceInspection = await api.inspectCompatibleAssetPreview(referenceRequest.requestId, signal);
+        const nextCache = cachedLabReferenceFromReadyStatus(referenceSignature, referenceRequest.requestId, referenceInspection, referenceReadyStatus);
+        if (nextCache) referencePreviewCacheRef.current = nextCache;
       }
-      const representativeWindow = conversionInspections[Math.floor(conversionInspections.length / 2)];
-      const conversionInspection = representativeWindow.inspection;
-      const outputFrameStructure = aggregateFrameStructureWindows(conversionInspections.map(({ inspection, position, startSeconds }) => ({ analysis: inspection.outputFrameStructure, position, startSeconds, durationSeconds: windowSeconds })));
-      const sourceFrameStructure = selectedAssetSnapshot?.frameStructureAnalysis ?? conversionInspection.sourceFrameStructure;
-      const frameRecommendation = frameStructureRecommendationForLab(
-        sourceFrameStructure,
-        selectedAssetSnapshot,
-        conversion.profile,
-        conversionInspection.frameStructureRecommendation,
-      );
-      const frameValidation = frameStructureValidationForLab(frameRecommendation, sourceFrameStructure, outputFrameStructure, conversion.profile ?? videoDraft, conversionInspection.qsvFeatureStatus);
-      const requestedHEVCLevel = conversionInspection.effectiveVideoDecision?.hevcLevel;
-      const expectedHEVCTier = conversionInspection.effectiveVideoDecision?.hevcTier;
-      const hevcBitstreamEvidence = conversionInspection.hevcBitstreamEvidence;
-      const measuredHEVCLevel = hevcBitstreamEvidence?.generalLevel;
-      const measuredHEVCTier = hevcBitstreamEvidence?.generalTier;
-      const hevcLevelValidation = validateHEVCLevelForLab(
-        requestedHEVCLevel,
-        expectedHEVCTier,
-        measuredHEVCLevel,
-        measuredHEVCTier,
-        hevcBitstreamEvidence,
-        conversionInspection.output.codec,
-      );
-      return {
+      while (!['completed', 'failed', 'canceled'].includes(operation.status)) {
+        await abortableLabFidelityDelay(2_000, signal);
+        try {
+          operation = await api.labFidelityOperation(operation.id, signal);
+          onProgress?.(operation);
+        } catch (error) {
+          if (error instanceof ApiRequestError && error.code === 'unknown_operation') {
+            onProgress?.({
+              ...operation,
+              status: 'failed',
+              phase: 'failed',
+              error: 'LAB Fidelity operation is no longer available after the backend restart.',
+              retryable: true,
+            });
+          }
+          throw error;
+        }
+      }
+      if (operation.status !== 'completed') {
+        throw new ApiRequestError(operation.error ?? `LAB Fidelity is ${operation.status}`, 409, { state: operation.status, retryable: operation.retryable });
+      }
+      const inspection = labInspectionFromOperation(operation, {
         assetPath: conversion.path,
-        draftSignature: JSON.stringify(conversion.profile ?? null),
+        draftSignature: JSON.stringify(conversion.profile ?? videoDraft),
         requestSignature: labVideoRequestSignature(
           conversion.path,
           String(conversion.start ?? '00:00:00'),
@@ -1322,59 +1490,65 @@ export function ProfileLabPage() {
           conversion.previewNormalization ?? 'normalize_bt709',
           conversion.profile ?? videoDraft,
         ),
-        source: referenceInspection.source,
-        reference: referenceInspection.output,
-        conversion: conversionInspection.output,
-        sourceFrameStructure,
-        outputFrameStructure,
-        qsvFrameWarnings: [...new Set(conversionInspections.flatMap(({ inspection }) => inspection.qsvFrameWarnings))],
-        qsvFeatureStatus: conversionInspection.qsvFeatureStatus,
-        frameRecommendation,
-        frameValidation,
-        requestedHEVCLevel,
-        expectedHEVCTier,
-        measuredHEVCLevel,
-        measuredHEVCTier,
-        hevcBitstreamEvidence,
-        hevcLevelValidation,
-        requestedEncoder: conversionInspection.requestedEncoder,
-        effectiveEncoder: conversionInspection.effectiveEncoder,
-        requestedQSVRateControl: conversionInspection.requestedQSVRateControl,
-        effectiveQSVRateControl: conversionInspection.effectiveQSVRateControl,
-        effectiveVideoDecision: conversionInspection.effectiveVideoDecision,
-        frameStructureRecommendation:
-          conversionInspection.frameStructureRecommendation,
-        referenceEncoder: referenceInspection.effectiveEncoder,
-        ffmpegArgs: conversionInspection.ffmpegArgs,
-        normalization: referenceInspection.normalization,
-        metrics: representativeWindow.metrics,
-        referenceRequestId: referenceRequest.requestId,
-        conversionRequestId: conversionRequest.requestId,
-        fidelityWindows: conversionInspections.map((window) => ({
-          position: window.position,
-          startSeconds: window.startSeconds,
-          durationSeconds: windowSeconds,
-          source: window.inspection.source,
-          output: window.inspection.output,
-          metrics: window.metrics,
-          options: window.options,
-          requestId: window.requestId,
-        })),
-        completedAt: Date.now(),
-      };
+        reference: referenceInspection,
+      });
+      if (!inspection) throw new Error('LAB Fidelity completed without a bounded result');
+      return inspection;
+
     },
-    onSuccess: (inspection) => {
+    onSuccess: (inspection, variables) => {
+      const operationSignature = labVideoRequestSignature(
+        variables.conversion.path,
+        String(variables.conversion.start ?? '00:00:00'),
+        Number(variables.conversion.seconds ?? 20),
+        variables.conversion.previewNormalization ?? 'normalize_bt709',
+        variables.conversion.profile ?? videoDraft,
+      );
+      const activeRun = labFidelityRunIdentityRef.current;
+      if (
+        variables.signal?.aborted ||
+        variables.conversion.path !== assetPath ||
+        operationSignature !== currentVideoRequestSignatureRef.current ||
+        !activeRun ||
+        inspection.operationId !== activeRun.operationId ||
+        inspection.primaryRequestId !== activeRun.primaryRequestId ||
+        inspection.primaryArtifactId !== activeRun.primaryArtifactId ||
+        inspection.primaryGeneration !== activeRun.primaryGeneration ||
+        inspection.materialSignature !== activeRun.materialSignature
+      ) return;
       setLastFidelityInspection(inspection);
       setProcessedReferencePreviewRequestId(inspection.referenceRequestId);
       setProcessedVideoPreviewRequestId(inspection.conversionRequestId);
+      primaryPreviewReadyRef.current = true;
       setVideoPreviewStatus('ready');
     },
-    onError: (error) => {
+    onError: (error, variables) => {
+      const operationSignature = labVideoRequestSignature(
+        variables.conversion.path,
+        String(variables.conversion.start ?? '00:00:00'),
+        Number(variables.conversion.seconds ?? 20),
+        variables.conversion.previewNormalization ?? 'normalize_bt709',
+        variables.conversion.profile ?? videoDraft,
+      );
+      if (
+        variables.signal?.aborted ||
+        variables.conversion.path !== assetPath ||
+        operationSignature !== currentVideoRequestSignature
+      ) return;
+      if (!isCanceledFidelityRequest(error) && (error instanceof ApiRequestError && error.code === 'unknown_operation')) {
+        const activeOperation = labFidelityOperationRef.current;
+        setLabFidelityOperation((current) => {
+          const operation = current ?? activeOperation;
+          return operation ? { ...operation, status: 'failed', phase: 'failed', error: 'LAB Fidelity operation is no longer available after the backend restart.', retryable: true } : current;
+        });
+      }
       if (error instanceof ApiRequestError && ['expired', 'unknown_request', 'stale_artifact', 'interrupted'].includes(error.code ?? error.state ?? '')) {
         setProcessedReferencePreviewRequestId('');
         setProcessedVideoPreviewRequestId('');
       }
-      setVideoPreviewStatus('error');
+      if (!variables.primaryRequestId && !primaryPreviewReadyRef.current) {
+        setVideoPreviewStatus('error');
+      }
     },
     retry: (failureCount, error) => failureCount < 1 && isCanceledFidelityRequest(error),
     retryDelay: 250,
@@ -1655,11 +1829,12 @@ export function ProfileLabPage() {
       : sampleEstimateOperation?.phase === 'finalizing'
         ? 'Finalizing estimate…'
         : 'Estimating output size';
-  const labAnalysisPending = trackSnapshot.isPending || autoRecommendation.isPending || fidelityInspection.isPending || startProfileSampleEstimate.isPending || sampleEstimateActive || videoPreviewStatus === 'loading' || audioPreviewStatus === 'loading';
-  const labAnalysisPhase = fidelityInspection.isPending
-    ? 'Encoding preview windows and validating output structure'
-    : videoPreviewStatus === 'loading'
-      ? 'Encoding the video preview'
+  const labFidelityRunning = labFidelityOperation?.status === 'queued' || labFidelityOperation?.status === 'running';
+  const labAnalysisPending = trackSnapshot.isPending || autoRecommendation.isPending || startProfileSampleEstimate.isPending || sampleEstimateActive || videoPreviewStatus === 'loading' || audioPreviewStatus === 'loading';
+  const labAnalysisPhase = videoPreviewStatus === 'loading'
+    ? 'Preparing the primary video preview'
+    : labFidelityRunning
+      ? `Analyzing Fidelity window ${Math.min((labFidelityOperation?.completedWindows ?? 0) + 1, labFidelityOperation?.totalWindows ?? 1)} of ${labFidelityOperation?.totalWindows ?? 1}`
       : audioPreviewStatus === 'loading'
         ? 'Encoding and analyzing the audio preview'
     : autoRecommendation.isPending
@@ -1694,6 +1869,12 @@ export function ProfileLabPage() {
     setProcessedVideoPreviewRequestId('');
     setProcessedVideoDraftSignature('');
     setProcessedVideoRequestSignature('');
+    if (labFidelityOperation && ['queued', 'running'].includes(labFidelityOperation.status)) {
+      void api.cancelLabFidelityOperation(labFidelityOperation.id).catch(() => undefined);
+    }
+    labFidelityOperationRef.current = null;
+    labFidelityRunIdentityRef.current = null;
+    setLabFidelityOperation(null);
     fidelityInspection.reset();
     setLastFidelityInspection(null);
     encoderQualityRecommendation.reset();
@@ -2482,6 +2663,42 @@ export function ProfileLabPage() {
     scrollToPreviews();
   }
 
+  function applyLabFidelityProgress(
+    operation: LabFidelityOperation,
+    controller: AbortController,
+    localRequestSignature: string,
+    path: string,
+    draft: ProfileInput,
+    referenceSignature: string,
+  ) {
+    if (controller.signal.aborted || currentVideoRequestSignatureRef.current !== localRequestSignature) return;
+    let run = labFidelityRunIdentityRef.current;
+    if (!run) {
+      if (!operation.id || !operation.primaryRequestId || !operation.primaryArtifactId || !operation.primaryGeneration || !operation.materialSignature) return;
+      run = {
+        operationId: operation.id,
+        primaryRequestId: operation.primaryRequestId,
+        primaryArtifactId: operation.primaryArtifactId,
+        primaryGeneration: operation.primaryGeneration,
+        materialSignature: operation.materialSignature,
+        localRequestSignature,
+      };
+      labFidelityRunIdentityRef.current = run;
+    }
+    if (!labFidelityOperationMatchesRun(operation, run) || run.localRequestSignature !== localRequestSignature) return;
+    labFidelityOperationRef.current = operation;
+    setLabFidelityOperation(operation);
+    const inspection = labInspectionFromOperation(operation, {
+      assetPath: path,
+      draftSignature: JSON.stringify(draft),
+      requestSignature: localRequestSignature,
+      reference: referencePreviewCacheRef.current?.signature === referenceSignature ? referencePreviewCacheRef.current.inspection : undefined,
+    });
+    if (inspection && inspection.operationId === run.operationId && inspection.materialSignature === run.materialSignature) {
+      setLastFidelityInspection(inspection);
+    }
+  }
+
   function processVideoPreview() {
     if (!assetPath || !isValidPreviewStart(start)) return;
 
@@ -2491,6 +2708,12 @@ export function ProfileLabPage() {
       
     fidelityAbortRef.current?.abort();
     videoPreviewCancelRef.current?.abort();
+    if (labFidelityOperation && ['queued', 'running'].includes(labFidelityOperation.status)) {
+      void api.cancelLabFidelityOperation(labFidelityOperation.id).catch(() => undefined);
+    }
+    labFidelityOperationRef.current = null;
+    labFidelityRunIdentityRef.current = null;
+    setLabFidelityOperation(null);
     const controller = new AbortController();
     fidelityAbortRef.current = controller;
     videoPreviewCancelRef.current = controller;
@@ -2509,6 +2732,7 @@ export function ProfileLabPage() {
     }
 
     setProcessedVideoPreviewRequestId('');
+    primaryPreviewReadyRef.current = false;
     setVideoPreviewStatus('loading');
     if (assetPath) {
       fidelityInspection.mutate({
@@ -2536,12 +2760,15 @@ export function ProfileLabPage() {
           previewNormalization,
           profile: videoDraft,
         },
+        onProgress: (operation) => applyLabFidelityProgress(operation, controller, currentVideoRequestSignature, assetPath, videoDraft, currentReferenceRequestSignature),
         signal: controller.signal,
         onPrepared: (referenceRequestId, conversionRequestId) => {
           if (controller.signal.aborted) return;
           setProcessedReferencePreviewRequestId(referenceRequestId);
           setProcessedVideoPreviewRequestId(conversionRequestId);
           setVideoPreviewNonce((current) => current + 1);
+          primaryPreviewReadyRef.current = true;
+          setVideoPreviewStatus('ready');
         },
       });
     }
@@ -2567,6 +2794,16 @@ export function ProfileLabPage() {
     if (trackSnapshot.isPending && labSnapshotOperation?.status === 'running') {
       setLabSnapshotOperation(await api.cancelSnapshotOperation(labSnapshotOperation.id));
     }
+    if (labFidelityOperation && ['queued', 'running'].includes(labFidelityOperation.status)) {
+      try {
+        const canceledOperation = await api.cancelLabFidelityOperation(labFidelityOperation.id);
+        labFidelityOperationRef.current = canceledOperation;
+        setLabFidelityOperation(canceledOperation);
+      } catch {
+        // The local abort still releases the client-side operation owner when
+        // the backend has already completed or expired the process-local op.
+      }
+    }
     if (fidelityInspection.isPending) fidelityAbortRef.current?.abort();
     if (sampleEstimateActive && sampleEstimateOperation) {
       await cancelProfileSampleEstimate.mutateAsync(sampleEstimateOperation.id);
@@ -2585,17 +2822,68 @@ export function ProfileLabPage() {
   }
 
   function resetProcessedVideoPreview() {
+    if (labFidelityOperation && ['queued', 'running'].includes(labFidelityOperation.status)) {
+      void api.cancelLabFidelityOperation(labFidelityOperation.id).catch(() => undefined);
+    }
     fidelityAbortRef.current?.abort();
     videoPreviewCancelRef.current?.abort();
     referencePreviewCacheRef.current = null;
 
     setVideoPreviewNonce(0);
+    primaryPreviewReadyRef.current = false;
     setVideoPreviewStatus('idle');
     setProcessedReferencePreviewRequestId('');
     setProcessedVideoPreviewRequestId('');
     setProcessedVideoDraftSignature('');
     setProcessedVideoRequestSignature('');
     fidelityInspection.reset();
+    labFidelityOperationRef.current = null;
+    labFidelityRunIdentityRef.current = null;
+    setLabFidelityOperation(null);
+  }
+
+  function retryLabFidelity() {
+    if (!assetPath || !processedVideoPreviewRequestId || videoPreviewStatus !== 'ready') return;
+    fidelityAbortRef.current?.abort();
+    const controller = new AbortController();
+    fidelityAbortRef.current = controller;
+    setVideoPreviewSignal(controller.signal);
+    labFidelityOperationRef.current = null;
+    labFidelityRunIdentityRef.current = null;
+    setLabFidelityOperation(null);
+    fidelityInspection.reset();
+    fidelityInspection.mutate({
+      primaryRequestId: processedVideoPreviewRequestId,
+      reference: {
+        path: assetPath,
+        start,
+        seconds,
+        mode: 'quality',
+        videoCodec: 'x264',
+        qualityValue: 16,
+        videoPreset: 'medium',
+        pixFmt: 'yuv420p',
+        videoEncoder: 'libx264',
+        useHardwareIfAvailable: false,
+        globalQuality: 21,
+        previewNormalization,
+      },
+      referenceSignature: currentReferenceRequestSignature,
+      conversion: {
+        path: assetPath,
+        start,
+        seconds,
+        mode: 'quality',
+        previewNormalization,
+        profile: videoDraft,
+      },
+      signal: controller.signal,
+      onProgress: (operation) => applyLabFidelityProgress(operation, controller, currentVideoRequestSignature, assetPath, videoDraft, currentReferenceRequestSignature),
+      onPrepared: () => {
+        primaryPreviewReadyRef.current = true;
+        setVideoPreviewStatus('ready');
+      },
+    });
   }
 
   function resetProcessedPreviews() {
@@ -2737,7 +3025,7 @@ export function ProfileLabPage() {
                 <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>{formatElapsedTime(analysisElapsedSeconds)}</Typography>
               </Stack>
               <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                <Typography variant="caption">The backend owns the active operation; this page can reconnect after a reload.</Typography>
+                <Typography variant="caption">The backend owns the active Fidelity operation.</Typography>
                 {(trackSnapshot.isPending && labSnapshotOperation?.status === 'running') || fidelityInspection.isPending || sampleEstimateActive || videoPreviewStatus === 'loading' || audioPreviewStatus === 'loading' ? (
                   <Button
                     size="small"
@@ -3154,7 +3442,7 @@ export function ProfileLabPage() {
                             label="Video draft"
                             requestId={processedVideoPreviewRequestId}
                             src={api.compatibleAssetPreviewUrl(processedVideoPreviewRequestId)}
-                            onStatusChange={setVideoPreviewStatus}
+                            onStatusChange={processedVideoStatusChange}
                             cancelSignal={videoPreviewSignal}
                           />
                         ) : (
@@ -3212,18 +3500,35 @@ export function ProfileLabPage() {
                         <Box>
                           <Typography variant="h3">Fidelity validation</Typography>
                           <Typography variant="body2" color="text.secondary">
-                            Source, browser reference, and profile result are probed separately after generation.
+                            Sample B becomes playable as soon as the primary Compatible Preview is ready; Fidelity continues in the background.
                           </Typography>
                         </Box>
                         <Button size="small" onClick={() => setFidelityOpen((current) => !current)} endIcon={<ExpandMoreIcon />}>
                           {fidelityOpen ? 'Hide' : 'Show'}
                         </Button>
                       </Stack>
-                      {fidelityInspection.isPending ? <Alert severity="info">
+                      {fidelityInspection.isPending && videoPreviewStatus === 'loading' ? <Alert severity="info">
                         {analysisElapsedSeconds >= 30
                           ? `This preview encode is taking longer than usual, but is still running. Elapsed ${formatElapsedTime(analysisElapsedSeconds)}.`
                           : 'Generating previews and validating their video characteristics…'}
                       </Alert> : null}
+                      {labFidelityOperation && labFidelityRunning ? (
+                        <Alert
+                          severity="info"
+                          action={<Button color="inherit" size="small" onClick={cancelActiveLabAnalysis}>Cancel Fidelity</Button>}
+                        >
+                          Analyzing Fidelity window {Math.min((labFidelityOperation.completedWindows ?? 0) + 1, labFidelityOperation.totalWindows || 1)} of {labFidelityOperation.totalWindows || 1}
+                          {labFidelityOperation.currentStart !== undefined ? ` · ${formatElapsedTime(labFidelityOperation.currentStart)} for ${formatElapsedTime(labFidelityOperation.currentDuration ?? 0)}` : ''}
+                        </Alert>
+                      ) : null}
+                      {labFidelityOperation && (labFidelityOperation.status === 'failed' || labFidelityOperation.status === 'canceled') ? (
+                        <Alert
+                          severity={labFidelityOperation.status === 'failed' ? 'warning' : 'info'}
+                          action={<Button color="inherit" size="small" onClick={retryLabFidelity} disabled={videoPreviewStatus !== 'ready'}>Retry Fidelity</Button>}
+                        >
+                          Fidelity {labFidelityOperation.status}. {labFidelityOperation.error ? `${labFidelityOperation.error} ` : ''}Sample B remains ready and playable.
+                        </Alert>
+                      ) : null}
                       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                         <Button size="small" variant="outlined" disabled={startProfileSampleEstimate.isPending || sampleEstimateActive || !assetPath || !previewStartValid} onClick={measureProfileSamples}>Measure samples</Button>
                         {startProfileSampleEstimate.isPending || sampleEstimateActive ? <Typography variant="body2" color="text.secondary">{sampleEstimatePhase}</Typography> : null}
@@ -3262,7 +3567,7 @@ export function ProfileLabPage() {
                             <FidelityCharacteristicsTable inspection={currentFidelityInspection} />
                           )
                         ) : (
-                          !fidelityInspection.isPending
+                          !fidelityInspection.isPending && !labFidelityRunning
                             ? <Alert severity="info">Process Video to generate and validate the current profile result.</Alert>
                             : null
                         )}
@@ -4817,62 +5122,6 @@ function LabWarningsAndGuidance({
   );
 }
 
-function labFrameSamplingPolicy(settings: AppSetting[] | undefined, duration: number) {
-  const raw = settings?.find((setting) => setting.key === 'frameStructureSampling')?.value;
-  const configuredPositions = Array.isArray(raw?.positions) ? raw.positions.map(Number).filter((value) => Number.isFinite(value) && value > 0 && value < 1) : [];
-  const requestedWindows = Math.max(1, Math.min(9, Number(raw?.windows) || 5));
-  let positions = (configuredPositions.length >= requestedWindows ? configuredPositions : [0.08, 0.27, 0.5, 0.73, 0.92]).slice(0, requestedWindows);
-  let windowSeconds = Math.max(5, Math.min(60, Number(raw?.windowSeconds) || 20));
-  if (raw?.adaptive !== false) {
-    if (duration <= 60) { positions = [0.5]; windowSeconds = Math.max(1, duration); }
-    else if (duration < 120) windowSeconds = Math.min(windowSeconds, 10);
-    else if (duration < 600) windowSeconds = Math.min(windowSeconds, 15);
-  }
-  return { positions, windowSeconds };
-}
-
-function aggregateFrameStructureWindows(windows: Array<{ analysis: QSVFrameStructureAnalysis; position: number; startSeconds: number; durationSeconds: number }>): QSVFrameStructureAnalysis {
-  const total = windows.reduce((result, window) => ({
-    frames: result.frames + window.analysis.framesAnalyzed,
-    i: result.i + window.analysis.iFrames,
-    p: result.p + window.analysis.pFrames,
-    b: result.b + window.analysis.bFrames,
-    key: result.key + window.analysis.keyFrames,
-    complete: result.complete + (window.analysis.completeGops ?? Math.max(0, window.analysis.keyFrames - 1)),
-    weightedGop: result.weightedGop + window.analysis.averageGopLength * (window.analysis.completeGops ?? Math.max(0, window.analysis.keyFrames - 1)),
-  }), { frames: 0, i: 0, p: 0, b: 0, key: 0, complete: 0, weightedGop: 0 });
-  const gops = windows.map((window) => window.analysis.averageGopLength).filter((value) => value > 0);
-  const mean = gops.length ? gops.reduce((sum, value) => sum + value, 0) / gops.length : 0;
-  const coefficient = mean > 0 ? Math.sqrt(gops.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, gops.length)) / mean : 0;
-  const minimumGops = windows.map((window) => window.analysis.minimumGopLength ?? 0).filter((value) => value > 0);
-  const variability = gops.length < 2 ? 'unknown' : coefficient > 0.35 ? 'high' : coefficient > 0.15 ? 'medium' : 'low';
-  const confidence = windows.length >= 4 && total.complete >= 5 && variability === 'low' ? 'high' : windows.length >= 3 && total.complete >= 2 ? 'medium' : 'low';
-  return {
-    version: 2,
-    framesAnalyzed: total.frames,
-    iFrames: total.i,
-    pFrames: total.p,
-    bFrames: total.b,
-    keyFrames: total.key,
-    bFrameRatio: total.frames ? total.b / total.frames : 0,
-    hasBFrames: total.b > 0,
-    maxConsecutiveBFrames: Math.max(0, ...windows.map((window) => window.analysis.maxConsecutiveBFrames)),
-    averageGopLength: total.complete ? total.weightedGop / total.complete : 0,
-    minimumGopLength: minimumGops.length ? Math.min(...minimumGops) : 0,
-    maximumGopLength: Math.max(0, ...windows.map((window) => window.analysis.maximumGopLength ?? 0)),
-    completeGops: total.complete,
-    sampledSeconds: windows.reduce((sum, window) => sum + window.durationSeconds, 0),
-    windowCount: windows.length,
-    windowLengthSeconds: windows[0]?.durationSeconds ?? 0,
-    positions: windows.map((window) => window.position),
-    variability,
-    confidence,
-    assessment: variability === 'high' ? 'High frame-structure variance was detected between output regions.' : 'Distributed output frame structure analyzed.',
-    source: 'five_distributed_preview_outputs',
-    windows: windows.map((window) => ({ position: window.position, startSeconds: window.startSeconds, durationSeconds: window.durationSeconds, analysis: window.analysis })),
-  };
-}
-
 function frameStructureRecommendationForLab(
   source: QSVFrameStructureAnalysis | undefined,
   scan: ScanResult | undefined,
@@ -5084,15 +5333,10 @@ export function FrameFidelityComparison({ inspection }: { inspection: LabFidelit
   if (!windows.length) {
     return <Alert severity="info">Process Video to create the canonical source and decoded output frames.</Alert>;
   }
-  const comparable = windows.filter((window) => window.metrics.comparable && Number.isFinite(window.metrics.ssim));
-  const averageSSIM = comparable.length ? comparable.reduce((sum, window) => sum + (window.metrics.ssim ?? 0), 0) / comparable.length : undefined;
-  const averagePSNRWindows = comparable.filter((window) => Number.isFinite(window.metrics.psnr));
-  const averagePSNR = averagePSNRWindows.length ? averagePSNRWindows.reduce((sum, window) => sum + (window.metrics.psnr ?? 0), 0) / averagePSNRWindows.length : undefined;
-  const worst = comparable.reduce<(typeof comparable)[number] | undefined>((current, window) => !current || (window.metrics.ssim ?? 1) < (current.metrics.ssim ?? 1) ? window : current, undefined);
-  const minimumSSIM = worst?.metrics.ssim;
-  const minimumPSNR = averagePSNRWindows.length ? Math.min(...averagePSNRWindows.map((window) => window.metrics.psnr ?? Infinity)) : undefined;
-  const metricVerdict = fidelityMetricVerdict(minimumSSIM);
-  const overallVerdict = comparable.length === windows.length ? metricVerdict : metricVerdict === 'Reject' ? 'Reject' : 'Review';
+  const visualAggregate = inspection.visualAggregate;
+  const analysisComplete = inspection.aggregateStatus === 'completed';
+  const canonicalStatus = inspection.canonicalStatus ?? 'unverified';
+  const overallVerdict = inspection.overallVerdict;
   const safeWindowIndex = Math.min(selectedWindowIndex, windows.length - 1);
   const selectedWindow = windows[safeWindowIndex];
   const selectedRequestId = typeof selectedWindow.requestId === 'string' ? selectedWindow.requestId.trim() : '';
@@ -5107,18 +5351,27 @@ export function FrameFidelityComparison({ inspection }: { inspection: LabFidelit
   return (
     <Stack spacing={1.5}>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-        <Chip size="small" color={fidelityVerdictColor(overallVerdict)} label={`Overall · ${overallVerdict}`} />
+        <Chip size="small" color={analysisComplete && overallVerdict ? fidelityVerdictColor(overallVerdict as 'Safe' | 'Review' | 'Reject') : 'default'} label={analysisComplete && overallVerdict ? `Overall · ${overallVerdict}` : 'Overall · Analyzing'} />
+        <Chip size="small" color={canonicalStatus === 'mismatch' ? 'error' : canonicalStatus === 'passed' ? 'success' : 'warning'} label={`Canonical Fidelity · ${canonicalStatus}`} />
         <Chip size="small" label={`${windows.length} regions`} />
-        <Chip size="small" color={comparable.length === windows.length ? 'default' : 'warning'} label={`${comparable.length}/${windows.length} comparable`} />
-        {averageSSIM !== undefined ? <Chip size="small" label={`Average SSIM · ${averageSSIM.toFixed(4)}`} /> : null}
-        {minimumSSIM !== undefined ? <Chip size="small" label={`Minimum SSIM · ${minimumSSIM.toFixed(4)}`} /> : null}
-        {averagePSNR !== undefined ? <Chip size="small" label={`Average PSNR · ${averagePSNR.toFixed(2)} dB`} /> : null}
-        {minimumPSNR !== undefined ? <Chip size="small" label={`Minimum PSNR · ${minimumPSNR.toFixed(2)} dB`} /> : null}
-        {worst ? <Chip size="small" color="warning" label={`Worst region · ${Math.round(worst.position * 100)}%`} /> : null}
+        {visualAggregate ? <Chip size="small" color={visualAggregate.comparableCount === visualAggregate.totalCount ? 'default' : 'warning'} label={`${visualAggregate.comparableCount}/${visualAggregate.totalCount} comparable`} /> : null}
+        {visualAggregate?.averageSSIM !== undefined ? <Chip size="small" label={`Average SSIM · ${visualAggregate.averageSSIM.toFixed(4)}`} /> : null}
+        {visualAggregate?.minimumSSIM !== undefined ? <Chip size="small" label={`Minimum SSIM · ${visualAggregate.minimumSSIM.toFixed(4)}`} /> : null}
+        {visualAggregate?.averagePSNR !== undefined ? <Chip size="small" label={`Average PSNR · ${visualAggregate.averagePSNR.toFixed(2)} dB`} /> : null}
+        {visualAggregate?.minimumPSNR !== undefined ? <Chip size="small" label={`Minimum PSNR · ${visualAggregate.minimumPSNR.toFixed(2)} dB`} /> : null}
+        {visualAggregate?.worstPosition !== undefined ? <Chip size="small" color="warning" label={`Worst region · ${Math.round(visualAggregate.worstPosition * 100)}%`} /> : null}
       </Stack>
-      {comparable.length !== windows.length ? (
+      {!analysisComplete ? (
+        <Alert severity="info">Completed windows are shown below. The aggregate remains in progress until every planned window has valid evidence.</Alert>
+      ) : null}
+      {canonicalStatus === 'mismatch' ? (
+        <Alert severity="error">Canonical Frame Fidelity found an authoritative output mismatch. A high SSIM/PSNR score cannot mask this result.</Alert>
+      ) : canonicalStatus === 'unverified' ? (
+        <Alert severity="warning">Canonical Frame Fidelity is unverified, so this result cannot be marked Safe.</Alert>
+      ) : null}
+      {visualAggregate && visualAggregate.comparableCount !== visualAggregate.totalCount ? (
         <Alert severity="warning">
-          {windows.length - comparable.length} region(s) did not produce comparable fidelity metrics. The overall result cannot be marked Safe until every region is measured.
+          {visualAggregate.totalCount - visualAggregate.comparableCount} region(s) did not produce comparable fidelity metrics. The overall result cannot be marked Safe until every region is measured.
         </Alert>
       ) : null}
       {loadError ? <Alert severity="warning">{loadError}</Alert> : null}
@@ -5187,7 +5440,7 @@ export function FrameFidelityComparison({ inspection }: { inspection: LabFidelit
         </CardContent>
       </Card>
       <Alert severity="info">
-        These frames use the same five distributed profile outputs analyzed by Process Video. Source frames receive the selected color policy; result frames are decoded from those generated outputs.
+        These frames use the distributed profile windows analyzed by Process Video. Source frames receive the selected color policy; result frames are decoded from those generated outputs.
       </Alert>
     </Stack>
   );
@@ -5269,6 +5522,12 @@ function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityI
     inspection.effectiveEncoder &&
     inspection.requestedEncoder !== inspection.effectiveEncoder,
   );
+  const canonicalFields = inspection.canonicalFidelity && typeof inspection.canonicalFidelity.fields === 'object' && inspection.canonicalFidelity.fields !== null
+    ? Object.entries(inspection.canonicalFidelity.fields as Record<string, unknown>).map(([name, value]) => ({
+      name,
+      status: value && typeof value === 'object' && 'status' in value ? String((value as Record<string, unknown>).status) : 'unverified',
+    }))
+    : [];
 
   return (
     <Stack spacing={1.5}>
@@ -5286,6 +5545,11 @@ function FidelityCharacteristicsTable({ inspection }: { inspection: LabFidelityI
       {encoderFallback ? (
         <Alert severity="warning">
           Requested {inspection.requestedEncoder}, but the runtime smoke test rejected it. This preview was actually encoded with {inspection.effectiveEncoder}.
+        </Alert>
+      ) : null}
+      {inspection.canonicalStatus ? (
+        <Alert severity={inspection.canonicalStatus === 'mismatch' ? 'error' : inspection.canonicalStatus === 'passed' ? 'success' : 'warning'}>
+          <strong>Canonical Frame Fidelity:</strong> {inspection.canonicalStatus}. {canonicalFields.length ? canonicalFields.map((field) => `${field.name}=${field.status}`).join(' · ') : 'Field evidence is unavailable.'}
         </Alert>
       ) : null}
       <Alert severity={inspection.normalization.applied || inspection.normalization.mode === 'preserve' ? 'info' : 'warning'}>
@@ -5960,6 +6224,15 @@ function labVideoRequestSignature(
   profile: ProfileInput,
 ) {
   return JSON.stringify({ path, start: start.trim(), seconds, normalization, profile });
+}
+
+function labOperationSignature(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `lab-v1-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 function isValidPreviewStart(value: string) {

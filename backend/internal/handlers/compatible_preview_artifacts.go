@@ -504,6 +504,11 @@ var compatiblePreviewArtifacts = struct {
 	items map[string]*compatiblePreviewArtifact
 }{items: map[string]*compatiblePreviewArtifact{}}
 
+// compatiblePreviewGenerationStarted is a narrow accounting seam for
+// consumers that must distinguish request registration/cache lookup from an
+// actual FFmpeg generation. It has no production behavior by default.
+var compatiblePreviewGenerationStarted = func(*compatiblePreviewArtifact) {}
+
 type compatiblePreviewArtifactLease struct {
 	entry *compatiblePreviewArtifact
 	once  sync.Once
@@ -550,7 +555,7 @@ func cleanupCompatiblePreviewEphemeralArtifacts(directory string, now time.Time)
 			!entry.scopeExpiresAt.IsZero() && !now.Before(entry.scopeExpiresAt) && !active
 		destination, logPath := entry.destination, entry.logPath
 		entry.mu.Unlock()
-		if !expired || filepath.Dir(destination) != directory {
+		if !expired || filepath.Clean(filepath.Dir(destination)) != filepath.Clean(directory) {
 			continue
 		}
 		_ = os.Remove(destination)
@@ -648,6 +653,7 @@ func runCompatiblePreviewGeneration(entry *compatiblePreviewArtifact, args []str
 			cmd := exec.CommandContext(entry.ctx, "ffmpeg", args...)
 			cmd.Stdout = staging
 			cmd.Stderr = stderr
+			compatiblePreviewGenerationStarted(entry)
 			runErr := cmd.Run()
 			closeErr := staging.Close()
 			if runErr != nil || closeErr != nil {

@@ -1968,6 +1968,14 @@ export type CompatiblePreviewRequest = {
   cacheIdentity: string;
   expiresInSeconds: number;
   path: string;
+  artifactId?: string;
+  sourceRevision?: Record<string, unknown>;
+  start?: string;
+  seconds?: number;
+  normalization?: Record<string, unknown>;
+  canonicalEncodeSignature?: string;
+  generationToken?: string;
+  generationVersion?: number;
 };
 
 export type CompatiblePreviewLifecycleState = 'idle' | 'generating' | 'ready' | 'failed' | 'canceled' | 'interrupted' | 'stale' | 'expired' | 'unknown';
@@ -1975,6 +1983,14 @@ export type CompatiblePreviewLifecycleState = 'idle' | 'generating' | 'ready' | 
 export type CompatiblePreviewLifecycleResponse = {
   requestId: string;
   artifactId?: string;
+  path?: string;
+  sourceRevision?: Record<string, unknown>;
+  start?: string;
+  seconds?: number;
+  normalization?: Record<string, unknown>;
+  canonicalEncodeSignature?: string;
+  generationToken?: string;
+  generationVersion?: number;
   code: string;
   state: CompatiblePreviewLifecycleState | string;
   retryable?: boolean;
@@ -2027,6 +2043,50 @@ export type ProfileSampleEstimateOperation = {
   etaSeconds: number;
   result?: ProfileSampleEstimate;
   error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LabFidelityOperationWindow = {
+  position: number;
+  startSeconds: number;
+  durationSeconds: number;
+  source?: PreviewVideoCharacteristics;
+  output?: PreviewVideoCharacteristics;
+  metrics?: PreviewFrameMetrics;
+  requestId: string;
+  artifactId?: string;
+  generationToken?: string;
+  generationVersion?: number;
+  status: string;
+  canonicalFidelity?: Record<string, unknown>;
+};
+
+export type LabFidelityOperation = {
+  id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled' | string;
+  phase: string;
+  primaryRequestId: string;
+  primaryArtifactId?: string;
+  primaryGeneration?: string;
+  sourceRevision?: Record<string, unknown>;
+  primaryStart?: number;
+  primaryDuration?: number;
+  normalization?: Record<string, unknown>;
+  frozenPlan?: Record<string, unknown>;
+  planSignature?: string;
+  materialSignature?: string;
+  clientCorrelationSignature?: string;
+  samplingPolicyVersion?: string;
+  samplingPolicy?: Record<string, unknown>;
+  completedWindows: number;
+  totalWindows: number;
+  currentStart?: number;
+  currentDuration?: number;
+  windows?: LabFidelityOperationWindow[];
+  result?: Record<string, unknown>;
+  error?: string;
+  retryable?: boolean;
   createdAt: string;
   updatedAt: string;
 };

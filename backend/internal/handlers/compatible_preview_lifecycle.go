@@ -295,6 +295,14 @@ func compatiblePreviewStatusProjection(requestID string, entry *compatiblePrevie
 	response := map[string]any{"requestId": requestID, "code": "idle", "state": "idle", "retryable": false, "recreate": false}
 	if descriptor != nil {
 		response["artifactId"] = descriptor.ArtifactID
+		response["path"] = descriptor.Path
+		response["sourceRevision"] = labSourceRevisionMap(descriptor.SourceRevision)
+		response["start"] = descriptor.Start
+		response["seconds"] = descriptor.Seconds
+		response["normalization"] = labNormalizationMap(descriptor.Normalization)
+		response["canonicalEncodeSignature"] = descriptor.CanonicalEncodeSignature
+		response["generationToken"] = descriptor.GenerationToken
+		response["generationVersion"] = descriptor.GenerationVersion
 		response["encoder"] = descriptor.EffectiveVideoEncoder
 		if response["encoder"] == "" {
 			response["encoder"] = descriptor.RequestedVideoEncoder
