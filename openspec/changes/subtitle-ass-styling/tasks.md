@@ -70,4 +70,4 @@
 
 - [x] 11.1 Reconcile implementation evidence against every task and update only completed OpenSpec task checkboxes; verify no production task is marked complete during the design-only phase.
 - [x] 11.2 Run `openspec validate subtitle-ass-styling --type change --strict` and resolve only planning-artifact validation errors.
-- [ ] 11.3 After implementation is later authorized, run `./scripts/verify.sh --auto`, confirm `ALL CHECKS PASSED`, review `git diff --stat` and `git status --short`, then commit and push the scoped change.
+- [x] 11.3 After implementation is later authorized, run `./scripts/verify.sh --auto`, confirm `ALL CHECKS PASSED`, review `git diff --stat` and `git status --short`, then commit and push the scoped change.
