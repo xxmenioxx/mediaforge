@@ -188,4 +188,24 @@ describe('compatible preview request transport', () => {
     expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBe(controller.signal);
     expect((fetchMock.mock.calls[1][1] as RequestInit).signal).toBe(controller.signal);
   });
+
+  it('starts an explicit bounded QSV temporal experiment through the existing LAB operation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'lab-1', status: 'queued', phase: 'waiting_for_capacity', primaryRequestId: 'p', completedWindows: 0, totalWindows: 1, createdAt: '', updatedAt: '' }), { status: 202, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await api.startLabFidelityOperation({
+      primaryRequestId: 'p',
+      qsvTemporalExperiment: { variantsByWindow: [{ windowIdentity: 'window:primary', variants: [{ changedVariable: 'gop', requestedDelta: { gopFrames: 48 } }] }] },
+    });
+    expect(String((fetchMock.mock.calls[0][1] as RequestInit).body)).toContain('qsvTemporalExperiment');
+    expect(String((fetchMock.mock.calls[0][1] as RequestInit).body)).toContain('window:primary');
+  });
+
+  it('cancels the owning LAB operation without creating a replacement request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'lab-1', status: 'canceled', phase: 'canceled', primaryRequestId: 'p', completedWindows: 1, totalWindows: 3, createdAt: '', updatedAt: '' }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await api.cancelLabFidelityOperation('lab-1');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/lab/fidelity/operations/lab-1/cancel');
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe('POST');
+  });
 });

@@ -2115,6 +2115,9 @@ export type LabFidelityOperationWindow = {
   position: number;
   startSeconds: number;
   durationSeconds: number;
+  windowIdentity?: string;
+  primary?: boolean;
+  roles?: string[];
   source?: PreviewVideoCharacteristics;
   output?: PreviewVideoCharacteristics;
   metrics?: PreviewFrameMetrics;
@@ -2124,6 +2127,124 @@ export type LabFidelityOperationWindow = {
   generationVersion?: number;
   status: string;
   canonicalFidelity?: Record<string, unknown>;
+};
+
+export type QSVTemporalVariantRequest = {
+  variantIdentity?: string;
+  changedVariable: 'quality_rate_control' | 'gop' | 'b_frame_strategy' | 'qsv_feature' | string;
+  requestedDelta: Record<string, unknown>;
+};
+
+export type QSVTemporalTargetRequest = {
+  windowIdentity: string;
+  variants?: QSVTemporalVariantRequest[];
+};
+
+export type QSVTemporalControlRequest = {
+  windowIdentity: string;
+  requestId?: string;
+  generationIdentity?: string;
+  evidenceIdentity?: string;
+};
+
+export type QSVTemporalExperimentRequest = {
+  variantsByWindow?: QSVTemporalTargetRequest[];
+  controls?: QSVTemporalControlRequest[];
+};
+
+export type QSVTemporalEvidence = {
+  targetWindowIdentity: string;
+  variantIdentity: string;
+  availability: string;
+  interpretation: 'likely_pumping' | 'inconclusive' | 'not_observed' | string;
+  interpretationPolicyVersion: string;
+  samplingPolicyVersion?: string;
+  samplingRateHz?: number;
+  baselineInterpretation?: 'likely_pumping' | 'inconclusive' | 'not_observed' | string;
+  variantInterpretation?: 'likely_pumping' | 'inconclusive' | 'not_observed' | string;
+  mitigationDirection?: 'improved' | 'worsened' | 'unchanged' | 'inconclusive' | string;
+  baselineEvidenceIdentity?: string;
+  variantEvidenceIdentity?: string;
+  frameCount?: number;
+  lossRecoveryEvents?: Array<Record<string, unknown>>;
+  temporalVariationSummary?: Record<string, unknown>;
+  warnings?: string[];
+};
+
+export type QSVExperimentCandidate = {
+  candidateIdentity: string;
+  sourceRevision: string;
+  samplingWindowIdentity: string;
+  requestId?: string;
+  artifactId?: string;
+  generationToken?: string;
+  generationVersion?: number;
+  canonicalEncodeSignature?: string;
+  effectiveEncoder?: string;
+  requestedQSVSettings?: Record<string, unknown>;
+  effectiveQSVSettings?: Record<string, unknown>;
+  fallbackReason?: string;
+  canonicalFidelity?: Record<string, unknown>;
+  sizeBytes?: number;
+  bitrate?: number;
+  speed?: number;
+};
+
+export type QSVTemporalIsolation = {
+  result: string;
+  declaredVariable: string;
+  changedFields?: string[];
+  unexpectedFields?: string[];
+  reason?: string;
+};
+
+export type QSVTemporalVariant = {
+  variantIdentity: string;
+  changedVariable: string;
+  requestedDelta?: Record<string, unknown>;
+  effectiveDelta?: Record<string, unknown>;
+  isolation: QSVTemporalIsolation;
+  candidate: QSVExperimentCandidate;
+  temporalEvidence?: QSVTemporalEvidence[];
+  perceptualEvidence?: Array<Record<string, unknown>>;
+};
+
+export type EncoderControlCandidate = {
+  windowIdentity: string;
+  requestId?: string;
+  encoderFamily?: string;
+  artifactIdentity?: string;
+  generationIdentity?: string;
+  artifactGeneration?: string;
+  evidenceIdentity?: string;
+  comparable: string;
+  canonicalFidelity?: Record<string, unknown>;
+  temporalInterpretation?: string;
+  warnings?: string[];
+};
+
+export type QSVTemporalTargetSummary = {
+  windowIdentity: string;
+  interval?: { startSeconds: number; durationSeconds: number };
+  roles?: string[];
+  reasons?: string[];
+  primary: boolean;
+  baseline: QSVExperimentCandidate;
+  variants?: QSVTemporalVariant[];
+  temporalEvidence?: QSVTemporalEvidence[];
+  controlCandidates?: EncoderControlCandidate[];
+  classification?: string;
+  recommendation?: Record<string, unknown>;
+  warnings?: string[];
+};
+
+export type QSVTemporalExperimentSummary = {
+  experimentId: string;
+  sourceRevision: string;
+  samplingPlanIdentity: string;
+  unavailableRoles?: string[];
+  targets: QSVTemporalTargetSummary[];
+  warnings?: string[];
 };
 
 export type LabFidelityOperation = {
@@ -2143,6 +2264,7 @@ export type LabFidelityOperation = {
   clientCorrelationSignature?: string;
   samplingPolicyVersion?: string;
   samplingPolicy?: Record<string, unknown>;
+  temporalExperiment?: QSVTemporalExperimentSummary;
   completedWindows: number;
   totalWindows: number;
   currentStart?: number;
