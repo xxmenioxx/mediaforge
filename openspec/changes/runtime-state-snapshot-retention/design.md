@@ -73,15 +73,18 @@ payload and the encoded value.
 
 The v1 payload contains normalized values for:
 
-- OS, architecture, container state, CPU core count, and total memory;
-- stable GPU presence/capability and metric-capability descriptors;
-- the complete normalized encoder capability map, including tested modes and
-  capability reasons that affect encoder selection;
+- OS, architecture, container state, and CPU core count;
+- total physical memory only when the detector can report it as a reliably
+  stable host property;
+- stable GPU presence plus codec/encoder capability values that affect
+  execution;
+- encoder capability booleans and modes that affect execution, such as
+  `usable`, `main10`, or `adaptiveB`, but not arbitrary diagnostic text;
 - recommended, selected, preferred, and fallback profiles;
-- effective runtime policy values, policy mode, and applied override keys/
-  values;
-- each configured disk's role, normalized identity/path, storage type, and
-  stable capacity descriptor used by execution decisions.
+- effective runtime policy values, policy mode, and applied override keys and
+  effective values;
+- each configured disk's role, normalized identity/path, and storage type when
+  stable.
 
 Object keys are sorted recursively, arrays whose meaning is set-like are
 normalized deterministically, and absent/empty values use one documented
@@ -90,10 +93,15 @@ serialization/map insertion order are excluded.
 
 The following remain in `RuntimeState` and may be copied into a capture but do
 not affect the stable fingerprint: CPU load, available memory, GPU utilization
-percentages, battery percentage, current power source/on-battery state, free
-disk bytes, transient warnings, and other rapidly changing counters. Battery
-presence and total memory are stable capability evidence; battery state and
-available memory are resource gates.
+percentages, GPU utilization availability for the current sample, GPU metric
+source when it only describes telemetry collection, battery percentage, current
+power source/on-battery state, free disk bytes, filesystem counters, transient
+warnings, and transient probe errors. Capability diagnostic strings containing
+timeouts, temporary device/permission failures, or other environment/error
+text are excluded. If stable enum-like capability provenance is required for
+an execution decision, it is first normalized into a bounded stable value;
+arbitrary diagnostic text is never hashed. Battery presence is stable
+capability evidence; battery state and available memory are resource gates.
 
 **Alternative considered:** Hash the whole JSON-serialized detector result.
 Rejected because map ordering, timestamps, IDs, free-space counters, and
@@ -152,6 +160,12 @@ dispatch. That transaction reads `Current`, captures a snapshot with reason
 `execution_plan_freeze`, sets the plan's runtime profile and snapshot ID, and
 commits the plan/reference pair atomically.
 
+The freeze operation is idempotent for a material plan version: when that
+version already has a non-null `RuntimeSnapshotID`, repeated evaluation,
+retry, polling, or status handling reuses the existing reference and does not
+capture another snapshot. Only a genuinely new material plan version may
+capture new execution evidence.
+
 `EvaluateResources` is then a dynamic gate, not a snapshot resolver. It reads
 current telemetry for free RAM, free disk, battery state, worker availability,
 and reservations, but it does not change the frozen runtime profile or
@@ -184,10 +198,15 @@ the resulting immutable ID together with effective configuration. The
 execution worker uses that frozen ID for metadata and later updates; it never
 looks up the current-state technical row ID as a substitute.
 
-If capture or the atomic binding update fails, the Test Encode remains
-non-executable/failed in its existing lifecycle and no FFmpeg process starts
-with missing or mutable runtime provenance. A retry/new Test Encode receives a
-new capture; current-state refreshes after preparation cannot alter the ID.
+The preparation operation is idempotent for a prepared Test Encode record: if
+`RuntimeSnapshotID` is already set, polling, status handling, or retry of that
+same execution record reuses the existing reference and does not capture
+another snapshot. If capture or the atomic binding update fails before the
+record is prepared, the Test Encode remains non-executable/failed in its
+existing lifecycle and no FFmpeg process starts with missing or mutable runtime
+provenance. A genuinely new Test Encode record/operation may receive a new
+capture; current-state refreshes after preparation cannot alter the existing
+ID.
 
 ### 7. Keep current-state consumers on the live boundary
 
@@ -199,11 +218,20 @@ capture workflows use immutable snapshot APIs.
 
 The runtime API response preserves existing telemetry/property names and adds
 `stateKind: "live"`, `detectedAt`, `stableFingerprint`, and optional
-`auditSnapshotId`. The current-state technical ID is omitted from or made
-nullable in the client contract; it is never serialized as `id` with the
-meaning “immutable host snapshot.” Existing consumers that only read telemetry
-fields remain wire-compatible, while clients displaying provenance switch to
-the explicit optional audit ID.
+`auditSnapshotId`. If the compatibility field `id` remains in the live
+response, it is explicitly the mutable `RuntimeState` technical row ID; it is
+not an immutable `RuntimeSnapshot` ID and is never rendered as “Host snapshot
+#”. Existing consumers that only read telemetry fields remain wire-compatible,
+while clients displaying provenance switch to the explicit audit field.
+
+The V1 meaning of `auditSnapshotId` is narrow: a normal live GET omits it or
+returns null; an ordinary refresh whose fingerprint is unchanged omits it or
+returns null; a refresh that atomically captures a `stable_transition` may
+return the newly created immutable ID as transition provenance; later live
+refreshes omit/null it rather than carrying that old transition ID forward as
+if current telemetry were the snapshot. If this distinction cannot be kept
+clear in the response type, the field is named `transitionAuditSnapshotId`
+instead.
 
 Dashboard and Settings use “Live runtime state · detected …” and “Runtime
 detection refreshed successfully.” They show “Host snapshot #N” only for an
@@ -226,19 +254,20 @@ during migration and pruning.
 
 ### 9. Use a deterministic seven-day retention policy with bounded batches
 
-The initial constants are:
+The initial rules are:
 
 - referenced snapshots: always retained;
 - newest immutable snapshot: always retained, even if unreferenced;
 - unreferenced snapshots newer than seven days: retained;
-- soft unreferenced-history pressure threshold: 256 rows;
 - maximum eligible deletions per housekeeping run: 100 rows.
 
-The count threshold is additive pressure, not permission to delete recent
-history: age and the protected-reference/latest rules are evaluated first.
-Older unreferenced rows are ordered by `detected_at ASC, id ASC` and selected
-in a maximum batch of 100. If fewer than 256 unreferenced rows exist, age still
-controls eligibility; the count does not cause recent rows to be deleted.
+An unreferenced snapshot is eligible when its age is at least seven days;
+there is no count threshold or hidden history-count configuration in V1.
+Eligible rows are ordered by `detected_at ASC, id ASC` and selected in a
+maximum batch of 100. Thus 50 old unreferenced rows are all eligible even when
+the total is below any former 256-row threshold, 500 recent unreferenced rows
+produce no deletions before seven days, and 500 old unreferenced rows produce
+100 oldest-first deletions in this run.
 
 The preview and run paths use the same candidate resolver. Preview reports
 advisory candidates only. The real run opens a write transaction per bounded
@@ -308,10 +337,10 @@ contract, but it is not part of #149.
   Mirror the existing runtime fields, initialize from the newest legacy row,
   retain wire field names, and make the technical state ID distinct from audit
   IDs.
-- [Risk] A soft count threshold does not cap a burst of recent telemetry rows
-  immediately. → Preserve the seven-day evidence guarantee and use the 100-row
-  bounded batch; future policy changes can add explicit operator-approved
-  compaction without changing provenance semantics.
+- [Risk] The seven-day policy permits a burst of recent audit rows to remain
+  temporarily. → Routine detection and polling do not create audit rows, and
+  the 100-row oldest-first batch bounds later cleanup without weakening the
+  seven-day evidence guarantee.
 - [Risk] Current consumers may accidentally retain a historical-snapshot
   assumption. → Audit every current `Latest()` reference, provide explicit
   `Current`/audit APIs, and add API/UI regression coverage for live labels.

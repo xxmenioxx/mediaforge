@@ -38,13 +38,24 @@ performed.
 ### Requirement: Stable runtime fingerprint is canonical and version-bound
 
 The system SHALL compute a deterministic `RuntimeStableFingerprint` from a
-versioned canonical representation. The representation SHALL include OS,
-architecture, container state, CPU core count, encoder capabilities, stable GPU
-presence/capability, recommended/selected/preferred/fallback profiles, effective
-runtime policy, applied overrides, and disk role identity/type information that
-materially affects execution decisions. It SHALL use canonical field names,
-normalized values, recursively ordered object keys, and an explicit fingerprint
-schema version; it SHALL NOT include timestamps or database IDs.
+versioned canonical representation of execution-relevant stable authority. The
+representation SHALL include OS, architecture, container state, CPU core count,
+total physical memory only when reliably stable, encoder capability booleans and
+modes that affect execution, stable GPU presence and codec/encoder capability,
+recommended/selected/preferred/fallback profiles, effective runtime policy,
+applied overrides with their effective values, and each configured disk's role,
+normalized identity/path, and stable storage type. It SHALL use canonical field
+names, normalized values, recursively ordered object keys, and an explicit
+fingerprint schema version; it SHALL NOT include timestamps or database IDs.
+
+The fingerprint SHALL exclude CPU load, available memory, GPU utilization,
+GPU-utilization availability for the current sample, telemetry-only GPU metric
+source, transient probe errors, free disk bytes, filesystem counters, transient
+warnings, current battery percentage/power source, and capability diagnostic
+strings containing transient environment or error text. If a stable enum-like
+capability provenance value is required for an execution decision, it SHALL be
+normalized into a bounded stable value before hashing; arbitrary capability
+reasons SHALL not affect the fingerprint.
 
 #### Scenario: Equivalent map order produces the same fingerprint
 
@@ -58,10 +69,37 @@ schema version; it SHALL NOT include timestamps or database IDs.
   power-source state, or free disk bytes changes
 - **THEN** the stable fingerprint remains unchanged
 
+#### Scenario: Transient capability reason is excluded
+
+- **WHEN** an encoder keeps the same capability booleans/modes but its probe
+  reason changes between equivalent transient messages such as timeout,
+  temporary device busy, or permission-read failure
+- **THEN** the stable fingerprint remains unchanged
+
+#### Scenario: GPU telemetry source is unavailable
+
+- **WHEN** GPU utilization or the source used to collect the current GPU
+  sample becomes temporarily unavailable while GPU presence/capability is
+  unchanged
+- **THEN** the stable fingerprint remains unchanged
+
 #### Scenario: Stable capability or policy changes
 
 - **WHEN** encoder capability, GPU capability, disk role/type identity, runtime
   profile selection, or effective runtime policy changes
+- **THEN** the canonical stable fingerprint changes
+
+#### Scenario: Encoder usability changes
+
+- **WHEN** an execution-relevant encoder capability changes from `usable=true`
+  to `usable=false`, or an execution-relevant mode such as `main10` or
+  `adaptiveB` changes
+- **THEN** the canonical stable fingerprint changes
+
+#### Scenario: Disk identity changes without free-space change
+
+- **WHEN** a configured disk role, normalized device/path identity, or stable
+  storage type changes
 - **THEN** the canonical stable fingerprint changes
 
 ### Requirement: Immutable runtime snapshots require an explicit capture boundary
@@ -123,17 +161,40 @@ using the existing telemetry and policy field meanings. `POST
 /api/system/runtime/refresh` SHALL reset relevant capability caches, perform
 fresh detection, atomically upsert current state, and return that live state.
 Responses SHALL expose explicit metadata equivalent to `stateKind: live`,
-`detectedAt`, and `stableFingerprint`. An `auditSnapshotId` SHALL be present
-only when the response actually represents or references an immutable audit
-snapshot; a current-state row identity SHALL never be presented as an audit
-snapshot ID. Existing field names and clients that consume current telemetry
-without provenance assumptions SHALL remain compatible.
+`detectedAt`, and `stableFingerprint`. If a compatibility `id` field is
+returned, it SHALL mean only the mutable `RuntimeState` technical row ID and
+SHALL never mean or be labeled as an immutable snapshot ID. The V1
+`auditSnapshotId` field SHALL be omitted or null for normal live GET responses
+and for ordinary refreshes whose stable fingerprint is unchanged. A refresh
+that atomically creates a `stable_transition` audit snapshot MAY return that
+new immutable ID as transition provenance; later live refreshes SHALL omit or
+null the field rather than carry that old ID forward as if current telemetry
+were the snapshot. If the response type cannot make this distinction clear,
+the field SHALL be named `transitionAuditSnapshotId` instead. Existing field
+names and clients that consume current telemetry without provenance assumptions
+SHALL remain compatible.
 
 #### Scenario: GET has no history to create
 
 - **WHEN** a client calls GET current runtime after state has been initialized
 - **THEN** the response is live current state and the call does not create an
   immutable snapshot
+
+#### Scenario: Unchanged refresh has no audit identity
+
+- **WHEN** a client posts a runtime refresh and the stable fingerprint is
+  unchanged
+- **THEN** the response is `stateKind: live`, includes current
+  `stableFingerprint` and `detectedAt`, and omits or returns null for audit
+  transition provenance
+
+#### Scenario: Stable-transition refresh returns bounded provenance
+
+- **WHEN** a refresh atomically changes the stable fingerprint and captures one
+  `stable_transition` snapshot
+- **THEN** that response may include the newly created immutable ID as
+  `auditSnapshotId` (or the explicitly named transition field), and a later
+  live refresh with no new transition omits or nulls that field
 
 #### Scenario: Refresh failure is reported without partial state
 
@@ -171,7 +232,11 @@ snapshot when its resolved execution authority is frozen, before the plan is
 persisted for evaluation/dispatch. The plan's `RuntimeSnapshotID` SHALL remain
 unchanged for that version, including while the plan is waiting or being
 reevaluated. Stable profile/capability decisions SHALL come from the frozen
-evidence; dynamic resource gates SHALL be evaluated from current state.
+evidence; dynamic resource gates SHALL be evaluated from current state. The
+freeze operation SHALL be idempotent: if the material plan version already has
+`RuntimeSnapshotID` set, repeated evaluation, retry, polling, or status
+handling SHALL reuse that ID and SHALL not capture another snapshot. Only a
+genuinely new material plan version MAY capture new evidence.
 
 #### Scenario: Plan freeze captures provenance
 
@@ -188,6 +253,13 @@ evidence; dynamic resource gates SHALL be evaluated from current state.
   but does not create an unbounded snapshot sequence or replace
   `RuntimeSnapshotID`
 
+#### Scenario: Repeated plan evaluation is idempotent
+
+- **WHEN** the same material plan version is evaluated or retried after its
+  `RuntimeSnapshotID` has already been persisted
+- **THEN** it reuses the existing immutable snapshot reference and the
+  immutable snapshot count does not increase
+
 #### Scenario: Final dynamic evidence remains explainable
 
 - **WHEN** dynamic telemetry materially determines the final dispatch decision
@@ -201,7 +273,10 @@ An explicit Test Encode SHALL capture one immutable runtime snapshot when its
 effective execution configuration is frozen/prepared, before encoding begins.
 `TestEncode.RuntimeSnapshotID` SHALL reference that immutable evidence and
 SHALL not be populated from the current-state row identity. Later current-state
-updates SHALL not change the reference.
+updates SHALL not change the reference. Preparation SHALL be idempotent for the
+same Test Encode record: once `RuntimeSnapshotID` is set, polling, status
+handling, or retry of that execution record SHALL not capture another snapshot.
+A genuinely new Test Encode record/operation MAY capture new evidence.
 
 #### Scenario: Test Encode starts with one frozen snapshot
 
@@ -215,6 +290,12 @@ updates SHALL not change the reference.
 - **WHEN** immutable evidence cannot be committed during Test Encode freeze
 - **THEN** the Test Encode does not begin execution with an unbound or mutable
   runtime reference
+
+#### Scenario: Prepared Test Encode retry is idempotent
+
+- **WHEN** a prepared Test Encode record is polled, status-updated, or retried
+- **THEN** its existing `RuntimeSnapshotID` is reused and no additional
+  immutable snapshot is captured
 
 ### Requirement: Runtime snapshot references have one retention boundary
 
@@ -241,17 +322,16 @@ callers.
 
 The default runtime snapshot policy SHALL always retain referenced snapshots and
 the newest immutable snapshot, retain unreferenced snapshots younger than seven
-days, and make older unreferenced snapshots eligible for pruning. The initial
-policy SHALL use a soft maximum of 256 unreferenced historical rows as an
-additional pressure rule and SHALL delete at most 100 eligible rows per
-housekeeping run. Candidate ordering SHALL be deterministic by detection time
-then ID. Retention SHALL never claim that deleting rows reclaimed equivalent
-filesystem bytes.
+days, and make every unreferenced snapshot aged at least seven days eligible
+for pruning. Eligible rows SHALL be ordered oldest first by detection time then
+ID, and housekeeping SHALL delete at most 100 eligible rows per run. V1 SHALL
+have no count threshold or hidden history-count configuration. Retention SHALL
+never claim that deleting rows reclaimed equivalent filesystem bytes.
 
 #### Scenario: Referenced old snapshot is retained
 
 - **WHEN** an old snapshot is referenced by an Execution Plan or Test Encode
-- **THEN** it is kept regardless of age or count pressure
+- **THEN** it is kept regardless of age
 
 #### Scenario: Newest and recent unreferenced rows are retained
 
@@ -261,10 +341,25 @@ filesystem bytes.
 
 #### Scenario: Old unreferenced rows are bounded
 
-- **WHEN** unreferenced rows are older than seven days and exceed the optional
-  count pressure rule
-- **THEN** the oldest eligible rows are selected deterministically, subject to
-  the per-run batch limit, while protected and recent rows remain untouched
+- **WHEN** unreferenced rows are at least seven days old
+- **THEN** they are eligible immediately, the oldest eligible rows are selected
+  deterministically, and no more than 100 are deleted in one run
+
+#### Scenario: Fewer than 256 old rows are still eligible
+
+- **WHEN** 50 unreferenced snapshots are at least seven days old
+- **THEN** all 50 are eligible even though the history count is below 256
+
+#### Scenario: Recent history is protected by age
+
+- **WHEN** 500 unreferenced snapshots are younger than seven days
+- **THEN** none is deleted before reaching the seven-day age boundary
+
+#### Scenario: Large old history is deleted oldest first
+
+- **WHEN** 500 unreferenced snapshots are at least seven days old
+- **THEN** the oldest 100 are deleted in this housekeeping run and the
+  remaining eligible rows wait for later bounded runs
 
 ### Requirement: Housekeeping owns runtime snapshot pruning and reporting
 
@@ -346,15 +441,18 @@ housekeeping SHALL never invoke SQLite `VACUUM` automatically.
 
 Dashboard and Settings SHALL label current telemetry as live runtime state,
 including its detection time, and SHALL show a host snapshot number only when
-the displayed data actually represents an immutable audit snapshot. Settings
-refresh success SHALL describe detection/state refresh and SHALL not claim that
-a snapshot was recorded unless a capture actually occurred.
+the user is explicitly viewing immutable audit evidence. Even when a live
+refresh returns transition audit provenance, the main object SHALL remain
+visibly live and that optional ID SHALL not be rendered as `Host snapshot #...`.
+Settings refresh success SHALL describe detection/state refresh and SHALL not
+claim that a snapshot was recorded unless a capture actually occurred.
 
 #### Scenario: Dashboard displays live state
 
 - **WHEN** Dashboard renders the response from GET or refresh runtime
 - **THEN** it uses live-state wording such as `Live runtime state` with the
-  detection time and does not display a fabricated host snapshot number
+  detection time and does not display a fabricated host snapshot number,
+  including when the response contains transition audit provenance
 
 #### Scenario: Immutable evidence is shown explicitly
 
