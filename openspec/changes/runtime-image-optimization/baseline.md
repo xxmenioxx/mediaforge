@@ -1,91 +1,169 @@
-# #150 Phase 1 baseline and inventory record
+# #150 baseline and runtime evidence
 
-Captured on 2026-09-25 before any #150 Dockerfile or runtime dependency
-changes.
+Captured on 2026-09-25. The recorded BEFORE source is the unmodified
+`origin/main` commit `d793cc467831f189fb71afcf68aa1c49f7db10dc`. The AFTER
+image was built from the #150 implementation commit
+`ca73aa2b750d42a35801026757804f6eb45c8b8f`; the later evidence-only changes
+to this OpenSpec record do not change Docker inputs.
 
-## Source and build context
+## Historical daemon limitation
 
-- Authoritative baseline: `origin/main` at
-  `d793cc467831f189fb71afcf68aa1c49f7db10dc`.
-- Working branch before implementation: `feat/150-runtime-image-optimization`;
-  it was exactly one OpenSpec commit ahead of that baseline.
-- `backend/Dockerfile` SHA-256 matched `origin/main`:
-  `a190403cc82d612f7c5df66c61fac6a22ff181051c8c07ff91812feb2ffa1bd3`.
-- Host: Darwin x86_64; intended release platform is `linux/amd64` from
-  `.github/workflows/release-images.yml`.
-- Docker client: `29.6.1`.
-- Docker buildx: `v0.35.0-desktop.2`.
-- Docker context: `desktop-linux`.
-- Docker server: unavailable. The configured socket
-  `unix:///Users/anuelvs/.docker/run/docker.sock` did not exist, so no image
-  could be built, inspected, or executed.
-- Build target: backend default final stage; frontend production target was
-  also identified for the healthcheck contract.
-- Baseline pull/cache policy: no local daemon was available to capture a
-  runtime build. CI/release configuration uses BuildKit GHA cache scopes
-  (`backend`, `web`) and release `linux/amd64`; no local override was
-  substituted.
+The first Phase 1 capture was made while the configured Docker socket was
+absent. That historical record correctly had no image measurements. Docker is
+now available, so the measurements and runtime evidence below supersede the
+unavailable portions of that record.
 
-## Dockerfile defaults
+## Reproducible measurement method
 
-The baseline uses five backend stages: `build`, `intel-media`, `ffmpeg`,
-`seconv`, and the final `debian:trixie-slim` runtime. The pinned defaults are:
+- Docker client/server: `29.6.1` / `29.6.1`.
+- Buildx: `v0.35.0-desktop.2` (`b554ce1decd8b509893b1e7c6227eabfb923d094`).
+- Docker context: `desktop-linux`; target platform: `linux/amd64`.
+- Backend target: default final stage; frontend target: `production`.
+- Build arguments: none supplied; Dockerfile defaults were used.
+- Pull policy: `--pull=false`.
+- Cache policy: the local Docker BuildKit cache only; no external or GHA
+  cache was used for these measurements.
+- Images were loaded into the local daemon with `--load`.
+- Backend command, run from `backend/`:
 
-- Intel build arguments: `LIBVA_COMMIT=217da1c28336d6a7e9c0c4cb8f1c303968a675f`,
-  `LIBVA_UTILS_COMMIT=1a13ae13382b7b548f3a7e8035e1d7df66662c0a`,
-  `GMMLIB_COMMIT=acee26b150043058f722920c8090187426e4abba`,
-  `MEDIA_DRIVER_COMMIT=c6ab0c941edfedf3ce79fa4dd7756f3369902e8d`,
-  `LIBVPL_COMMIT=c45b5d786bf7cdabbe49ff1bab78693ad78feb78`,
-  `LIBVPL_TOOLS_COMMIT=ad9deecaf0ee76f689373b55fe620c843e3c8a4d`, and
-  `VPL_GPU_COMMIT=e61f5633b0afee74639285e8d201fb803aeacb2f`.
-- FFmpeg `8.1.2`; SVT-AV1 `4.1.0`.
-- SeConv `5.1.0-rc15`; SkiaSharp native assets `3.119.4`;
-  HarfBuzzSharp native assets `8.3.1.5`.
-- No build arguments or target overrides were applied during this baseline
-  record.
+  ```text
+  docker build --progress=plain --platform linux/amd64 --pull=false --load \
+    -t <before-or-after-backend-tag> .
+  ```
 
-## Measurements unavailable
+- Frontend command, run from `frontend/`:
 
-The following BEFORE measurements are unavailable because the Docker daemon
-socket was absent:
+  ```text
+  docker build --progress=plain --platform linux/amd64 --pull=false --load \
+    --target production -t <before-or-after-web-tag> .
+  ```
 
-- final backend/frontend image size;
-- `docker history --no-trunc`, layer IDs, and layer sizes;
-- installed Debian package inventory and installed sizes;
-- runtime `/opt/ffmpeg`, `/opt/intel`, and `/usr/local/lib` sizes/content;
-- `ldd`/loader closure for FFmpeg, Intel/VAAPI/VPL, SeConv, and native OCR
-  libraries;
-- container execution, software capability probes, QSV/VAAPI probes,
-  Tesseract/SeConv checks, healthchecks, backup, and SSH runtime checks.
+The BEFORE images were built from an isolated archive of the exact baseline
+commit, not from the feature worktree. `docker image inspect`,
+`docker history --no-trunc`, disposable `docker run`, package inventory, and
+prefix-size commands were run against both image pairs.
 
-No size or percentage estimate is made.
+## Measured image results
 
-## Static dependency evidence
+| image | source | image ID | size (bytes) | size (MiB) | layers |
+| --- | --- | --- | ---: | ---: | ---: |
+| backend BEFORE | `d793cc4` | `sha256:4a259805d46ed41cd59274ac2562c0e22ee0d981364f49afe4e7c81823c98eea` | 444,810,619 | 424.20 | 16 |
+| backend AFTER | `ca73aa2` | `sha256:ab125398061d5338a25cabc4deb47011def074987288a989b29a3ec1282fa9e7` | 440,814,792 | 420.39 | 16 |
+| frontend BEFORE | `d793cc4` | `sha256:d29924b9ccc969e0b3cab05b2b23f272d89734f6834f813df357cd00cb032850` | 26,394,520 | 25.17 | 10 |
+| frontend AFTER | `ca73aa2` | `sha256:05dd2653b7336897df47df9d1c38bc7774274da35a9c0c012f41b72654189550` | 26,394,506 | 25.17 | 10 |
 
-- Build-only stages contain Go/CGo, Intel, FFmpeg/SVT-AV1, and SeConv
-  compilers, headers, source trees, package managers, and archive tools;
-  none are copied into the final stage.
-- The final stage copies `mvforge-api`, `mvforge-hw-probe`, FFmpeg/ffprobe,
-  `/opt/ffmpeg/lib`, the complete `/opt/intel` prefix, SeConv, and native
-  Skia/HarfBuzz libraries.
-- Runtime packages include media shared libraries, `libsqlite3-0`, `sqlite3`,
-  `curl`, `openssh-client`, Tesseract and `eng`/`spa`/`jpn`/`jpn_vert` data,
-  Hunspell `en`/`es`, OpenCL/DRM support, and `tzdata`.
-- `curl` is consumed by the backend healthcheck; `wget` is consumed by the
-  production frontend healthcheck; `sqlite3` is consumed by the NAS backup;
-  SSH is consumed by remote execution; `vainfo` and `vpl-inspect` are invoked
-  by `mvforge-hw-probe`.
-- FFmpeg is configured with libVPL, VAAPI, libdrm, and software codec/filter
-  providers; `MetricCapabilities` probes actual FFmpeg filters/provider/model
-  evidence and remains authoritative.
-- Production NAS Compose maps `/dev/dri`; local development Compose does not.
+| comparison | BEFORE | AFTER | absolute delta | percentage delta |
+| --- | ---: | ---: | ---: | ---: |
+| backend | 444,810,619 | 440,814,792 | -3,995,827 bytes | -0.898321% |
+| frontend | 26,394,520 | 26,394,506 | -14 bytes | -0.000053% |
+| combined | 471,205,139 | 467,209,298 | -3,995,841 bytes | -0.848005% |
 
-## Phase 1 treatment decision
+The backend AFTER layer history retains the same 16-layer structure and the
+same copied-prefix layer sizes: API 43.1 MB, hardware probe 3.21 MB, FFmpeg
+binary 668 kB, FFmpeg libraries 39 MB, Intel prefix 562 MB, SeConv 80.7 MB,
+native libraries 14 MB, and the license layers. The reported runtime package
+layer is 177 MB BEFORE and 165 MB AFTER; the Debian base layer is 87.4 MB
+BEFORE and 87.6 MB AFTER. The frontend retains the same Nginx base/config/
+distribution layer sizes and 10-layer shape.
 
-No runtime dependency, copied prefix, driver, plugin, language pack, native
-library, or operational binary is removed, relocated, or pruned in this
-implementation without Docker/loader evidence. The implementation is limited
-to BuildKit cache mounts and conservative build-context exclusions that do not
-change final runtime contents. Runtime image measurements and hardware/loader
-validation remain explicit follow-up requirements until a Docker daemon and
-appropriate hardware runtime are available.
+The Debian `trixie-slim` tag resolved to different base snapshots during the
+two daemon builds (`@1783900800` BEFORE and `@1789689600` AFTER). The runtime
+Dockerfile package list and copied runtime artifacts were not changed by
+#150, so the backend byte delta cannot be attributed solely to the cache and
+context optimizations; it includes the observed base/package snapshot drift.
+The measured deltas are reported as required, without treating them as an
+estimated optimization saving.
+
+## Package and prefix evidence
+
+| observation | BEFORE | AFTER |
+| --- | ---: | ---: |
+| installed Debian packages | 190 | 190 |
+| `dpkg` installed size | 282,653 kB / 276.03 MiB | 282,859 kB / 276.23 MiB |
+| `/opt/ffmpeg` | 38M | 38M |
+| `/opt/intel` | 536M | 536M |
+| `/usr/local/lib` | 14M | 14M |
+
+The relevant package identities and installed sizes remained present AFTER:
+
+- `curl`, `ca-certificates`, and `openssh-client` for health and remote
+  execution;
+- `sqlite3` and `libsqlite3-0` for backup and the Go SQLite driver;
+- `libdrm2`, `ocl-icd-libopencl1`, the Intel prefix, and the VAAPI/VPL
+  libraries and driver;
+- FFmpeg shared-library dependencies including libass, libfreetype,
+  libfontconfig, libfribidi, libx264, libx265, libvpx, libopus, libvorbis,
+  libaom, libdav1d, libopenjp2, libzimg, and libsoxr;
+- `tesseract-ocr`, `libtesseract5`, `tesseract-ocr-eng`, `-spa`, `-jpn`,
+  `-jpn-vert`, and the required OSD data;
+- `hunspell-en-us` and `hunspell-es`, with dictionary absence remaining an
+  optional degradation path.
+
+The final image contains no Go/CGo compiler, CMake, Make, Git, pkg-config,
+NASM, or copied source/header tree from the build stages. The `perl` executable
+observed in the Debian runtime is a transitive base/runtime package, not a
+copied build toolchain. No dependency or copied runtime prefix was removed or
+relocated by #150.
+
+## Runtime dependency map evidence
+
+| component | package/binary/library | consumer/probe | phase | status | evidence and treatment |
+| --- | --- | --- | --- | --- | --- |
+| API build | Go/CGo toolchain and module/build caches | backend build stage | build-time | required for build | not present in final image; cache mounts retained |
+| Intel build | libva, gmmlib, media-driver, libvpl, VPL tools, VPL GPU build dependencies | Intel build stages; final `/opt/intel` | build-time + runtime prefix | required runtime | final prefix and `iHD_drv_video.so` retained; loader and probe paths checked |
+| FFmpeg build | FFmpeg/SVT-AV1 compilers, headers, source, archives | FFmpeg build stage; final `/opt/ffmpeg/bin` and `lib` | build-time + runtime prefix | required runtime | build-only inputs do not enter final image; FFmpeg and ffprobe execute and load successfully |
+| FFmpeg/media | `ffmpeg`, `ffprobe`, libva, libdrm, libvpl, Intel driver, FFmpeg shared libs | Go execution paths, `mvforge-hw-probe`, capability probes | runtime | required/optional by capability | software filters/codecs and loader closure pass; hardware stays unavailable without `/dev/dri` |
+| metrics | SSIM/PSNR/XPSNR FFmpeg filters; optional libvmaf/model/provider evidence | #69 `MetricCapabilities` probe and cache/reset paths | runtime | SSIM/PSNR/XPSNR required; VMAF/provider optional | filters execute; libvmaf filter is absent and remains an explicit unavailable result; no package flag is added |
+| OCR | `tesseract`, `libtesseract5`, `eng`/`spa`/`jpn`/`jpn_vert`/OSD data | OCR handlers and bitmap subtitle workflow | runtime | required where OCR configured | version, language list, and data presence pass; no language pack removed |
+| subtitle rendering | libass, fontconfig, freetype, fribidi, FFmpeg ASS/SSA/SRT support | subtitle extraction/rendering and sidecar paths | runtime | required | ASS and SRT render smoke checks pass; SSA uses the same FFmpeg subtitle path |
+| SeConv | `/usr/local/bin/seconv`, `libSkiaSharp.so`, `libHarfBuzzSharp.so` | subtitle conversion/tooling | runtime | required | SeConv help/version works; native loader closure has no unresolved libraries |
+| Hunspell | `hunspell-en-us`, `hunspell-es` dictionaries | OCR scoring/correction | runtime | optional data | dictionaries are present; missing dictionaries continue to degrade through existing behavior |
+| backup | `sqlite3`, `libsqlite3-0`, `/bin/sh`, `test`, `mkdir` | `deploy/nas/backup.sh` inner command | runtime/operational | required | disposable `.backup` produced and reopened successfully; production data untouched |
+| health | `curl`, `wget` | backend and frontend Docker healthchecks | runtime/operational | required | both production healthchecks report healthy on a disposable network |
+| remote execution | `openssh-client` and `ssh` | Go `exec.Command` remote executor | runtime/operational | required when configured | `ssh -V` and binary path pass; no configured disposable remote endpoint was available |
+| diagnostics | `mvforge-hw-probe`, `vainfo`, `vpl-inspect` | hardware diagnostic path | runtime/diagnostic | optional hardware | binaries are present; probe returns structured `device_missing`/runtime-incompatible results without `/dev/dri` |
+
+No relevant dependency remains classified as an unknown removable candidate.
+Hardware usability is an unavailable environment capability, not evidence that
+its runtime libraries can be deleted.
+
+## Build/cache observations
+
+The backend build context transferred approximately 4.98 MB for the exact
+baseline source and 2.87 MB for the optimized source after the `.dockerignore`
+exclusions. The frontend context was approximately 2.44 MB in both captures.
+The Go build step logged 272.5 seconds in the baseline build and 128.8
+seconds in the optimized build with the cache mounts. These are observed step
+times from separate builds with different cache state, not a controlled
+benchmark and are reported separately from final image size. No runtime
+package, binary, driver, model, or copied-prefix optimization was accepted
+without evidence.
+
+## Functional runtime evidence
+
+- `ffmpeg` 8.1.2 and `ffprobe` 8.1.2 are discoverable using the image PATH;
+  both loader closures report zero `not found` entries.
+- Required filters `fieldmatch`, `bwdif`, `decimate`, `setfield`, `crop`,
+  `format`, `subtitles`, `ass`, `ssim`, `psnr`, `xpsnr`, `aresample`, and
+  `loudnorm` are listed. `libx265`, `libsvtav1`, AAC, Opus, QSV, and VAAPI
+  encoders are listed. Software IVTC/x265, SVT-AV1, audio, SRT, ASS, metric,
+  and ffprobe smokes pass.
+- `tesseract --list-langs` reports `eng`, `spa`, `jpn`, `jpn_vert`, and `osd`.
+  SeConv reports version 5.0.0/help successfully. SkiaSharp and HarfBuzzSharp
+  native libraries load with no unresolved dependencies.
+- Backend and frontend Docker healthchecks both become `healthy`; `/health`
+  returns HTTP 200. A disposable SQLite database is backed up and reopened
+  with the same command shape used by the NAS backup script.
+- The disposable API returns runtime state and accepts explicit runtime
+  refresh with HTTP 200. Focused #69/#149 capability/runtime tests pass, so
+  MetricCapabilities, RuntimeState, RuntimeSnapshot, cache-reset, and refresh
+  semantics remain application-owned rather than image-owned.
+
+## Hardware limitation
+
+The Docker host does not expose `/dev/dri`. Therefore production-style QSV/
+VAAPI validation, Intel media-driver usability, permissions, and hardware
+encoder smoke success are unavailable, not passed. The shipped probe reports
+`device_missing` for the device/VAAPI/QSV paths, while `vainfo` and
+`vpl-inspect` binaries remain present. No image or capability-detection change
+was made to mask this result.
