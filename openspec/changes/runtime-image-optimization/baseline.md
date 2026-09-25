@@ -193,13 +193,16 @@ provider exists. These are explicit model results, not validation failures.
   `eng`, `spa`, `jpn`, `jpn_vert`, and `osd`. Disposable PBM invocations exit
   successfully for each configured language. SeConv reports version 5.0.0.
   `libSkiaSharp.so` and `libHarfBuzzSharp.so` have no unresolved loader
-  dependencies. The explicit missing-tool failure branch was not separately
-  exercised because no repository fixture exists for it and the NAS image was
-  not modified.
+  dependencies. Focused bitmap OCR success tests pass with an isolated OCR
+  lifecycle root. `TestGenerateBitmapSubtitleBothReportsMissingOCRTools` uses
+  temporary PATH contents to exercise both existing explicit missing-SeConv
+  and missing-Tesseract errors and verifies no SRT/ASS output is created.
 - The image contains `en_US` and `es_ES` Hunspell dictionary/affix pairs.
-  Focused OCR scoring and dictionary-evidence tests pass. Missing-dictionary
-  degradation was not simulated because no repository fixture exists and the
-  NAS installation was not modified.
+  Focused OCR scoring and dictionary-evidence tests pass.
+  `TestSubtitleOCRWithoutHunspellDictionaryKeepsUncorrectedText` directs the
+  existing dictionary-folder override to an isolated empty directory and
+  proves scoring/correction degrades without dictionary evidence. The NAS
+  installation was not modified.
 - Focused disposable-fixture tests pass for SRT, ASS, SSA, PGS/VobSub bitmap
   OCR, canonical `both` reuse, sidecar validation/publication, and configured
   text/bitmap translation preparation. No repository bitmap media fixture was

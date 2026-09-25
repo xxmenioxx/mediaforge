@@ -206,6 +206,39 @@ func TestGenerateResolvedBitmapOCRFailureDoesNotLeaveArtifact(t *testing.T) {
 	}
 }
 
+func TestGenerateBitmapSubtitleBothReportsMissingOCRTools(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		installSeconv bool
+		wantError     string
+	}{
+		{name: "missing seconv", wantError: "OCR is not available in this backend image (seconv was not found)"},
+		{name: "missing tesseract", installSeconv: true, wantError: "OCR is not available in this backend image (Tesseract was not found)"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bin := t.TempDir()
+			if test.installSeconv {
+				if err := os.WriteFile(filepath.Join(bin, "seconv"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", bin)
+			root := t.TempDir()
+			destination := filepath.Join(root, "episode.mkv")
+			_, err := generateBitmapSubtitleBoth(context.Background(), "/unused/source.mkv", destination, FFProbeStream{Index: 4, CodecName: "hdmv_pgs_subtitle"}, SubtitleExtractionInput{}, nil)
+			if err == nil || err.Error() != test.wantError {
+				t.Fatalf("missing-tool error=%v, want %q", err, test.wantError)
+			}
+			for _, extension := range []string{"srt", "ass"} {
+				path := strings.TrimSuffix(destination, filepath.Ext(destination)) + ".und.4." + extension
+				if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+					t.Fatalf("missing-tool path left output %q: %v", path, statErr)
+				}
+			}
+		})
+	}
+}
+
 func TestBitmapSubtitleExtractionUsesSameAccurateTestEncodeWindow(t *testing.T) {
 	for _, test := range []struct {
 		name       string

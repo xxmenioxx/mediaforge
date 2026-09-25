@@ -951,3 +951,20 @@ func TestSubtitleOCRScoringUsesBoundedDictionaryEvidence(t *testing.T) {
 		t.Fatalf("unsupported language received a dictionary suggestion: %q/%v", suggestion, ok)
 	}
 }
+
+func TestSubtitleOCRWithoutHunspellDictionaryKeepsUncorrectedText(t *testing.T) {
+	dictionaryRoot := t.TempDir()
+	previousFolder := ocrDictionaryFolderOverride
+	ocrDictionaryFolderOverride = dictionaryRoot
+	defer func() { ocrDictionaryFolderOverride = previousFolder }()
+
+	if words := ocrKnownWords("eng"); len(words) != 0 {
+		t.Fatalf("isolated empty dictionary directory loaded words: %#v", words)
+	}
+	if suggestion, ok := deterministicOCRSuggestion("The h0use", "eng"); ok || suggestion != "" {
+		t.Fatalf("missing dictionary should degrade to no deterministic correction, got %q/%v", suggestion, ok)
+	}
+	if got, want := ocrConfusionCount("The h0use", "eng"), 0; got != want {
+		t.Fatalf("missing dictionary supplied confusion evidence: got %d, want %d", got, want)
+	}
+}
