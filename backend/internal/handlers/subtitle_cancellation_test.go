@@ -346,10 +346,35 @@ while :; do sleep 1; done
 			}
 			response = httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles/"+started.OperationID+"/cancel", nil))
-			if response.Code != http.StatusAccepted {
+			if response.Code != http.StatusAccepted && response.Code != http.StatusOK {
 				t.Fatalf("cancel status=%d body=%s", response.Code, response.Body.String())
 			}
-			cancelled := waitForSubtitleOperationStatus(t, started.OperationID, "cancelled")
+			var cancellation subtitleExtractionOperation
+			if err := json.Unmarshal(response.Body.Bytes(), &cancellation); err != nil {
+				t.Fatalf("decode cancel response: %v; body=%s", err, response.Body.String())
+			}
+			if cancellation.ID != started.OperationID {
+				t.Fatalf("cancel response operation ID=%q, want %q", cancellation.ID, started.OperationID)
+			}
+			if cancellation.Error != "" {
+				t.Fatalf("bitmap cancellation response reported failure: %#v", cancellation)
+			}
+			var cancelled subtitleExtractionOperation
+			switch response.Code {
+			case http.StatusAccepted:
+				if cancellation.Status != "running" {
+					t.Fatalf("accepted cancellation response was not still running: %#v", cancellation)
+				}
+				cancelled = waitForSubtitleOperationStatus(t, started.OperationID, "cancelled")
+			case http.StatusOK:
+				if cancellation.Status != "cancelled" {
+					t.Fatalf("successful cancel response was not already cancelled: %#v", cancellation)
+				}
+				cancelled = cancellation
+			}
+			if cancelled.Status != "cancelled" {
+				t.Fatalf("bitmap cancellation did not reach cancelled status: %#v", cancelled)
+			}
 			if cancelled.Error != "" {
 				t.Fatalf("bitmap cancellation reported failure: %#v", cancelled)
 			}
