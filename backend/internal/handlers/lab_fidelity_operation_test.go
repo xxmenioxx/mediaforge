@@ -303,11 +303,13 @@ func TestLabFidelityThreeFrozenWindowsBindDistinctGenerationsAndKeepAReusable(t 
 
 func TestLabFidelityPerceptualCancellationReleasesHeavySlot(t *testing.T) {
 	plan := SamplingPlan{PlanIdentity: "cancel-plan", SelectedWindows: []SamplingWindow{{Identity: "primary", Primary: true, StartSeconds: 0, DurationSeconds: 5}}}
+	labFidelityHeavySlot <- struct{}{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := collectPerceptualEvidenceUnderHeavySlot(ctx, plan, models.Profile{}, perceptualArtifactInput{}); err != context.Canceled {
 		t.Fatalf("canceled perceptual operation returned %v instead of context.Canceled", err)
 	}
+	<-labFidelityHeavySlot
 	select {
 	case labFidelityHeavySlot <- struct{}{}:
 		<-labFidelityHeavySlot
