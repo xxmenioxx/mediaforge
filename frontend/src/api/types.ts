@@ -1153,6 +1153,7 @@ export type RuntimeProfilesResponse = { profiles: RuntimeProfileDefinition[]; ef
 
 export type QueueJob = {
   id: number;
+  sourceAssetRecordId?: number;
   executionNumber?: number;
   batchId: string;
   batchName: string;
@@ -1407,6 +1408,7 @@ export type QueueSelectedAssetResult = {
   batchId?: string;
   batchName?: string;
   jobId?: number;
+  analysisEvidence?: AssetAnalysisEvidence;
 };
 
 export type QueueSelectedAssetsResponse = {

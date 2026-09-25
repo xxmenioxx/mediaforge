@@ -379,7 +379,7 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
     await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
-    expect(await screen.findByText('No snapshot available')).toBeTruthy();
+    expect(await screen.findByText('No snapshot available for the current source revision.')).toBeTruthy();
     expect(api.suggestProfile).not.toHaveBeenCalled();
     expect(api.startSnapshotOperation).not.toHaveBeenCalled();
   });
@@ -404,7 +404,14 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.libraries).mockResolvedValue([{ id: 1, name: 'Anime', sourcePath: '/media/raw/anime', destinationPath: '/media/library/anime', type: 'anime', validationRules: {}, createdAt: '', updatedAt: '' }]);
     vi.mocked(api.queueJobs).mockResolvedValue([
       { ...activeQueueJob(100, asset.path), status: 'completed', stage: 'completed', publishedPath: `${currentPath}.old`, publicationRetiredAt: '2026-08-27T00:00:00Z' },
-      { ...activeQueueJob(101, asset.path), status: 'completed', stage: 'completed', publishedPath: currentPath },
+      {
+        ...activeQueueJob(101, asset.path), status: 'completed', stage: 'completed', publishedPath: currentPath,
+        sourceAssetRecordId: asset.id, activeExecutionPlanId: 202,
+        profileSnapshot: { sourceAnalysisEvidence: {
+          status: 'ready', sourceAssetRecordId: asset.id,
+          sourceIdentity: { path: asset.path, snapshotId: 77, matchesCurrentSourceRevision: true },
+        } },
+      },
     ]);
 
     const user = userEvent.setup();
@@ -434,8 +441,11 @@ describe('Unprocessed Assets hierarchy', () => {
     await waitFor(() => expect(api.executionPlans).toHaveBeenCalledWith(101));
 
     await user.click(within(dialog).getByRole('tab', { name: 'History' }));
-    expect(within(dialog).getByText(new RegExp(`Queue job #101 .* current`))).toBeTruthy();
-    expect(within(dialog).getByText(new RegExp(`Queue job #100 .* historical`))).toBeTruthy();
+    expect(within(dialog).getByText(new RegExp(`Queue result #101 .* current`))).toBeTruthy();
+    expect(within(dialog).getByText(new RegExp(`Queue result #100 .* historical`))).toBeTruthy();
+    expect(within(dialog).getByText(new RegExp(`Source evidence snapshot #77 · Ready .* frozen plan #202 → Queue result #101`))).toBeTruthy();
+    expect(within(dialog).getByText(/Source evidence link unresolved; no path-only match is used/)).toBeTruthy();
+    expect(within(dialog).getAllByText(/Validation record link pending \(#53\)/)).toHaveLength(2);
     expect(within(dialog).getByText(/Direct publication #55/)).toBeTruthy();
   });
 
@@ -525,7 +535,7 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     await user.click(await screen.findByRole('button', { name: 'Analyze asset' }));
     await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1));
-    expect(api.startSnapshotOperation).toHaveBeenCalledWith({ path: '/media/raw/movies/Akira/Akira.mkv' });
+    expect(api.startSnapshotOperation).toHaveBeenCalledWith({ path: '/media/raw/movies/Akira/Akira.mkv', force: true });
   });
 
   it('starts one forced snapshot operation only after Refresh analysis is clicked', async () => {
@@ -942,7 +952,7 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
 
-    expect(await screen.findByText('No snapshot available')).toBeTruthy();
+    expect(await screen.findByText('No snapshot available for the current source revision.')).toBeTruthy();
     expect(screen.queryByText(/snapshot test failure/)).toBeNull();
     expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1);
   });
@@ -1058,14 +1068,14 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.queueSelectedAssets).mockImplementation(async ({ assetIds, commit }) => commit ? {
       summary: { selected: 1, eligible: 0, queued: 0, skipped: 1, failed: 0, titleCount: 1, sizeBytes: 1024 },
       results: [
-        { assetId: 1, outcome: 'skipped', reason: 'already_queued', message: 'Asset already has an open Queue job' },
+        { assetId: 1, outcome: 'skipped', reason: 'already_queued', message: 'Asset already has an open Queue job', analysisEvidence: { status: 'ready', sourceIdentity: { path: '/media/raw/movies/Akira/Akira.mkv', snapshotId: 11, sizeBytes: 100, modifiedAtUnixNano: 1, matchesCurrentSourceRevision: true } } },
       ],
       batches: [],
     } : {
       summary: { selected: 2, eligible: 1, queued: 0, skipped: 1, failed: 0, titleCount: 1, sizeBytes: 2048 },
       results: [
-        { assetId: assetIds[0], outcome: 'eligible', batchId: 'selected-test-001', batchName: 'Akira' },
-        { assetId: assetIds[1], outcome: 'skipped', reason: 'missing', message: 'Asset file is missing' },
+        { assetId: assetIds[0], outcome: 'eligible', batchId: 'selected-test-001', batchName: 'Akira', analysisEvidence: { status: 'ready', sourceIdentity: { path: '/media/raw/movies/Akira/Akira.mkv', snapshotId: 11, sizeBytes: 100, modifiedAtUnixNano: 1, matchesCurrentSourceRevision: true } } },
+        { assetId: assetIds[1], outcome: 'skipped', reason: 'missing', message: 'Asset file is missing', analysisEvidence: { status: 'stale', staleComponents: ['cadence'] } },
       ],
       batches: [],
     });
@@ -1078,6 +1088,10 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(api.effectiveAssetConfigurations).not.toHaveBeenCalled();
     expect(api.createQueueBatch).not.toHaveBeenCalled();
     expect(await screen.findByText('Will be queued: 1')).toBeTruthy();
+    const preflight = screen.getByRole('dialog');
+    expect(within(preflight).getByText('Ready')).toBeTruthy();
+    expect(within(preflight).getByText('Stale')).toBeTruthy();
+    expect(within(preflight).getByText('Snapshot #11')).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Queue 1 assets' }));
     await waitFor(() => expect(api.queueSelectedAssets).toHaveBeenCalledWith({ assetIds: [1, 2], commit: true }));

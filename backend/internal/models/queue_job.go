@@ -2,6 +2,8 @@ package models
 
 import "time"
 
+const QueueSourceAnalysisEvidenceKey = "sourceAnalysisEvidence"
+
 type QueueJob struct {
 	ID                    uint       `json:"id" gorm:"primaryKey"`
 	ExecutionNumber       *uint      `json:"executionNumber,omitempty" gorm:"uniqueIndex"`

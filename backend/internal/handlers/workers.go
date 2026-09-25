@@ -1267,9 +1267,60 @@ func freezeQueuePreparedProfileSnapshot(db *gorm.DB, job *models.QueueJob, profi
 		interlaceAnalysisSnapshotKey,
 		cadenceAnalysisSnapshotKey,
 		cadenceRecommendationSnapshotKey,
+		"samplingPlan",
+		"samplingPlanIdentity",
+		sourceAnalysisEvidenceSnapshotKey,
 	} {
 		if value, ok := job.ProfileSnapshot[key]; ok {
 			snapshot[key] = value
+		}
+	}
+	if job.SourceAssetRecordID != nil {
+		if raw, ok := snapshot[sourceAnalysisEvidenceSnapshotKey]; ok {
+			manifest, ok := snapshotCacheMap(raw)
+			if ok {
+				manifest["sourceAssetRecordId"] = *job.SourceAssetRecordID
+				manifest["status"] = assetAnalysisUnavailable
+				manifest["unavailableReason"] = "source_identity_unresolved"
+				if rawIdentity, ok := snapshotCacheMap(manifest["sourceIdentity"]); ok {
+					var record models.AssetRecord
+					var scan models.ScanResult
+					snapshotID := uint(jsonInt64(rawIdentity["snapshotId"]))
+					if snapshotID > 0 && db.Where("id = ?", snapshotID).First(&scan).Error == nil &&
+						db.Where("id = ?", *job.SourceAssetRecordID).First(&record).Error == nil &&
+						cleanAssetLifecyclePath(record.Path) == cleanAssetLifecyclePath(scan.Path) {
+						evidence := resolveAssetAnalysisEvidence(record, []models.ScanResult{scan}, analysisPolicy(db), 20)
+						manifest["status"] = evidence.Status
+						manifest["sourceIdentity"] = models.JSONMap{
+							"path": rawIdentity["path"], "snapshotId": rawIdentity["snapshotId"],
+							"sizeBytes": rawIdentity["sizeBytes"], "modifiedAtUnixNano": rawIdentity["modifiedAtUnixNano"],
+							"snapshotUpdatedAt":            rawIdentity["snapshotUpdatedAt"],
+							"assetRecordId":                *job.SourceAssetRecordID,
+							"matchesCurrentSourceRevision": evidence.SourceIdentity != nil && evidence.SourceIdentity.MatchesCurrentSourceRevision,
+						}
+						manifest["unavailableReason"] = evidence.UnavailableReason
+						manifest["staleComponents"] = evidence.StaleComponents
+					}
+				}
+				snapshot[sourceAnalysisEvidenceSnapshotKey] = manifest
+			}
+		} else {
+			manifest := models.JSONMap{
+				"sourceAssetRecordId": *job.SourceAssetRecordID,
+				"components":          []string{},
+			}
+			var record models.AssetRecord
+			if db.Where("id = ?", *job.SourceAssetRecordID).First(&record).Error == nil {
+				evidence := resolveAssetAnalysisEvidence(record, nil, analysisPolicy(db), 20)
+				manifest["status"] = evidence.Status
+				if evidence.UnavailableReason != "" {
+					manifest["unavailableReason"] = evidence.UnavailableReason
+				}
+			} else {
+				manifest["status"] = assetAnalysisUnavailable
+				manifest["unavailableReason"] = "source_asset_record_unavailable"
+			}
+			snapshot[sourceAnalysisEvidenceSnapshotKey] = manifest
 		}
 	}
 	job.ProfileSnapshot = snapshot

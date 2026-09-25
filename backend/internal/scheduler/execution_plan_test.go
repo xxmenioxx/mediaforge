@@ -26,6 +26,11 @@ func TestCreatePendingExecutionPlanVersionsAndSupersedes(t *testing.T) {
 		MediaPath: "/media/raw/priority.mkv", LibraryID: 1, ProfileID: profile.ID,
 		ProfileVersion: 1, ProfileSnapshot: snapshot, Priority: 1, Status: "queued",
 	}
+	job.ProfileSnapshot[models.QueueSourceAnalysisEvidenceKey] = models.JSONMap{
+		"status": "ready", "sourceAssetRecordId": 41,
+		"sourceIdentity": models.JSONMap{"snapshotId": 17, "path": job.MediaPath},
+		"components":     []string{"cadenceAnalysis"},
+	}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -36,6 +41,15 @@ func TestCreatePendingExecutionPlanVersionsAndSupersedes(t *testing.T) {
 	}
 	if first.Version != 1 || first.Status != ExecutionPlanPendingEvaluation || job.ActiveExecutionPlanID == nil || *job.ActiveExecutionPlanID != first.ID {
 		t.Fatalf("unexpected first plan: %#v job=%#v", first, job)
+	}
+	job.ProfileSnapshot[models.QueueSourceAnalysisEvidenceKey] = models.JSONMap{"status": "stale", "sourceAssetRecordId": 42}
+	var storedEvidence models.ExecutionPlan
+	if err := db.First(&storedEvidence, first.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	frozenEvidence, ok := storedEvidence.DecisionSources[models.QueueSourceAnalysisEvidenceKey].(map[string]any)
+	if !ok || frozenEvidence["status"] != "ready" || frozenEvidence["sourceAssetRecordId"] != float64(41) {
+		t.Fatalf("execution plan did not retain its immutable source evidence reference: %#v", storedEvidence.DecisionSources)
 	}
 
 	profile.ProfileVersion = 2

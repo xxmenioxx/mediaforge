@@ -1101,6 +1101,25 @@ func openAPIComponents() gin.H {
 					"commit":   gin.H{"type": "boolean"},
 				},
 			},
+			"AssetAnalysisEvidence": gin.H{
+				"type": "object", "required": []string{"status"},
+				"properties": gin.H{
+					"status":            gin.H{"type": "string", "enum": []string{"missing", "ready", "stale", "unavailable"}},
+					"sourceIdentity":    ref("AssetAnalysisSourceIdentity"),
+					"staleComponents":   gin.H{"type": "array", "items": gin.H{"type": "string"}},
+					"unavailableReason": gin.H{"type": "string"},
+				},
+			},
+			"AssetAnalysisSourceIdentity": gin.H{
+				"type": "object", "required": []string{"path", "sizeBytes", "modifiedAtUnixNano", "matchesCurrentSourceRevision"},
+				"properties": gin.H{
+					"path": gin.H{"type": "string"}, "snapshotId": gin.H{"type": "integer"},
+					"sizeBytes":                    gin.H{"type": "integer", "format": "int64"},
+					"modifiedAtUnixNano":           gin.H{"type": "integer", "format": "int64"},
+					"snapshotUpdatedAt":            gin.H{"type": "string", "format": "date-time"},
+					"matchesCurrentSourceRevision": gin.H{"type": "boolean"},
+				},
+			},
 			"QueueSelectedAssetResult": gin.H{
 				"type": "object", "required": []string{"assetId", "outcome"},
 				"properties": gin.H{
@@ -1108,6 +1127,7 @@ func openAPIComponents() gin.H {
 					"outcome": gin.H{"type": "string", "enum": []string{"eligible", "queued", "skipped", "failed"}},
 					"reason":  gin.H{"type": "string", "enum": []string{"not_found", "not_unprocessed", "missing", "needs_review", "already_queued", "active_maintenance", "invalid_configuration", "reservation_conflict", "queue_creation_failed"}},
 					"message": gin.H{"type": "string"}, "batchId": gin.H{"type": "string"}, "batchName": gin.H{"type": "string"}, "jobId": gin.H{"type": "integer"},
+					"analysisEvidence": ref("AssetAnalysisEvidence"),
 				},
 			},
 			"QueueSelectedAssetsResponse": gin.H{

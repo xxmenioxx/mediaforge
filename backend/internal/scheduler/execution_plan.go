@@ -76,6 +76,13 @@ func CreatePendingExecutionPlan(db *gorm.DB, job *models.QueueJob, reason string
 		Reservation: models.JSONMap{},
 		Evaluation:  models.JSONMap{},
 	}
+	if sourceEvidence, ok := job.ProfileSnapshot[models.QueueSourceAnalysisEvidenceKey]; ok {
+		frozenEvidence, err := jsonMap(sourceEvidence)
+		if err != nil {
+			return models.ExecutionPlan{}, fmt.Errorf("freeze source analysis evidence: %w", err)
+		}
+		plan.DecisionSources[models.QueueSourceAnalysisEvidenceKey] = frozenEvidence
+	}
 	if err := db.Create(&plan).Error; err != nil {
 		return models.ExecutionPlan{}, err
 	}

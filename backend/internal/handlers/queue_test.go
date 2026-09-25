@@ -558,6 +558,121 @@ func TestQueueProfileSnapshotDoesNotChangeWhenProfileChanges(t *testing.T) {
 	}
 }
 
+func TestQueuePreparedProfileFreezesOnlyConsumedAnalysisIdentity(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	path := filepath.Join(t.TempDir(), "frozen-evidence.mkv")
+	if err := os.WriteFile(path, []byte("queue source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := models.AssetRecord{Path: path, SourcePath: path, FileName: filepath.Base(path), Status: "unprocessed", SizeBytes: info.Size(), ModifiedAt: info.ModTime()}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	scan := completeAnalysisSnapshot(path, info)
+	stampSnapshotCacheMetadata(&scan, path, info)
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	initialSnapshot, err := scheduler.CaptureProfileSnapshot(profile, time.Now(), "queue_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: path, SourceAssetRecordID: &record.ID, ProfileID: profile.ID, Status: JobStatusQueued, ProfileSnapshot: initialSnapshot}
+	if err := NewQueueHandler(db).captureInterlaceSnapshot(path, job.ProfileSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := freezeQueuePreparedProfileSnapshot(db, &job, profile); err != nil {
+		t.Fatal(err)
+	}
+	var frozen models.QueueJob
+	if err := db.First(&frozen, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	manifest, ok := snapshotCacheMap(frozen.ProfileSnapshot[sourceAnalysisEvidenceSnapshotKey])
+	if !ok || manifest["status"] != assetAnalysisReady || uint(jsonInt64(manifest["sourceAssetRecordId"])) != record.ID {
+		t.Fatalf("Queue did not freeze canonical evidence identity with the asset record: %#v", frozen.ProfileSnapshot[sourceAnalysisEvidenceSnapshotKey])
+	}
+	components, ok := manifest["components"].([]any)
+	if !ok {
+		if typed, typedOK := manifest["components"].([]string); typedOK {
+			components = make([]any, len(typed))
+			for index, component := range typed {
+				components[index] = component
+			}
+		} else {
+			t.Fatalf("frozen evidence components have unexpected representation: %#v", manifest["components"])
+		}
+	}
+	for _, value := range components {
+		if value == "hdr" || value == "audio" || value == "subtitles" {
+			t.Fatalf("unused evidence was copied into the frozen manifest: %#v", components)
+		}
+	}
+	frozenManifest, err := json.Marshal(frozen.ProfileSnapshot[sourceAnalysisEvidenceSnapshotKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	scan.CadenceAnalysis = models.JSONMap{"status": "changed_after_freeze"}
+	if err := db.Save(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile.ProfileVersion++
+	profile.WorkerConfig["crf"] = 99
+	if err := db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var after models.QueueJob
+	if err := db.First(&after, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	afterManifest, err := json.Marshal(after.ProfileSnapshot[sourceAnalysisEvidenceSnapshotKey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterManifest) != string(frozenManifest) || after.ProfileVersion != frozen.ProfileVersion || !reflect.DeepEqual(after.ProfileSnapshot, frozen.ProfileSnapshot) {
+		t.Fatalf("post-freeze evidence/settings mutation rewrote the Queue snapshot: before=%#v after=%#v", frozen.ProfileSnapshot, after.ProfileSnapshot)
+	}
+}
+
+func TestQueuePreparedProfilePreservesUnavailableMissingAssetEvidence(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	record := models.AssetRecord{Path: "/media/raw/missing.mkv", FileName: "missing.mkv", Status: "unprocessed", Missing: true}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	initialSnapshot, err := scheduler.CaptureProfileSnapshot(profile, time.Now(), "queue_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: record.Path, SourceAssetRecordID: &record.ID, ProfileID: profile.ID, Status: JobStatusQueued, ProfileSnapshot: initialSnapshot}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := freezeQueuePreparedProfileSnapshot(db, &job, profile); err != nil {
+		t.Fatal(err)
+	}
+	manifest, ok := snapshotCacheMap(job.ProfileSnapshot[sourceAnalysisEvidenceSnapshotKey])
+	if !ok || manifest["status"] != assetAnalysisUnavailable || manifest["unavailableReason"] != "asset_missing" {
+		t.Fatalf("missing asset evidence was incorrectly presented as absent-but-available: %#v", job.ProfileSnapshot[sourceAnalysisEvidenceSnapshotKey])
+	}
+}
+
 func TestQueuePreparingFreezesHEVCDecisionBeforeProfileMutation(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-hevc-preparing-freeze?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -2040,12 +2155,21 @@ func TestQueueSelectedAssetsPlanIsAuthoritativeAndDoesNotPersist(t *testing.T) {
 	}
 	queryCounts := map[string]int{}
 	callbackName := "test:count-selected-queue-effective-scans"
-	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
-		queryCounts[tx.Statement.Table]++
-	}); err != nil {
+	countQuery := func(tx *gorm.DB) {
+		table := tx.Statement.Table
+		if table == "" && strings.Contains(tx.Statement.SQL.String(), "scan_results") {
+			table = "scan_results"
+		}
+		queryCounts[table]++
+	}
+	if err := db.Callback().Query().After("gorm:query").Register(callbackName, countQuery); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Callback().Row().After("gorm:row").Register(callbackName, countQuery); err != nil {
 		t.Fatal(err)
 	}
 	defer db.Callback().Query().Remove(callbackName)
+	defer db.Callback().Row().Remove(callbackName)
 
 	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{
 		AssetIDs: []uint{records[1].ID, records[0].ID, records[2].ID, records[3].ID, 999999, records[0].ID},
@@ -2086,8 +2210,71 @@ func TestQueueSelectedAssetsPlanIsAuthoritativeAndDoesNotPersist(t *testing.T) {
 			t.Fatalf("Queue prepare scanned %s %d times, want once: %#v", table, queryCounts[table], queryCounts)
 		}
 	}
-	if queryCounts["scan_results"] != 0 {
-		t.Fatalf("Queue preview read execution ScanResult data: %#v", queryCounts)
+	if queryCounts["scan_results"] != 1 {
+		t.Fatalf("Queue preview did not batch-read persisted analysis evidence exactly once: %#v", queryCounts)
+	}
+}
+
+func TestQueueSelectedAssetsAnalysisEvidenceIsSharedAndBatchReadOnly(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	path := filepath.Join(t.TempDir(), "selected-analysis.mkv")
+	if err := os.WriteFile(path, []byte("source fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := models.AssetRecord{Path: path, SourcePath: path, FileName: filepath.Base(path), Status: "unprocessed", SizeBytes: info.Size(), ModifiedAt: info.ModTime()}
+	missing := models.AssetRecord{Path: path + ".missing", SourcePath: path + ".missing", FileName: "missing.mkv", Status: "unprocessed"}
+	if err := db.Create(&[]models.AssetRecord{ready, missing}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var records []models.AssetRecord
+	if err := db.Order("id").Find(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	scan := completeAnalysisSnapshot(path, info)
+	stampSnapshotCacheMetadata(&scan, path, info)
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	queries := 0
+	callbackName := "test:count-selected-analysis-scan-batch"
+	countScanQuery := func(tx *gorm.DB) {
+		if tx.Statement.Table == "scan_results" || strings.Contains(tx.Statement.SQL.String(), "scan_results") {
+			queries++
+		}
+	}
+	if err := db.Callback().Query().After("gorm:query").Register(callbackName, countScanQuery); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Callback().Row().After("gorm:row").Register(callbackName, countScanQuery); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Callback().Query().Remove(callbackName)
+	defer db.Callback().Row().Remove(callbackName)
+
+	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{records[0].ID, records[1].ID}})
+	if queries != 1 {
+		t.Fatalf("selected Preflight issued %d ScanResult queries, want one batch read", queries)
+	}
+	want := resolveAssetAnalysisEvidence(records[0], []models.ScanResult{scan}, analysisPolicy(db), 20)
+	if !reflect.DeepEqual(response.Results[0].AnalysisEvidence, want) {
+		t.Fatalf("Preflight evidence differs from Asset Info projection: got %#v want %#v", response.Results[0].AnalysisEvidence, want)
+	}
+	if response.Results[0].AnalysisEvidence.Status != assetAnalysisReady || response.Results[0].AnalysisEvidence.SourceIdentity.SnapshotID != scan.ID {
+		t.Fatalf("ready source identity was not exposed: %#v", response.Results[0].AnalysisEvidence)
+	}
+	if response.Results[1].AnalysisEvidence.Status != assetAnalysisMissing {
+		t.Fatalf("missing persisted evidence was not reported: %#v", response.Results[1].AnalysisEvidence)
+	}
+	var scanCount, jobCount int64
+	if err := db.Model(&models.ScanResult{}).Count(&scanCount).Error; err != nil || scanCount != 1 {
+		t.Fatalf("read-only Preflight changed ScanResult count=%d err=%v", scanCount, err)
+	}
+	if err := db.Model(&models.QueueJob{}).Count(&jobCount).Error; err != nil || jobCount != 0 {
+		t.Fatalf("read-only Preflight persisted Queue jobs count=%d err=%v", jobCount, err)
 	}
 }
 

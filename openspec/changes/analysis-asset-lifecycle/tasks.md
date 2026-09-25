@@ -37,40 +37,40 @@
 
 ## 3. Batch Preflight and Queue freeze
 
-- [ ] 3.1 Extend the existing selected-assets preview/Batch Preflight response
+- [x] 3.1 Extend the existing selected-assets preview/Batch Preflight response
   with the shared per-asset evidence status and identity using bounded batch
   reads; verify preview starts no media work and performs no per-asset request
   fan-out.
-- [ ] 3.2 Preserve Queue's current eligibility, claim, preparation, and
+- [x] 3.2 Preserve Queue's current eligibility, claim, preparation, and
   effective-configuration authorities; at the existing immutable freeze,
   persist/reference only the canonical evidence components needed to explain
   the accepted plan.
-- [ ] 3.3 Add deterministic Queue tests proving frozen evidence identity and
+- [x] 3.3 Add deterministic Queue tests proving frozen evidence identity and
   plan remain unchanged after current evidence/configuration changes and that
   unused evidence is not copied into the execution snapshot.
-- [ ] 3.4 Verify Batch Preflight and Asset Info show the same evidence identity
+- [x] 3.4 Verify Batch Preflight and Asset Info show the same evidence identity
   and status for the same persisted observation and distinguish preflight
   preview from Queue's later preparation-time refresh.
 
 ## 4. History correlation and compatibility
 
-- [ ] 4.1 Link canonical source evidence, immutable frozen plan, Queue result,
+- [x] 4.1 Link canonical source evidence, immutable frozen plan, Queue result,
   and a future #53 Validation record in existing per-asset History by stable
   authority/record identity; do not add report storage or implement Validation.
-- [ ] 4.2 Preserve historical evidence references across asset rescan, rename,
+- [x] 4.2 Preserve historical evidence references across asset rescan, rename,
   move, replacement, and path reuse; verify unavailable/unresolved links remain
   explicit rather than attaching to current evidence by path or timestamp.
-- [ ] 4.3 Keep existing scanner APIs, operation records, `ScanResult`, and
+- [x] 4.3 Keep existing scanner APIs, operation records, `ScanResult`, and
   `analysisPolicy` consumers compatible; document/removal-scope any obsolete
   page-only API use before deprecation.
 
 ## 5. Validation and handoff
 
-- [ ] 5.1 Run focused backend/frontend checks for evidence state, lazy behavior,
+- [x] 5.1 Run focused backend/frontend checks for evidence state, lazy behavior,
   batch preview, freeze provenance, route migration, and History correlation;
   report unrelated baseline failures separately.
-- [ ] 5.2 Run `openspec validate analysis-asset-lifecycle --type change --strict`
+- [x] 5.2 Run `openspec validate analysis-asset-lifecycle --type change --strict`
   and verify proposal, design, specs, and tasks are valid.
-- [ ] 5.3 Keep #53 Validation implementation and all production changes out of
-  this planning-only change; implementation tasks remain unchecked until
-  separately authorized.
+- [x] 5.3 Keep #53 Validation implementation out of this #52 implementation;
+  constrain production changes to the explicitly authorized #52 tasks and
+  preserve the #53 handoff only.
