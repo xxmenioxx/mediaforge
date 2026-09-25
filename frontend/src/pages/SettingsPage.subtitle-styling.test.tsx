@@ -4,7 +4,8 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SubtitleStylingCard, subtitleHexError, subtitleNormalizeHexColor, subtitleStylingValue } from './SettingsPage';
+import { SubtitleStylingCard } from './SettingsPage';
+import { subtitleHexError, subtitleNormalizeHexColor, subtitleStylingValue } from '../utils/settingsPageHelpers';
 
 afterEach(cleanup);
 

@@ -7,11 +7,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   WorkersCard,
-  settingsToForm,
-  workerProgressPercentError,
-  workerSettingsPayload,
 } from './SettingsPage';
 import type { SettingsForm } from './SettingsPage';
+import { settingsToForm, workerProgressPercentError, workerSettingsPayload } from '../utils/settingsPageHelpers';
 
 afterEach(cleanup);
 

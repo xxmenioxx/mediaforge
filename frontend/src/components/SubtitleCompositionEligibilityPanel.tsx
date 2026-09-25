@@ -54,8 +54,8 @@ function sourceRequest(candidate: SubtitleCompositionCandidate) {
 }
 
 export function SubtitleCompositionEligibilityPanel({ assetPath = '', eligibility, loading = false, disabled = false, operation = null, error, onCompose, onCancel, onRetry }: SubtitleCompositionEligibilityPanelProps) {
-  const primaryCandidates = eligibility?.primaryCandidates ?? [];
-  const supplementalCandidates = eligibility?.supplementalCandidates ?? [];
+  const primaryCandidates = useMemo(() => eligibility?.primaryCandidates ?? [], [eligibility?.primaryCandidates]);
+  const supplementalCandidates = useMemo(() => eligibility?.supplementalCandidates ?? [], [eligibility?.supplementalCandidates]);
   const firstEligiblePrimary = useMemo(() => primaryCandidates.find((candidate) => candidate.eligible)?.sourceIdentity ?? '', [primaryCandidates]);
   const [primaryIdentity, setPrimaryIdentity] = useState(firstEligiblePrimary);
   const [supplementalIdentities, setSupplementalIdentities] = useState<string[]>([]);

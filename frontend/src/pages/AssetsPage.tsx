@@ -50,10 +50,11 @@ import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutli
 import EditIcon from '@mui/icons-material/Edit';
 import ScienceIcon from '@mui/icons-material/Science';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Component, Fragment, useEffect, useRef, useState } from 'react';
+import { Component, Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { filterAssetGroups, subtitleOCRReviewKey, subtitleOCRSidecarSelection, subtitleOperationStopsPolling } from '../utils/assetPageHelpers';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { TrackMaintenancePanel } from '../components/TrackMaintenancePanel';
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
@@ -120,7 +121,7 @@ export function AssetsPage() {
     if (legacyTab === 'archive') { next.set('location', 'library'); next.set('original', 'archived'); }
     if (legacyTab === 'reports') { next.set('location', 'library'); next.set('evidence', 'reports'); }
     setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
+  }, [legacyTab, unsupportedLegacyTab, searchParams, setSearchParams]);
   const updateLibraryFilter = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
     next.set('location', 'library');
@@ -872,7 +873,7 @@ function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetI
 		return <Box sx={{ overflowX: 'auto' }}><Table size="small" sx={{ minWidth: 720, tableLayout: 'fixed' }}><TableHead><TableRow><TableCell padding="checkbox" sx={{ width: 48 }} /><TableCell>Asset</TableCell><TableCell sx={{ width: 180 }}>Status</TableCell><TableCell sx={{ width: 100 }}>Size</TableCell><TableCell align="center" sx={{ width: 220 }}>Actions</TableCell></TableRow></TableHead><TableBody>{visibleAssets.map((asset) => {
 			const effective = asset.id ? effectiveConfigurations.data?.configurations[String(asset.id)] : undefined;
 			const track = trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey);
-			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} autoOpenAssetInfo={normalizePath(asset.path) === normalizePath(legacyAssetPath)} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupRelativePath={path.relativePath} groupPath={path.path} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)} bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
+			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} autoOpenAssetInfo={normalizePath(asset.path) === normalizePath(legacyAssetPath)} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupRelativePath={path.relativePath} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)} bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
 		})}</TableBody></Table></Box>;
 	};
 	return <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
@@ -1685,7 +1686,6 @@ function ArchivedAssetTable({
 				srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)}
                 assetCategories={assetCategories}
                 groupRelativePath={group.relativePath}
-                groupPath={group.path}
                 groupCategory=""
                 confidenceEnabled
                 groupProfileId={0}
@@ -2477,7 +2477,6 @@ function AssetGroupRow({
                           pathTrackProfile={trackProfiles.find((profile) => profile.key === selectedTrackProfileKey)}
                           assetCategories={assetCategories}
                           groupRelativePath={group.relativePath}
-                          groupPath={group.path}
                           groupCategory={groupCategory}
                           confidenceEnabled={isConfidenceEnabled}
                           groupProfileId={selectedProfileId < 0 ? -1 : effectiveProfileId}
@@ -2739,7 +2738,6 @@ function AssetRow({
   pathTrackProfile,
   assetCategories,
   groupRelativePath,
-  groupPath,
   groupCategory,
   confidenceEnabled,
   groupProfileId,
@@ -2766,7 +2764,6 @@ function AssetRow({
   pathTrackProfile?: TrackProfile;
   assetCategories: string[];
   groupRelativePath: string;
-  groupPath: string;
   groupCategory: string;
   confidenceEnabled: boolean;
   groupProfileId: number;
@@ -2855,6 +2852,9 @@ function AssetRow({
   const category = firstCategory(assetEditDraft.metadata.categories) || groupCategory;
   const authoritativeAssetEdit = assetInfoEditDocument(assetMetadata, normalizeAssetConversionOverride(asset.conversion));
   const authoritativeAssetEditSignature = JSON.stringify(authoritativeAssetEdit);
+  const persistedAssetEditSignature = JSON.stringify(persistedAssetEdit);
+  const assetEditDraftSignature = JSON.stringify(assetEditDraft);
+  const assetEditReconciliationRef = useRef('');
 
   useEffect(() => {
     assetEditDraftRef.current = assetEditDraft;
@@ -2994,6 +2994,7 @@ function AssetRow({
       setAssetEditDraft(retained.draft);
     },
   });
+  const resetAssetEdit = saveAssetEdit.reset;
   const createJob = useMutation({
     mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
       if (selectedTrackProfile) {
@@ -3267,18 +3268,14 @@ function AssetRow({
     updateAssetDestination.mutate({ selection: 'value', libraryId });
   }
   useEffect(() => {
-    if (!showSnapshotDialog || snapshotTab !== 'subtitles' || asset.missing) {
-      return;
-    }
-
-  void restoreSubtitleOperations();
-  }, [showSnapshotDialog, snapshotTab, asset.path]);
-  useEffect(() => {
+    const signature = JSON.stringify([asset.path, authoritativeAssetEditSignature, persistedAssetEditSignature, assetEditDraftSignature]);
+    if (assetEditReconciliationRef.current === signature) return;
+    assetEditReconciliationRef.current = signature;
     if (assetEditPathRef.current !== asset.path) {
       assetEditPathRef.current = asset.path;
       setPersistedAssetEdit(authoritativeAssetEdit);
       setAssetEditDraft(authoritativeAssetEdit);
-      saveAssetEdit.reset();
+      resetAssetEdit();
       return;
     }
     const refreshed = assetInfoRefreshReconciliation(persistedAssetEdit, assetEditDraft, authoritativeAssetEdit);
@@ -3286,7 +3283,7 @@ function AssetRow({
       setPersistedAssetEdit(refreshed.baseline);
       setAssetEditDraft(refreshed.draft);
     }
-  }, [asset.path, authoritativeAssetEditSignature, assetEditDirty]);
+  }, [asset.path, authoritativeAssetEdit, authoritativeAssetEditSignature, persistedAssetEdit, persistedAssetEditSignature, assetEditDraft, assetEditDraftSignature, assetEditDirty, resetAssetEdit]);
 
   function openSnapshotDialog(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
@@ -3415,14 +3412,14 @@ function AssetRow({
     });
   }
 
-  async function waitForSubtitleOperation(
+  const waitForSubtitleOperation = useCallback(async (
     operationId: string,
     key: string,
     streamIndex: number,
     format: 'original' | 'srt' | 'ass',
     onUpdate?: (operation: SubtitleExtractionOperation) => void,
     readOperation: (operationId: string) => Promise<SubtitleExtractionOperation> = api.subtitleExtractionOperation,
-  ) {
+  ) => {
   if (subtitleOperationPollers.current.has(operationId)) {
     return;
   }
@@ -3478,14 +3475,14 @@ function AssetRow({
         );
       }
 
-      await delay(500);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
     }
   } finally {
     subtitleOperationPollers.current.delete(operationId);
   }
-}
+  }, [setSubtitleGenerations]);
 
-async function restoreSubtitleOperations() {
+  const restoreSubtitleOperations = useCallback(async () => {
   try {
     const response = await api.subtitleExtractionOperations(asset.path);
 
@@ -3543,7 +3540,12 @@ async function restoreSubtitleOperations() {
       error,
     );
   }
-}
+  }, [asset.path, setSubtitleCompositionOperation, setSubtitleGenerations, waitForSubtitleOperation]);
+
+  useEffect(() => {
+    if (!showSnapshotDialog || snapshotTab !== 'subtitles' || asset.missing) return;
+    void restoreSubtitleOperations();
+  }, [showSnapshotDialog, snapshotTab, asset.missing, restoreSubtitleOperations]);
 
 async function composeSubtitles(input: SubtitleCompositionInput) {
   if (subtitleCompositionOperation?.status === 'running') return;
@@ -5445,12 +5447,6 @@ type SubtitleRestyleOperationState = {
   retryable?: boolean;
 };
 
-export function subtitleOperationStopsPolling(
-  status: 'running' | 'completed' | 'cancelled' | 'error',
-) {
-  return status !== 'running';
-}
-
 function subtitleGenerationKey(streamIndex: number, format:  'original' | 'srt' | 'ass') {
   return `${streamIndex}:${format}`;
 }
@@ -5460,24 +5456,6 @@ function defaultOCRLanguage(language: string) {
   if (value === 'spa' || value === 'es' || value === 'esp') return 'spa';
   if (value === 'jpn' || value === 'ja' || value === 'jp') return 'jpn';
   return 'eng';
-}
-
-export function subtitleOCRReviewKey(subtitle: ExternalSubtitle) {
-  const logicalTransformKey = subtitle.logicalTransformKey?.trim();
-  return logicalTransformKey ? `logical:${logicalTransformKey}` : subtitle.path;
-}
-
-export function subtitleOCRSidecarSelection(values: ExternalSubtitle[], sidecar: ExternalSubtitle) {
-  const logicalTransformKey = sidecar.logicalTransformKey?.trim();
-  if (logicalTransformKey) {
-    const siblings = values.filter((candidate) => candidate.logicalTransformKey?.trim() === logicalTransformKey);
-    const srt = siblings.find((candidate) => candidate.format === 'srt');
-    const ass = siblings.find((candidate) => candidate.format === 'ass');
-    if (srt && ass) {
-      return { sidecarPaths: [srt.path, ass.path], format: 'both' as const };
-    }
-  }
-  return { sidecarPaths: [sidecar.path], format: sidecar.format === 'ssa' ? 'ass' : sidecar.format };
 }
 
 export function ExternalSubtitleList({
@@ -5657,14 +5635,6 @@ const videoCodecOptions: SelectOption[] = [
   { value: 'x264', label: 'H.264 / x264' },
 ];
 
-const audioCodecOptions: SelectOption[] = [
-  { value: '', label: 'Profile default' },
-  { value: 'copy', label: 'Keep original audio' },
-  { value: 'aac', label: 'AAC (best compatibility)' },
-  { value: 'ac3', label: 'AC-3 (home theater)' },
-  { value: 'opus', label: 'Opus (small files)' },
-];
-
 const speedOptions: SelectOption[] = [
   { value: '', label: 'Profile default' },
   { value: 'veryfast', label: 'Fast preview' },
@@ -5734,7 +5704,7 @@ function AssetConversionOverridePanel({
       data: QualityRecommendationResponse;
     }>();
 
-  const encoderQualityRecommendation = useMutation({
+  const { mutate: requestEncoderQuality, isError: encoderQualityRecommendationError, error: encoderQualityRecommendationFailure } = useMutation({
     mutationFn: api.recommendEncoderQuality,
     onSuccess: (data, variables) => {
       if (!variables.path) return;
@@ -5845,20 +5815,21 @@ function AssetConversionOverridePanel({
   const videoToolboxPowerAvailable = videoToolboxCapability?.videoToolboxPowerEfficient === true
     && (!videoToolboxMain10Selected || videoToolboxCapability.testedModes?.videoToolboxPowerEfficientMain10 === true);
   const effectiveEvaluationProfile = assetQualityProfile(profile, draft, effectiveVideoEncoder, String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'custom'));
-  const upscaleHeightError = customUpscaleHeightError(draft.upscaleMode, draft.upscaleCustomHeight);
   const effectiveEvaluationSignature = JSON.stringify(effectiveEvaluationProfile);
+  const effectiveEvaluationProfileRef = useRef(effectiveEvaluationProfile);
+  useEffect(() => {
+    effectiveEvaluationProfileRef.current = effectiveEvaluationProfile;
+  }, [effectiveEvaluationProfile]);
+  const upscaleHeightError = customUpscaleHeightError(draft.upscaleMode, draft.upscaleCustomHeight);
   const displayedEncoderRecommendation =
     lastEncoderRecommendation?.path === assetPath
       ? lastEncoderRecommendation.data
       : undefined;
 
-  const encoderRecommendationUpdating =
-    Boolean(displayedEncoderRecommendation) &&
-    encoderQualityRecommendation.isPending;
   useEffect(() => {
-    const timer = window.setTimeout(() => encoderQualityRecommendation.mutate({ path: assetPath, profile: effectiveEvaluationProfile }), 250);
+    const timer = window.setTimeout(() => requestEncoderQuality({ path: assetPath, profile: effectiveEvaluationProfileRef.current }), 250);
     return () => window.clearTimeout(timer);
-  }, [assetPath, effectiveEvaluationSignature]);
+  }, [assetPath, effectiveEvaluationSignature, requestEncoderQuality]);
 
   function selectHardwareQualityPreset(
   preset: string,
@@ -5882,7 +5853,7 @@ function AssetConversionOverridePanel({
       preset,
     );
 
-    encoderQualityRecommendation.mutate(
+    requestEncoderQuality(
       { path: assetPath, profile: requested },
       {
         onSuccess: (result) =>
@@ -5903,7 +5874,7 @@ function AssetConversionOverridePanel({
     };
     Object.entries(patch).forEach(([name, setting]) => onChange(name as keyof AssetConversionOverrideState, setting as never));
     const requested = assetQualityProfile(profile, { ...draft, ...patch }, effectiveVideoEncoder, 'custom');
-    encoderQualityRecommendation.mutate({ path: assetPath, profile: requested });
+    requestEncoderQuality({ path: assetPath, profile: requested });
   }
 
   function updateFrameStructurePolicy(patch: Record<string, unknown>) {
@@ -5913,7 +5884,7 @@ function AssetConversionOverridePanel({
     onChange('hardwareQualityPreset', retainedQualityPreset);
     if (effectiveVideoEncoder === 'hevc_qsv' || effectiveVideoEncoder === 'hevc_videotoolbox') {
       const requested = assetQualityProfile(profile, { ...draft, ...patch }, effectiveVideoEncoder, String(draft.hardwareQualityPreset ?? profile?.workerConfig?.hardwareQualityPreset ?? 'custom'));
-      encoderQualityRecommendation.mutate({ path: assetPath, profile: requested });
+      requestEncoderQuality({ path: assetPath, profile: requested });
     }
   }
 
@@ -6360,7 +6331,7 @@ function AssetConversionOverridePanel({
                   <Grid size={{ xs: 12 }}><Stack direction="row" spacing={2} flexWrap="wrap"><FormControlLabel title="Off is the default for offline conversion. Enable only for explicit low-latency work." control={<Checkbox checked={draft.videoToolboxRealtime ?? profile?.workerConfig?.videoToolboxRealtime === true} onChange={(event) => onChange('videoToolboxRealtime', event.target.checked)} />} label="Realtime" /><FormControlLabel title="Adjust target, maxrate and buffer for the effective B-frame strategy." control={<Checkbox checked={draft.videoToolboxAutoAdjustBitrate ?? profile?.workerConfig?.videoToolboxAutoAdjustBitrate === true} onChange={(event) => onChange('videoToolboxAutoAdjustBitrate', event.target.checked)} />} label="Auto-adjust bitrate for encoder strategy" /><FormControlLabel title="Available only after the matching VideoToolbox Main/Main10 power-efficiency probe succeeds." control={<Checkbox disabled={!videoToolboxPowerAvailable} checked={draft.videoToolboxPowerEfficiency ?? profile?.workerConfig?.videoToolboxPowerEfficiency === true} onChange={(event) => onChange('videoToolboxPowerEfficiency', event.target.checked)} />} label="Power efficiency" /></Stack></Grid>
                 </Grid>
               ) : null}
-              {encoderQualityRecommendation.isError ? <Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendation.error instanceof Error ? encoderQualityRecommendation.error.message : 'unknown error'}</Alert> : null}
+              {encoderQualityRecommendationError ? <Alert severity="warning">Quality recommendation failed: {encoderQualityRecommendationFailure instanceof Error ? encoderQualityRecommendationFailure.message : 'unknown error'}</Alert> : null}
               {displayedEncoderRecommendation ? (
                 <Stack spacing={1} sx={{ mt: 1.5 }}>
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -6976,34 +6947,6 @@ function lifecycleLabel(value: string) {
   return value.replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
-export function filterAssetGroups(groups: AssetGroup[], query: string, filters: { provenance?: string; validation?: string; original?: string; workflow?: string; attention?: string } = {}) {
-  const cleanQuery = query.trim().toLowerCase();
-  if (!cleanQuery && !filters.provenance && !filters.validation && !filters.original && !filters.workflow && !filters.attention) return groups;
-  return groups.flatMap((group) => {
-    const matchingAssets = safeArray(group.assets).filter((asset) => {
-      const lifecycle = asset.lifecycle;
-      const provenance = lifecycle?.provenance ?? (asset.status === 'converted' ? 'converted' : asset.status === 'published_as_is' ? 'published_as_is' : asset.status === 'accepted' ? 'imported' : 'legacy_or_unknown');
-      const validation = lifecycle?.validation ?? 'unavailable';
-      const original = lifecycle?.original ?? (asset.status === 'archive' ? 'archived' : 'unknown');
-      const workflow = lifecycle?.lifecycle ?? (asset.status === 'unprocessed' ? 'available' : 'unknown');
-      if (filters.provenance && provenance !== filters.provenance) return false;
-      if (filters.validation && validation !== filters.validation) return false;
-      if (filters.original && original !== filters.original) return false;
-      if (filters.workflow && workflow !== filters.workflow) return false;
-      if (filters.attention && !(lifecycle?.attention ?? []).includes(filters.attention)) return false;
-      if (!cleanQuery) return true;
-      const values = [asset.fileName, asset.path, asset.relativePath, asset.status, lifecycle?.lifecycle, lifecycle?.provenance, lifecycle?.validation, lifecycle?.publication, lifecycle?.original, ...(lifecycle?.attention ?? [])];
-      return values.some((value) => (value ?? '').toLowerCase().includes(cleanQuery));
-    });
-    if (!matchingAssets.length && (filters.provenance || filters.validation || filters.original || filters.workflow || filters.attention)) return [];
-    if (!matchingAssets.length) {
-      const groupValues = [group.path, group.relativePath, group.libraryName, group.status];
-      if (!cleanQuery || !groupValues.some((value) => (value ?? '').toLowerCase().includes(cleanQuery))) return [];
-    }
-    return [{ ...group, assets: matchingAssets }];
-  });
-}
-
 function pathLabelForCollection(group: AssetGroup) {
 	const asset = firstAssetForGroup(group.assets);
 	if (asset?.logicalGroupPath) {
@@ -7122,10 +7065,6 @@ function countLabel(count: number, singular: string) {
 
 function sumGroupBytes(groups: AssetGroup[]) {
   return groups.reduce((total, group) => total + (Number.isFinite(group.sizeBytes) ? group.sizeBytes : 0), 0);
-}
-
-function sumAssetBytes(assets: Array<{ asset: Asset }>) {
-  return assets.reduce((total, { asset }) => total + (Number.isFinite(asset.sizeBytes) ? asset.sizeBytes : 0), 0);
 }
 
 function recommendationLabel(recommendation: AdvisorResponse['recommendation']) {
@@ -7857,14 +7796,6 @@ function normalizeNumberList(values?: number[] | null) {
   return Array.from(new Set(safeArray(values).filter((value) => Number.isInteger(value) && value >= 0))).sort((left, right) => left - right);
 }
 
-function numberOrUndefined(value: string) {
-  if (value.trim() === '') {
-    return undefined;
-  }
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
 function optionItems(options: SelectOption[], currentValue?: string) {
   const value = currentValue ?? '';
   if (!value || options.some((option) => option.value === value)) {
@@ -7883,43 +7814,6 @@ function withoutCropFilters(value?: string) {
 
 function joinFilters(...values: Array<string | undefined>) {
   return values.map((value) => value?.trim()).filter(Boolean).join(',');
-}
-
-function friendlyCodec(value?: string) {
-  switch ((value ?? '').toLowerCase()) {
-    case 'copy':
-      return 'Keep original';
-    case 'x265_10bit':
-    case 'libx265':
-      return 'HEVC / x265';
-    case 'x264':
-    case 'libx264':
-      return 'H.264 / x264';
-    case 'aac':
-      return 'AAC';
-    case 'ac3':
-      return 'AC-3';
-    default:
-      return value ?? '';
-  }
-}
-
-function friendlyPreset(value?: string) {
-  if (!value) {
-    return '';
-  }
-  return value.replace(/-/g, ' ');
-}
-
-function friendlyPixFmt(value?: string) {
-  switch (value) {
-    case 'yuv420p10le':
-      return '10-bit';
-    case 'yuv420p':
-      return '8-bit';
-    default:
-      return value ?? '';
-  }
 }
 
 function getAudioProfiles(settings?: AppSetting[]) {

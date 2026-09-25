@@ -35,6 +35,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DragEvent, FormEvent, useMemo, useState } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { canRemoveQueueBatch } from '../utils/queueBatch';
 import { JobDetailsDialog } from '../components/JobDetailsDialog';
 import { PageHeader } from '../components/PageHeader';
 import type { AppSetting, Asset, AssetInventory, AudioEnhancementProfile, Library, Profile, QueueJob, QueueJobInput } from '../api/types';
@@ -643,10 +644,6 @@ type QueueJobGroup = {
   running: number;
   queued: number;
 };
-
-export function canRemoveQueueBatch(jobs: QueueJob[]) {
-  return jobs.length > 0 && jobs.every((job) => job.status === 'canceled');
-}
 
 function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value: string; onChange: (path: string) => void }) {
   const selected = assets.find((asset) => asset.path === value) ?? null;

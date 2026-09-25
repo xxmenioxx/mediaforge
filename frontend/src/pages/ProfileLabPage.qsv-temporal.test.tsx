@@ -3,10 +3,10 @@ import type { LabFidelityOperation, QSVTemporalExperimentSummary } from '../api/
 import {
   buildQSVTemporalExperimentRequest,
   buildQSVTemporalRequestedDelta,
-  labFidelityOperationMatchesRun,
   qsvTemporalEvidenceProjection,
   qsvTemporalRequestFromSummary,
-} from './ProfileLabPage';
+} from '../utils/profileLabTemporal';
+import { labFidelityOperationMatchesRun } from '../utils/profileLabFidelity';
 
 function summary(): QSVTemporalExperimentSummary {
   return {

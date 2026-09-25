@@ -1,6 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import { buildVideoFilterChain, combinedAutomaticMotionFilters, combinedVideoCommandArgs } from './ProfileLabPage';
+import { combinedVideoCommandArgs as buildCombinedVideoCommandArgs, type CombinedVideoCommandContext } from '../utils/profileLabVideoCommand';
+import { buildVideoFilterChain, combinedAutomaticMotionFilters } from '../utils/profileLabVideoUtilities';
 import type { EffectiveVideoDecision, ProfileInput, ScanResult } from '../api/types';
+
+const commandContext: CombinedVideoCommandContext = {
+  videoWorkerValue: (profile, key, fallback = '') => {
+    const value = profile.workerConfig?.[key];
+    return typeof value === 'string' ? value : fallback;
+  },
+  videoWorkerBool: (profile, key, fallback = false) => {
+    const value = profile.workerConfig?.[key];
+    if (typeof value === 'boolean') return value;
+    return typeof value === 'string' ? ['true', '1', 'yes', 'enabled', 'on'].includes(value.toLowerCase()) : fallback;
+  },
+  numberWorkerValue: (profile, key, fallback) => {
+    const value = profile.workerConfig?.[key];
+    const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+    return Number.isFinite(parsed) ? parsed : fallback;
+  },
+  softwareEncoderForLabCodec: () => 'libx265',
+  adaptiveVideoToolboxPreviewRates: () => { throw new Error('unexpected VideoToolbox path in filter test'); },
+  isTenBitDraft: () => false,
+  combinedVideoToolboxColorConversion: () => ({}),
+  isHardwareEncoderOption: () => false,
+  effectiveLabX265Params: () => '',
+  frameStructureRecommendationForLab: () => { throw new Error('unexpected automatic frame structure path in filter test'); },
+};
+
+const combinedVideoCommandArgs = (profile: ProfileInput, scan: ScanResult, decision?: EffectiveVideoDecision) =>
+  buildCombinedVideoCommandArgs(profile, scan, decision, commandContext);
 
 describe('Profile Lab video filter chain', () => {
   it('places medium Regrain after final sharpen and before field metadata', () => {

@@ -6,7 +6,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import type { QueueJob } from '../api/types';
-import { canRemoveQueueBatch, QueueGroupCard } from './QueuePage';
+import { QueueGroupCard } from './QueuePage';
+import { canRemoveQueueBatch } from '../utils/queueBatch';
 
 afterEach(() => {
   cleanup();

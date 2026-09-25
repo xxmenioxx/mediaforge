@@ -6,7 +6,8 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import type { SubtitleTranslationReadiness } from '../api/types';
-import { SubtitleTranslationSettingsCard, subtitleTranslationSettingsValue } from './SettingsPage';
+import { SubtitleTranslationSettingsCard } from './SettingsPage';
+import { subtitleTranslationSettingsValue } from '../utils/settingsPageHelpers';
 
 afterEach(() => {
   cleanup();

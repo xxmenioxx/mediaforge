@@ -259,12 +259,12 @@ export function ProfilesPage() {
     },
   });
   const encoderQualityRecommendation = useMutation({ mutationFn: api.recommendEncoderQuality });
-  const profileEvaluationSignature = JSON.stringify(form);
+  const requestQualityRecommendation = encoderQualityRecommendation.mutate;
   useEffect(() => {
     if (!showForm) return;
-    const timer = window.setTimeout(() => encoderQualityRecommendation.mutate({ profile: form }), 250);
+    const timer = window.setTimeout(() => requestQualityRecommendation({ profile: form }), 250);
     return () => window.clearTimeout(timer);
-  }, [profileEvaluationSignature, showForm]);
+  }, [form, requestQualityRecommendation, showForm]);
 
   function updateField<K extends keyof ProfileInput>(field: K, value: ProfileInput[K]) {
     let next = { ...form, [field]: value };
