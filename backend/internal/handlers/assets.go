@@ -378,6 +378,7 @@ type Asset struct {
 	Metadata         AssetMetadataState           `json:"metadata"`
 	Conversion       AssetConversionOverrideState `json:"conversion"`
 	PublicationMode  string                       `json:"publicationMode,omitempty"`
+	Lifecycle        *AssetLifecycleProjection    `json:"lifecycle,omitempty"`
 	Technical        *AssetTechnicalInfo          `json:"technical,omitempty"`
 }
 
@@ -731,6 +732,13 @@ func (h AssetHandler) Recover(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "archive file is no longer physically available"})
 		return
 	}
+	if active, err := h.assetHasActiveWork(record); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "check active asset work: " + err.Error()})
+		return
+	} else if active {
+		c.JSON(http.StatusConflict, gin.H{"error": "asset has active work"})
+		return
+	}
 	rawRoot, err := settingPath(h.db, "rawRoot", "/media/raw")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -873,6 +881,11 @@ func (h AssetHandler) permanentlyDeleteArchiveAsset(path string) (int, error) {
 	if record.Missing {
 		return http.StatusNotFound, fmt.Errorf("archive file is no longer physically available")
 	}
+	if active, err := h.assetHasActiveWork(record); err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("check active asset work: %w", err)
+	} else if active {
+		return http.StatusConflict, fmt.Errorf("asset has active work")
+	}
 	archiveRoot, err := originalsArchivePath(h.db)
 	if err != nil {
 		return http.StatusInternalServerError, err
@@ -932,6 +945,13 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 	}
 	if record.Status != "converted" {
 		c.JSON(http.StatusConflict, gin.H{"error": "only a MVForge converted asset can use this recovery-safe delete flow"})
+		return
+	}
+	if active, err := h.assetHasActiveWork(record); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "check active asset work: " + err.Error()})
+		return
+	} else if active {
+		c.JSON(http.StatusConflict, gin.H{"error": "asset has active work"})
 		return
 	}
 	convertedExists := false
@@ -1661,8 +1681,9 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		for _, record := range publishing {
 			publishedPath := publishedPaths[record.Path]
+			sourceAssetRecordID := record.ID
 			publication := models.DirectPublication{
-				SourcePath: record.Path, PublishedPath: publishedPath, LibraryID: library.ID,
+				SourcePath: record.Path, SourceAssetRecordID: &sourceAssetRecordID, PublishedPath: publishedPath, LibraryID: library.ID,
 				PublishedFingerprint: fingerprints[record.Path], PublishedSizeBytes: record.SizeBytes, PublishedAt: publishedAt,
 			}
 			if err := saveDirectPublication(tx, &publication); err != nil {
@@ -2145,6 +2166,17 @@ func validateLibraryRenamePlanForApply(plan LibraryRenamePlan, library models.Li
 func (h AssetHandler) validateLibraryRenameHasNoActiveWork(plan LibraryRenamePlan) error {
 	queue := NewQueueHandler(h.db)
 	for _, asset := range plan.Assets {
+		var record models.AssetRecord
+		if asset.AssetID > 0 && h.db.First(&record, asset.AssetID).Error == nil {
+			active, err := h.assetHasActiveWork(record)
+			if err != nil {
+				return err
+			}
+			if active {
+				return fmt.Errorf("asset has active work: %s", asset.SourcePath)
+			}
+			continue
+		}
 		active, err := queue.assetHasOpenJob(asset.SourcePath, 0)
 		if err != nil {
 			return err
@@ -5448,6 +5480,10 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	if err := h.db.Order("status asc, library_name asc, relative_path asc").Find(&records).Error; err != nil {
 		return AssetInventory{}, err
 	}
+	lifecycleByID, err := h.assetLifecycleProjections(records)
+	if err != nil {
+		return AssetInventory{}, err
+	}
 	scans := []models.ScanResult{}
 	if h.db.Migrator().HasTable(&models.ScanResult{}) {
 		if err := h.db.Order("updated_at desc, id desc").Find(&scans).Error; err != nil {
@@ -5516,14 +5552,15 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 			continue
 		}
 		asset := assetFromRecord(record)
+		asset.Lifecycle = lifecycleByID[record.ID]
 		asset.Technical = technicalByPath[cleanPath]
 		switch record.Status {
 		case "converted":
-			if directOutputs[cleanPath] {
+			if asset.Lifecycle != nil && asset.Lifecycle.Provenance == AssetProvenancePublishedAsIs {
 				asset.Status = "published_as_is"
 				asset.PublicationMode = "as_is"
 				inventory.Library = append(inventory.Library, asset)
-			} else if mvForgeOutputs[cleanPath] {
+			} else if asset.Lifecycle != nil && asset.Lifecycle.Provenance == AssetProvenanceConverted {
 				asset.Status = "converted"
 				inventory.Converted = append(inventory.Converted, asset)
 				inventory.Library = append(inventory.Library, asset)
@@ -5585,7 +5622,9 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	sortAssetGroups(inventory.ArchiveGroups)
 	for _, record := range records {
 		if record.Missing && !missing.HistoricalPaths[filepath.Clean(record.Path)] {
-			inventory.Missing = append(inventory.Missing, assetFromRecord(record))
+			asset := assetFromRecord(record)
+			asset.Lifecycle = lifecycleByID[record.ID]
+			inventory.Missing = append(inventory.Missing, asset)
 		}
 	}
 	sortAssets(inventory.Missing)

@@ -24,6 +24,7 @@ type QueueHandler struct {
 
 type QueueJobInput struct {
 	MediaPath                 string `json:"mediaPath" binding:"required"`
+	SourceAssetRecordID       *uint  `json:"-"`
 	PublishMode               string `json:"publishMode"`
 	BatchID                   string `json:"batchId"`
 	BatchName                 string `json:"batchName"`
@@ -177,6 +178,61 @@ type QueueSelectedAssetsResponse struct {
 	Summary QueueSelectedAssetsSummary       `json:"summary"`
 	Results []QueueSelectedAssetResult       `json:"results"`
 	Batches []QueueSelectedAssetsBatchResult `json:"batches"`
+}
+
+func sourceAssetRecordIDForPath(db *gorm.DB, mediaPath string) (*uint, error) {
+	if db == nil || strings.TrimSpace(mediaPath) == "" {
+		return nil, nil
+	}
+	var record models.AssetRecord
+	result := db.Where("path = ?", filepath.Clean(mediaPath)).Limit(1).Find(&record)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 || record.ID == 0 {
+		return nil, nil
+	}
+	id := record.ID
+	return &id, nil
+}
+
+func populateSourceAssetRecordIDs(db *gorm.DB, inputs []QueueJobInput) error {
+	if db == nil || len(inputs) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(inputs))
+	seen := make(map[string]struct{}, len(inputs))
+	for _, input := range inputs {
+		path := filepath.Clean(strings.TrimSpace(input.MediaPath))
+		if path == "." || path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	var records []models.AssetRecord
+	if err := db.Where("path IN ?", paths).Find(&records).Error; err != nil {
+		return err
+	}
+	byPath := make(map[string]uint, len(records))
+	for _, record := range records {
+		byPath[filepath.Clean(record.Path)] = record.ID
+	}
+	for index := range inputs {
+		if inputs[index].SourceAssetRecordID != nil {
+			continue
+		}
+		if id := byPath[filepath.Clean(inputs[index].MediaPath)]; id != 0 {
+			inputs[index].SourceAssetRecordID = &id
+		}
+	}
+	return nil
 }
 
 const (
@@ -637,18 +693,19 @@ func (h QueueHandler) prepareBatchQueueJob(
 	}
 
 	job := models.QueueJob{
-		MediaPath:         input.MediaPath,
-		PublishMode:       publishMode,
-		LibraryID:         input.LibraryID,
-		ProfileID:         input.ProfileID,
-		AudioProfileKey:   input.AudioProfileKey,
-		TrackProfileKey:   input.TrackProfileKey,
-		ProfileResolution: profileResolution,
-		ProcessingMode:    processingMode,
-		Priority:          priority,
-		Status:            JobStatusQueued,
-		Stage:             JobStageQueued,
-		Notes:             input.Notes,
+		MediaPath:           input.MediaPath,
+		SourceAssetRecordID: input.SourceAssetRecordID,
+		PublishMode:         publishMode,
+		LibraryID:           input.LibraryID,
+		ProfileID:           input.ProfileID,
+		AudioProfileKey:     input.AudioProfileKey,
+		TrackProfileKey:     input.TrackProfileKey,
+		ProfileResolution:   profileResolution,
+		ProcessingMode:      processingMode,
+		Priority:            priority,
+		Status:              JobStatusQueued,
+		Stage:               JobStageQueued,
+		Notes:               input.Notes,
 	}
 
 	if input.deferFreeze {
@@ -780,6 +837,10 @@ func (h QueueHandler) CreateBatch(c *gin.Context) {
 	// Backend is authoritative for asset order.
 	//
 	jobsInput := append([]QueueJobInput(nil), input.Jobs...)
+	if err := populateSourceAssetRecordIDs(h.db, jobsInput); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "resolve source asset identities: " + err.Error()})
+		return
+	}
 
 	sort.SliceStable(jobsInput, func(i, j int) bool {
 		return assetSequenceLess(
@@ -999,6 +1060,7 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 		}
 		queueInput := QueueJobInput{
 			MediaPath:                 record.Path,
+			SourceAssetRecordID:       &record.ID,
 			PublishMode:               PublishModeStandard,
 			LibraryID:                 effective.Destination.DestinationLibraryID,
 			ProfileID:                 effective.Video.VideoProfileID,
@@ -1206,23 +1268,29 @@ func (h QueueHandler) Create(c *gin.Context) {
 	if priority == 0 {
 		priority = 5
 	}
+	sourceAssetRecordID, err := sourceAssetRecordIDForPath(h.db, input.MediaPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "resolve source asset identity: " + err.Error()})
+		return
+	}
 
 	job := models.QueueJob{
-		MediaPath:         input.MediaPath,
-		PublishMode:       publishMode,
-		BatchID:           input.BatchID,
-		BatchName:         input.BatchName,
-		BatchPosition:     max(0, input.BatchPosition),
-		LibraryID:         input.LibraryID,
-		ProfileID:         input.ProfileID,
-		AudioProfileKey:   input.AudioProfileKey,
-		TrackProfileKey:   input.TrackProfileKey,
-		ProfileResolution: profileResolution,
-		ProcessingMode:    processingMode,
-		Priority:          priority,
-		Status:            "queued",
-		Stage:             JobStageQueued,
-		Notes:             input.Notes,
+		MediaPath:           input.MediaPath,
+		SourceAssetRecordID: sourceAssetRecordID,
+		PublishMode:         publishMode,
+		BatchID:             input.BatchID,
+		BatchName:           input.BatchName,
+		BatchPosition:       max(0, input.BatchPosition),
+		LibraryID:           input.LibraryID,
+		ProfileID:           input.ProfileID,
+		AudioProfileKey:     input.AudioProfileKey,
+		TrackProfileKey:     input.TrackProfileKey,
+		ProfileResolution:   profileResolution,
+		ProcessingMode:      processingMode,
+		Priority:            priority,
+		Status:              "queued",
+		Stage:               JobStageQueued,
+		Notes:               input.Notes,
 	}
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		var highest int64
