@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # The React bundle is architecture-independent. Build it on the native CI
 # runner instead of executing Node under QEMU for every target platform.
 FROM --platform=$BUILDPLATFORM node:22-alpine AS build
@@ -5,7 +7,7 @@ FROM --platform=$BUILDPLATFORM node:22-alpine AS build
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm,sharing=locked npm ci
 
 COPY . .
 
@@ -18,7 +20,7 @@ FROM node:22-alpine AS development
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm,sharing=locked npm ci
 
 COPY . .
 
