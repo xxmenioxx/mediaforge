@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/anuelvs/mvforge/backend/internal/capabilities"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 )
@@ -166,14 +167,15 @@ var labFidelitySequence atomic.Uint64
 var labFidelityHeavySlot = make(chan struct{}, 1)
 
 type labFidelityWindowPlan struct {
-	Position     float64
-	Start        float64
-	Duration     float64
-	Primary      bool
-	Identity     string
-	Roles        []string
-	Reasons      []string
-	EvidenceRefs []string
+	SamplingPlanIdentity string
+	Position             float64
+	Start                float64
+	Duration             float64
+	Primary              bool
+	Identity             string
+	Roles                []string
+	Reasons              []string
+	EvidenceRefs         []string
 }
 
 type labPreviewArtifactEvidence struct {
@@ -190,9 +192,13 @@ type labPreviewArtifactEvidence struct {
 }
 
 type labPreviewEvidenceCacheEntry struct {
-	Evidence  labPreviewArtifactEvidence
-	Metrics   *previewFrameMetrics
-	UpdatedAt time.Time
+	Evidence      labPreviewArtifactEvidence
+	Metrics       *previewFrameMetrics
+	MetricResults map[string]MetricResult
+	Reference     *ReferenceIdentity
+	Pair          *ComparisonPairIdentity
+	EvidenceSet   *PerceptualEvidenceSet
+	UpdatedAt     time.Time
 }
 
 var labPreviewEvidence = struct {
@@ -260,6 +266,84 @@ func labPreviewEvidenceCachePutMetrics(key string, metrics previewFrameMetrics) 
 		cached.UpdatedAt = time.Now()
 		labPreviewEvidence.items[key] = cached
 	}
+}
+
+// Canonical metric results share the existing bounded LAB evidence cache. The
+// result identity is the lookup key; operation IDs and UI consumers are not.
+// Only complete successful results are published by callers.
+func labPreviewEvidenceCacheGetMetricResult(identity string) (MetricResult, bool) {
+	key := "metric-result:" + identity
+	entry, ok := labPreviewEvidenceCacheGet(key)
+	if !ok || entry.MetricResults == nil {
+		return MetricResult{}, false
+	}
+	result, ok := entry.MetricResults[identity]
+	return result, ok
+}
+
+func labPreviewEvidenceCachePutMetricResult(result MetricResult) {
+	if result.Status != PerceptualMetricAvailable || result.Value == nil {
+		return
+	}
+	key := "metric-result:" + result.Identity.Identity
+	labPreviewEvidence.Lock()
+	defer labPreviewEvidence.Unlock()
+	if len(labPreviewEvidence.items) >= labPreviewEvidenceMaxItems {
+		var oldestKey string
+		var oldestAt time.Time
+		for candidate, existing := range labPreviewEvidence.items {
+			if oldestKey == "" || existing.UpdatedAt.Before(oldestAt) {
+				oldestKey, oldestAt = candidate, existing.UpdatedAt
+			}
+		}
+		if oldestKey != "" {
+			delete(labPreviewEvidence.items, oldestKey)
+		}
+	}
+	labPreviewEvidence.items[key] = labPreviewEvidenceCacheEntry{
+		MetricResults: map[string]MetricResult{result.Identity.Identity: result}, UpdatedAt: time.Now(),
+	}
+}
+
+// These identity-keyed entries deliberately live in the existing bounded LAB
+// evidence cache. They are material evidence, not a second media cache.
+func labPreviewEvidenceCacheGetReference(identity string) (ReferenceIdentity, bool) {
+	entry, ok := labPreviewEvidenceCacheGet("reference:" + identity)
+	if !ok || entry.Reference == nil {
+		return ReferenceIdentity{}, false
+	}
+	return *entry.Reference, true
+}
+
+func labPreviewEvidenceCachePutReference(reference ReferenceIdentity) {
+	value := reference
+	labPreviewEvidenceCachePut("reference:"+reference.Identity, labPreviewEvidenceCacheEntry{Reference: &value, UpdatedAt: time.Now()})
+}
+
+func labPreviewEvidenceCacheGetPair(identity string) (ComparisonPairIdentity, bool) {
+	entry, ok := labPreviewEvidenceCacheGet("pair:" + identity)
+	if !ok || entry.Pair == nil {
+		return ComparisonPairIdentity{}, false
+	}
+	return *entry.Pair, true
+}
+
+func labPreviewEvidenceCachePutPair(pair ComparisonPairIdentity) {
+	value := pair
+	labPreviewEvidenceCachePut("pair:"+pair.Identity, labPreviewEvidenceCacheEntry{Pair: &value, UpdatedAt: time.Now()})
+}
+
+func labPreviewEvidenceCacheGetEvidenceSet(identity string) (PerceptualEvidenceSet, bool) {
+	entry, ok := labPreviewEvidenceCacheGet("evidence-set:" + identity)
+	if !ok || entry.EvidenceSet == nil {
+		return PerceptualEvidenceSet{}, false
+	}
+	return *entry.EvidenceSet, true
+}
+
+func labPreviewEvidenceCachePutEvidenceSet(set PerceptualEvidenceSet) {
+	value := set
+	labPreviewEvidenceCachePut("evidence-set:"+set.Identity, labPreviewEvidenceCacheEntry{EvidenceSet: &value, UpdatedAt: time.Now()})
 }
 
 func labSourceProbeKey(descriptor *compatiblePreviewDescriptor) string {
@@ -668,6 +752,10 @@ func (h AssetHandler) collectLabFidelityWindow(ctx context.Context, descriptor *
 		return nil, err
 	}
 	canonical := labEvaluateCanonicalFidelity(descriptor, evidence)
+	perceptual, perceptualErr := labPerceptualWindowEvidence(ctx, descriptor, evidence, metrics, window)
+	if perceptualErr != nil {
+		return nil, perceptualErr
+	}
 	return models.JSONMap{
 		"position": window.Position, "startSeconds": window.Start, "durationSeconds": window.Duration,
 		"windowIdentity": window.Identity, "primary": window.Primary,
@@ -678,7 +766,177 @@ func (h AssetHandler) collectLabFidelityWindow(ctx context.Context, descriptor *
 		"requestId":             descriptor.requestID,
 		"artifactId":            descriptor.ArtifactID, "generationToken": descriptor.GenerationToken,
 		"generationVersion": descriptor.GenerationVersion, "status": "completed",
-		"canonicalFidelity": canonical,
+		"canonicalFidelity":        canonical,
+		"perceptualWindowEvidence": perceptual,
+	}, nil
+}
+
+func labPerceptualWindowEvidence(ctx context.Context, descriptor *compatiblePreviewDescriptor, evidence labPreviewArtifactEvidence, metrics previewFrameMetrics, window labFidelityWindowPlan) (PerceptualWindowEvidence, error) {
+	sourceRevision, err := canonicalEvidenceHash("source-revision", descriptor.SourceRevision)
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	transform, err := canonicalEvidenceHash("fidelity-transform", models.JSONMap{
+		"effectiveVideoDecision": descriptor.ResolvedVideoDecision,
+		"normalization":          labNormalizationMap(descriptor.Normalization),
+	})
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	referenceProfile := models.Profile{}
+	if descriptor.EffectivePreviewProfile != nil {
+		referenceProfile = *descriptor.EffectivePreviewProfile
+	} else if descriptor.PreviewProfile != nil {
+		referenceProfile = *descriptor.PreviewProfile
+	}
+	candidateRevision, err := canonicalEvidenceHash("candidate-revision", models.JSONMap{
+		"artifactId": descriptor.ArtifactID, "generationToken": descriptor.GenerationToken,
+		"generationVersion": descriptor.GenerationVersion, "cachePath": descriptor.CachePath,
+	})
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	candidateTimeline, err := canonicalEvidenceHash("candidate-timeline", models.JSONMap{
+		"kind": "compatible_preview", "artifactId": descriptor.ArtifactID,
+		"generationToken": descriptor.GenerationToken, "generationVersion": descriptor.GenerationVersion,
+		"revision": candidateRevision, "segmentStartSeconds": 0, "segmentDurationSeconds": window.Duration,
+	})
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	alignmentValue := perceptualAlignmentEvidenceForWindow(window.Start, window.Duration, 0, window.Duration,
+		perceptualAlignmentMode(referenceProfile, false), sourceRevision, transform, candidateTimeline)
+	alignment, err := canonicalEvidenceHash("alignment", alignmentValue)
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	referenceFilter, candidateFilter := canonicalComparisonDomainFiltersForProfile(evidence.Source, evidence.Output, referenceProfile, descriptor.Normalization.Filter)
+	domain, err := canonicalEvidenceHash("comparison-domain", models.JSONMap{
+		"source":                evidence.Source,
+		"candidate":             evidence.Output,
+		"normalization":         labNormalizationMap(descriptor.Normalization),
+		"pixelFormat":           "yuv420p",
+		"squarePixelDimensions": true,
+		"referenceFilter":       referenceFilter,
+		"candidateFilter":       candidateFilter,
+	})
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	reference, err := ComputeReferenceIdentity(ReferenceIdentity{
+		SamplingPlanIdentity: window.SamplingPlanIdentity, SamplingWindowIdentity: window.Identity,
+		SourceRevision: sourceRevision, SourceStreamIdentity: "0:v:0",
+		TransformIdentity: transform, TransformVersion: perceptualEvidenceSchemaVersion,
+		NormalizationProvenance: labNormalizationMap(descriptor.Normalization), AlignmentIdentity: alignment,
+		Alignment:                alignmentValue,
+		ComparisonDomainIdentity: domain,
+	})
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	if cached, cacheHit := labPreviewEvidenceCacheGetReference(reference.Identity); cacheHit {
+		reference = cached
+	} else {
+		labPreviewEvidenceCachePutReference(reference)
+	}
+	candidate, err := ComputeCandidateIdentity(CandidateIdentity{
+		Kind: "compatible_preview", ArtifactID: descriptor.ArtifactID,
+		GenerationToken: descriptor.GenerationToken, GenerationVersion: descriptor.GenerationVersion,
+		OutputRevision: candidateRevision, ConfigurationIdentity: descriptor.CanonicalEncodeSignature, SourceRevision: sourceRevision, StreamIdentity: "0:v:0",
+		SegmentStartSeconds: 0, SegmentDurationSeconds: window.Duration, TimelineIdentity: candidateTimeline,
+	})
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	coverage, err := ComputeCandidateCoverage(CandidateCoverage{
+		SourceStartSeconds: window.Start, SourceDurationSeconds: window.Duration,
+		CoveredWindowIdentities: []string{window.Identity}, SegmentMappingIdentity: alignment,
+		SourceTimelineIdentity: sourceRevision, CandidateTimelineIdentity: candidateRevision,
+	})
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	pair, err := ComputeComparisonPairIdentity(ComparisonPairIdentity{
+		SamplingPlanIdentity: window.SamplingPlanIdentity, SamplingWindowIdentity: window.Identity,
+		Reference: reference, Candidate: candidate, CoverageIdentity: coverage.Identity,
+		SegmentMappingIdentity: coverage.SegmentMappingIdentity, AlignmentIdentity: alignment,
+		ComparisonDomainIdentity: domain, SourceRevision: sourceRevision, CandidateRevision: candidateRevision,
+	})
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	if cached, cacheHit := labPreviewEvidenceCacheGetPair(pair.Identity); cacheHit {
+		pair = cached
+	} else {
+		labPreviewEvidenceCachePutPair(pair)
+	}
+
+	runtimeSnapshot := capabilities.CachedMetricCapabilities(ctx)
+	capabilityValues := make([]MetricCapability, 0, len(runtimeSnapshot.Metrics))
+	results := make([]MetricResult, 0, len(runtimeSnapshot.Metrics))
+	cacheableResults := make([]MetricResult, 0, len(runtimeSnapshot.Metrics))
+	for _, rawCapability := range runtimeSnapshot.Metrics {
+		capability := MetricCapability{
+			Metric: PerceptualMetric(rawCapability.Metric), Provider: rawCapability.Provider,
+			ProviderVersion: rawCapability.ProviderVersion, InvocationContract: rawCapability.InvocationContract,
+			ModelIdentity: rawCapability.ModelIdentity, Availability: rawCapability.Availability,
+			Reason: rawCapability.Reason, RuntimeCapabilityIdentity: rawCapability.RuntimeCapabilityIdentity,
+		}
+		capabilityValues = append(capabilityValues, capability)
+		status := PerceptualMetricUnavailable
+		reason := capability.Reason
+		var value *MetricValue
+		if capability.Availability != "available" {
+			if capability.Provider == "" {
+				status = PerceptualMetricUnsupported
+			}
+		} else {
+			descriptorMetric := newMetricDescriptor(capability.Metric, capability.Provider, capability.ProviderVersion, capability.InvocationContract, capability.ModelIdentity, capability.RuntimeCapabilityIdentity, "higher_is_better")
+			resultIdentity, identityErr := ComputeMetricResultIdentity(pair, descriptorMetric)
+			if identityErr != nil {
+				return PerceptualWindowEvidence{}, identityErr
+			}
+			if cached, cacheHit := labPreviewEvidenceCacheGetMetricResult(resultIdentity.Identity); cacheHit {
+				results = append(results, cached)
+				continue
+			}
+			var parsed MetricValue
+			var runErr error
+			if capability.Metric == PerceptualMetricSSIM || capability.Metric == PerceptualMetricPSNR {
+				parsed, runErr = runCanonicalWindowMetricValueWithRunner(ctx, descriptor.Path, descriptor.Start, referenceFilter, descriptor.CachePath, "0", candidateFilter, window.Duration, strings.ToLower(string(capability.Metric)), defaultPreviewMetricProcessRunner)
+			} else {
+				parsed, runErr = runCanonicalWindowLogicalMetricValueWithRunner(ctx, descriptor.Path, descriptor.Start, referenceFilter, descriptor.CachePath, "0", candidateFilter, window.Duration, capability, defaultPreviewMetricProcessRunner)
+			}
+			if runErr != nil {
+				status, reason = PerceptualMetricFailedMeasurement, runErr.Error()
+			} else {
+				status, value, reason = PerceptualMetricAvailable, &parsed, ""
+			}
+			result := MetricResult{Identity: resultIdentity, Status: status, Value: value, Reason: reason}
+			if status == PerceptualMetricAvailable {
+				cacheableResults = append(cacheableResults, result)
+			}
+			results = append(results, result)
+			continue
+		}
+		descriptorMetric := newMetricDescriptor(capability.Metric, capability.Provider, capability.ProviderVersion, capability.InvocationContract, capability.ModelIdentity, capability.RuntimeCapabilityIdentity, "higher_is_better")
+		resultIdentity, identityErr := ComputeMetricResultIdentity(pair, descriptorMetric)
+		if identityErr != nil {
+			return PerceptualWindowEvidence{}, identityErr
+		}
+		results = append(results, MetricResult{Identity: resultIdentity, Status: status, Value: value, Reason: reason})
+	}
+	if err := ctx.Err(); err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	for _, result := range cacheableResults {
+		labPreviewEvidenceCachePutMetricResult(result)
+	}
+	return PerceptualWindowEvidence{
+		WindowIdentity: window.Identity, StartSeconds: window.Start, DurationSeconds: window.Duration,
+		Primary: window.Primary, Roles: window.Roles, Reasons: window.Reasons, EvidenceRefs: window.EvidenceRefs,
+		Status: "covered", Reference: &reference, Candidate: &candidate, Coverage: &coverage, PairIdentity: &pair,
+		Metrics: results, ComparableReason: "canonical bounded comparison window",
 	}, nil
 }
 
@@ -699,11 +957,12 @@ func labFidelityAdditionalWindowRequest(descriptor *compatiblePreviewDescriptor,
 }
 
 func labFidelityWindowPlans(primaryStart, primaryDuration, duration float64, plan SamplingPlan) []labFidelityWindowPlan {
+	selection := SamplingPlanForPerceptualQuality(plan)
 	primaryEnd := primaryStart + primaryDuration
-	primaryPlan := labFidelityWindowPlan{Position: primaryPosition(primaryStart, primaryDuration, duration), Start: primaryStart, Duration: primaryDuration, Primary: true}
+	primaryPlan := labFidelityWindowPlan{SamplingPlanIdentity: selection.PlanIdentity, Position: primaryPosition(primaryStart, primaryDuration, duration), Start: primaryStart, Duration: primaryDuration, Primary: true}
 	result := []labFidelityWindowPlan{primaryPlan}
-	if len(plan.SelectedWindows) > 0 {
-		for _, selected := range plan.SelectedWindows {
+	if len(selection.Windows) > 0 {
+		for _, selected := range selection.Windows {
 			if !selected.Primary && samplingWindowsEquivalent(SamplingWindow{StartSeconds: primaryStart, DurationSeconds: primaryDuration}, selected, 1.0/30.0) {
 				continue
 			}
@@ -731,7 +990,8 @@ func labFidelityWindowPlans(primaryStart, primaryDuration, duration float64, pla
 				continue
 			}
 			result = append(result, labFidelityWindowPlan{
-				Position: selected.Position, Start: start, Duration: windowDuration,
+				SamplingPlanIdentity: selection.PlanIdentity,
+				Position:             selected.Position, Start: start, Duration: windowDuration,
 				Identity: selected.Identity, Roles: append([]string(nil), selected.Roles...),
 				Reasons: append([]string(nil), selected.Reasons...), EvidenceRefs: append([]string(nil), selected.EvidenceRefs...),
 			})
@@ -741,6 +1001,9 @@ func labFidelityWindowPlans(primaryStart, primaryDuration, duration float64, pla
 		}
 		return result
 	}
+	// Legacy LAB requests created before #70 may contain only Positions. Keep
+	// their bounded compatibility behavior, but never use this path for a
+	// frozen SelectedWindows plan consumed by perceptual evidence.
 	tolerance := 1.0 / 30.0
 	for _, position := range plan.Positions {
 		windowDuration := math.Min(plan.WindowSeconds, duration)
@@ -761,7 +1024,7 @@ func labFidelityWindowPlans(primaryStart, primaryDuration, duration float64, pla
 			}
 		}
 		if !duplicate {
-			result = append(result, labFidelityWindowPlan{Position: position, Start: start, Duration: windowDuration})
+			result = append(result, labFidelityWindowPlan{SamplingPlanIdentity: selection.PlanIdentity, Position: position, Start: start, Duration: windowDuration})
 			if plan.Limits.MaximumWindows > 0 && len(result) >= plan.Limits.MaximumWindows {
 				break
 			}
@@ -866,10 +1129,65 @@ func labFidelityOperationResult(input labFidelityOperationInput, descriptor *com
 		"samplingPlanIdentity": plan.PlanIdentity,
 		"completedAt":          map[bool]int64{true: time.Now().UnixMilli(), false: 0}[complete],
 	}
+	if evidenceSet, evidenceErr := labPerceptualEvidenceSet(plan, descriptor, windows); evidenceErr == nil {
+		result["perceptualEvidence"] = evidenceSet
+	} else {
+		result["perceptualEvidenceWarning"] = evidenceErr.Error()
+	}
 	if complete {
 		result["overallVerdict"] = labFidelityOverallVerdict(canonicalStatus, visualAggregate)
 	}
 	return result
+}
+
+func labPerceptualEvidenceSet(plan SamplingPlan, descriptor *compatiblePreviewDescriptor, windows []models.JSONMap) (PerceptualEvidenceSet, error) {
+	windowEvidence := make([]PerceptualWindowEvidence, 0, len(windows))
+	for _, raw := range windows {
+		encoded, err := json.Marshal(raw["perceptualWindowEvidence"])
+		if err != nil {
+			return PerceptualEvidenceSet{}, err
+		}
+		var evidence PerceptualWindowEvidence
+		if err := json.Unmarshal(encoded, &evidence); err != nil {
+			return PerceptualEvidenceSet{}, err
+		}
+		windowEvidence = append(windowEvidence, evidence)
+	}
+	sourceRevision := ""
+	if descriptor != nil {
+		sourceRevision, _ = canonicalEvidenceHash("source-revision", descriptor.SourceRevision)
+	}
+	runtimeSnapshot := capabilities.CachedMetricCapabilities(context.Background())
+	capabilityValues := make([]MetricCapability, 0, len(runtimeSnapshot.Metrics))
+	requested := make([]MetricDescriptor, 0, len(runtimeSnapshot.Metrics))
+	for _, rawCapability := range runtimeSnapshot.Metrics {
+		capabilityValues = append(capabilityValues, MetricCapability{
+			Metric: PerceptualMetric(rawCapability.Metric), Provider: rawCapability.Provider,
+			ProviderVersion: rawCapability.ProviderVersion, InvocationContract: rawCapability.InvocationContract,
+			ModelIdentity: rawCapability.ModelIdentity, Availability: rawCapability.Availability,
+			Reason: rawCapability.Reason, RuntimeCapabilityIdentity: rawCapability.RuntimeCapabilityIdentity,
+		})
+		requested = append(requested, newMetricDescriptor(PerceptualMetric(rawCapability.Metric), rawCapability.Provider, rawCapability.ProviderVersion, rawCapability.InvocationContract, rawCapability.ModelIdentity, rawCapability.RuntimeCapabilityIdentity, "higher_is_better"))
+	}
+	provenance := models.JSONMap{
+		"owner": "LabFidelityOperation", "metricWork": "sequential_under_lab_fidelity_heavy_slot",
+	}
+	if descriptor != nil {
+		profile := descriptor.EffectivePreviewProfile
+		if profile == nil {
+			profile = descriptor.PreviewProfile
+		}
+		if profile != nil {
+			if raw := profile.WorkerConfig[restorationAnalysisSnapshotKey]; raw != nil {
+				provenance["restorationAnalysis"] = raw
+			}
+		}
+	}
+	set, err := BuildPerceptualEvidenceSet(plan, sourceRevision, runtimeSnapshot.RuntimeCapabilityIdentity, requested, windowEvidence, capabilityValues, nil, provenance)
+	if err == nil {
+		labPreviewEvidenceCachePutEvidenceSet(set)
+	}
+	return set, err
 }
 
 func labFidelityOperationResultWithIdentity(input labFidelityOperationInput, operation *LabFidelityOperation, descriptor *compatiblePreviewDescriptor, windows []models.JSONMap, plan SamplingPlan, totalWindows int, complete bool) models.JSONMap {
@@ -1095,21 +1413,33 @@ func labGeneratePreviewFrameMetrics(ctx context.Context, descriptor *compatibleP
 	}
 	sourceFilter := joinPreviewFilters(descriptor.Normalization.Filter, squarePixelFrameFilter(evidence.Source), "format=yuv420p")
 	outputFilter := joinPreviewFilters(squarePixelFrameFilter(evidence.Output), "format=yuv420p")
-	ssim, err := runPreviewFrameMetric(ctx, descriptor.Path, descriptor.Start, sourceFilter, descriptor.CachePath, outputFilter, "ssim")
-	if err != nil {
-		if strings.Contains(err.Error(), "did not report SSIM") {
-			result.Reason = "Frame geometry is comparable, but FFmpeg did not provide SSIM for the selected decoded frame."
-			labPreviewEvidenceCachePutMetrics(key, result)
-			return result, nil
+	result.DomainComparable = true
+	ssimValue, ssimErr := runPreviewFrameMetricValueAtWithRunner(ctx, descriptor.Path, descriptor.Start, sourceFilter, descriptor.CachePath, "0", outputFilter, "ssim", defaultPreviewMetricProcessRunner)
+	if ssimErr == nil {
+		result.SSIMValue = &ssimValue
+		if value, ok := ssimValue.Float64(); ok {
+			result.SSIMAvailable, result.SSIM = true, value
 		}
-		return result, err
+	} else {
+		result.SSIMReason = ssimErr.Error()
 	}
-	psnr, err := runPreviewFrameMetric(ctx, descriptor.Path, descriptor.Start, sourceFilter, descriptor.CachePath, outputFilter, "psnr")
-	if err != nil {
-		return result, err
+	psnrValue, psnrErr := runPreviewFrameMetricValueAtWithRunner(ctx, descriptor.Path, descriptor.Start, sourceFilter, descriptor.CachePath, "0", outputFilter, "psnr", defaultPreviewMetricProcessRunner)
+	if psnrErr == nil {
+		result.PSNRValue = &psnrValue
+		if value, ok := psnrValue.Float64(); ok {
+			result.PSNRAvailable, result.PSNR = true, value
+			if math.IsInf(value, 1) {
+				result.PSNR = 100
+			}
+		}
+	} else {
+		result.PSNRReason = psnrErr.Error()
 	}
-	result.Comparable, result.SSIM, result.PSNR = true, ssim, psnr
+	result.Comparable = result.SSIMAvailable
 	result.Reason = "Both decoded frames were compared in the same color domain, pixel format, and square-pixel geometry."
+	if !result.Comparable || !result.PSNRAvailable {
+		result.Reason = "Frame geometry is comparable, but one or more optional frame metrics could not be measured."
+	}
 	labPreviewEvidenceCachePutMetrics(key, result)
 	return result, nil
 }

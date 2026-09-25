@@ -27,6 +27,7 @@ type RuntimeSnapshot struct {
 	OnBattery             bool      `json:"onBattery"`
 	Disks                 JSONMap   `json:"disks" gorm:"type:json"`
 	Encoders              JSONMap   `json:"encoders" gorm:"type:json"`
+	MetricCapabilities    JSONMap   `json:"metricCapabilities" gorm:"type:json"`
 	RecommendedProfile    string    `json:"recommendedProfile"`
 	SelectedProfile       string    `json:"selectedProfile"`
 	PreferredProfile      string    `json:"preferredProfile"`

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PreviewVideoCharacteristics } from '../api/types';
 import { api } from '../api/client';
 import { LAB_COMPARISON_VIEWPORT_POLICY, labComparisonImageSx, labComparisonLayerSx } from '../components/LabComparisonViewport';
-import { FrameFidelityComparison, VideoPreviewRequest } from './ProfileLabPage';
+import { FrameFidelityComparison, PerceptualEvidencePanel, VideoPreviewRequest } from './ProfileLabPage';
 
 afterEach(() => {
   cleanup();
@@ -170,6 +170,68 @@ describe('LAB fidelity comparison geometry', () => {
 
     expect(screen.getByText('Overall · Review')).toBeTruthy();
     expect(screen.getByText(/cannot be marked Safe/i)).toBeTruthy();
+  });
+
+  it('renders explicit partial perceptual evidence without deriving a verdict', () => {
+    render(<PerceptualEvidencePanel evidence={{
+      schemaVersion: 'perceptual-evidence-v1',
+      policyVersion: 'perceptual-quality-policy-v1',
+      identity: 'set-1',
+      samplingPlanIdentity: 'plan-1',
+      sourceRevision: 'source-1',
+      runtimeCapabilityIdentity: 'runtime-1',
+      requestedMetrics: [],
+      capabilities: [{ metric: 'VMAF', availability: 'unavailable', reason: 'libvmaf absent' }],
+      aggregates: [{ logicalMetric: 'PSNR', median: { kind: 'positive_infinity' }, lowerPercentileP10: { kind: 'positive_infinity' }, worstValue: { kind: 'positive_infinity' } }],
+      windows: [
+        { windowIdentity: 'primary', startSeconds: 0, durationSeconds: 20, primary: true, status: 'covered', candidate: { identity: 'candidate-1' }, pairIdentity: { identity: 'pair-1' }, metrics: [] },
+        { windowIdentity: 'hard', startSeconds: 100, durationSeconds: 20, primary: false, status: 'not_covered', comparableReason: 'Test Encode segment does not represent this window.' },
+      ],
+    }} />);
+
+    expect(screen.getByTestId('perceptual-evidence-panel')).toBeTruthy();
+    expect(screen.getByText(/SamplingPlan · plan-1/)).toBeTruthy();
+    expect(screen.getByText('not covered')).toBeTruthy();
+    expect(screen.getByText(/libvmaf absent/)).toBeTruthy();
+    expect(screen.getByText(/PSNR · median \+∞/)).toBeTruthy();
+    expect(screen.queryByText(/Safe|Review|Reject/)).toBeNull();
+  });
+
+  it('renders stale, unavailable, failed, non-comparable, and infinite evidence without starting work', () => {
+    const metric = (logicalMetric: string, status: string, value?: { kind: 'finite' | 'positive_infinity'; value?: number }, reason?: string) => ({
+      identity: { identity: `${logicalMetric}-result`, pairIdentity: 'pair-a', metric: { logicalMetric } }, status, value, reason,
+    });
+    render(<PerceptualEvidencePanel evidence={{
+      status: 'stale',
+      unavailableReason: 'Frozen source revision no longer matches the current source.',
+      schemaVersion: 'perceptual-evidence-v1',
+      policyVersion: 'perceptual-quality-policy-v1',
+      identity: 'set-stale', samplingPlanIdentity: 'plan-stale', sourceRevision: 'source-old', runtimeCapabilityIdentity: 'runtime-2',
+      requestedMetrics: [],
+      capabilities: [{ metric: 'VMAF', availability: 'unavailable', reason: 'libvmaf is not installed' }],
+      aggregates: [{ logicalMetric: 'PSNR', median: { kind: 'positive_infinity' }, lowerPercentileP10: { kind: 'finite', value: 39 }, worstValue: { kind: 'finite', value: 38 }, worstWindowIdentity: 'hard-b' }],
+      windows: [
+        { windowIdentity: 'primary', startSeconds: 0, durationSeconds: 20, primary: true, status: 'covered', candidate: { identity: 'candidate-a' }, reference: { identity: 'reference-a' }, pairIdentity: { identity: 'pair-a' }, metrics: [metric('PSNR', 'available', { kind: 'positive_infinity' }), metric('VMAF', 'failed_measurement', undefined, 'provider process failed')] },
+        { windowIdentity: 'hard-b', startSeconds: 100, durationSeconds: 20, primary: false, status: 'covered', candidate: { identity: 'candidate-b' }, reference: { identity: 'reference-b' }, pairIdentity: { identity: 'pair-b' }, metrics: [metric('SSIM', 'available', { kind: 'finite', value: 0.97 }), metric('XPSNR', 'non_comparable', undefined, 'canonical reference unavailable')] },
+        { windowIdentity: 'hard-c', startSeconds: 200, durationSeconds: 20, primary: false, status: 'not_covered', comparableReason: 'Test Encode segment does not represent this frozen window.' },
+      ],
+    }} />);
+
+    expect(screen.getByText('Evidence · stale')).toBeTruthy();
+    expect(screen.getByText(/Frozen source revision no longer matches/)).toBeTruthy();
+    expect(screen.getByText(/libvmaf is not installed/)).toBeTruthy();
+    expect(screen.getByText(/VMAF · failed_measurement · provider process failed/)).toBeTruthy();
+    expect(screen.getByText(/XPSNR · non_comparable · canonical reference unavailable/)).toBeTruthy();
+    expect(screen.getByText(/PSNR · median \+∞/)).toBeTruthy();
+    expect(screen.getByText(/worst window hard-b/)).toBeTruthy();
+    expect(screen.getByText('not covered')).toBeTruthy();
+    expect(screen.queryByText(/Overall · (Safe|Review|Reject)/)).toBeNull();
+    expect(api.compatibleAssetFrameUrl).not.toHaveBeenCalled();
+  });
+
+  it('keeps legacy Fidelity results without perceptual evidence readable', () => {
+    const { container } = render(<PerceptualEvidencePanel />);
+    expect(container.firstChild).toBeNull();
   });
 
   it('does not fetch or build a media element before a request ID is available', async () => {

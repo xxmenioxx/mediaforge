@@ -180,6 +180,9 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	var sourceDirectPlayReport scheduler.DirectPlayReport
 	sourceDirectPlayAvailable := false
 	colorReport := models.JSONMap{}
+	var perceptualEvidence PerceptualEvidenceSet
+	perceptualEvidenceAvailable := false
+	perceptualEvidenceWarning := ""
 	timingReport := models.JSONMap{"status": "unverified"}
 	var sourceProbe map[string]any
 	var outputProbe map[string]any
@@ -251,6 +254,39 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		if fidelity := validateJobFrameFidelity(db, job, sourceProbe, outputProbe, hevcEvidence, colorReport, smartUpscaleReport, restorationReport); len(fidelity) > 0 {
 			colorReport["frameFidelity"] = fidelity
 		}
+		if frozenPlan, planOK := samplingPlanFromQueueJob(job); planOK {
+			if sourceMatches, sourceErr := frozenSamplingPlanSourceMatches(job.MediaPath, frozenPlan); sourceErr != nil {
+				perceptualEvidenceWarning = "perceptual evidence unavailable: current source revision could not be verified: " + sourceErr.Error()
+			} else if !sourceMatches {
+				staleEvidence, staleErr := unavailablePerceptualEvidenceSet(frozenPlan, frozenPlan.SourceRevision, "stale", "current source revision does not match the frozen Queue SamplingPlan")
+				if staleErr == nil {
+					perceptualEvidence = staleEvidence
+					perceptualEvidenceAvailable = true
+				}
+				perceptualEvidenceWarning = "perceptual evidence stale: current source revision does not match the frozen Queue SamplingPlan"
+			} else if sourceRevision, sourceErr := sourceRevisionForPath(job.MediaPath); sourceErr == nil {
+				sourceRevisionID, revisionHashErr := canonicalEvidenceHash("source-revision", sourceRevision)
+				candidateRevision, candidateErr := mediaFileFingerprint(job.OutputPath)
+				candidateDuration := validationProbeDuration(outputProbe)
+				if revisionHashErr == nil && candidateErr == nil {
+					authority := resolveFidelityAuthority(db, job)
+					perceptualEvidence, revisionHashErr = collectPerceptualEvidenceUnderHeavySlot(context.Background(), frozenPlan, authority.profile, perceptualArtifactInput{
+						SourcePath: job.MediaPath, CandidatePath: job.OutputPath, SourceRevision: sourceRevisionID,
+						CandidateRevision: candidateRevision, CandidateKind: "final_output", CandidateArtifactID: fmt.Sprintf("queue-job:%d", job.ID),
+						GenerationToken: fmt.Sprintf("queue-job:%d", job.ID), GenerationVersion: 1,
+						ConfigurationIdentity: fmt.Sprintf("queue-job:%d:profile:%d", job.ID, job.ProfileVersion),
+						SegmentStartSeconds:   0, SegmentDuration: candidateDuration, CandidateDuration: candidateDuration, FullOutput: true,
+					})
+					if revisionHashErr == nil {
+						perceptualEvidenceAvailable = true
+					} else {
+						perceptualEvidenceWarning = revisionHashErr.Error()
+					}
+				}
+			} else {
+				perceptualEvidenceWarning = sourceErr.Error()
+			}
+		}
 	}
 
 	if score < 0 {
@@ -287,6 +323,13 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	report["restoration"] = restorationReport
 	if len(hevcEvidence) > 0 {
 		report["hevcBitstreamEvidence"] = hevcEvidence
+	}
+	if perceptualEvidenceAvailable {
+		report["perceptualEvidence"] = perceptualEvidence
+	} else if perceptualEvidenceWarning != "" {
+		// Optional perceptual evidence is descriptive and must not alter the
+		// existing Validation score/status when its reference is unavailable.
+		report["perceptualEvidenceWarning"] = perceptualEvidenceWarning
 	}
 
 	return ValidationResult{

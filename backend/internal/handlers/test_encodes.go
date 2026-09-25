@@ -144,8 +144,9 @@ func (h AssetHandler) CreateTestEncode(c *gin.Context) {
 		return
 	}
 	start, duration := resolveTestEncodeWindow(h.db, resolved.job.MediaPath, input.StartMode, input.StartSeconds, input.DurationSeconds)
+	sourceDuration := testEncodeCanonicalSourceDuration(h.db, resolved.job.MediaPath, start, duration)
 	plan := h.samplingPlanForFrozenWindow(
-		resolved.job.MediaPath, fingerprint, fingerprint, float64(duration), float64(start), float64(duration), samplingPlanPolicyVersion,
+		resolved.job.MediaPath, fingerprint, fingerprint, sourceDuration, float64(start), float64(duration), samplingPlanPolicyVersion,
 	)
 	if resolved.requested == nil {
 		resolved.requested = models.JSONMap{}
@@ -539,6 +540,21 @@ func resolveTestEncodeWindow(db *gorm.DB, path, mode string, custom float64, req
 	}
 }
 
+func testEncodeCanonicalSourceDuration(db *gorm.DB, path string, start float64, segmentDuration int) float64 {
+	var scan models.ScanResult
+	if db != nil && db.Where("path = ?", filepath.Clean(path)).Order("updated_at DESC").First(&scan).Error == nil && scan.Duration > 0 {
+		return scan.Duration
+	}
+	if probe := ffprobeJSON(path); probe != nil {
+		if duration := validationProbeDuration(probe); duration > 0 {
+			return duration
+		}
+	}
+	// An unavailable source duration is still explicit and bounded; it must not
+	// make a non-zero segment pretend that the entire asset is that segment.
+	return maxFloat(start+float64(segmentDuration), float64(segmentDuration))
+}
+
 func testEncodeRetentionHours(db *gorm.DB) int {
 	var setting models.AppSetting
 	if db.First(&setting, "key = ?", "testEncodePolicy").Error == nil {
@@ -708,6 +724,27 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 			report["samplingPolicyVersion"] = samplingPlan.PolicyVersion
 			report["samplingWindows"] = samplingPlan.SelectedWindows
 			report["samplingFallback"] = samplingPlan.Fallback
+			sourceRevision := test.SourceFingerprint
+			if currentRevision, revisionErr := mediaFileFingerprint(test.SourcePath); revisionErr == nil && currentRevision != sourceRevision {
+				// The output was produced from a different source revision. Keep the
+				// validation report, but do not create a comparison pair for stale
+				// material.
+				report["perceptualEvidenceWarning"] = "source revision changed before perceptual analysis; evidence was not reused"
+			} else if candidateRevision, revisionErr := mediaFileFingerprint(output); revisionErr == nil {
+				evidence, evidenceErr := collectPerceptualEvidenceUnderHeavySlot(ctx, samplingPlan, resolved.profile, perceptualArtifactInput{
+					SourcePath: test.SourcePath, CandidatePath: output, SourceRevision: sourceRevision,
+					CandidateRevision: candidateRevision, CandidateKind: "test_encode", CandidateArtifactID: fmt.Sprintf("test-encode:%d", id),
+					ConfigurationIdentity: test.ConfigurationHash,
+					GenerationToken:       fmt.Sprintf("test-encode:%d", id), GenerationVersion: 1,
+					SegmentStartSeconds: test.StartSeconds, SegmentDuration: float64(test.DurationSeconds),
+					CandidateDuration: float64(test.DurationSeconds), FullOutput: false,
+				})
+				if evidenceErr != nil {
+					report["perceptualEvidenceWarning"] = evidenceErr.Error()
+				} else {
+					report["perceptualEvidence"] = evidence
+				}
+			}
 		}
 	}
 	completed := time.Now()

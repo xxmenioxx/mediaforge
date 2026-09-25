@@ -234,6 +234,90 @@ func TestLabFidelityEvidenceKeysSeparateGlobalAndIntervalIdentity(t *testing.T) 
 	}
 }
 
+func TestLabFidelityThreeFrozenWindowsBindDistinctGenerationsAndKeepAReusable(t *testing.T) {
+	resetLabFidelityEvidenceForTest()
+	t.Cleanup(resetLabFidelityEvidenceForTest)
+	plan := SamplingPlan{PlanIdentity: "lab-plan", SourceRevision: "source-lab", SelectedWindows: []SamplingWindow{
+		{Identity: "primary-a", Primary: true, StartSeconds: 10, DurationSeconds: 20, Roles: []string{"primary"}},
+		{Identity: "hard-b", StartSeconds: 100, DurationSeconds: 20, Roles: []string{"hard_scene"}},
+		{Identity: "hard-c", StartSeconds: 200, DurationSeconds: 20, Roles: []string{"hard_scene"}},
+	}}
+	descriptors := []*compatiblePreviewDescriptor{
+		testCompatiblePreviewDescriptor(t, "lab-a"), testCompatiblePreviewDescriptor(t, "lab-b"), testCompatiblePreviewDescriptor(t, "lab-c"),
+	}
+	for index, descriptor := range descriptors {
+		descriptor.GenerationToken = string(rune('a' + index))
+		descriptor.GenerationVersion = int64(index + 1)
+	}
+	windowIDs := []string{"primary-a", "hard-b", "hard-c"}
+	pairs := make([]ComparisonPairIdentity, 0, len(descriptors))
+	for index, descriptor := range descriptors {
+		candidate, err := ComputeCandidateIdentity(CandidateIdentity{
+			Kind: "compatible_preview", ArtifactID: descriptor.ArtifactID, GenerationToken: descriptor.GenerationToken,
+			GenerationVersion: descriptor.GenerationVersion, OutputRevision: descriptor.GenerationToken, SourceRevision: plan.SourceRevision,
+			StreamIdentity: "0:v:0", SegmentStartSeconds: 0, SegmentDurationSeconds: 20, TimelineIdentity: descriptor.GenerationToken,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		reference, err := ComputeReferenceIdentity(ReferenceIdentity{
+			SamplingPlanIdentity: plan.PlanIdentity, SamplingWindowIdentity: windowIDs[index], SourceRevision: plan.SourceRevision,
+			SourceStreamIdentity: "0:v:0", TransformIdentity: "transform-lab", TransformVersion: "v1",
+			AlignmentIdentity: "alignment-" + windowIDs[index], ComparisonDomainIdentity: "domain-" + windowIDs[index],
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pair, err := ComputeComparisonPairIdentity(ComparisonPairIdentity{
+			SamplingPlanIdentity: plan.PlanIdentity, SamplingWindowIdentity: windowIDs[index], Reference: reference, Candidate: candidate,
+			CoverageIdentity: descriptor.GenerationToken, SegmentMappingIdentity: descriptor.GenerationToken,
+			AlignmentIdentity: reference.AlignmentIdentity, ComparisonDomainIdentity: reference.ComparisonDomainIdentity,
+			SourceRevision: plan.SourceRevision, CandidateRevision: descriptor.GenerationToken,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pairs = append(pairs, pair)
+		labPreviewEvidenceCachePutPair(pair)
+	}
+	if pairs[0].Candidate.Identity == pairs[1].Candidate.Identity || pairs[1].Candidate.Identity == pairs[2].Candidate.Identity || pairs[0].Identity == pairs[1].Identity {
+		t.Fatal("LAB windows did not retain distinct artifact-generation/pair identities")
+	}
+	if _, ok := labPreviewEvidenceCacheGetPair(pairs[0].Identity); !ok {
+		t.Fatal("primary window material evidence was not reusable")
+	}
+	replacedB := pairs[1]
+	replacedB.Candidate.GenerationToken = "b-replacement"
+	replacedB.Candidate.OutputRevision = "b-replacement"
+	replacedB, replacementErr := ComputeComparisonPairIdentity(replacedB)
+	if replacementErr != nil {
+		t.Fatal(replacementErr)
+	}
+	if replacedB.Identity == pairs[1].Identity {
+		t.Fatal("replacing LAB window B generation did not invalidate B pair")
+	}
+	if _, ok := labPreviewEvidenceCacheGetPair(pairs[0].Identity); !ok {
+		t.Fatal("replacing LAB window B invalidated reusable primary A evidence")
+	}
+}
+
+func TestLabFidelityPerceptualCancellationReleasesHeavySlot(t *testing.T) {
+	plan := SamplingPlan{PlanIdentity: "cancel-plan", SelectedWindows: []SamplingWindow{{Identity: "primary", Primary: true, StartSeconds: 0, DurationSeconds: 5}}}
+	labFidelityHeavySlot <- struct{}{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := collectPerceptualEvidenceUnderHeavySlot(ctx, plan, models.Profile{}, perceptualArtifactInput{}); err != context.Canceled {
+		t.Fatalf("canceled perceptual operation returned %v instead of context.Canceled", err)
+	}
+	<-labFidelityHeavySlot
+	select {
+	case labFidelityHeavySlot <- struct{}{}:
+		<-labFidelityHeavySlot
+	default:
+		t.Fatal("canceled perceptual operation leaked the LAB heavy-work slot")
+	}
+}
+
 func TestLabFidelityPartialAggregateKeepsCanonicalMismatchVisible(t *testing.T) {
 	descriptor := testCompatiblePreviewDescriptor(t, "aggregate")
 	windows := []models.JSONMap{{
