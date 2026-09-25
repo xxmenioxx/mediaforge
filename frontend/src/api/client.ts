@@ -38,7 +38,7 @@ import type {
   QueueBatchResponse,
   QueueSelectedAssetsInput,
   QueueSelectedAssetsResponse,
-  RuntimeSnapshot,
+  RuntimeState,
   RuntimeProfilesResponse,
   ScanResult,
   SnapshotOperation,
@@ -645,9 +645,13 @@ export const api = {
     }),
   settings: () => request<AppSetting[]>('/api/settings'),
   softwareVersions: () => request<SoftwareVersions>('/api/system/versions'),
-  runtimeSnapshot: () => request<RuntimeSnapshot>('/api/system/runtime'),
+  runtimeState: () => request<RuntimeState>('/api/system/runtime'),
+  /** @deprecated Use runtimeState for the live current-state endpoint. */
+  runtimeSnapshot: () => request<RuntimeState>('/api/system/runtime'),
   runtimeProfiles: () => request<RuntimeProfilesResponse>('/api/system/runtime/profiles'),
-  refreshRuntimeSnapshot: () => request<RuntimeSnapshot>('/api/system/runtime/refresh', { method: 'POST', body: JSON.stringify({}) }),
+  refreshRuntime: () => request<RuntimeState>('/api/system/runtime/refresh', { method: 'POST', body: JSON.stringify({}) }),
+  /** @deprecated Use refreshRuntime for the live current-state endpoint. */
+  refreshRuntimeSnapshot: () => request<RuntimeState>('/api/system/runtime/refresh', { method: 'POST', body: JSON.stringify({}) }),
   updateSetting: ({ key, value }: UpdateSettingInput) =>
     request<AppSetting>(`/api/settings/${key}`, {
       method: 'POST',

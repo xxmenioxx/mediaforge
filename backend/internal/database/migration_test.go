@@ -3,11 +3,47 @@ package database
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestMigrateInitializesRuntimeStateFromNewestLegacySnapshot(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "runtime-state.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.RuntimeSnapshot{}); err != nil {
+		t.Fatal(err)
+	}
+	older := models.RuntimeSnapshot{DetectedAt: time.Unix(100, 0).UTC(), Architecture: "amd64", SelectedProfile: "desktop_safe"}
+	newer := models.RuntimeSnapshot{DetectedAt: time.Unix(200, 0).UTC(), Architecture: "arm64", SelectedProfile: "workstation_balanced"}
+	if err := db.Create(&older).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&newer).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var state models.RuntimeState
+	if err := db.Where("singleton_key = ?", models.RuntimeStateSingletonKey).First(&state).Error; err != nil {
+		t.Fatal(err)
+	}
+	if state.Architecture != newer.Architecture || state.SelectedProfile != newer.SelectedProfile || state.StableFingerprint == "" {
+		t.Fatalf("runtime state was not initialized from newest legacy snapshot: %#v", state)
+	}
+	var count int64
+	if err := db.Model(&models.RuntimeSnapshot{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("legacy runtime history changed during migration: %d", count)
+	}
+}
 
 func TestMigrateUpgradesLegacyQueueWithoutLosingJob(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")

@@ -36,5 +36,8 @@ type RuntimeSnapshot struct {
 	EffectivePolicy       JSONMap   `json:"effectivePolicy" gorm:"type:json"`
 	SelectionReasons      JSONList  `json:"selectionReasons" gorm:"type:json"`
 	Warnings              JSONList  `json:"warnings" gorm:"type:json"`
+	StableFingerprint     string    `json:"stableFingerprint" gorm:"index"`
+	FingerprintVersion    string    `json:"fingerprintVersion"`
+	CaptureReason         string    `json:"captureReason" gorm:"index"`
 	CreatedAt             time.Time `json:"createdAt"`
 }

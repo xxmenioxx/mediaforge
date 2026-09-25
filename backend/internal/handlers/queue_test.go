@@ -2320,6 +2320,9 @@ func TestClaimedSelectedQueueJobFreezesCurrentConfigurationOnce(t *testing.T) {
 	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "test", Encoders: models.JSONMap{"libx265": models.JSONMap{"listed": true, "usable": true}}}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&models.RuntimeState{SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "test", Encoders: models.JSONMap{"libx265": models.JSONMap{"listed": true, "usable": true}}, StableFingerprint: "queue-test", FingerprintVersion: "v1"}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{record.ID}, Commit: true})
 	if response.Summary.Queued != 1 {
@@ -2483,7 +2486,7 @@ func queueSelectedAssetsTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&models.AssetRecord{}, &models.Profile{}, &models.ProfileAssignment{}, &models.AssetScopeConfiguration{},
-		&models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{}, &models.AppSetting{}, &models.ScanResult{}, &models.AssetMaintenanceOperation{}, &models.Library{}, &models.RuntimeSnapshot{},
+		&models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{}, &models.AppSetting{}, &models.ScanResult{}, &models.AssetMaintenanceOperation{}, &models.Library{}, &models.RuntimeSnapshot{}, &models.RuntimeState{},
 	); err != nil {
 		t.Fatal(err)
 	}

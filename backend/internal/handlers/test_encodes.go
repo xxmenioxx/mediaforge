@@ -626,9 +626,10 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		"title":                   fmt.Sprintf("MVForge Test T%d", id),
 	}
 	encoder := resolvedVideoEncoder(plan.Profile)
-	var runtimeSnapshotID *uint
-	if snapshot, snapshotErr := runtimeinfo.Latest(h.db); snapshotErr == nil {
-		runtimeSnapshotID = &snapshot.ID
+	runtimeSnapshotID, snapshotErr := bindTestEncodeRuntimeSnapshot(h.db, &test)
+	if snapshotErr != nil {
+		h.failTestEncode(id, snapshotErr)
+		return
 	}
 	executorName := "test-encode-local"
 
@@ -753,6 +754,63 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		"output_size_bytes": outputInfo.Size(), "subtitle_artifacts": subtitleArtifactsJSON(subtitleArtifacts),
 		"validation_report": report, "temporary_path": "", "updated_at": completed,
 	}).Error
+}
+
+// bindTestEncodeRuntimeSnapshot binds immutable runtime evidence exactly once
+// for a Test Encode record. Re-entry for the same prepared record reuses the
+// existing reference; it never follows current telemetry or overwrites
+// provenance. The transaction keeps the read-and-bind lifecycle atomic for
+// SQLite's single-writer model.
+func bindTestEncodeRuntimeSnapshot(db *gorm.DB, test *models.TestEncode) (*uint, error) {
+	var boundID *uint
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var current models.TestEncode
+		if err := tx.First(&current, test.ID).Error; err != nil {
+			return fmt.Errorf("load Test Encode %d for runtime freeze: %w", test.ID, err)
+		}
+		if current.RuntimeSnapshotID != nil {
+			var snapshot models.RuntimeSnapshot
+			if err := tx.First(&snapshot, *current.RuntimeSnapshotID).Error; err != nil {
+				return fmt.Errorf("load frozen Test Encode runtime snapshot %d: %w", *current.RuntimeSnapshotID, err)
+			}
+			boundID = current.RuntimeSnapshotID
+			*test = current
+			return nil
+		}
+
+		state, err := runtimeinfo.Current(tx)
+		if err != nil {
+			return fmt.Errorf("capture Test Encode runtime evidence: %w", err)
+		}
+		snapshot, err := runtimeinfo.CaptureAuditSnapshot(tx, state, "test_encode_freeze")
+		if err != nil {
+			return fmt.Errorf("capture Test Encode runtime evidence: %w", err)
+		}
+		result := tx.Model(&models.TestEncode{}).
+			Where("id = ? AND runtime_snapshot_id IS NULL", current.ID).
+			Update("runtime_snapshot_id", snapshot.ID)
+		if result.Error != nil {
+			return fmt.Errorf("bind Test Encode runtime snapshot: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			if err := tx.First(&current, test.ID).Error; err != nil {
+				return fmt.Errorf("reload Test Encode after runtime freeze race: %w", err)
+			}
+			if current.RuntimeSnapshotID == nil {
+				return fmt.Errorf("Test Encode %d runtime freeze lost its binding", test.ID)
+			}
+			boundID = current.RuntimeSnapshotID
+		} else {
+			boundID = &snapshot.ID
+			current.RuntimeSnapshotID = boundID
+		}
+		*test = current
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return boundID, nil
 }
 
 func activateTestSubtitleArtifacts(artifacts []SubtitleArtifact, temporaryMediaPath, outputMediaPath string) error {

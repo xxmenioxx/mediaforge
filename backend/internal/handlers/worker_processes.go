@@ -60,7 +60,7 @@ func (h WorkerHandler) startSleepInhibitor(processID int) {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	snapshot, err := runtimeinfo.Latest(h.db)
+	snapshot, err := runtimeinfo.Current(h.db)
 	if err != nil {
 		return
 	}

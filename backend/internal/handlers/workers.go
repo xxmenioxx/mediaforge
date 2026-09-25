@@ -170,7 +170,7 @@ func (h WorkerHandler) heartbeatWorker(name string, limits workerLimits, reporte
 			}
 		}
 		runtimeProfile = strings.TrimSpace(reportedRuntimeProfile)
-	} else if snapshot, err := runtimeinfo.Latest(h.db); err == nil {
+	} else if snapshot, err := runtimeinfo.Current(h.db); err == nil {
 		runtimeProfile = snapshot.SelectedProfile
 		for encoder, raw := range snapshot.Encoders {
 			entry, ok := raw.(map[string]any)

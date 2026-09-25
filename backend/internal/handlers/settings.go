@@ -190,7 +190,7 @@ func (h SettingsHandler) Update(c *gin.Context) {
 		}
 	}
 	if key == "runtimePolicy" {
-		if _, err := runtimeinfo.DetectAndSave(h.db); err != nil {
+		if _, _, err := runtimeinfo.DetectAndUpsert(h.db); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

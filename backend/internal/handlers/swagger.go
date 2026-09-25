@@ -1018,7 +1018,7 @@ func openAPIComponents() gin.H {
 					"requestedProfile":         ref("Profile"),
 					"effectiveProfile":         ref("Profile"),
 					"recommendation":           ref("EncoderRecommendation"),
-					"capabilitySource":         gin.H{"type": "string", "enum": []string{"active_runtime_snapshot", "live_backend_probe"}},
+					"capabilitySource":         gin.H{"type": "string", "enum": []string{"active_runtime_state", "active_runtime_snapshot", "live_backend_probe"}},
 					"ffmpegVideoArguments":     gin.H{"type": "array", "items": gin.H{"type": "string"}},
 					"estimatedOutputMinBytes":  gin.H{"type": "integer", "format": "int64"},
 					"estimatedOutputMaxBytes":  gin.H{"type": "integer", "format": "int64"},

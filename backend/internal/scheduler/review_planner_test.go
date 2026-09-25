@@ -16,7 +16,7 @@ func TestConditionalReviewEstimatesAndAutoApproves(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.Library{}, &models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+	if err := db.AutoMigrate(&models.Library{}, &models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}, &models.RuntimeState{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
 		t.Fatal(err)
 	}
 	seedReviewRuntime(t, db)
@@ -55,12 +55,71 @@ func TestConditionalReviewEstimatesAndAutoApproves(t *testing.T) {
 	}
 }
 
+func TestRepeatedReviewEvaluationReusesPlanRuntimeSnapshot(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:review-plan-idempotent?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}, &models.RuntimeState{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+		t.Fatal(err)
+	}
+	seedReviewRuntime(t, db)
+	inputPath := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(inputPath, make([]byte, 10_000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{Name: "Movies", SourcePath: filepath.Dir(inputPath), DestinationPath: "/media/library"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile := executionPlanTestProfile(1, 25)
+	snapshot, err := CaptureProfileSnapshot(profile, time.Now(), "queue_create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: inputPath, LibraryID: library.ID, ProfileID: profile.ID, ProfileVersion: 1, ProfileSnapshot: snapshot, Priority: 1, Status: "queued"}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan, err := CreatePendingExecutionPlan(db, &job, "review test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := EvaluateReviewPlan(db, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.RuntimeSnapshotID == nil {
+		t.Fatal("first material evaluation did not bind runtime provenance")
+	}
+	boundID := *plan.RuntimeSnapshotID
+	var countBefore int64
+	if err := db.Model(&models.RuntimeSnapshot{}).Count(&countBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now().Add(time.Minute), SelectedProfile: "laptop_safe", AvailableMemoryBytes: 16 << 30}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := EvaluateReviewPlan(db, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.RuntimeSnapshotID == nil || *plan.RuntimeSnapshotID != boundID {
+		t.Fatalf("repeated evaluation replaced plan provenance: got=%v want=%d", plan.RuntimeSnapshotID, boundID)
+	}
+	var countAfter int64
+	if err := db.Model(&models.RuntimeSnapshot{}).Count(&countAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if countAfter != countBefore+1 {
+		t.Fatalf("repeated evaluation unexpectedly captured runtime evidence: before=%d after=%d", countBefore, countAfter)
+	}
+}
+
 func TestManualReviewCanRejectAndApproveActivePlan(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:manual-review?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}, &models.RuntimeState{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
 		t.Fatal(err)
 	}
 	seedReviewRuntime(t, db)
@@ -91,7 +150,7 @@ func TestManualApprovalWaitsForScheduleWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}, &models.RuntimeState{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
 		t.Fatal(err)
 	}
 	seedReviewRuntime(t, db)
@@ -132,6 +191,13 @@ func seedReviewRuntime(t *testing.T, db *gorm.DB) {
 		"hevc_qsv":          models.JSONMap{"listed": true, "usable": true, "reason": ""},
 	}
 	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "desktop_balanced", AvailableMemoryBytes: 16 << 30, Disks: disks, Encoders: encoders}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeState{
+		SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "desktop_balanced",
+		AvailableMemoryBytes: 16 << 30, Disks: disks, Encoders: encoders,
+		StableFingerprint: "review-runtime", FingerprintVersion: "v1",
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.WorkerNode{Name: "test-worker", Status: "online", MaxConcurrentJobs: 2, Encoders: models.JSONList{"libx265", "hevc_videotoolbox", "hevc_qsv"}, LastSeenAt: time.Now()}).Error; err != nil {

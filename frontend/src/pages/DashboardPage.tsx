@@ -30,7 +30,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { MetricCard } from '../components/MetricCard';
 import { PageHeader } from '../components/PageHeader';
-import type { AssetInventory, Library, QueueJob, RuntimeSnapshot } from '../api/types';
+import type { AssetInventory, Library, QueueJob, RuntimeState } from '../api/types';
+import { liveRuntimeStateLabel } from '../utils/runtimeStatePresentation';
 
 export function DashboardPage() {
   const navigate = useNavigate();
@@ -44,8 +45,8 @@ export function DashboardPage() {
     refetchInterval: (query) => (query.state.data?.some((job) => job.status === 'queued' || job.status === 'running') ? 2000 : false),
   });
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
-  const runtime = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
-  const refreshRuntime = useMutation({ mutationFn: api.refreshRuntimeSnapshot, onSuccess: (snapshot) => queryClient.setQueryData(['runtime-snapshot'], snapshot) });
+  const runtime = useQuery({ queryKey: ['runtime-state'], queryFn: api.runtimeState });
+  const refreshRuntime = useMutation({ mutationFn: api.refreshRuntime, onSuccess: (state) => queryClient.setQueryData(['runtime-state'], state) });
   useEffect(() => {
     if (!autoRefreshRuntime) return undefined;
     const timer = window.setInterval(() => refreshRuntime.mutate(), 30_000);
@@ -286,7 +287,7 @@ export function DashboardPage() {
   );
 }
 
-function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefresh, onAutoRefresh, onRefresh }: { snapshot?: RuntimeSnapshot; loading: boolean; error: boolean; refreshing: boolean; autoRefresh: boolean; onAutoRefresh: (enabled: boolean) => void; onRefresh: () => void }) {
+function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefresh, onAutoRefresh, onRefresh }: { snapshot?: RuntimeState; loading: boolean; error: boolean; refreshing: boolean; autoRefresh: boolean; onAutoRefresh: (enabled: boolean) => void; onRefresh: () => void }) {
   const disks = snapshot ? Object.entries(snapshot.disks ?? {}) : [];
   const encoders = snapshot ? Object.entries(snapshot.encoders ?? {}) : [];
   const ramPercent = snapshot && snapshot.totalMemoryBytes > 0 ? Math.round((snapshot.availableMemoryBytes / snapshot.totalMemoryBytes) * 100) : 0;
@@ -343,7 +344,7 @@ function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefres
         <Grid size={{ xs: 12, md: 4 }}><Stack spacing={0.75}><Typography fontWeight={700}>Storage</Typography>{disks.map(([role, raw]) => { const disk = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}; return <Stack direction="row" justifyContent="space-between" key={role}><Typography color="text.secondary" variant="body2">{role} · {String(disk.type ?? 'unknown')}</Typography><Typography variant="body2">{formatBytes(Number(disk.availableBytes ?? 0))} free</Typography></Stack>; })}{!disks.length ? <Typography color="text.secondary" variant="body2">No controlled disks detected.</Typography> : null}</Stack></Grid>
         <Grid size={{ xs: 12, md: 4 }}><Stack spacing={0.75}><Typography fontWeight={700}>FFmpeg encoders</Typography><Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>{encoders.map(([name, encoder]) => <Chip key={name} size="small" color={encoder.usable ? 'success' : 'default'} variant={encoder.usable ? 'filled' : 'outlined'} label={`${name} · ${encoder.usable ? 'usable' : encoder.listed ? 'disabled' : 'not found'}`} title={encoder.reason || (encoder.usable ? 'Passed capability check' : 'Unavailable')} />)}{!encoders.length ? <Chip size="small" color="warning" label="No encoder diagnostics available" /> : null}</Stack><Typography color="text.secondary" variant="caption">Hover an encoder to see its capability diagnostic.</Typography></Stack></Grid>
       </Grid>
-      <Typography color="text.secondary" variant="caption">Host snapshot #{snapshot.id} · {formatDate(snapshot.detectedAt)}</Typography>
+      <Typography color="text.secondary" variant="caption">{liveRuntimeStateLabel(snapshot.detectedAt, formatDate)}</Typography>
     </> : null}
   </Stack></CardContent></Card>;
 }

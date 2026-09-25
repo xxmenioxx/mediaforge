@@ -47,11 +47,17 @@ func TestCanDispatchBlocksAtMachineRunningLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.RuntimeState{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
 		t.Fatal(err)
 	}
 	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(500 << 30)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
 	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "desktop_safe", AvailableMemoryBytes: 16 << 30, Disks: disks}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeState{
+		SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "desktop_safe",
+		AvailableMemoryBytes: 16 << 30, Disks: disks, StableFingerprint: "resource-limit", FingerprintVersion: "v1",
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.WorkerNode{Name: "test-worker", Status: "online", MaxConcurrentJobs: 2, Encoders: models.JSONList{"libx265"}, LastSeenAt: time.Now()}).Error; err != nil {
@@ -78,6 +84,9 @@ func TestCanDispatchBlocksAtMachineRunningLimit(t *testing.T) {
 	}
 	if candidate.SelectedEncoder != "libx265" {
 		t.Fatalf("resource saturation must not replace a locked encoder: %#v", candidate)
+	}
+	if candidate.RuntimeSnapshotID != nil {
+		t.Fatalf("dynamic resource evaluation unexpectedly captured plan provenance: %#v", candidate.RuntimeSnapshotID)
 	}
 }
 
@@ -125,11 +134,18 @@ func TestEvaluateResourcesWaitsForACPower(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.RuntimeState{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
 		t.Fatal(err)
 	}
 	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(500 << 30)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
 	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "laptop_safe", AvailableMemoryBytes: 16 << 30, OnBattery: true, BatteryPresent: true, Disks: disks}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeState{
+		SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "laptop_safe",
+		AvailableMemoryBytes: 16 << 30, OnBattery: true, BatteryPresent: true, Disks: disks,
+		StableFingerprint: "battery-policy", FingerprintVersion: "v1",
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.AppSetting{Key: "runtimePolicy", Value: models.JSONMap{"pauseWhenOnBattery": true}}).Error; err != nil {
@@ -144,5 +160,52 @@ func TestEvaluateResourcesWaitsForACPower(t *testing.T) {
 	}
 	if decision.Allowed || decision.WaitingState != "WAITING_POWER" {
 		t.Fatalf("unexpected power decision: %#v", decision)
+	}
+}
+
+func TestEvaluateResourcesPreservesFrozenRuntimeProvenance(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:resource-provenance?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.RuntimeState{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+		t.Fatal(err)
+	}
+	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(500 << 30)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
+	first := models.RuntimeSnapshot{DetectedAt: time.Now().Add(-time.Minute), SelectedProfile: "desktop_safe", AvailableMemoryBytes: 16 << 30, Disks: disks}
+	if err := db.Create(&first).Error; err != nil {
+		t.Fatal(err)
+	}
+	latest := models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "laptop_safe", AvailableMemoryBytes: 16 << 30, Disks: disks}
+	if err := db.Create(&latest).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeState{
+		SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: latest.DetectedAt,
+		SelectedProfile: latest.SelectedProfile, AvailableMemoryBytes: latest.AvailableMemoryBytes,
+		Disks: disks, StableFingerprint: "test-current", FingerprintVersion: "v1",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan := models.ExecutionPlan{
+		RuntimeProfile:          first.SelectedProfile,
+		RuntimeSnapshotID:       &first.ID,
+		SelectedEncoder:         "libx265",
+		EstimatedWorkspaceBytes: 1 << 30,
+		EstimatedOutputMaxBytes: 1 << 30,
+		Reservation:             models.JSONMap{},
+	}
+	if _, err := EvaluateResources(db, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.RuntimeSnapshotID == nil || *plan.RuntimeSnapshotID != first.ID {
+		t.Fatalf("resource reevaluation replaced frozen snapshot ID: %#v", plan)
+	}
+	if plan.RuntimeProfile != first.SelectedProfile {
+		t.Fatalf("resource reevaluation replaced frozen runtime profile: %#v", plan)
+	}
+	resources, ok := plan.Evaluation["resources"].(ResourceDecision)
+	if !ok || resources.Telemetry.AvailableMemoryBytes != 16<<30 {
+		t.Fatalf("dynamic resource evidence was not retained in the plan decision: %#v", plan.Evaluation["resources"])
 	}
 }

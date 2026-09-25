@@ -12,7 +12,6 @@ import (
 	"github.com/anuelvs/mvforge/backend/internal/capabilities"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/quality"
-	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
 	"gorm.io/gorm"
 )
 
@@ -190,8 +189,7 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 		return err
 	}
 	runtimeEncoders := models.JSONMap{}
-	if snapshot, runtimeErr := runtimeinfo.Latest(db); runtimeErr == nil {
-		plan.RuntimeSnapshotID = &snapshot.ID
+	if snapshot, runtimeErr := freezeExecutionPlanRuntime(db, plan); runtimeErr == nil {
 		plan.RuntimeProfile = snapshot.SelectedProfile
 		runtimeEncoders = snapshot.Encoders
 		plan.DecisionSources["runtimeProfile"] = "runtime_snapshot"

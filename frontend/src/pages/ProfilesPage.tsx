@@ -165,7 +165,7 @@ export function ProfilesPage() {
     queryKey: ['profiles', 'admin'],
     queryFn: api.profilesAdmin,
   });
-  const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const runtimeSnapshot = useQuery({ queryKey: ['runtime-state'], queryFn: api.runtimeState });
   const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const [form, setForm] = useState<ProfileInput>(initialProfile);

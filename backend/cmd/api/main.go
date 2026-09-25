@@ -33,7 +33,7 @@ func main() {
 		log.Printf("configure persistent logging: %v", err)
 	}
 
-	if _, err := runtimeinfo.DetectAndSave(db); err != nil {
+	if _, _, err := runtimeinfo.DetectAndUpsert(db); err != nil {
 		log.Printf("detect runtime: %v", err)
 	}
 	if report, err := handlers.RecoverSchedulerState(db); err != nil {

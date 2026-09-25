@@ -14,7 +14,7 @@ vi.mock('../api/client', async (importOriginal) => {
       ...actual.api,
     queueJobs: vi.fn(), assets: vi.fn(), profiles: vi.fn(), libraries: vi.fn(), settings: vi.fn(), snapshotOperations: vi.fn(),
     latestSnapshot: vi.fn(), startSnapshotOperation: vi.fn(), snapshotOperation: vi.fn(), externalAssetSubtitles: vi.fn(), subtitleExtractionOperations: vi.fn(),
-    suggestProfile: vi.fn(), runtimeSnapshot: vi.fn(), workerNodes: vi.fn(), recommendEncoderQuality: vi.fn(),
+    suggestProfile: vi.fn(), runtimeState: vi.fn(), workerNodes: vi.fn(), recommendEncoderQuality: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
     configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), createQueueBatch: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
     updateAssetConversion: vi.fn(), updateAssetMetadata: vi.fn(), updateAssetEdit: vi.fn(), testEncodes: vi.fn(),
@@ -114,7 +114,7 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.startSnapshotOperation).mockResolvedValue(completedSnapshotOperation());
     vi.mocked(api.snapshotOperation).mockResolvedValue(completedSnapshotOperation());
     vi.mocked(api.suggestProfile).mockResolvedValue(testProfileSuggestion());
-    vi.mocked(api.runtimeSnapshot).mockResolvedValue({ encoders: {} } as never);
+    vi.mocked(api.runtimeState).mockResolvedValue({ encoders: {} } as never);
     vi.mocked(api.workerNodes).mockResolvedValue([]);
     vi.mocked(api.recommendEncoderQuality).mockResolvedValue(undefined as never);
     vi.mocked(api.externalAssetSubtitles).mockResolvedValue([]);

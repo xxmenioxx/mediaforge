@@ -252,7 +252,10 @@ func fallbackFreezeTestDB(t *testing.T, fallback bool) (*gorm.DB, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.AppSetting{}, &models.ScanResult{}); err != nil {
+	if err := db.AutoMigrate(&models.AppSetting{}, &models.ScanResult{}, &models.RuntimeState{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeState{SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "desktop_safe", Encoders: models.JSONMap{"libx265": models.JSONMap{"listed": true, "usable": true}}, StableFingerprint: "queue-fallback-test", FingerprintVersion: "v1"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Clean("/media/raw/show/episode.mkv")
@@ -321,6 +324,9 @@ func queueCreationFreezeFixture(t *testing.T, fallback bool) (*gorm.DB, string, 
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "test", Encoders: models.JSONMap{"libx265": models.JSONMap{"listed": true, "usable": true}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeState{SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "test", Encoders: models.JSONMap{"libx265": models.JSONMap{"listed": true, "usable": true}}, StableFingerprint: "queue-creation-test", FingerprintVersion: "v1"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	return db, path, library, profile

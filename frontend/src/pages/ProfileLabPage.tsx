@@ -984,7 +984,7 @@ export function ProfileLabPage() {
   const adminProfiles = useQuery({ queryKey: ['profiles', 'admin'], queryFn: api.profilesAdmin });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
-  const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const runtimeSnapshot = useQuery({ queryKey: ['runtime-state'], queryFn: api.runtimeState });
   const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const labAssets = useMemo(
     () => uniqueAssets([
