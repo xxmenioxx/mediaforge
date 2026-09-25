@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,8 @@ import (
 type QueueHandler struct {
 	db *gorm.DB
 }
+
+const sourceAnalysisEvidenceSnapshotKey = models.QueueSourceAnalysisEvidenceKey
 
 type QueueJobInput struct {
 	MediaPath                 string `json:"mediaPath" binding:"required"`
@@ -159,13 +162,14 @@ type QueueSelectedAssetsSummary struct {
 }
 
 type QueueSelectedAssetResult struct {
-	AssetID   uint   `json:"assetId"`
-	Outcome   string `json:"outcome"`
-	Reason    string `json:"reason,omitempty"`
-	Message   string `json:"message,omitempty"`
-	BatchID   string `json:"batchId,omitempty"`
-	BatchName string `json:"batchName,omitempty"`
-	JobID     uint   `json:"jobId,omitempty"`
+	AssetID          uint                  `json:"assetId"`
+	Outcome          string                `json:"outcome"`
+	Reason           string                `json:"reason,omitempty"`
+	Message          string                `json:"message,omitempty"`
+	BatchID          string                `json:"batchId,omitempty"`
+	BatchName        string                `json:"batchName,omitempty"`
+	JobID            uint                  `json:"jobId,omitempty"`
+	AnalysisEvidence AssetAnalysisEvidence `json:"analysisEvidence"`
 }
 
 type QueueSelectedAssetsBatchResult struct {
@@ -985,6 +989,46 @@ func (h QueueHandler) queueSelectedAssets(c *gin.Context, forcedCommit *bool) {
 	c.JSON(http.StatusOK, response)
 }
 
+// selectedAssetsAnalysisEvidence shares the persisted-only evidence projection
+// used by Asset Info while keeping selected-assets preview bounded to one
+// ScanResult query for the whole selection.
+func (h QueueHandler) selectedAssetsAnalysisEvidence(records []models.AssetRecord) (map[uint]AssetAnalysisEvidence, error) {
+	result := make(map[uint]AssetAnalysisEvidence, len(records))
+	paths := make([]string, 0, len(records))
+	seenPaths := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		path := cleanAssetLifecyclePath(record.Path)
+		if path == "" {
+			continue
+		}
+		for _, candidate := range []string{record.Path, path} {
+			if candidate == "" {
+				continue
+			}
+			if _, exists := seenPaths[candidate]; exists {
+				continue
+			}
+			seenPaths[candidate] = struct{}{}
+			paths = append(paths, candidate)
+		}
+	}
+
+	var scans []models.ScanResult
+	if len(paths) > 0 && h.db.Migrator().HasTable(&models.ScanResult{}) {
+		if err := h.db.Raw(`SELECT * FROM (
+			SELECT scan_results.*, ROW_NUMBER() OVER (PARTITION BY path ORDER BY updated_at DESC, id DESC) AS row_num
+			FROM scan_results WHERE path IN ?
+		) WHERE row_num = 1`, paths).Scan(&scans).Error; err != nil {
+			return nil, err
+		}
+	}
+	policy := analysisPolicy(h.db)
+	for _, record := range records {
+		result[record.ID] = resolveAssetAnalysisEvidence(record, scans, policy, 20)
+	}
+	return result, nil
+}
+
 func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (QueueSelectedAssetsResponse, error) {
 	response := QueueSelectedAssetsResponse{
 		Results: make([]QueueSelectedAssetResult, 0, len(assetIDs)),
@@ -995,6 +1039,10 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 	var records []models.AssetRecord
 	if err := h.db.Where("id IN ?", assetIDs).Find(&records).Error; err != nil {
 		return response, fmt.Errorf("load selected assets: %w", err)
+	}
+	analysisEvidence, err := h.selectedAssetsAnalysisEvidence(records)
+	if err != nil {
+		return response, fmt.Errorf("load selected asset evidence: %w", err)
 	}
 	sort.SliceStable(records, func(i, j int) bool {
 		leftLogical := filepath.Clean(records[i].LogicalGroupPath)
@@ -1029,7 +1077,7 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 		}
 		titles[titlePath] = true
 
-		result := QueueSelectedAssetResult{AssetID: record.ID}
+		result := QueueSelectedAssetResult{AssetID: record.ID, AnalysisEvidence: analysisEvidence[record.ID]}
 		if record.Status != "unprocessed" {
 			result.Outcome, result.Reason, result.Message = "skipped", "not_unprocessed", "Asset is not currently Unprocessed"
 			response.Results = append(response.Results, result)
@@ -1124,6 +1172,9 @@ func (h QueueHandler) resolveSelectedAssetsQueue(assetIDs []uint, commit bool) (
 			Outcome: "failed",
 			Reason:  "not_found",
 			Message: "Asset record was not found",
+			AnalysisEvidence: AssetAnalysisEvidence{
+				Status: assetAnalysisUnavailable, UnavailableReason: "asset_record_unavailable",
+			},
 		})
 	}
 	response.Summary.TitleCount = len(titles)
@@ -2217,17 +2268,24 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 	haveScan := h.db != nil && strings.TrimSpace(path) != "" && h.db.Migrator().HasTable(&models.ScanResult{}) &&
 		h.db.Where("path = ?", path).Order("updated_at desc, id desc").First(&scan).Error == nil
 	if haveScan {
+		components := make([]string, 0, 4)
 		if _, ok := decodeInterlaceAnalysis(scan.InterlaceAnalysis); ok {
 			snapshot[interlaceAnalysisSnapshotKey] = scan.InterlaceAnalysis
+			components = append(components, "interlaceAnalysis")
 		}
 		if analysis, ok := decodeCadenceAnalysis(scan.CadenceAnalysis); ok {
 			snapshot[cadenceAnalysisSnapshotKey] = scan.CadenceAnalysis
+			components = append(components, "cadenceAnalysis")
 			if _, recommendationOK := decodeCadenceRecommendation(scan.CadenceRecommendation); !recommendationOK {
 				snapshot[cadenceRecommendationSnapshotKey] = cadenceRecommendationMap(recommendCadence(analysis))
+				components = append(components, "cadenceRecommendation")
 			}
 		}
 		if _, ok := decodeCadenceRecommendation(scan.CadenceRecommendation); ok {
 			snapshot[cadenceRecommendationSnapshotKey] = scan.CadenceRecommendation
+			if !slices.Contains(components, "cadenceRecommendation") {
+				components = append(components, "cadenceRecommendation")
+			}
 		}
 		var plan SamplingPlan
 		if currentRevisionErr == nil {
@@ -2246,6 +2304,23 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 		}
 		snapshot["samplingPlan"] = samplingPlanMap(plan)
 		snapshot["samplingPlanIdentity"] = plan.PlanIdentity
+		components = append(components, "samplingPlan")
+		if identity := assetAnalysisSourceIdentity(scan); identity != nil {
+			snapshot[sourceAnalysisEvidenceSnapshotKey] = models.JSONMap{
+				"status": "unavailable",
+				"sourceIdentity": models.JSONMap{
+					"path": identity.Path, "snapshotId": identity.SnapshotID,
+					"sizeBytes": identity.SizeBytes, "modifiedAtUnixNano": identity.ModifiedAtUnixNano,
+					"snapshotUpdatedAt": identity.SnapshotUpdatedAt,
+				},
+				"components": components,
+			}
+		} else if len(components) > 0 {
+			snapshot[sourceAnalysisEvidenceSnapshotKey] = models.JSONMap{
+				"status": "unavailable", "unavailableReason": "source_identity_unavailable",
+				"components": components,
+			}
+		}
 	} else if strings.TrimSpace(path) != "" {
 		fingerprint := filepath.Clean(path)
 		if currentRevisionErr == nil {

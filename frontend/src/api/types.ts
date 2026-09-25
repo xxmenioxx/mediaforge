@@ -124,9 +124,24 @@ export type AssetLifecycleProjection = {
     queueJobIds?: number[];
     directPublicationIds?: number[];
     hasAnalysis?: boolean;
+    analysis?: AssetAnalysisEvidence;
     originalArchivedPath?: string;
   };
   actions?: Record<string, { allowed: boolean; reason?: string }>;
+};
+
+export type AssetAnalysisEvidence = {
+  status: 'missing' | 'ready' | 'stale' | 'unavailable';
+  sourceIdentity?: {
+    path: string;
+    snapshotId?: number;
+    sizeBytes: number;
+    modifiedAtUnixNano: number;
+    snapshotUpdatedAt?: string;
+    matchesCurrentSourceRevision: boolean;
+  };
+  staleComponents?: string[];
+  unavailableReason?: string;
 };
 
 export type AssetDimensionCount = { value: string; count: number };
@@ -1138,6 +1153,7 @@ export type RuntimeProfilesResponse = { profiles: RuntimeProfileDefinition[]; ef
 
 export type QueueJob = {
   id: number;
+  sourceAssetRecordId?: number;
   executionNumber?: number;
   batchId: string;
   batchName: string;
@@ -1392,6 +1408,7 @@ export type QueueSelectedAssetResult = {
   batchId?: string;
   batchName?: string;
   jobId?: number;
+  analysisEvidence?: AssetAnalysisEvidence;
 };
 
 export type QueueSelectedAssetsResponse = {

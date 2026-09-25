@@ -71,16 +71,20 @@ func TestLatestSnapshotReadsPersistedEvidenceWithoutStartingAnalysis(t *testing.
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	var payload struct {
-		Found            bool               `json:"found"`
-		Snapshot         *models.ScanResult `json:"snapshot"`
-		Status           string             `json:"status"`
-		RequiresAnalysis bool               `json:"requiresAnalysis"`
+		Found            bool                  `json:"found"`
+		Snapshot         *models.ScanResult    `json:"snapshot"`
+		Status           string                `json:"status"`
+		RequiresAnalysis bool                  `json:"requiresAnalysis"`
+		AnalysisEvidence AssetAnalysisEvidence `json:"analysisEvidence"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if !payload.Found || payload.Snapshot == nil || payload.Snapshot.ID != latest.ID || payload.Snapshot.VideoCodec != "hevc" || payload.Status != "current" || payload.RequiresAnalysis {
 		t.Fatalf("unexpected persisted snapshot response: %#v", payload)
+	}
+	if payload.AnalysisEvidence.Status != assetAnalysisReady || payload.AnalysisEvidence.SourceIdentity == nil || !payload.AnalysisEvidence.SourceIdentity.MatchesCurrentSourceRevision {
+		t.Fatalf("latest snapshot omitted its validated source evidence identity: %#v", payload.AnalysisEvidence)
 	}
 	if err := os.WriteFile(path, []byte("fixture changed"), 0o644); err != nil {
 		t.Fatal(err)
@@ -92,6 +96,9 @@ func TestLatestSnapshotReadsPersistedEvidenceWithoutStartingAnalysis(t *testing.
 	}
 	if payload.Status != "changed" || !payload.RequiresAnalysis {
 		t.Fatalf("changed media did not request analysis: %#v", payload)
+	}
+	if payload.AnalysisEvidence.Status != assetAnalysisStale || payload.AnalysisEvidence.SourceIdentity == nil || payload.AnalysisEvidence.SourceIdentity.MatchesCurrentSourceRevision {
+		t.Fatalf("changed media was not reported stale against its current source identity: %#v", payload.AnalysisEvidence)
 	}
 	var count int64
 	if err := db.Model(&models.ScanResult{}).Where("path = ?", path).Count(&count).Error; err != nil || count != 2 {

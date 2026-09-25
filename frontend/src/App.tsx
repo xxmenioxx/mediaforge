@@ -3,7 +3,6 @@ import { AppLayout } from './components/AppLayout';
 import { DashboardPage } from './pages/DashboardPage';
 import { LibrariesPage } from './pages/LibrariesPage';
 import { AssetsPage } from './pages/AssetsPage';
-import { AnalysisPage } from './pages/AnalysisPage';
 import { AudioProfilesPage } from './pages/AudioProfilesPage';
 import { ProfileLabPage } from './pages/ProfileLabPage';
 import { ProfilesPage } from './pages/ProfilesPage';
@@ -25,12 +24,12 @@ export default function App() {
         <Route path="libraries" element={<LibrariesPage />} />
         <Route path="assets" element={<AssetsPage />} />
         <Route path="assets/:legacyView" element={<LegacyAssetsRoute />} />
-        <Route path="analysis" element={<AnalysisPage />} />
+        <Route path="analysis" element={<LegacyAnalysisRoute />} />
         <Route path="profile-lab" element={<ProfileLabPage />} />
         <Route path="profiles" element={<ProfilesPage />} />
         <Route path="audio" element={<AudioProfilesPage />} />
         <Route path="track-profiles" element={<TrackProfilesPage />} />
-        <Route path="scanner" element={<Navigate to="/analysis" replace />} />
+        <Route path="scanner" element={<LegacyAnalysisRoute />} />
         <Route path="queue" element={<QueuePage />} />
         <Route path="workers" element={<WorkersPage />} />
         <Route path="history" element={<HistoryPage />} />
@@ -43,6 +42,18 @@ export default function App() {
       </Route>
     </Routes>
   );
+}
+
+export function LegacyAnalysisRoute() {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const asset = params.get('asset') ?? params.get('assetPath') ?? params.get('path');
+  params.delete('autorun');
+  params.delete('assetPath');
+  params.delete('path');
+  params.set('location', 'raw');
+  if (asset) params.set('asset', asset);
+  return <Navigate to={`/assets?${params.toString()}`} replace />;
 }
 
 export function LegacyAssetsRoute() {

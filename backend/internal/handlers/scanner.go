@@ -207,10 +207,12 @@ func (h ScannerHandler) LatestSnapshot(c *gin.Context) {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			status := "missing"
 			requiresAnalysis := statErr == nil && !info.IsDir()
+			evidence := AssetAnalysisEvidence{Status: assetAnalysisMissing}
 			if !requiresAnalysis {
 				status = "unavailable"
+				evidence = AssetAnalysisEvidence{Status: assetAnalysisUnavailable, UnavailableReason: "source_unavailable"}
 			}
-			c.JSON(http.StatusOK, gin.H{"found": false, "snapshot": nil, "status": status, "requiresAnalysis": requiresAnalysis, "staleComponents": []string{}})
+			c.JSON(http.StatusOK, gin.H{"found": false, "snapshot": nil, "status": status, "requiresAnalysis": requiresAnalysis, "staleComponents": []string{}, "analysisEvidence": evidence})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
@@ -220,12 +222,15 @@ func (h ScannerHandler) LatestSnapshot(c *gin.Context) {
 	normalizeScanResultAttachmentStreams(&snapshot)
 	snapshot.ColorPolicy = colorPolicyPresentationForScan(snapshot)
 	if statErr != nil || info.IsDir() {
-		c.JSON(http.StatusOK, gin.H{"found": true, "snapshot": snapshot, "status": "unavailable", "requiresAnalysis": false, "staleComponents": []string{}})
+		evidence := AssetAnalysisEvidence{Status: assetAnalysisUnavailable, SourceIdentity: assetAnalysisSourceIdentity(snapshot), UnavailableReason: "source_unavailable"}
+		c.JSON(http.StatusOK, gin.H{"found": true, "snapshot": snapshot, "status": "unavailable", "requiresAnalysis": false, "staleComponents": []string{}, "analysisEvidence": evidence})
 		return
 	}
 
 	policy := analysisPolicy(h.db)
 	fingerprintMatches, legacy, staleComponents := snapshotCacheStateWithEvidence(snapshot, path, info, policy, 20)
+	record := models.AssetRecord{Path: path, SizeBytes: info.Size(), ModifiedAt: info.ModTime()}
+	evidence := resolveAssetAnalysisEvidence(record, []models.ScanResult{snapshot}, policy, 20)
 	status := "current"
 	requiresAnalysis := false
 	switch {
@@ -244,6 +249,7 @@ func (h ScannerHandler) LatestSnapshot(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"found": true, "snapshot": snapshot, "status": status,
 		"requiresAnalysis": requiresAnalysis, "staleComponents": staleComponents,
+		"analysisEvidence": evidence,
 	})
 }
 
@@ -516,6 +522,13 @@ func snapshotCacheStateWithPolicy(snapshot models.ScanResult, path string, info 
 }
 
 func snapshotCacheStateWithEvidence(snapshot models.ScanResult, path string, info os.FileInfo, policy AnalysisPolicy, analysisSeconds int) (fingerprintMatches bool, legacy bool, staleComponents []string) {
+	if info == nil {
+		return snapshotCacheStateForSourceRevision(snapshot, path, 0, 0, false, policy, analysisSeconds)
+	}
+	return snapshotCacheStateForSourceRevision(snapshot, path, info.Size(), info.ModTime().UnixNano(), true, policy, analysisSeconds)
+}
+
+func snapshotCacheStateForSourceRevision(snapshot models.ScanResult, path string, sizeBytes, modifiedAtUnixNano int64, revisionKnown bool, policy AnalysisPolicy, analysisSeconds int) (fingerprintMatches bool, legacy bool, staleComponents []string) {
 	cache, ok := snapshotCacheMap(snapshot.RawProbe["snapshotCache"])
 	if !ok {
 		return true, true, nil
@@ -524,11 +537,10 @@ func snapshotCacheStateWithEvidence(snapshot models.ScanResult, path string, inf
 		return false, false, nil
 	}
 	fingerprint, ok := snapshotCacheMap(cache["fingerprint"])
-	if !ok || filepath.Clean(stringFromUnknown(fingerprint["path"])) != filepath.Clean(path) || info == nil {
+	if !ok || filepath.Clean(stringFromUnknown(fingerprint["path"])) != filepath.Clean(path) || !revisionKnown {
 		return false, false, nil
 	}
-	if jsonInt64(fingerprint["sizeBytes"]) != info.Size() ||
-		jsonInt64(fingerprint["mtimeNs"]) != info.ModTime().UnixNano() {
+	if jsonInt64(fingerprint["sizeBytes"]) != sizeBytes || jsonInt64(fingerprint["mtimeNs"]) != modifiedAtUnixNano {
 		return false, false, nil
 	}
 	components, ok := snapshotCacheMap(cache["components"])
