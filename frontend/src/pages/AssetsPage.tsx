@@ -6562,7 +6562,7 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
   const colorPolicy = recordFromRecord(report, 'colorPolicy');
   const sourceColor = recordFromRecord(colorPolicy, 'source');
   const outputColor = recordFromRecord(colorPolicy, 'output');
-  const frameFidelity = recordFromRecord(colorPolicy, 'frameFidelity');
+  const frameFidelity = recordFromRecord(report, 'frameFidelity');
   const frameFidelityFields = recordFromRecord(frameFidelity, 'fields');
 
   return (

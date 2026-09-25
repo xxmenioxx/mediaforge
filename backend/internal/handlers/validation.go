@@ -180,6 +180,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	var sourceDirectPlayReport scheduler.DirectPlayReport
 	sourceDirectPlayAvailable := false
 	colorReport := models.JSONMap{}
+	frameFidelityReport := models.JSONMap{}
 	var perceptualEvidence PerceptualEvidenceSet
 	perceptualEvidenceAvailable := false
 	perceptualEvidenceWarning := ""
@@ -251,9 +252,7 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 		if colorWarning != "" {
 			warnings = append(warnings, colorWarning)
 		}
-		if fidelity := validateJobFrameFidelity(db, job, sourceProbe, outputProbe, hevcEvidence, colorReport, smartUpscaleReport, restorationReport); len(fidelity) > 0 {
-			colorReport["frameFidelity"] = fidelity
-		}
+		frameFidelityReport = validateJobFrameFidelity(db, job, sourceProbe, outputProbe, hevcEvidence, colorReport, smartUpscaleReport, restorationReport)
 		if frozenPlan, planOK := samplingPlanFromQueueJob(job); planOK {
 			if sourceMatches, sourceErr := frozenSamplingPlanSourceMatches(job.MediaPath, frozenPlan); sourceErr != nil {
 				perceptualEvidenceWarning = "perceptual evidence unavailable: current source revision could not be verified: " + sourceErr.Error()
@@ -317,6 +316,9 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 	}
 	if len(colorReport) > 0 {
 		report["colorPolicy"] = colorReport
+	}
+	if len(frameFidelityReport) > 0 {
+		report["frameFidelity"] = frameFidelityReport
 	}
 	report["avTiming"] = timingReport
 	report["smartUpscale"] = smartUpscaleReport

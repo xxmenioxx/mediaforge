@@ -58,7 +58,11 @@ export function ValidationPage() {
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         {jobs.isError ? <Alert severity="warning">Unable to load completed jobs.</Alert> : null}
-        {validateJob.isError ? <Alert severity="warning" sx={{ mb: 2 }}>Validation could not be completed.</Alert> : null}
+        {validateJob.isError ? (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            {validateJob.error instanceof Error ? validateJob.error.message : 'Validation could not be completed.'}
+          </Alert>
+        ) : null}
 
         <Card>
           <CardContent sx={{ p: 0, '&:last-child': { pb: 0 } }}>
