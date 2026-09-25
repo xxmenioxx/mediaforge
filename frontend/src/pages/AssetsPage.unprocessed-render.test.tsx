@@ -16,7 +16,7 @@ vi.mock('../api/client', async (importOriginal) => {
     latestSnapshot: vi.fn(), startSnapshotOperation: vi.fn(), snapshotOperation: vi.fn(), externalAssetSubtitles: vi.fn(), subtitleExtractionOperations: vi.fn(),
     suggestProfile: vi.fn(), runtimeState: vi.fn(), workerNodes: vi.fn(), recommendEncoderQuality: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
-    configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), createQueueBatch: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
+    configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), queueRemainingPreview: vi.fn(), queueRemainingCommit: vi.fn(), createQueueBatch: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
     updateAssetConversion: vi.fn(), updateAssetMetadata: vi.fn(), updateAssetEdit: vi.fn(), testEncodes: vi.fn(),
     },
   };
@@ -139,6 +139,16 @@ describe('Unprocessed Assets hierarchy', () => {
       summary: { selected: assetIds.length, eligible: assetIds.length, queued: commit ? assetIds.length : 0, skipped: 0, failed: 0, titleCount: 1, sizeBytes: assetIds.length * 1024 },
       results: assetIds.map((assetId) => ({ assetId, outcome: commit ? 'queued' as const : 'eligible' as const, batchId: 'selected-test-001', batchName: 'Akira', ...(commit ? { jobId: assetId + 100 } : {}) })),
       batches: commit ? [{ batchId: 'selected-test-001', batchName: 'Akira', jobCount: assetIds.length }] : [],
+    }));
+    vi.mocked(api.queueRemainingPreview).mockImplementation(async (assetIds) => ({
+      summary: { selected: assetIds.length, eligible: assetIds.length, queued: 0, skipped: 0, failed: 0, titleCount: 1, sizeBytes: assetIds.length * 1024 },
+      results: assetIds.map((assetId) => ({ assetId, outcome: 'eligible' as const, batchId: 'remaining-test-001', batchName: 'Akira' })),
+      batches: [],
+    }));
+    vi.mocked(api.queueRemainingCommit).mockImplementation(async (assetIds) => ({
+      summary: { selected: assetIds.length, eligible: 0, queued: assetIds.length, skipped: 0, failed: 0, titleCount: 1, sizeBytes: assetIds.length * 1024 },
+      results: assetIds.map((assetId) => ({ assetId, outcome: 'queued' as const, batchId: 'remaining-test-001', batchName: 'Akira', jobId: assetId + 100 })),
+      batches: [{ batchId: 'remaining-test-001', batchName: 'Akira', jobCount: assetIds.length }],
     }));
   });
 
@@ -691,7 +701,9 @@ describe('Unprocessed Assets hierarchy', () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
-    await user.click(await screen.findByRole('tab', { name: /Converted/ }));
+    await user.click(await screen.findByRole('tab', { name: /Library/ }));
+    await user.click(await screen.findByRole('combobox', { name: 'Provenance' }));
+    await user.click(await screen.findByRole('option', { name: /Converted/ }));
     await user.click(await screen.findByText('/media/library/series/Akira'));
     await user.click(await screen.findByRole('button', { name: 'Asset Info Converted Episode.mkv' }));
     const dialog = await screen.findByRole('dialog');
@@ -948,10 +960,23 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(await screen.findByText('Will be queued: 1')).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Queue 1 assets' }));
-    await waitFor(() => expect(api.queueSelectedAssets).toHaveBeenCalledWith({ assetIds: [1], commit: true }));
+    await waitFor(() => expect(api.queueSelectedAssets).toHaveBeenCalledWith({ assetIds: [1, 2], commit: true }));
     expect(await screen.findByText('0 queued · 1 skipped · 0 failed')).toBeTruthy();
     expect(screen.getByText('Asset 1: Asset already has an open Queue job')).toBeTruthy();
     expect(api.createQueueBatch).not.toHaveBeenCalled();
+  });
+
+  it('Queue Remaining previews and commits the identical complete group IDs', async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Select title Akira' }));
+    await user.click(screen.getByRole('button', { name: 'Queue Remaining' }));
+    await waitFor(() => expect(api.queueRemainingPreview).toHaveBeenCalledWith([1, 2]));
+    const dialogQueueButton = (await screen.findAllByRole('button', { name: /Queue Remaining/ })).at(-1)!;
+    await user.click(dialogQueueButton);
+    await waitFor(() => expect(api.queueRemainingCommit).toHaveBeenCalledWith([1, 2]));
+    expect(await screen.findByText('2 queued · 0 skipped · 0 failed')).toBeTruthy();
   });
 
   it('keeps the Assets selection and result in place after a successful Queue selected commit', async () => {

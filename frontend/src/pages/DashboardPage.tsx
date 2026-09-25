@@ -409,9 +409,10 @@ function CoverageRow({
 }
 
 function buildDashboardSummary(libraries: Library[], jobs: QueueJob[], assets?: AssetInventory) {
-  const unprocessedAssets = assets?.unprocessed.length ?? 0;
-  const libraryAssets = assets?.library?.length ?? assets?.converted.length ?? 0;
-  const convertedAssets = assets?.converted.length ?? 0;
+  const counts = assets?.counts;
+  const unprocessedAssets = counts?.raw ?? assets?.raw?.length ?? assets?.unprocessed.length ?? 0;
+  const libraryAssets = counts?.library ?? assets?.library?.length ?? assets?.converted.length ?? 0;
+  const convertedAssets = counts?.converted ?? assets?.converted.length ?? 0;
   const unverifiedAssets = assets?.unverified?.length ?? Math.max(0, libraryAssets - convertedAssets);
   const totalAssets = unprocessedAssets + libraryAssets;
   const queuedJobs = jobs.filter((job) => job.status === 'queued').length;

@@ -71,13 +71,14 @@ export type Asset = {
   extension: string;
   sizeBytes: number;
   modifiedAt: string;
-  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'accepted' | 'archive';
+  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'accepted' | 'archive' | 'mixed';
   missing: boolean;
   expiresAt?: string;
   review: AssetReviewState;
   metadata: AssetMetadataState;
   conversion: AssetConversionOverrideState;
   publicationMode?: 'as_is';
+  lifecycle?: AssetLifecycleProjection;
   technical?: {
     videoCodec: string;
     encoder?: string;
@@ -95,7 +96,7 @@ export type AssetGroup = {
   libraryName: string;
   path: string;
   relativePath: string;
-  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'accepted' | 'archive';
+  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'accepted' | 'archive' | 'mixed';
   fileCount: number;
   sizeBytes: number;
   modifiedAt: string;
@@ -104,6 +105,34 @@ export type AssetGroup = {
   pathReview: AssetReviewState;
   metadata: AssetMetadataState;
   pathMetadata: AssetMetadataState;
+  lifecycleSummary?: AssetGroupLifecycleSummary;
+};
+
+export type AssetLifecycleProjection = {
+  location: 'raw' | 'library' | string;
+  lifecycle: string;
+  provenance: string;
+  validation: string;
+  publication: string;
+  original: string;
+  activeOperation?: { kind?: string; status?: string; stage?: string };
+  attention?: string[];
+  currentPublication?: { state?: string; authority?: string; id?: number; path?: string };
+  sourceProvenance?: Array<{ sourcePath?: string; authority?: string; jobId?: number; publicationId?: number }>;
+  currentRawCorrelation?: { state?: string; assetRecordId?: number; path?: string };
+  evidenceSummary?: Record<string, unknown>;
+  actions?: Record<string, { allowed: boolean; reason?: string }>;
+};
+
+export type AssetDimensionCount = { value: string; count: number };
+
+export type AssetGroupLifecycleSummary = {
+  total: number;
+  lifecycle: AssetDimensionCount[];
+  provenance: AssetDimensionCount[];
+  validation: AssetDimensionCount[];
+  publication: AssetDimensionCount[];
+  attention: AssetDimensionCount[];
 };
 
 export type LibraryRenameSidecarPlan = {
@@ -546,6 +575,7 @@ export type AssetConversionUpdateInput = AssetConversionOverrideState & {
 
 export type AssetInventory = {
 	sourceGroups: AssetSourceGroup[];
+  raw?: Asset[];
   unprocessed: Asset[];
   library: Asset[];
   converted: Asset[];
@@ -554,6 +584,7 @@ export type AssetInventory = {
   archive: Asset[];
   missing: Asset[];
   unprocessedGroups: AssetGroup[];
+  rawGroups?: AssetGroup[];
   libraryGroups: AssetGroup[];
   convertedGroups: AssetGroup[];
   unverifiedGroups: AssetGroup[];
@@ -561,6 +592,20 @@ export type AssetInventory = {
   archiveGroups: AssetGroup[];
   reports: AssetReports;
   sync: AssetSyncInfo;
+  counts?: AssetInventoryCounts;
+};
+
+export type AssetInventoryCounts = {
+  raw: number;
+  library: number;
+  processing: number;
+  needsReview: number;
+  validationReview: number;
+  publicationBlocked: number;
+  converted: number;
+  originalsArchived: number;
+  missing: number;
+  historicalPaths: number;
 };
 
 export type AssetSourceGroup = {

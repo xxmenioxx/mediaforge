@@ -927,10 +927,31 @@ type selectedQueueCandidate struct {
 }
 
 func (h QueueHandler) QueueSelectedAssets(c *gin.Context) {
+	h.queueSelectedAssets(c, nil)
+}
+
+// QueueRemainingPreview and QueueRemainingCommit are transport adapters for
+// the Assets presentation. They intentionally share the selected-assets
+// resolver so Queue remains the sole owner of eligibility, ordering, and
+// commit-time revalidation.
+func (h QueueHandler) QueueRemainingPreview(c *gin.Context) {
+	commit := false
+	h.queueSelectedAssets(c, &commit)
+}
+
+func (h QueueHandler) QueueRemainingCommit(c *gin.Context) {
+	commit := true
+	h.queueSelectedAssets(c, &commit)
+}
+
+func (h QueueHandler) queueSelectedAssets(c *gin.Context, forcedCommit *bool) {
 	var input QueueSelectedAssetsInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	if forcedCommit != nil {
+		input.Commit = *forcedCommit
 	}
 	if len(input.AssetIDs) == 0 || len(input.AssetIDs) > 1000 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "assetIds must contain between 1 and 1000 assets"})

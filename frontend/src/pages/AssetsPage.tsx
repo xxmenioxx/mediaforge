@@ -52,6 +52,7 @@ import ScienceIcon from '@mui/icons-material/Science';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, Fragment, useEffect, useRef, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { TrackMaintenancePanel } from '../components/TrackMaintenancePanel';
@@ -93,11 +94,37 @@ const VIDEO_PROFILE_OVERRIDE_ONLY = -1;
 const VIDEO_PROFILE_AUDIO_ONLY = -2;
 
 export function AssetsPage() {
-  const [tab, setTab] = useState<'unprocessed' | 'library' | 'converted' | 'archive' | 'reports'>('unprocessed');
-  const [libraryDecision, setLibraryDecision] = useState<'' | 'unverified' | 'accepted'>('');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialLocation = searchParams.get('location') === 'library' || ['library', 'converted', 'archive', 'reports'].includes(searchParams.get('tab') ?? '') ? 'library' : 'unprocessed';
+  const initialProvenance = searchParams.get('provenance') ?? (searchParams.get('tab') === 'converted' ? 'converted' : '');
+  const initialOriginal = searchParams.get('original') ?? (searchParams.get('tab') === 'archive' ? 'archived' : '');
+  const [tab, setTab] = useState<'unprocessed' | 'library'>(initialLocation);
+  const [libraryDecision, setLibraryDecision] = useState<string>(initialProvenance);
+  const [originalFilter, setOriginalFilter] = useState(initialOriginal);
+  const [validationFilter, setValidationFilter] = useState(searchParams.get('validation') ?? '');
+  const [workflowFilter, setWorkflowFilter] = useState(searchParams.get('workflow') ?? '');
+  const [attentionFilter, setAttentionFilter] = useState(searchParams.get('attention') ?? '');
   const [assetQuery, setAssetQuery] = useState('');
   const [mediaArea, setMediaArea] = useState('');
 	const [sourceGroupId, setSourceGroupId] = useState(0);
+  useEffect(() => {
+    const legacyTab = searchParams.get('tab');
+    if (!legacyTab) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('tab');
+    if (legacyTab === 'unprocessed') next.set('location', 'raw');
+    if (legacyTab === 'library') next.set('location', 'library');
+    if (legacyTab === 'converted') { next.set('location', 'library'); next.set('provenance', 'converted'); }
+    if (legacyTab === 'archive') { next.set('location', 'library'); next.set('original', 'archived'); }
+    if (legacyTab === 'reports') { next.set('location', 'library'); next.set('evidence', 'reports'); }
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+  const updateLibraryFilter = (key: string, value: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('location', 'library');
+    if (value) next.set(key, value); else next.delete(key);
+    setSearchParams(next);
+  };
   const jobs = useQuery({
     queryKey: ['queueJobs'],
     queryFn: api.queueJobs,
@@ -129,12 +156,13 @@ export function AssetsPage() {
   const assetCategories = getAssetCategories(settings.data);
   const unprocessedCount = safeArray(assets.data?.unprocessed).length;
   const libraryCount = safeArray(assets.data?.library).length;
-  const convertedCount = safeArray(assets.data?.converted).length;
+  const convertedCount = assets.data?.counts?.converted ?? safeArray(assets.data?.converted).length;
   const acceptedCount = safeArray(assets.data?.accepted).length;
-  const archiveCount = safeArray(assets.data?.archive).length;
   const sourceGroups = safeArray(assets.data?.sourceGroups);
+  const libraryGroups = safeArray(assets.data?.libraryGroups);
+  const canonicalLibraryGroups = libraryGroups.length ? libraryGroups : safeArray(assets.data?.convertedGroups);
   const statusGroups = safeArray(
-    tab === 'archive' ? assets.data?.archiveGroups : tab === 'library' ? assets.data?.libraryGroups : tab === 'converted' ? assets.data?.convertedGroups : assets.data?.unprocessedGroups,
+    tab === 'library' ? canonicalLibraryGroups : assets.data?.rawGroups ?? assets.data?.unprocessedGroups,
   );
 	const currentGroups = statusGroups;
 	const selectedSourceGroup = sourceGroups.find((group) => group.id === sourceGroupId) ?? sourceGroups[0];
@@ -143,12 +171,9 @@ export function AssetsPage() {
     ...safeArray(assets.data?.convertedGroups), ...safeArray(assets.data?.archiveGroups),
   ];
   const mediaAreas = [...new Set(allInventoryGroups.map((group) => mediaAreaForGroup(group, settings.data)).filter(Boolean))].sort();
-  const decisionGroups = tab === 'library' && libraryDecision
-    ? currentGroups.filter((group) => group.status === libraryDecision)
-    : currentGroups;
-  const areaGroups = mediaArea ? decisionGroups.filter((group) => mediaAreaForGroup(group, settings.data) === mediaArea) : decisionGroups;
-  const filteredGroups = filterAssetGroups(areaGroups, assetQuery);
-  const filteredArchiveAssets = tab === 'archive' ? archiveAssetsFromGroups(areaGroups, assetQuery) : [];
+  const areaGroups = mediaArea ? currentGroups.filter((group) => mediaAreaForGroup(group, settings.data) === mediaArea) : currentGroups;
+  const filteredGroups = filterAssetGroups(areaGroups, assetQuery, { provenance: libraryDecision, original: originalFilter, validation: validationFilter, workflow: workflowFilter, attention: attentionFilter });
+  const showEvidence = searchParams.get('evidence') === 'reports';
   const runningSnapshotPaths = new Set(
     (snapshotOperations.data?.operations ?? [])
       .filter((operation) => operation.status === 'running')
@@ -179,6 +204,11 @@ export function AssetsPage() {
                   setTab(value);
                   setAssetQuery('');
                   setLibraryDecision('');
+                  setOriginalFilter('');
+                  setValidationFilter('');
+                  setWorkflowFilter('');
+                  setAttentionFilter('');
+                  setSearchParams(value === 'library' ? { location: 'library' } : { location: 'raw' });
                 }}
                 variant="scrollable"
                 scrollButtons="auto"
@@ -186,32 +216,49 @@ export function AssetsPage() {
               >
                 <Tab label={<AssetTabLabel label="Unprocessed" count={unprocessedCount} color="warning" />} value="unprocessed" />
                 <Tab label={<AssetTabLabel label="Library" count={libraryCount} color="primary" />} value="library" />
-                <Tab label={<AssetTabLabel label="Converted" count={convertedCount} color="success" />} value="converted" />
-                <Tab label={<AssetTabLabel label="Archive" count={archiveCount} color="default" />} value="archive" />
-                <Tab label="Reports" value="reports" />
               </Tabs>
               <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ flex: 1 }}>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" alignItems={{ xs: 'stretch', sm: 'center' }} sx={{ width: '100%' }}>
                   <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => syncAssets.mutate()} disabled={syncAssets.isPending} sx={{ minHeight: 40 }}>
                     Sync
                   </Button>
-                  {tab !== 'reports' ? (
-                    tab === 'library' ? (
+                  {tab === 'library' ? (
                       <TextField
                         select
                         value={libraryDecision}
-                        onChange={(event) => setLibraryDecision(event.target.value as '' | 'unverified' | 'accepted')}
-                        label="Decision"
+                        onChange={(event) => { setLibraryDecision(event.target.value); updateLibraryFilter('provenance', event.target.value); }}
+                        label="Provenance"
                         size="small"
                         sx={{ width: { xs: '100%', sm: 180 } }}
                       >
-                        <MenuItem value="">All decisions</MenuItem>
-                        <MenuItem value="unverified">Unverified</MenuItem>
-                        <MenuItem value="accepted">Accepted ({acceptedCount})</MenuItem>
+                        <MenuItem value="">All provenance</MenuItem>
+                        <MenuItem value="converted">Converted ({convertedCount})</MenuItem>
+                        <MenuItem value="published_as_is">Published as-is</MenuItem>
+                        <MenuItem value="imported">Imported / accepted ({acceptedCount})</MenuItem>
+                        <MenuItem value="legacy_or_unknown">Legacy / unknown</MenuItem>
                       </TextField>
-                    ) : null
                   ) : null}
-                  {tab !== 'reports' && tab !== 'unprocessed' ? (
+                  {tab === 'library' ? (
+                    <TextField select value={validationFilter} onChange={(event) => { setValidationFilter(event.target.value); updateLibraryFilter('validation', event.target.value); }} label="Validation" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
+                      <MenuItem value="">All validation</MenuItem><MenuItem value="passed">Passed</MenuItem><MenuItem value="passed_with_warnings">Warnings</MenuItem><MenuItem value="review_required">Review</MenuItem><MenuItem value="failed">Failed</MenuItem><MenuItem value="unavailable">Unavailable</MenuItem>
+                    </TextField>
+                  ) : null}
+                  {tab === 'library' ? (
+                    <TextField select value={originalFilter} onChange={(event) => { setOriginalFilter(event.target.value); updateLibraryFilter('original', event.target.value); }} label="Original" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
+                      <MenuItem value="">All originals</MenuItem><MenuItem value="available">Available</MenuItem><MenuItem value="archived">Archived</MenuItem><MenuItem value="deleted">Deleted</MenuItem><MenuItem value="unknown">Unknown</MenuItem>
+                    </TextField>
+                  ) : null}
+                  {tab === 'library' ? (
+                    <TextField select value={workflowFilter} onChange={(event) => { setWorkflowFilter(event.target.value); updateLibraryFilter('workflow', event.target.value); }} label="Workflow" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
+                      <MenuItem value="">All workflow</MenuItem><MenuItem value="available">Ready</MenuItem><MenuItem value="queued">Queued</MenuItem><MenuItem value="processing">Processing</MenuItem><MenuItem value="publishing">Publishing</MenuItem><MenuItem value="needs_review">Needs attention</MenuItem><MenuItem value="failed">Failed</MenuItem>
+                    </TextField>
+                  ) : null}
+                  {tab === 'library' ? (
+                    <TextField select value={attentionFilter} onChange={(event) => { setAttentionFilter(event.target.value); updateLibraryFilter('attention', event.target.value); }} label="Attention" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
+                      <MenuItem value="">All attention</MenuItem><MenuItem value="needs_review">Needs review</MenuItem><MenuItem value="publication_conflict">Publication conflict</MenuItem>
+                    </TextField>
+                  ) : null}
+                  {tab === 'library' ? (
                     <TextField
                       select
                       value={mediaArea}
@@ -224,8 +271,7 @@ export function AssetsPage() {
                       {mediaAreas.map((area) => <MenuItem key={area} value={area}>media/{area}</MenuItem>)}
                     </TextField>
                   ) : null}
-                  {tab !== 'reports' ? (
-                    <TextField
+                  <TextField
                       value={assetQuery}
                       onChange={(event) => setAssetQuery(event.target.value)}
                       placeholder="Search path, file, library, status"
@@ -238,25 +284,20 @@ export function AssetsPage() {
                           </InputAdornment>
                         ),
                       }}
-                    />
-                  ) : null}
+                  />
                 </Stack>
-                {tab !== 'reports' ? (
-                  <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent={{ xs: 'flex-start', sm: 'flex-end' }} useFlexGap>
+                <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent={{ xs: 'flex-start', sm: 'flex-end' }} useFlexGap>
                     {tab === 'unprocessed' ? (
                       <><Chip label={`${unprocessedCount} assets`} size="small" /><Chip label={formatBytes(safeArray(assets.data?.unprocessed).reduce((total, asset) => total + asset.sizeBytes, 0))} size="small" /></>
-                    ) : tab === 'archive' ? (
-                      <Chip label={`${filteredArchiveAssets.length}/${sumGroupFiles(areaGroups)} assets`} size="small" />
                     ) : (
                       <Chip label={`${filteredGroups.length}/${areaGroups.length} groups`} size="small" />
                     )}
-                    {tab !== 'unprocessed' ? <Chip label={`${tab === 'archive' ? filteredArchiveAssets.length : sumGroupFiles(filteredGroups)} files`} size="small" /> : null}
-                    {tab !== 'unprocessed' ? <Chip label={formatBytes(tab === 'archive' ? sumAssetBytes(filteredArchiveAssets) : sumGroupBytes(filteredGroups))} size="small" /> : null}
+                    {tab !== 'unprocessed' ? <Chip label={`${sumGroupFiles(filteredGroups)} files`} size="small" /> : null}
+                    {tab !== 'unprocessed' ? <Chip label={formatBytes(sumGroupBytes(filteredGroups))} size="small" /> : null}
                     <Chip label={`Last sync: ${formatDate(assets.data?.sync?.lastSyncedAt ?? '')}`} size="small" />
                     {(assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0} missing`} color="warning" size="small" /> : null}
                     {(assets.data?.sync?.missingHistorical ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingHistorical ?? 0} historical paths`} size="small" /> : null}
-                  </Stack>
-                ) : null}
+                </Stack>
               </Stack>
             </Stack>
 			{sourceGroups.length > 0 && tab === 'unprocessed' ? (
@@ -264,25 +305,17 @@ export function AssetsPage() {
 					{sourceGroups.map((group) => <Tab key={group.id} value={group.id} label={`${group.name} (${group.fileCount})`} />)}
 				</Tabs>
 			) : null}
-            {tab === 'converted' ? (
-              <Alert severity="info" sx={{ mt: 1.25 }}>
-                Converted assets can be inspected, moved to another library, or safely deleted and restored. Re-processing should start from Original Archive.
-              </Alert>
-            ) : null}
+            {tab === 'library' && libraryDecision === 'converted' ? <Alert severity="info" sx={{ mt: 1.25 }}>Converted is a Library provenance projection. Re-processing and original retention remain independent lifecycle evidence.</Alert> : null}
             {syncAssets.isSuccess ? (
               <Alert severity={syncAssets.data.reviewMatches > 0 ? 'warning' : 'success'} sx={{ mt: 1 }}>
                 Inventory synced. {syncAssets.data.reconciledFiles} relocated asset(s) reconciled automatically.
                 {syncAssets.data.reviewMatches > 0 ? ` ${syncAssets.data.reviewMatches} possible match(es) were sent to Review.` : ''}
               </Alert>
             ) : null}
-            {tab === 'archive' ? (
-              <Alert severity="info" sx={{ mt: 1 }}>
-                Archived originals are protected here. Recovery keeps converted files; permanent deletion requires an explicit irreversible-action confirmation.
-              </Alert>
-            ) : null}
+            {tab === 'library' && originalFilter === 'archived' ? <Alert severity="info" sx={{ mt: 1 }}>Archived originals are Library evidence. Recovery keeps the current Library publication and remains backend-authorized.</Alert> : null}
           </CardContent>
           {syncAssets.isError ? <Alert severity="warning" sx={{ m: 2 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
-          {tab === 'reports' ? (
+          {showEvidence ? (
             <AssetReportsPanel inventory={assets.data} />
 		  ) : tab === 'unprocessed' ? (
 			<AssetsErrorBoundary boundaryKey={`unprocessed-${selectedSourceGroup?.id ?? 'empty'}`}>
@@ -313,12 +346,10 @@ export function AssetsPage() {
                 assetCategories={assetCategories}
                 queueJobs={jobs.data ?? []}
                 runningSnapshotPaths={runningSnapshotPaths}
-                mode={tab}
+                mode={tab === 'library' && libraryDecision === 'converted' ? 'converted' : tab === 'library' && originalFilter === 'archived' ? 'archive' : tab}
                 query={assetQuery}
                 emptyLabel={
-                  tab === 'archive'
-                    ? 'No archived originals found in the inventory.'
-					: tab === 'library' ? 'No library asset groups found.' : 'No MVForge-converted asset groups found.'
+                  'No Library asset groups match the persisted filters.'
                 }
               />
             </AssetsErrorBoundary>
@@ -964,6 +995,8 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 	const [configureOpen, setConfigureOpen] = useState(false);
 	const [queuePlan, setQueuePlan] = useState<PreparedSelectionQueue | null>(null);
 	const [queueCommitResult, setQueueCommitResult] = useState<QueueSelectedAssetsResponse | null>(null);
+	const [queueAssetIds, setQueueAssetIds] = useState<number[]>([]);
+	const [queueMode, setQueueMode] = useState<'selected' | 'remaining'>('selected');
 	const [videoProfileId, setVideoProfileId] = useState(0);
 	const [audioProfileKey, setAudioProfileKey] = useState('__inherit__');
 	const [trackProfileKey, setTrackProfileKey] = useState('__inherit__');
@@ -982,6 +1015,7 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 	const selectedAssetsWithOpenJobs = selectedAssets.filter((asset) => assetHasOpenJob(asset, queueJobs));
 	const allSelectedAssetsHaveOpenJobs = selectedAssets.length > 0 && selectedAssetsWithOpenJobs.length === selectedAssets.length;
 	const selectedGroupHasOpenJob = fullySelectedGroups.some((group) => group.assetPaths.some((path) => path.assets.some((asset) => !asset.missing && assetHasOpenJob(asset, queueJobs))));
+	const remainingAssetIds = Array.from(new Set(fullySelectedGroups.flatMap((group) => group.assetPaths.flatMap((path) => path.assets).filter((asset) => !asset.missing && asset.id).map((asset) => asset.id as number))));
 
 	const saveSelectedConfiguration = useMutation({
 		mutationFn: async () => {
@@ -1008,8 +1042,12 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 	});
 
 	const prepareQueue = useMutation({
-		mutationFn: async () => {
-			return api.queueSelectedAssets({ assetIds: selectedAssets.map((asset) => asset.id as number), commit: false });
+		mutationFn: async (input: { assetIds: number[]; remaining: boolean }) => {
+			setQueueAssetIds(input.assetIds);
+			setQueueMode(input.remaining ? 'remaining' : 'selected');
+			return input.remaining
+				? api.queueRemainingPreview(input.assetIds)
+				: api.queueSelectedAssets({ assetIds: input.assetIds, commit: false });
 		},
 		onSuccess: (response) => { setQueueCommitResult(null); setQueuePlan(response); },
 	});
@@ -1017,7 +1055,9 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 	const createQueue = useMutation({
 		mutationFn: async () => {
 			if (!queuePlan?.summary.eligible) throw new Error('No selected assets are eligible for Queue.');
-			return api.queueSelectedAssets({ assetIds: queuePlan.results.filter((result) => result.outcome === 'eligible').map((result) => result.assetId), commit: true });
+			return queueMode === 'remaining'
+				? api.queueRemainingCommit(queueAssetIds)
+				: api.queueSelectedAssets({ assetIds: queueAssetIds, commit: true });
 		},
 		onSuccess: async (response) => {
 			await Promise.all([
@@ -1030,18 +1070,18 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 	});
 	const displayedQueueResult = queueCommitResult ?? queuePlan;
 	const queueReasonCount = (reason: string) => displayedQueueResult?.results.filter((result) => result.reason === reason).length ?? 0;
-	const closeQueueDialog = () => { setQueuePlan(null); setQueueCommitResult(null); };
+	const closeQueueDialog = () => { setQueuePlan(null); setQueueCommitResult(null); setQueueAssetIds([]); };
 
 	return <>
 		<Box sx={{ mt: 1.25, p: 1, border: 1, borderColor: 'primary.main', borderRadius: 1, bgcolor: 'action.selected', position: 'sticky', top: 8, zIndex: 2 }}>
 			<Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between" spacing={1}>
 				<Typography variant="body2">{countLabel(fullySelectedGroups.length, 'title')} selected · {countLabel(selectedAssets.length, 'asset')} · {formatBytes(selectedSize)}</Typography>
-				<Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Button size="small" variant="contained" startIcon={<PlaylistAddIcon />} onClick={() => prepareQueue.mutate()} disabled={prepareQueue.isPending || allSelectedAssetsHaveOpenJobs}>{prepareQueue.isPending ? 'Resolving…' : 'Queue selected'}</Button><Button size="small" variant="outlined" startIcon={<EditIcon />} disabled={!fullySelectedGroups.length || selectedGroupHasOpenJob} onClick={() => { setConfigurationFields(new Set()); setConfigureOpen(true); }}>Configure selected</Button><Button size="small" onClick={onClear}>Clear</Button></Stack>
+				<Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Button size="small" variant="contained" startIcon={<PlaylistAddIcon />} onClick={() => prepareQueue.mutate({ assetIds: selectedAssets.map((asset) => asset.id as number), remaining: false })} disabled={prepareQueue.isPending || allSelectedAssetsHaveOpenJobs}>{prepareQueue.isPending ? 'Resolving…' : 'Queue selected'}</Button><Button size="small" variant="outlined" startIcon={<PlaylistAddIcon />} onClick={() => prepareQueue.mutate({ assetIds: remainingAssetIds, remaining: true })} disabled={prepareQueue.isPending || !remainingAssetIds.length}>{prepareQueue.isPending ? 'Resolving…' : 'Queue Remaining'}</Button><Button size="small" variant="outlined" startIcon={<EditIcon />} disabled={!fullySelectedGroups.length || selectedGroupHasOpenJob} onClick={() => { setConfigurationFields(new Set()); setConfigureOpen(true); }}>Configure selected</Button><Button size="small" onClick={onClear}>Clear</Button></Stack>
 			</Stack>
 			{selectedAssetsWithOpenJobs.length ? <Alert severity="info" sx={{ mt: 1 }}>{countLabel(selectedAssetsWithOpenJobs.length, 'asset')} already locked by an active Queue job. Read-only details remain available.</Alert> : null}
 			{prepareQueue.isError ? <Alert severity="warning" sx={{ mt: 1 }}>{prepareQueue.error instanceof Error ? prepareQueue.error.message : 'Could not resolve the selected assets.'}</Alert> : null}
 		</Box>
-		<Dialog open={Boolean(queuePlan)} onClose={() => !createQueue.isPending && closeQueueDialog()} maxWidth="sm" fullWidth><DialogTitle>Queue selected titles</DialogTitle><DialogContent dividers>{displayedQueueResult ? <Stack spacing={1}><Typography>Titles: {displayedQueueResult.summary.titleCount}</Typography><Typography>Assets selected: {displayedQueueResult.summary.selected}</Typography><Typography>{queueCommitResult ? 'Queued' : 'Will be queued'}: {queueCommitResult ? displayedQueueResult.summary.queued : displayedQueueResult.summary.eligible}</Typography><Typography>Estimated input size: {formatBytes(displayedQueueResult.summary.sizeBytes)}</Typography><Typography>Already queued: {queueReasonCount('already_queued')}</Typography><Typography>Needs review: {queueReasonCount('needs_review')}</Typography><Typography>Missing: {queueReasonCount('missing')}</Typography><Typography>Blocked or incomplete configuration: {queueReasonCount('invalid_configuration') + queueReasonCount('not_found') + queueReasonCount('active_maintenance')}</Typography><Divider /><Typography variant="body2" color="text.secondary">Destination and profiles are resolved independently for every asset and frozen when its worker claims it.</Typography>{queueCommitResult ? <Alert severity={queueCommitResult.summary.skipped || queueCommitResult.summary.failed ? (queueCommitResult.summary.queued ? 'warning' : 'error') : 'success'}>{queueCommitResult.summary.queued} queued · {queueCommitResult.summary.skipped} skipped · {queueCommitResult.summary.failed} failed{queueCommitResult.results.filter((result) => result.outcome === 'skipped' || result.outcome === 'failed').map((result) => <Typography key={result.assetId} component="div" variant="body2">Asset {result.assetId}: {result.message ?? result.reason}</Typography>)}</Alert> : null}{createQueue.isError ? <Alert severity="warning">{createQueue.error instanceof Error ? createQueue.error.message : 'Could not queue the selection.'}</Alert> : null}</Stack> : null}</DialogContent><DialogActions><Button onClick={closeQueueDialog} disabled={createQueue.isPending}>{queueCommitResult ? 'Close' : 'Cancel'}</Button><Button variant="contained" onClick={() => createQueue.mutate()} disabled={createQueue.isPending || Boolean(queueCommitResult) || !queuePlan?.summary.eligible}>Queue {queuePlan?.summary.eligible ?? 0} assets</Button></DialogActions></Dialog>
+		<Dialog open={Boolean(queuePlan)} onClose={() => !createQueue.isPending && closeQueueDialog()} maxWidth="sm" fullWidth><DialogTitle>{queueMode === 'remaining' ? 'Queue Remaining titles' : 'Queue selected titles'}</DialogTitle><DialogContent dividers>{displayedQueueResult ? <Stack spacing={1}><Typography>Titles: {displayedQueueResult.summary.titleCount}</Typography><Typography>Assets selected: {displayedQueueResult.summary.selected}</Typography><Typography>Selectable: {displayedQueueResult.summary.selected} · Eligible: {displayedQueueResult.summary.eligible} · Skipped: {displayedQueueResult.summary.skipped} · Blocked: {displayedQueueResult.summary.failed}</Typography><Typography>{queueCommitResult ? 'Queued' : 'Will be queued'}: {queueCommitResult ? displayedQueueResult.summary.queued : displayedQueueResult.summary.eligible}</Typography><Typography>Estimated input size: {formatBytes(displayedQueueResult.summary.sizeBytes)}</Typography><Typography>Already queued: {queueReasonCount('already_queued')}</Typography><Typography>Needs review: {queueReasonCount('needs_review')}</Typography><Typography>Missing: {queueReasonCount('missing')}</Typography><Typography>Blocked or incomplete configuration: {queueReasonCount('invalid_configuration') + queueReasonCount('not_found') + queueReasonCount('active_maintenance')}</Typography><Divider /><Typography variant="body2" color="text.secondary">Queue is resolved independently for every asset. Commit resubmits the same complete Asset ID set and revalidates current eligibility.</Typography>{queueCommitResult ? <Alert severity={queueCommitResult.summary.skipped || queueCommitResult.summary.failed ? (queueCommitResult.summary.queued ? 'warning' : 'error') : 'success'}>{queueCommitResult.summary.queued} queued · {queueCommitResult.summary.skipped} skipped · {queueCommitResult.summary.failed} failed{queueCommitResult.results.filter((result) => result.outcome === 'skipped' || result.outcome === 'failed').map((result) => <Typography key={result.assetId} component="div" variant="body2">Asset {result.assetId}: {result.message ?? result.reason}</Typography>)}</Alert> : null}{createQueue.isError ? <Alert severity="warning">{createQueue.error instanceof Error ? createQueue.error.message : 'Could not queue the selection.'}</Alert> : null}</Stack> : null}</DialogContent><DialogActions><Button onClick={closeQueueDialog} disabled={createQueue.isPending}>{queueCommitResult ? 'Close' : 'Cancel'}</Button><Button variant="contained" onClick={() => createQueue.mutate()} disabled={createQueue.isPending || Boolean(queueCommitResult) || !queuePlan?.summary.eligible}>{queueMode === 'remaining' ? 'Queue Remaining' : 'Queue'} {queuePlan?.summary.eligible ?? 0} assets</Button></DialogActions></Dialog>
 		<Dialog open={configureOpen} onClose={() => !saveSelectedConfiguration.isPending && setConfigureOpen(false)} maxWidth="md" fullWidth><DialogTitle>Configure {fullySelectedGroups.length} selected title{fullySelectedGroups.length === 1 ? '' : 's'}</DialogTitle><DialogContent dividers><Stack spacing={2}><Alert severity="info">Checked dimensions are written independently to each Logical Group. Unchecked dimensions remain unchanged.</Alert>{([['video','Video'],['audio','Audio'],['tracks','Tracks'],['category','Category'],['destination','Destination']] as const).map(([field, text]) => <FormControlLabel key={field} control={<Checkbox checked={configurationFields.has(field)} onChange={() => setConfigurationFields((current) => { const next = new Set(current); if (next.has(field)) next.delete(field); else next.add(field); return next; })} />} label={`Change ${text}`} />)}<Grid container spacing={2}><Grid size={{ xs: 12, md: 4 }}><ProfileAutocomplete profiles={profiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={videoProfileId} onChange={setVideoProfileId} label="Video profile" allowNone allowInherit disabled={!configurationFields.has('video')} /></Grid><Grid size={{ xs: 12, md: 4 }}><AudioProfileAutocomplete profiles={audioProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={audioProfileKey} onChange={setAudioProfileKey} label="Audio profile" allowInherit disabled={!configurationFields.has('audio')} /></Grid><Grid size={{ xs: 12, md: 4 }}><TrackProfileAutocomplete profiles={trackProfiles.filter((profile) => profile.scope === 'path' && !profile.disabled && !profile.deletedAt)} value={trackProfileKey} onChange={setTrackProfileKey} label="Tracks profile" allowInherit disabled={!configurationFields.has('tracks')} /></Grid><Grid size={{ xs: 12, sm: 3 }}><TextField select fullWidth label="Category mode" value={categoryMode} onChange={(event) => setCategoryMode(event.target.value as typeof categoryMode)} disabled={!configurationFields.has('category')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid><Grid size={{ xs: 12, sm: 3 }}><AssetCategorySelect value={category} options={categories} onChange={setCategory} label="Category" disabled={!configurationFields.has('category') || categoryMode !== 'value'} /></Grid><Grid size={{ xs: 12, sm: 3 }}><TextField select fullWidth label="Destination mode" value={destinationMode} onChange={(event) => setDestinationMode(event.target.value as typeof destinationMode)} disabled={!configurationFields.has('destination')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField></Grid><Grid size={{ xs: 12, sm: 3 }}><LibraryAutocomplete libraries={libraries} value={destinationLibraryId} onChange={setDestinationLibraryId} label="Destination" disabled={!configurationFields.has('destination') || destinationMode !== 'value'} /></Grid></Grid>{saveSelectedConfiguration.isError ? <Alert severity="warning">{saveSelectedConfiguration.error instanceof Error ? saveSelectedConfiguration.error.message : 'Could not configure the selected titles.'}</Alert> : null}</Stack></DialogContent><DialogActions><Button onClick={() => setConfigureOpen(false)} disabled={saveSelectedConfiguration.isPending}>Cancel</Button><Button variant="contained" onClick={() => saveSelectedConfiguration.mutate()} disabled={saveSelectedConfiguration.isPending || !configurationFields.size || (configurationFields.has('category') && categoryMode === 'value' && !category) || (configurationFields.has('destination') && destinationMode === 'value' && !destinationLibraryId)}>Apply to selected titles</Button></DialogActions></Dialog>
 	</>;
 }
@@ -1686,12 +1726,15 @@ function AssetGroupRow({
     ? 0
     : selectedProfileId || pathVideoProfiles[0]?.id || 0;
   const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
-  const isConvertedGroup = group.status === 'converted';
-  const isPublishedAsIsGroup = group.status === 'published_as_is' || (groupAssets.length > 0 && groupAssets.every((asset) => asset.publicationMode === 'as_is'));
-  const isAcceptedGroup = group.status === 'accepted';
-  const isLibraryGroup = group.status === 'unverified' || group.status === 'accepted' || group.status === 'library' || group.status === 'published_as_is';
+  const lifecycleSummary = group.lifecycleSummary;
+  const memberProvenances = new Set(groupAssets.map((asset) => asset.lifecycle?.provenance ?? asset.status));
+  const isMixedGroup = memberProvenances.size > 1 || group.status === 'mixed' || (lifecycleSummary?.lifecycle.length ?? 0) > 1 || (lifecycleSummary?.validation.length ?? 0) > 1 || (lifecycleSummary?.publication.length ?? 0) > 1;
+  const isConvertedGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'converted' || asset.status === 'converted');
+  const isPublishedAsIsGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'published_as_is' || asset.publicationMode === 'as_is');
+  const isAcceptedGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'imported' || asset.status === 'accepted');
+  const isLibraryGroup = mode === 'library' || group.status === 'unverified' || group.status === 'accepted' || group.status === 'library' || group.status === 'published_as_is';
   const isArchiveGroup = mode === 'archive' || group.status === 'archive';
-  const isReadOnlyGroup = isConvertedGroup || isPublishedAsIsGroup || isAcceptedGroup || isArchiveGroup;
+  const isReadOnlyGroup = isMixedGroup || isConvertedGroup || isPublishedAsIsGroup || isAcceptedGroup || isArchiveGroup;
   const showConfidenceColumn = mode !== 'archive' && mode !== 'converted';
   const bulkSelectableAssets = isReadOnlyGroup && !isAcceptedGroup ? groupAssets.filter((asset) => !asset.missing) : [];
   const hasMultipleSelectableAssets = bulkSelectableAssets.length > 1;
@@ -2034,11 +2077,8 @@ function AssetGroupRow({
         <TableCell sx={{ display: { xs: 'none', sm: 'table-cell' } }}>{group.libraryName}</TableCell>
         <TableCell>
           <Stack spacing={0.75} alignItems="flex-start">
-            <Chip
-              label={groupAssets.every((asset) => asset.publicationMode === 'as_is') ? 'Published as-is' : statusLabel(group.status)}
-              color={groupAssets.every((asset) => asset.publicationMode === 'as_is') ? 'success' : statusColor(group.status)}
-              size="small"
-            />
+            <Chip label={isMixedGroup ? 'Mixed lifecycle' : isPublishedAsIsGroup ? 'Published as-is' : statusLabel(group.status)} color={isMixedGroup ? 'warning' : isPublishedAsIsGroup ? 'success' : statusColor(group.status)} size="small" />
+            {isMixedGroup ? <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>{(lifecycleSummary?.provenance ?? []).map((item) => <Chip key={`provenance-${item.value}`} label={`${item.count} ${lifecycleLabel(item.value)}`} size="small" variant="outlined" />)}{(lifecycleSummary?.lifecycle ?? []).map((item) => <Chip key={`lifecycle-${item.value}`} label={`${item.count} ${lifecycleLabel(item.value)}`} size="small" variant="outlined" />)}</Stack> : null}
             {groupReview.requiresReview ? <Chip label="Some need review" color="error" size="small" /> : null}
           </Stack>
         </TableCell>
@@ -2857,9 +2897,10 @@ function AssetRow({
     },
   });
   const isBlockedByReview = assetReview.requiresReview;
-  const isConverted = asset.status === 'converted';
-  const isPublishedAsIs = asset.status === 'published_as_is';
-  const isAccepted = asset.status === 'accepted';
+  const assetProvenance = asset.lifecycle?.provenance;
+  const isConverted = assetProvenance === 'converted' || (!assetProvenance && asset.status === 'converted');
+  const isPublishedAsIs = assetProvenance === 'published_as_is' || (!assetProvenance && asset.status === 'published_as_is');
+  const isAccepted = assetProvenance === 'imported' || (!assetProvenance && asset.status === 'accepted');
   const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is';
   const isArchive = mode === 'archive' || asset.status === 'archive';
   const canGenerateTestEncode = testEncodeEligibleAsset(asset, mode);
@@ -6582,20 +6623,35 @@ function safeArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
 }
 
-function filterAssetGroups(groups: AssetGroup[], query: string) {
+function lifecycleLabel(value: string) {
+  return value.replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function filterAssetGroups(groups: AssetGroup[], query: string, filters: { provenance?: string; validation?: string; original?: string; workflow?: string; attention?: string } = {}) {
   const cleanQuery = query.trim().toLowerCase();
-  if (!cleanQuery) {
-    return groups;
-  }
-  return groups.filter((group) => {
-    const values = [
-      group.path,
-      group.relativePath,
-      group.libraryName,
-      group.status,
-      ...safeArray(group.assets).flatMap((asset) => [asset.fileName, asset.path, asset.relativePath, asset.status]),
-    ];
-    return values.some((value) => value.toLowerCase().includes(cleanQuery));
+  if (!cleanQuery && !filters.provenance && !filters.validation && !filters.original && !filters.workflow && !filters.attention) return groups;
+  return groups.flatMap((group) => {
+    const matchingAssets = safeArray(group.assets).filter((asset) => {
+      const lifecycle = asset.lifecycle;
+      const provenance = lifecycle?.provenance ?? (asset.status === 'converted' ? 'converted' : asset.status === 'published_as_is' ? 'published_as_is' : asset.status === 'accepted' ? 'imported' : 'legacy_or_unknown');
+      const validation = lifecycle?.validation ?? 'unavailable';
+      const original = lifecycle?.original ?? 'unknown';
+      const workflow = lifecycle?.lifecycle ?? (asset.status === 'unprocessed' ? 'available' : 'unknown');
+      if (filters.provenance && provenance !== filters.provenance) return false;
+      if (filters.validation && validation !== filters.validation) return false;
+      if (filters.original && original !== filters.original) return false;
+      if (filters.workflow && workflow !== filters.workflow) return false;
+      if (filters.attention && !(lifecycle?.attention ?? []).includes(filters.attention)) return false;
+      if (!cleanQuery) return true;
+      const values = [asset.fileName, asset.path, asset.relativePath, asset.status, lifecycle?.lifecycle, lifecycle?.provenance, lifecycle?.validation, lifecycle?.publication, lifecycle?.original, ...(lifecycle?.attention ?? [])];
+      return values.some((value) => (value ?? '').toLowerCase().includes(cleanQuery));
+    });
+    if (!matchingAssets.length && (filters.provenance || filters.validation || filters.original || filters.workflow || filters.attention)) return [];
+    if (!matchingAssets.length) {
+      const groupValues = [group.path, group.relativePath, group.libraryName, group.status];
+      if (!cleanQuery || !groupValues.some((value) => (value ?? '').toLowerCase().includes(cleanQuery))) return [];
+    }
+    return [{ ...group, assets: matchingAssets }];
   });
 }
 
@@ -6923,6 +6979,21 @@ function profileAssignmentSource(job: QueueJob | undefined, mediaType: 'video' |
 }
 
 function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueue: boolean): { label: string; color: 'default' | 'primary' | 'success' | 'warning' | 'error' } {
+  if (asset.lifecycle) {
+    const state = asset.lifecycle.lifecycle;
+    if (state === 'published') return { label: 'Published', color: 'success' };
+    if (state === 'queued') return { label: 'QUEUED', color: 'primary' };
+    if (state === 'preparing') return { label: 'PREPARING', color: 'primary' };
+    if (state === 'processing') return { label: 'PROCESSING', color: 'primary' };
+    if (state === 'validating') return { label: 'VALIDATING', color: 'primary' };
+    if (state === 'publishing') return { label: 'PUBLISHING', color: 'primary' };
+    if (state === 'failed') return { label: 'Failed', color: 'error' };
+    if (state === 'needs_review') return { label: 'Needs review', color: 'error' };
+    if (asset.lifecycle.provenance === 'converted') return { label: 'Converted', color: 'success' };
+    if (asset.lifecycle.provenance === 'published_as_is') return { label: 'Published as-is', color: 'success' };
+    if (asset.lifecycle.provenance === 'imported') return { label: 'Imported', color: 'success' };
+    return { label: 'Available', color: 'default' };
+  }
   if (asset.status === 'archive') {
     return { label: 'Archive', color: 'default' };
   }

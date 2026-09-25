@@ -582,6 +582,34 @@ func TestAssetGroupsPreserveImmediateContainingSubpath(t *testing.T) {
 	}
 }
 
+func TestAssetGroupsSummarizeMixedLifecycleMembersWithoutGroupAuthority(t *testing.T) {
+	assets := []Asset{
+		{ID: 1, LibraryID: 7, LibraryName: "Anime", GroupPath: "Series/Season 2", Path: "/library/Series/Season 2/E01.mkv", Status: "converted", Lifecycle: &AssetLifecycleProjection{Lifecycle: AssetLifecyclePublished, Provenance: AssetProvenanceConverted, Validation: AssetValidationPassed, Publication: AssetPublicationPublished}},
+		{ID: 2, LibraryID: 7, LibraryName: "Anime", GroupPath: "Series/Season 2", Path: "/library/Series/Season 2/E02.mkv", Status: "published_as_is", Lifecycle: &AssetLifecycleProjection{Lifecycle: AssetLifecyclePublished, Provenance: AssetProvenancePublishedAsIs, Validation: AssetValidationUnavailable, Publication: AssetPublicationPublished}},
+		{ID: 3, LibraryID: 7, LibraryName: "Anime", GroupPath: "Series/Season 2", Path: "/library/Series/Season 2/E03.mkv", Status: "library", Lifecycle: &AssetLifecycleProjection{Lifecycle: AssetLifecycleQueued, Provenance: AssetProvenanceLegacyOrUnknown, Validation: AssetValidationPending, Publication: AssetPublicationPending}},
+		{ID: 4, LibraryID: 7, LibraryName: "Anime", GroupPath: "Series/Season 2", Path: "/library/Series/Season 2/E04.mkv", Status: "library", Lifecycle: &AssetLifecycleProjection{Lifecycle: AssetLifecycleNeedsReview, Provenance: AssetProvenanceLegacyOrUnknown, Validation: AssetValidationReviewRequired, Publication: AssetPublicationBlocked, Attention: []string{"needs_review"}}},
+		{ID: 5, LibraryID: 7, LibraryName: "Anime", GroupPath: "Series/Season 2", Path: "/library/Series/Season 2/E05.mkv", Status: "library", Lifecycle: &AssetLifecycleProjection{Lifecycle: AssetLifecycleFailed, Provenance: AssetProvenanceLegacyOrUnknown, Validation: AssetValidationFailed, Publication: AssetPublicationFailed}},
+	}
+
+	groups := groupAssets(assets, nil, nil)
+	if len(groups) != 1 {
+		t.Fatalf("mixed members split into %d groups, want one: %#v", len(groups), groups)
+	}
+	group := groups[0]
+	if group.Status != "mixed" {
+		t.Fatalf("group status = %q, want compatibility-only mixed marker", group.Status)
+	}
+	if group.LifecycleSummary.Total != 5 {
+		t.Fatalf("summary total = %d, want 5", group.LifecycleSummary.Total)
+	}
+	if len(group.LifecycleSummary.Provenance) != 3 || len(group.LifecycleSummary.Lifecycle) != 4 {
+		t.Fatalf("unexpected mixed summary: %#v", group.LifecycleSummary)
+	}
+	if group.Assets[0].Lifecycle.Provenance != AssetProvenanceConverted || group.Assets[1].Lifecycle.Provenance != AssetProvenancePublishedAsIs {
+		t.Fatalf("member lifecycle authority was not preserved: %#v", group.Assets)
+	}
+}
+
 func TestRemoveMissingDeletesOnlyAbsentInventoryRecord(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:remove-missing-asset?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
