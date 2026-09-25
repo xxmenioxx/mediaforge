@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -10,7 +12,6 @@ import (
 const (
 	runtimeSnapshotRetentionAge       = 7 * 24 * time.Hour
 	runtimeSnapshotRetentionBatchSize = 100
-	runtimeSnapshotReferenceBatchSize = 500
 )
 
 // RuntimeSnapshotRetentionReport describes the database-only part of a
@@ -26,10 +27,14 @@ type RuntimeSnapshotRetentionReport struct {
 	Errors                 []string `json:"errors"`
 }
 
-// RuntimeSnapshotReferenceProvider is a canonical source of immutable
-// RuntimeSnapshot provenance references. New provenance owners can be added
-// to the registry without changing pruning or deletion logic.
-type RuntimeSnapshotReferenceProvider func(*gorm.DB) ([]uint, error)
+// RuntimeSnapshotReferenceProvider describes one canonical provenance owner.
+// The registry turns these indexed foreign-key-like columns into EXISTS
+// predicates, so housekeeping never materializes the owner's full history in
+// Go memory. New provenance owners belong here, not in pruning code.
+type RuntimeSnapshotReferenceProvider struct {
+	Table  string
+	Column string
+}
 
 // RuntimeSnapshotReferenceRegistry centralizes all reference discovery used by
 // retention. The default registry covers every plan and Test Encode row,
@@ -40,16 +45,16 @@ type RuntimeSnapshotReferenceRegistry struct {
 
 func NewRuntimeSnapshotReferenceRegistry(extra ...RuntimeSnapshotReferenceProvider) RuntimeSnapshotReferenceRegistry {
 	providers := []RuntimeSnapshotReferenceProvider{
-		executionPlanRuntimeSnapshotReferences,
-		testEncodeRuntimeSnapshotReferences,
+		{Table: "execution_plans", Column: "runtime_snapshot_id"},
+		{Table: "test_encodes", Column: "runtime_snapshot_id"},
 	}
 	providers = append(providers, extra...)
 	return RuntimeSnapshotReferenceRegistry{providers: providers}
 }
 
-// ReferencedRuntimeSnapshotIDs returns the distinct immutable snapshot IDs
-// protected from pruning. It is the only reference-discovery boundary used by
-// runtime snapshot retention.
+// ReferencedRuntimeSnapshotIDs is a compatibility/debugging helper for
+// callers that explicitly need the complete set. Housekeeping does not call
+// it; retention uses indexed candidate-scoped EXISTS queries instead.
 func ReferencedRuntimeSnapshotIDs(db *gorm.DB) (map[uint]struct{}, error) {
 	return NewRuntimeSnapshotReferenceRegistry().IDs(db)
 }
@@ -57,10 +62,13 @@ func ReferencedRuntimeSnapshotIDs(db *gorm.DB) (map[uint]struct{}, error) {
 func (r RuntimeSnapshotReferenceRegistry) IDs(db *gorm.DB) (map[uint]struct{}, error) {
 	ids := make(map[uint]struct{})
 	for _, provider := range r.providers {
-		if provider == nil {
+		if provider.Table == "" || provider.Column == "" || !db.Migrator().HasTable(provider.Table) {
 			continue
 		}
-		provided, err := provider(db)
+		var provided []uint
+		err := db.Table(provider.Table).
+			Where(provider.Column+" IS NOT NULL").
+			Pluck(provider.Column, &provided).Error
 		if err != nil {
 			return nil, err
 		}
@@ -73,38 +81,38 @@ func (r RuntimeSnapshotReferenceRegistry) IDs(db *gorm.DB) (map[uint]struct{}, e
 	return ids, nil
 }
 
-func executionPlanRuntimeSnapshotReferences(db *gorm.DB) ([]uint, error) {
-	if !db.Migrator().HasTable(&models.ExecutionPlan{}) {
-		return nil, nil
+func (r RuntimeSnapshotReferenceRegistry) referencedPredicate(db *gorm.DB, snapshotAlias string) string {
+	clauses := make([]string, 0, len(r.providers))
+	for index, provider := range r.providers {
+		if provider.Table == "" || provider.Column == "" || !db.Migrator().HasTable(provider.Table) {
+			continue
+		}
+		alias := fmt.Sprintf("runtime_ref_%d", index)
+		clauses = append(clauses, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM %s AS %s WHERE %s.%s = %s.id)",
+			provider.Table, alias, alias, provider.Column, snapshotAlias,
+		))
 	}
-	var plans []struct {
-		RuntimeSnapshotID uint `gorm:"column:runtime_snapshot_id"`
+	if len(clauses) == 0 {
+		return "0 = 1"
 	}
-	err := db.Table("execution_plans").
-		Where("runtime_snapshot_id IS NOT NULL").
-		Find(&plans).Error
-	ids := make([]uint, 0, len(plans))
-	for _, plan := range plans {
-		ids = append(ids, plan.RuntimeSnapshotID)
-	}
-	return ids, err
+	return "(" + strings.Join(clauses, " OR ") + ")"
 }
 
-func testEncodeRuntimeSnapshotReferences(db *gorm.DB) ([]uint, error) {
-	if !db.Migrator().HasTable(&models.TestEncode{}) {
-		return nil, nil
+func (r RuntimeSnapshotReferenceRegistry) unreferencedPredicate(db *gorm.DB, snapshotAlias string) string {
+	return "NOT " + r.referencedPredicate(db, snapshotAlias)
+}
+
+func (r RuntimeSnapshotReferenceRegistry) isReferenced(db *gorm.DB, snapshotID uint) (bool, error) {
+	var exists int
+	query := db.Model(&models.RuntimeSnapshot{}).
+		Select("1").
+		Where("id = ?", snapshotID).
+		Where(r.referencedPredicate(db, "runtime_snapshots"))
+	if err := query.Limit(1).Scan(&exists).Error; err != nil {
+		return false, err
 	}
-	var encodes []struct {
-		RuntimeSnapshotID uint `gorm:"column:runtime_snapshot_id"`
-	}
-	err := db.Table("test_encodes").
-		Where("runtime_snapshot_id IS NOT NULL").
-		Find(&encodes).Error
-	ids := make([]uint, 0, len(encodes))
-	for _, encode := range encodes {
-		ids = append(ids, encode.RuntimeSnapshotID)
-	}
-	return ids, err
+	return exists == 1, nil
 }
 
 type runtimeSnapshotRetentionCandidate struct {
@@ -130,11 +138,6 @@ func resolveRuntimeSnapshotRetention(db *gorm.DB, now time.Time, registry Runtim
 		return plan, nil
 	}
 
-	references, err := registry.IDs(db)
-	if err != nil {
-		return plan, err
-	}
-
 	var latest struct {
 		ID uint
 	}
@@ -151,7 +154,8 @@ func resolveRuntimeSnapshotRetention(db *gorm.DB, now time.Time, registry Runtim
 		plan.LatestKept = 1
 	}
 
-	plan.ReferencedKept, err = countReferencedRuntimeSnapshots(db, references, "")
+	var err error
+	plan.ReferencedKept, err = countReferencedRuntimeSnapshots(db, registry, "")
 	if err != nil {
 		return plan, err
 	}
@@ -163,13 +167,13 @@ func resolveRuntimeSnapshotRetention(db *gorm.DB, now time.Time, registry Runtim
 		Count(&recentUnreferenced).Error; err != nil {
 		return plan, err
 	}
-	recentReferenced, err := countReferencedRuntimeSnapshots(db, references, "detected_at > ?", cutoff)
+	recentReferenced, err := countReferencedRuntimeSnapshots(db, registry, "detected_at > ?", cutoff)
 	if err != nil {
 		return plan, err
 	}
 	plan.RecentUnreferencedKept = maxInt64(0, recentUnreferenced-recentReferenced)
 
-	plan.candidates, err = findRuntimeSnapshotCandidates(db, references, latest.ID, cutoff)
+	plan.candidates, err = findRuntimeSnapshotCandidates(db, registry, latest.ID, cutoff)
 	if err != nil {
 		return plan, err
 	}
@@ -177,66 +181,27 @@ func resolveRuntimeSnapshotRetention(db *gorm.DB, now time.Time, registry Runtim
 	return plan, nil
 }
 
-func countReferencedRuntimeSnapshots(db *gorm.DB, references map[uint]struct{}, condition string, args ...any) (int64, error) {
-	if len(references) == 0 {
-		return 0, nil
-	}
-	ids := make([]uint, 0, len(references))
-	for id := range references {
-		ids = append(ids, id)
-	}
+func countReferencedRuntimeSnapshots(db *gorm.DB, registry RuntimeSnapshotReferenceRegistry, condition string, args ...any) (int64, error) {
 	var count int64
-	for start := 0; start < len(ids); start += runtimeSnapshotReferenceBatchSize {
-		end := minInt(start+runtimeSnapshotReferenceBatchSize, len(ids))
-		query := db.Model(&models.RuntimeSnapshot{}).Where("id IN ?", ids[start:end])
-		if condition != "" {
-			query = query.Where(condition, args...)
-		}
-		var batch int64
-		if err := query.Count(&batch).Error; err != nil {
-			return 0, err
-		}
-		count += batch
+	query := db.Model(&models.RuntimeSnapshot{}).Where(registry.referencedPredicate(db, "runtime_snapshots"))
+	if condition != "" {
+		query = query.Where(condition, args...)
 	}
-	return count, nil
+	return count, query.Count(&count).Error
 }
 
-func findRuntimeSnapshotCandidates(db *gorm.DB, references map[uint]struct{}, latestID uint, cutoff time.Time) ([]runtimeSnapshotRetentionCandidate, error) {
+func findRuntimeSnapshotCandidates(db *gorm.DB, registry RuntimeSnapshotReferenceRegistry, latestID uint, cutoff time.Time) ([]runtimeSnapshotRetentionCandidate, error) {
 	candidates := make([]runtimeSnapshotRetentionCandidate, 0, runtimeSnapshotRetentionBatchSize)
-	var lastDetectedAt time.Time
-	var lastID uint
-	for len(candidates) < runtimeSnapshotRetentionBatchSize {
-		var rows []runtimeSnapshotRetentionCandidate
-		query := db.Model(&models.RuntimeSnapshot{}).
-			Select("id, detected_at").
-			Where("detected_at <= ?", cutoff)
-		if !lastDetectedAt.IsZero() {
-			query = query.Where("(detected_at > ? OR (detected_at = ? AND id > ?))", lastDetectedAt, lastDetectedAt, lastID)
-		}
-		if err := query.Order("detected_at ASC").Order("id ASC").Limit(runtimeSnapshotReferenceBatchSize).Find(&rows).Error; err != nil {
-			return nil, err
-		}
-		if len(rows) == 0 {
-			break
-		}
-		for _, row := range rows {
-			lastDetectedAt = row.DetectedAt
-			lastID = row.ID
-			if row.ID == latestID {
-				continue
-			}
-			if _, referenced := references[row.ID]; referenced {
-				continue
-			}
-			candidates = append(candidates, row)
-			if len(candidates) == runtimeSnapshotRetentionBatchSize {
-				break
-			}
-		}
-		if len(rows) < runtimeSnapshotReferenceBatchSize {
-			break
-		}
+	var rows []runtimeSnapshotRetentionCandidate
+	query := db.Model(&models.RuntimeSnapshot{}).
+		Select("id, detected_at").
+		Where("detected_at <= ?", cutoff).
+		Where("id <> ?", latestID).
+		Where(registry.unreferencedPredicate(db, "runtime_snapshots"))
+	if err := query.Order("detected_at ASC").Order("id ASC").Limit(runtimeSnapshotRetentionBatchSize).Find(&rows).Error; err != nil {
+		return nil, err
 	}
+	candidates = append(candidates, rows...)
 	return candidates, nil
 }
 
@@ -256,20 +221,20 @@ func pruneRuntimeSnapshots(db *gorm.DB, now time.Time, dryRun bool) (RuntimeSnap
 		if err != nil {
 			return err
 		}
-		references, err := registry.IDs(tx)
-		if err != nil {
-			return err
-		}
-		latestID, err := newestRuntimeSnapshotID(tx)
-		if err != nil {
-			return err
-		}
 		cutoff := now.Add(-runtimeSnapshotRetentionAge)
 		for _, candidate := range plan.candidates {
+			latestID, err := newestRuntimeSnapshotID(tx)
+			if err != nil {
+				return err
+			}
 			if candidate.ID == latestID {
 				continue
 			}
-			if _, referenced := references[candidate.ID]; referenced {
+			referenced, err := registry.isReferenced(tx, candidate.ID)
+			if err != nil {
+				return err
+			}
+			if referenced {
 				continue
 			}
 			result := tx.Where("id = ? AND detected_at <= ?", candidate.ID, cutoff).Delete(&models.RuntimeSnapshot{})

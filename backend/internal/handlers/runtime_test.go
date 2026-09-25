@@ -24,6 +24,7 @@ func TestRuntimeGetReturnsLiveStateWithoutAuditIdentity(t *testing.T) {
 	state := models.RuntimeState{
 		SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(),
 		OS: "linux", Architecture: "amd64", StableFingerprint: "runtime-stable-v1:test", FingerprintVersion: "v1",
+		MetricCapabilities: models.JSONMap{"runtimeCapabilityIdentity": "metric-runtime-v1"},
 	}
 	if err := db.Create(&state).Error; err != nil {
 		t.Fatal(err)
@@ -43,6 +44,10 @@ func TestRuntimeGetReturnsLiveStateWithoutAuditIdentity(t *testing.T) {
 	}
 	if body["stateKind"] != "live" || body["stableFingerprint"] != state.StableFingerprint {
 		t.Fatalf("unexpected live provenance: %#v", body)
+	}
+	metricCapabilities, ok := body["metricCapabilities"].(map[string]any)
+	if !ok || metricCapabilities["runtimeCapabilityIdentity"] != "metric-runtime-v1" {
+		t.Fatalf("live response lost metric capabilities: %#v", body["metricCapabilities"])
 	}
 	if _, exists := body["auditSnapshotId"]; exists {
 		t.Fatalf("normal live GET exposed audit identity: %#v", body)

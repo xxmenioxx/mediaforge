@@ -189,16 +189,14 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 		return err
 	}
 	runtimeEncoders := models.JSONMap{}
-	if snapshot, runtimeErr := freezeExecutionPlanRuntime(db, plan); runtimeErr == nil {
-		plan.RuntimeProfile = snapshot.SelectedProfile
-		runtimeEncoders = snapshot.Encoders
-		plan.DecisionSources["runtimeProfile"] = "runtime_snapshot"
-		plan.DecisionReasons = append(plan.DecisionReasons, snapshot.SelectionReasons...)
-	} else {
-		plan.RuntimeProfile = "desktop_safe"
-		plan.DecisionSources["runtimeProfile"] = "safe_fallback"
-		plan.Warnings = append(plan.Warnings, "No runtime snapshot was available; desktop_safe policy was selected")
+	snapshot, runtimeErr := freezeExecutionPlanRuntime(db, plan)
+	if runtimeErr != nil {
+		return fmt.Errorf("freeze execution-plan runtime provenance: %w", runtimeErr)
 	}
+	plan.RuntimeProfile = snapshot.SelectedProfile
+	runtimeEncoders = snapshot.Encoders
+	plan.DecisionSources["runtimeProfile"] = "runtime_snapshot"
+	plan.DecisionReasons = append(plan.DecisionReasons, snapshot.SelectionReasons...)
 	encoderFailure := ""
 	selectedCapability := capabilities.EncoderCapability{}
 	for _, candidate := range uniqueStrings(append([]string{profile.PreferredEncoder}, []string(profile.AllowedEncoders)...)) {

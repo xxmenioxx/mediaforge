@@ -114,6 +114,80 @@ func TestRepeatedReviewEvaluationReusesPlanRuntimeSnapshot(t *testing.T) {
 	}
 }
 
+func TestReviewPlanRuntimeFreezeFailsClosedAndRetriesIdempotently(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:review-plan-freeze-failure?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.QueueJob{}, &models.ExecutionPlan{}, &models.AppSetting{}, &models.RuntimeSnapshot{}, &models.RuntimeState{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+		t.Fatal(err)
+	}
+	inputPath := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(inputPath, make([]byte, 10_000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{Name: "Movies", SourcePath: filepath.Dir(inputPath), DestinationPath: "/media/library"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile := executionPlanTestProfile(1, 25)
+	snapshot, err := CaptureProfileSnapshot(profile, time.Now(), "queue_create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: inputPath, LibraryID: library.ID, ProfileID: profile.ID, ProfileVersion: 1, ProfileSnapshot: snapshot, Priority: 1, Status: "queued"}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan, err := CreatePendingExecutionPlan(db, &job, "review test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialStatus := plan.Status
+	if err := EvaluateReviewPlan(db, &plan); err == nil {
+		t.Fatal("expected runtime freeze failure when RuntimeState is unavailable")
+	}
+	if plan.RuntimeSnapshotID != nil {
+		t.Fatalf("failed runtime freeze bound a snapshot: %v", *plan.RuntimeSnapshotID)
+	}
+	if plan.Status != initialStatus || plan.RuntimeProfile == "desktop_safe" {
+		t.Fatalf("failed runtime freeze advanced plan with fallback state: status=%q profile=%q", plan.Status, plan.RuntimeProfile)
+	}
+	var persisted models.ExecutionPlan
+	if err := db.First(&persisted, plan.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.RuntimeSnapshotID != nil || persisted.Status != initialStatus {
+		t.Fatalf("failed runtime freeze changed persisted plan: %#v", persisted)
+	}
+
+	seedReviewRuntime(t, db)
+	if err := EvaluateReviewPlan(db, &plan); err != nil {
+		t.Fatalf("retry after runtime state became available failed: %v", err)
+	}
+	if plan.RuntimeSnapshotID == nil {
+		t.Fatal("successful retry did not bind runtime provenance")
+	}
+	boundID := *plan.RuntimeSnapshotID
+	var countAfterRetry int64
+	if err := db.Model(&models.RuntimeSnapshot{}).Count(&countAfterRetry).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := EvaluateReviewPlan(db, &plan); err != nil {
+		t.Fatalf("repeated retry evaluation failed: %v", err)
+	}
+	if plan.RuntimeSnapshotID == nil || *plan.RuntimeSnapshotID != boundID {
+		t.Fatalf("repeated evaluation changed runtime provenance: got=%v want=%d", plan.RuntimeSnapshotID, boundID)
+	}
+	var countAfterRepeat int64
+	if err := db.Model(&models.RuntimeSnapshot{}).Count(&countAfterRepeat).Error; err != nil {
+		t.Fatal(err)
+	}
+	if countAfterRepeat != countAfterRetry {
+		t.Fatalf("repeated evaluation captured another runtime snapshot: before=%d after=%d", countAfterRetry, countAfterRepeat)
+	}
+}
+
 func TestManualReviewCanRejectAndApproveActivePlan(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:manual-review?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

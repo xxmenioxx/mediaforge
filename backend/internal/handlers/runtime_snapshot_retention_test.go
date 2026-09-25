@@ -164,6 +164,39 @@ func TestRuntimeSnapshotRetentionUsesSevenDayAgeAndBoundedBatches(t *testing.T) 
 			t.Fatalf("newest snapshot was deleted: %v", err)
 		}
 	})
+
+	t.Run("large reference history stays database-scoped and bounded", func(t *testing.T) {
+		db := openRuntimeSnapshotRetentionDB(t, &models.RuntimeSnapshot{}, &models.ExecutionPlan{}, &models.TestEncode{})
+		snapshots := make([]models.RuntimeSnapshot, 600)
+		for i := range snapshots {
+			snapshots[i] = models.RuntimeSnapshot{DetectedAt: now.Add(-runtimeSnapshotRetentionAge - time.Duration(600-i)*time.Minute)}
+			if err := db.Create(&snapshots[i]).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i := 0; i < 500; i++ {
+			if err := db.Create(&models.ExecutionPlan{JobID: uint(i + 1), Version: 1, Status: "waiting", RuntimeSnapshotID: &snapshots[i].ID}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		latest := models.RuntimeSnapshot{DetectedAt: now}
+		if err := db.Create(&latest).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		report, err := pruneRuntimeSnapshots(db, now, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.PruneCandidates != runtimeSnapshotRetentionBatchSize || report.Deleted != runtimeSnapshotRetentionBatchSize {
+			t.Fatalf("large history exceeded bounded batch: %#v", report)
+		}
+		for i := 0; i < 500; i++ {
+			if err := db.First(&models.RuntimeSnapshot{}, snapshots[i].ID).Error; err != nil {
+				t.Fatalf("referenced snapshot %d was deleted: %v", snapshots[i].ID, err)
+			}
+		}
+	})
 }
 
 func TestRuntimeSnapshotRetentionRechecksReferencesAfterPreview(t *testing.T) {

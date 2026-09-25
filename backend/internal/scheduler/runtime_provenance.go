@@ -103,7 +103,7 @@ func runtimeSnapshotFromCurrentState(state models.RuntimeState) models.RuntimeSn
 		TotalMemoryBytes: state.TotalMemoryBytes, AvailableMemoryBytes: state.AvailableMemoryBytes,
 		BatteryPresent: state.BatteryPresent, BatteryPercent: state.BatteryPercent,
 		PowerSource: state.PowerSource, OnBattery: state.OnBattery, Disks: state.Disks,
-		Encoders: state.Encoders, RecommendedProfile: state.RecommendedProfile,
+		Encoders: state.Encoders, MetricCapabilities: state.MetricCapabilities, RecommendedProfile: state.RecommendedProfile,
 		SelectedProfile: state.SelectedProfile, PreferredProfile: state.PreferredProfile,
 		FallbackProfile: state.FallbackProfile, AppliedOverrides: state.AppliedOverrides,
 		EffectivePolicy: state.EffectivePolicy, SelectionReasons: state.SelectionReasons,

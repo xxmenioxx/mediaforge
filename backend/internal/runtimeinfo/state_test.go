@@ -39,6 +39,13 @@ func testRuntimeState() models.RuntimeState {
 				"reason":      "probe succeeded",
 			},
 		},
+		MetricCapabilities: models.JSONMap{
+			"schemaVersion":             "metric-capability-v1",
+			"runtimeCapabilityIdentity": "metric-runtime-v1",
+			"metrics": models.JSONList{
+				models.JSONMap{"metric": "VMAF", "availability": "available", "reason": ""},
+			},
+		},
 		RecommendedProfile: "desktop_balanced", SelectedProfile: "desktop_balanced",
 		PreferredProfile: "auto", FallbackProfile: "desktop_safe",
 		AppliedOverrides: models.JSONList{"maxVideoJobs", "minFreeRamGb"},
@@ -59,6 +66,13 @@ func TestRuntimeStableFingerprintIsDeterministicAndExcludesVolatileInputs(t *tes
 			"testedModes": models.JSONMap{"qsvIcqMain10": true}, "usable": true, "listed": true,
 		},
 	}
+	second.MetricCapabilities = models.JSONMap{
+		"schemaVersion":             "metric-capability-v1",
+		"runtimeCapabilityIdentity": "metric-runtime-v1",
+		"metrics": models.JSONList{
+			models.JSONMap{"metric": "VMAF", "availability": "unavailable", "reason": "FFmpeg runtime probe failed"},
+		},
+	}
 	first.CPULoad1, first.AvailableMemoryBytes = 0.1, 12<<30
 	first.GPUUsageAvailable, first.GPUUsagePercent, first.GPUMetricSource = true, 75, "drm_fdinfo"
 	first.BatteryPercent, first.PowerSource, first.OnBattery = 90, "ac", false
@@ -73,6 +87,20 @@ func TestRuntimeStableFingerprintIsDeterministicAndExcludesVolatileInputs(t *tes
 
 	if got, want := RuntimeStableFingerprint(first), RuntimeStableFingerprint(second); got != want {
 		t.Fatalf("volatile or map-order changes altered fingerprint: %s != %s", got, want)
+	}
+
+	batteryPresentChanged := first
+	batteryPresentChanged.BatteryPresent = true
+	if RuntimeStableFingerprint(first) == RuntimeStableFingerprint(batteryPresentChanged) {
+		t.Fatal("stable battery-presence change did not alter fingerprint")
+	}
+
+	volatileBatteryChanged := first
+	volatileBatteryChanged.BatteryPercent = 1
+	volatileBatteryChanged.PowerSource = "battery"
+	volatileBatteryChanged.OnBattery = true
+	if RuntimeStableFingerprint(first) != RuntimeStableFingerprint(volatileBatteryChanged) {
+		t.Fatal("volatile battery telemetry altered fingerprint")
 	}
 
 	second.Encoders["hevc_qsv"].(models.JSONMap)["usable"] = false
@@ -124,6 +152,13 @@ func TestUpsertDetectedStateCreatesOneTransitionPerStableChange(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("transition snapshot count=%d want 1", count)
 	}
+	var snapshot models.RuntimeSnapshot
+	if err := db.Order("id desc").First(&snapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.MetricCapabilities["runtimeCapabilityIdentity"] != "metric-runtime-v1" {
+		t.Fatalf("transition snapshot lost metric capabilities: %#v", snapshot.MetricCapabilities)
+	}
 
 	changed.DetectedAt = changed.DetectedAt.Add(time.Minute)
 	if _, transition, err = UpsertDetectedState(db, changed); err != nil || transition != nil {
@@ -150,7 +185,9 @@ func TestUpsertDetectedStateCreatesOneTransitionPerStableChange(t *testing.T) {
 func TestInitializeLegacyStateUsesNewestSnapshotWithoutDeletingHistory(t *testing.T) {
 	db := openRuntimeStateTestDB(t)
 	older := models.RuntimeSnapshot{ID: 0, DetectedAt: time.Unix(100, 0), OS: "linux", Architecture: "amd64", CPUCores: 2}
-	newer := models.RuntimeSnapshot{DetectedAt: time.Unix(200, 0), OS: "linux", Architecture: "arm64", CPUCores: 8, SelectedProfile: "nas_balanced"}
+	newer := models.RuntimeSnapshot{DetectedAt: time.Unix(200, 0), OS: "linux", Architecture: "arm64", CPUCores: 8, SelectedProfile: "nas_balanced", MetricCapabilities: models.JSONMap{
+		"schemaVersion": "metric-capability-v1", "runtimeCapabilityIdentity": "legacy-metric-runtime-v1",
+	}}
 	if err := db.Create(&older).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +203,9 @@ func TestInitializeLegacyStateUsesNewestSnapshotWithoutDeletingHistory(t *testin
 	}
 	if state.Architecture != "arm64" || state.CPUCores != 8 || state.StableFingerprint == "" {
 		t.Fatalf("legacy state initialized from wrong snapshot: %#v", state)
+	}
+	if state.MetricCapabilities["runtimeCapabilityIdentity"] != "legacy-metric-runtime-v1" {
+		t.Fatalf("legacy state lost metric capabilities: %#v", state.MetricCapabilities)
 	}
 	var count int64
 	if err := db.Model(&models.RuntimeSnapshot{}).Count(&count).Error; err != nil {
@@ -207,6 +247,7 @@ func TestStableAuthorityChangesCaptureTransitions(t *testing.T) {
 		change func(*models.RuntimeState)
 	}{
 		{name: "gpu capability", change: func(state *models.RuntimeState) { state.GPUDetected = !state.GPUDetected }},
+		{name: "battery presence", change: func(state *models.RuntimeState) { state.BatteryPresent = !state.BatteryPresent }},
 		{name: "runtime policy", change: func(state *models.RuntimeState) { state.EffectivePolicy["baseProfile"] = "nas_balanced" }},
 		{name: "disk role type", change: func(state *models.RuntimeState) { state.Disks["workspace"].(models.JSONMap)["type"] = "hdd" }},
 	}
@@ -230,5 +271,33 @@ func TestStableAuthorityChangesCaptureTransitions(t *testing.T) {
 				t.Fatalf("snapshot count=%d want 1", count)
 			}
 		})
+	}
+}
+
+func TestMetricCapabilityDiagnosticsDoNotCaptureStableTransition(t *testing.T) {
+	db := openRuntimeStateTestDB(t)
+	base := testRuntimeState()
+	if _, _, err := UpsertDetectedState(db, base); err != nil {
+		t.Fatal(err)
+	}
+	changed := testRuntimeState()
+	changed.MetricCapabilities = models.JSONMap{
+		"schemaVersion":             "metric-capability-v1",
+		"runtimeCapabilityIdentity": "metric-runtime-v1",
+		"metrics": models.JSONList{
+			models.JSONMap{"metric": "VMAF", "availability": "unavailable", "reason": "probe timed out"},
+		},
+	}
+	if _, transition, err := UpsertDetectedState(db, changed); err != nil {
+		t.Fatal(err)
+	} else if transition != nil {
+		t.Fatalf("transient metric capability diagnostics created transition %d", *transition)
+	}
+	var count int64
+	if err := db.Model(&models.RuntimeSnapshot{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("metric capability-only refresh created %d immutable snapshots", count)
 	}
 }

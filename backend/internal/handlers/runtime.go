@@ -33,6 +33,7 @@ func (h RuntimeHandler) Latest(c *gin.Context) {
 
 func (h RuntimeHandler) Refresh(c *gin.Context) {
 	capabilities.ResetEncoderCache()
+	capabilities.ResetMetricCapabilityCache()
 	state, transitionID, err := runtimeinfo.DetectAndUpsert(h.db)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
