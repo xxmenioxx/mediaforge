@@ -1,5 +1,9 @@
+.git
+**/*_test.go
+coverage
+tmp
+*.log
 bin
 data
 *.db
 *.db-*
-

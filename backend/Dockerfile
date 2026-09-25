@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM golang:1.25-trixie AS build
 
 WORKDIR /src
@@ -7,10 +9,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum* ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 go build -o /out/mvforge-api ./cmd/api \
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
+    CGO_ENABLED=1 go build -o /out/mvforge-api ./cmd/api \
     && CGO_ENABLED=0 go build -o /out/mvforge-hw-probe ./cmd/hwprobe
 
 FROM debian:trixie-slim AS intel-media
@@ -238,7 +243,7 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates curl openssh-client \ 
+       ca-certificates curl openssh-client \
        libaom3 libass9 libbluray2 libdav1d7 libdrm2 \
        libfontconfig1 libfreetype6 libfribidi0 libmp3lame0 libopenjp2-7 \
        libopus0 libsoxr0 libsqlite3-0 \

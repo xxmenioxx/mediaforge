@@ -1,6 +1,10 @@
+.git
+.cache
+.vite
+coverage
+*.log
 dist
 node_modules
 .env.local
 .env.*.local
 npm-debug.log*
-
