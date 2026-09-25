@@ -3232,7 +3232,8 @@ func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 	convertedSidecar := strings.TrimSuffix(convertedPath, filepath.Ext(convertedPath)) + ".spa.srt"
 	writeTestFile(t, convertedSidecar, "keep this subtitle")
 	writeTestFile(t, archivePath, "original")
-	job := models.QueueJob{MediaPath: restorePath, LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: convertedPath, OriginalArchivedPath: archivePath}
+	publishedAt := time.Now()
+	job := models.QueueJob{MediaPath: restorePath, LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: convertedPath, PublishedAt: &publishedAt, OriginalArchivedPath: archivePath}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -3293,9 +3294,10 @@ func TestDeleteConvertedLibraryReplacementRestoresOriginalToLibrary(t *testing.T
 	archivePath := filepath.Join(archiveRoot, "library-replacements", "library-7", "Beck", "BECK - 01.mkv")
 	writeTestFile(t, convertedPath, "converted")
 	writeTestFile(t, archivePath, "original library file")
+	publishedAt := time.Now()
 	job := models.QueueJob{
 		MediaPath: originalPath, PublishMode: PublishModeReplaceLibrary, LibraryID: library.ID, ProfileID: 1,
-		Status: JobStatusCompleted, PublishedPath: convertedPath, ReplacementTargetPath: convertedPath, OriginalArchivedPath: archivePath,
+		Status: JobStatusCompleted, PublishedPath: convertedPath, PublishedAt: &publishedAt, ReplacementTargetPath: convertedPath, OriginalArchivedPath: archivePath,
 	}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
@@ -3404,7 +3406,8 @@ func TestDeleteArchiveRequiresConfirmationAndPreservesProvenance(t *testing.T) {
 	if err := db.Create(&record).Error; err != nil {
 		t.Fatal(err)
 	}
-	job := models.QueueJob{MediaPath: "/raw/movies/movie.mkv", Status: JobStatusCompleted, PublishedPath: publishedPath, OriginalArchivedPath: archivePath}
+	publishedAt := time.Now()
+	job := models.QueueJob{MediaPath: "/raw/movies/movie.mkv", Status: JobStatusCompleted, PublishedPath: publishedPath, PublishedAt: &publishedAt, OriginalArchivedPath: archivePath}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -3567,7 +3570,8 @@ func TestDeleteConvertedCanResumeWhenConvertedAlreadyWentMissing(t *testing.T) {
 	archivePath := filepath.Join(archiveRoot, "movie.mkv")
 	restorePath := filepath.Join(rawRoot, "movie.mkv")
 	writeTestFile(t, archivePath, "original")
-	job := models.QueueJob{MediaPath: restorePath, LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: convertedPath, OriginalArchivedPath: archivePath}
+	publishedAt := time.Now()
+	job := models.QueueJob{MediaPath: restorePath, LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: convertedPath, PublishedAt: &publishedAt, OriginalArchivedPath: archivePath}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}

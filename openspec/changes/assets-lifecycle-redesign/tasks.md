@@ -46,6 +46,6 @@
 
 ## 5. Validation and handoff
 
-- [ ] 5.1 Run focused backend projection/correlation/eligibility/archive/rename tests and focused frontend tests/build; verify all required RAW/Library, mixed-group, Queue Remaining, provenance, Asset Info, archive-safety, integration-boundary, and performance scenarios pass.
-- [ ] 5.2 Run `openspec validate assets-lifecycle-redesign --type change --strict` and verify it reports a valid change with all four planning artifacts present.
+- [x] 5.1 Run focused backend projection/correlation/eligibility/archive/rename tests and focused frontend tests/build; verify all required RAW/Library, mixed-group, Queue Remaining, provenance, Asset Info, archive-safety, integration-boundary, and performance scenarios pass.
+- [x] 5.2 Run `openspec validate assets-lifecycle-redesign --type change --strict` and verify it reports a valid change with all four planning artifacts present.
 - [ ] 5.3 When implementation is applied in a later phase, run `./scripts/verify.sh --auto` and require `ALL CHECKS PASSED`; do not mark implementation tasks complete from SDD validation alone.

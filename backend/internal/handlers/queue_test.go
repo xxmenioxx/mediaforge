@@ -1504,6 +1504,7 @@ func TestQueueCreatePreservesBatchOrderAndNormalizesAssetsWithinBatch(t *testing
 	}
 
 	if err := db.AutoMigrate(
+		&models.AssetRecord{},
 		&models.Profile{},
 		&models.QueueJob{},
 		&models.ExecutionPlan{},
@@ -1701,6 +1702,7 @@ func TestQueueCreateBatchCreatesWholeBatchInNaturalOrder(t *testing.T) {
 	}
 
 	if err := db.AutoMigrate(
+		&models.AssetRecord{},
 		&models.Profile{},
 		&models.QueueJob{},
 		&models.ExecutionPlan{},
@@ -1854,6 +1856,7 @@ func TestQueueCreateBatchRollsBackEntireBatchWhenOneAssetReservationFails(t *tes
 	}
 
 	if err := db.AutoMigrate(
+		&models.AssetRecord{},
 		&models.Profile{},
 		&models.QueueJob{},
 		&models.ExecutionPlan{},

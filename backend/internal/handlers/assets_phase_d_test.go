@@ -133,8 +133,8 @@ func TestPhaseDLegacyInventoryPreservesEvidenceWithoutFabricatingProvenance(t *t
 	if inventory.Archive[0].Lifecycle == nil || inventory.Archive[0].Lifecycle.Original != AssetOriginalArchived {
 		t.Fatalf("archive evidence was not projected: %#v", inventory.Archive[0].Lifecycle)
 	}
-	if len(inventory.SourceGroups) != 0 {
-		t.Fatalf("stale Source Group became active RAW organization: %#v", inventory.SourceGroups)
+	if len(inventory.SourceGroups) != 1 || inventory.SourceGroups[0].ID != staleGroup.ID {
+		t.Fatalf("stale Source Group provenance was not retained for RAW: %#v", inventory.SourceGroups)
 	}
 	if len(inventory.Raw) != 1 || inventory.Raw[0].ID != pathReusedRaw.ID {
 		t.Fatalf("RAW compatibility inventory=%#v", inventory.Raw)
