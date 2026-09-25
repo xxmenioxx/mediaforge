@@ -130,6 +130,11 @@ export function DashboardPage() {
                     <CoverageRow label="Converted" value={summary.convertedAssets} total={summary.libraryAssets} color="success" />
                     <CoverageRow label="Unverified in Library" value={summary.unverifiedAssets} total={summary.libraryAssets} color="warning" />
                     <CoverageRow label="Unprocessed" value={summary.unprocessedAssets} total={summary.totalAssets} color="warning" />
+                    <CoverageRow label="Processing" value={summary.processingAssets} total={summary.totalAssets} color="primary" />
+                    <CoverageRow label="Needs review" value={summary.needsReviewAssets} total={summary.totalAssets} color="warning" />
+                    <CoverageRow label="Validation review" value={summary.validationReviewAssets} total={summary.totalAssets} color="warning" />
+                    <CoverageRow label="Publication blocked" value={summary.publicationBlockedAssets} total={summary.libraryAssets} color="error" />
+                    <CoverageRow label="Originals archived" value={summary.originalsArchived} total={summary.libraryAssets} color="success" />
                   </Stack>
                 </Stack>
               </CardContent>
@@ -387,7 +392,7 @@ function CoverageRow({
   label: string;
   value: number;
   total: number;
-  color: 'primary' | 'success' | 'warning';
+  color: 'primary' | 'success' | 'warning' | 'error';
 }) {
   const percent = total > 0 ? Math.round((value / total) * 100) : 0;
   return (
@@ -408,12 +413,17 @@ function CoverageRow({
   );
 }
 
-function buildDashboardSummary(libraries: Library[], jobs: QueueJob[], assets?: AssetInventory) {
+export function buildDashboardSummary(libraries: Library[], jobs: QueueJob[], assets?: AssetInventory) {
   const counts = assets?.counts;
   const unprocessedAssets = counts?.raw ?? assets?.raw?.length ?? assets?.unprocessed.length ?? 0;
   const libraryAssets = counts?.library ?? assets?.library?.length ?? assets?.converted.length ?? 0;
   const convertedAssets = counts?.converted ?? assets?.converted.length ?? 0;
   const unverifiedAssets = assets?.unverified?.length ?? Math.max(0, libraryAssets - convertedAssets);
+  const processingAssets = counts?.processing ?? 0;
+  const needsReviewAssets = counts?.needsReview ?? 0;
+  const validationReviewAssets = counts?.validationReview ?? 0;
+  const publicationBlockedAssets = counts?.publicationBlocked ?? 0;
+  const originalsArchived = counts?.originalsArchived ?? 0;
   const totalAssets = unprocessedAssets + libraryAssets;
   const queuedJobs = jobs.filter((job) => job.status === 'queued').length;
   const runningJobs = jobs.filter((job) => job.status === 'running').length;
@@ -450,6 +460,11 @@ function buildDashboardSummary(libraries: Library[], jobs: QueueJob[], assets?: 
     libraryAssets,
     convertedAssets,
     unverifiedAssets,
+    processingAssets,
+    needsReviewAssets,
+    validationReviewAssets,
+    publicationBlockedAssets,
+    originalsArchived,
     totalAssets,
     queuedJobs,
     runningJobs,

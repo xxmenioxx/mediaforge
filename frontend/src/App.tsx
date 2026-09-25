@@ -45,7 +45,7 @@ export default function App() {
   );
 }
 
-function LegacyAssetsRoute() {
+export function LegacyAssetsRoute() {
   const location = useLocation();
   const view = location.pathname.split('/').filter(Boolean).at(-1);
   const params = new URLSearchParams(location.search);

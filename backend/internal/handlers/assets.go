@@ -2554,20 +2554,16 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 			return
 		}
 	}
-	migratingPaths := make([]string, 0, len(migrating))
 	for _, record := range migrating {
-		migratingPaths = append(migratingPaths, record.Path)
-	}
-	var openJobs int64
-	if err := h.db.Model(&models.QueueJob{}).
-		Where("media_path IN ? AND status IN ?", migratingPaths, []string{JobStatusQueued, JobStatusRunning}).
-		Count(&openJobs).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if openJobs > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "source path has assets with open Queue jobs"})
-		return
+		active, guardErr := h.assetHasActiveWork(record)
+		if guardErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": guardErr.Error()})
+			return
+		}
+		if active {
+			c.JSON(http.StatusConflict, gin.H{"error": "source path has assets with active work"})
+			return
+		}
 	}
 
 	var sourceLibrary models.Library
@@ -2632,13 +2628,20 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 			}).Error; err != nil {
 				return err
 			}
+			if tx.Migrator().HasTable(&models.ScanResult{}) {
+				if err := tx.Model(&models.ScanResult{}).Where("path = ?", oldPath).Updates(map[string]any{
+					"path": newPath, "file_name": filepath.Base(newPath),
+				}).Error; err != nil {
+					return err
+				}
+			}
 			if err := tx.Model(&models.QueueJob{}).
-				Where("published_path = ?", oldPath).
+				Where("published_path = ? AND publication_retired_at IS NULL", oldPath).
 				Updates(map[string]any{"published_path": newPath, "library_id": destinationLibrary.ID, "notes": gorm.Expr("COALESCE(notes, '') || ?", "\nConverted asset migrated to "+newPath)}).Error; err != nil {
 				return err
 			}
 			if err := tx.Model(&models.QueueJob{}).
-				Where("replacement_target_path = ?", oldPath).
+				Where("replacement_target_path = ? AND publication_retired_at IS NULL", oldPath).
 				Update("replacement_target_path", newPath).Error; err != nil {
 				return err
 			}

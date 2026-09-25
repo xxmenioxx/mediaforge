@@ -107,9 +107,11 @@ export function AssetsPage() {
   const [assetQuery, setAssetQuery] = useState('');
   const [mediaArea, setMediaArea] = useState('');
 	const [sourceGroupId, setSourceGroupId] = useState(0);
+  const legacyTab = searchParams.get('tab');
+  const unsupportedLegacyTab = legacyTab && !['unprocessed', 'library', 'converted', 'archive', 'reports'].includes(legacyTab);
   useEffect(() => {
-    const legacyTab = searchParams.get('tab');
     if (!legacyTab) return;
+    if (unsupportedLegacyTab) return;
     const next = new URLSearchParams(searchParams);
     next.delete('tab');
     if (legacyTab === 'unprocessed') next.set('location', 'raw');
@@ -189,6 +191,7 @@ export function AssetsPage() {
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         {assets.isError ? <Alert severity="warning">Unable to read library paths from the backend container.</Alert> : null}
+        {unsupportedLegacyTab ? <Alert severity="info">This Assets link is no longer a supported inventory context. Open RAW or Library and use the persisted lifecycle filters.</Alert> : null}
 
         <Card>
           <CardContent sx={{ py: 1.25 }}>
@@ -337,7 +340,7 @@ export function AssetsPage() {
             <AssetsErrorBoundary boundaryKey={tab}>
               <AssetTable
                 key={tab}
-                groups={areaGroups}
+                groups={filteredGroups}
                 libraries={libraries.data ?? []}
                 profiles={profiles.data ?? []}
                 audioProfiles={audioProfiles}
@@ -2078,7 +2081,7 @@ function AssetGroupRow({
         <TableCell>
           <Stack spacing={0.75} alignItems="flex-start">
             <Chip label={isMixedGroup ? 'Mixed lifecycle' : isPublishedAsIsGroup ? 'Published as-is' : statusLabel(group.status)} color={isMixedGroup ? 'warning' : isPublishedAsIsGroup ? 'success' : statusColor(group.status)} size="small" />
-            {isMixedGroup ? <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>{(lifecycleSummary?.provenance ?? []).map((item) => <Chip key={`provenance-${item.value}`} label={`${item.count} ${lifecycleLabel(item.value)}`} size="small" variant="outlined" />)}{(lifecycleSummary?.lifecycle ?? []).map((item) => <Chip key={`lifecycle-${item.value}`} label={`${item.count} ${lifecycleLabel(item.value)}`} size="small" variant="outlined" />)}</Stack> : null}
+            {isMixedGroup ? <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>{(lifecycleSummary?.provenance ?? []).map((item) => <Chip key={`provenance-${item.value}`} label={`${item.count} ${lifecycleLabel(item.value)}`} size="small" variant="outlined" />)}{(lifecycleSummary?.lifecycle ?? []).map((item) => <Chip key={`lifecycle-${item.value}`} label={`${item.count} ${lifecycleLabel(item.value)}`} size="small" variant="outlined" />)}{(lifecycleSummary?.validation ?? []).map((item) => <Chip key={`validation-${item.value}`} label={`${item.count} ${lifecycleLabel(item.value)}`} size="small" variant="outlined" />)}{(lifecycleSummary?.publication ?? []).map((item) => <Chip key={`publication-${item.value}`} label={`${item.count} ${lifecycleLabel(item.value)}`} size="small" variant="outlined" />)}</Stack> : null}
             {groupReview.requiresReview ? <Chip label="Some need review" color="error" size="small" /> : null}
           </Stack>
         </TableCell>
@@ -6835,7 +6838,7 @@ function lifecycleLabel(value: string) {
   return value.replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
-function filterAssetGroups(groups: AssetGroup[], query: string, filters: { provenance?: string; validation?: string; original?: string; workflow?: string; attention?: string } = {}) {
+export function filterAssetGroups(groups: AssetGroup[], query: string, filters: { provenance?: string; validation?: string; original?: string; workflow?: string; attention?: string } = {}) {
   const cleanQuery = query.trim().toLowerCase();
   if (!cleanQuery && !filters.provenance && !filters.validation && !filters.original && !filters.workflow && !filters.attention) return groups;
   return groups.flatMap((group) => {
@@ -6843,7 +6846,7 @@ function filterAssetGroups(groups: AssetGroup[], query: string, filters: { prove
       const lifecycle = asset.lifecycle;
       const provenance = lifecycle?.provenance ?? (asset.status === 'converted' ? 'converted' : asset.status === 'published_as_is' ? 'published_as_is' : asset.status === 'accepted' ? 'imported' : 'legacy_or_unknown');
       const validation = lifecycle?.validation ?? 'unavailable';
-      const original = lifecycle?.original ?? 'unknown';
+      const original = lifecycle?.original ?? (asset.status === 'archive' ? 'archived' : 'unknown');
       const workflow = lifecycle?.lifecycle ?? (asset.status === 'unprocessed' ? 'available' : 'unknown');
       if (filters.provenance && provenance !== filters.provenance) return false;
       if (filters.validation && validation !== filters.validation) return false;
