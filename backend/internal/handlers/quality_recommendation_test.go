@@ -34,7 +34,7 @@ func TestQualityRecommendationUsesActiveRuntimeQSVFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.RuntimeSnapshot{}); err != nil {
+	if err := db.AutoMigrate(&models.RuntimeState{}); err != nil {
 		t.Fatal(err)
 	}
 	encoders := models.JSONMap{"hevc_qsv": models.JSONMap{
@@ -43,7 +43,7 @@ func TestQualityRecommendationUsesActiveRuntimeQSVFallback(t *testing.T) {
 		"qsvIcqMain10": false, "qsvLaIcqMain10": false, "qsvCqpMain10": true,
 		"testedModes": models.JSONMap{"qsvCqpMain8": true, "qsvCqpMain10": true},
 	}}
-	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), Encoders: encoders}).Error; err != nil {
+	if err := db.Create(&models.RuntimeState{SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), Encoders: encoders, StableFingerprint: "quality-test", FingerprintVersion: "v1"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	profile := models.Profile{
@@ -65,7 +65,7 @@ func TestQualityRecommendationUsesActiveRuntimeQSVFallback(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.CapabilitySource != "active_runtime_snapshot" || response.Recommendation.EffectiveRateControl != "cqp" {
+	if response.CapabilitySource != "active_runtime_state" || response.Recommendation.EffectiveRateControl != "cqp" {
 		t.Fatalf("unexpected recommendation: %#v", response)
 	}
 	command := strings.Join(response.FFmpegVideoArguments, " ")

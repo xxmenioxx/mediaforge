@@ -23,7 +23,7 @@ vi.mock('../api/client', async (importOriginal) => {
       profilesAdmin: vi.fn(),
       settings: vi.fn(),
       libraries: vi.fn(),
-      runtimeSnapshot: vi.fn(),
+      runtimeState: vi.fn(),
       workerNodes: vi.fn(),
       latestSnapshot: vi.fn(),
       recommendEncoderQuality: vi.fn(),
@@ -163,7 +163,7 @@ describe('Profile Lab asynchronous sample estimate', () => {
     vi.mocked(api.profilesAdmin).mockResolvedValue([]);
     vi.mocked(api.settings).mockResolvedValue([]);
     vi.mocked(api.libraries).mockResolvedValue([]);
-    vi.mocked(api.runtimeSnapshot).mockResolvedValue({ encoders: {} } as never);
+  vi.mocked(api.runtimeState).mockResolvedValue({ encoders: {} } as never);
     vi.mocked(api.workerNodes).mockResolvedValue([]);
     vi.mocked(api.latestSnapshot).mockResolvedValue({
       found: true,

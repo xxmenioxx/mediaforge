@@ -34,12 +34,13 @@ type HousekeepingCandidate struct {
 }
 
 type HousekeepingReport struct {
-	RanAt          time.Time               `json:"ranAt"`
-	DryRun         bool                    `json:"dryRun"`
-	Candidates     []HousekeepingCandidate `json:"candidates"`
-	RemovedPaths   []string                `json:"removedPaths"`
-	RecoveredBytes int64                   `json:"recoveredBytes"`
-	Errors         []string                `json:"errors"`
+	RanAt            time.Time                      `json:"ranAt"`
+	DryRun           bool                           `json:"dryRun"`
+	Candidates       []HousekeepingCandidate        `json:"candidates"`
+	RemovedPaths     []string                       `json:"removedPaths"`
+	RecoveredBytes   int64                          `json:"recoveredBytes"`
+	Errors           []string                       `json:"errors"`
+	RuntimeSnapshots RuntimeSnapshotRetentionReport `json:"runtimeSnapshots"`
 }
 
 type HousekeepingHandler struct{ db *gorm.DB }
@@ -91,7 +92,7 @@ func loadHousekeepingPolicy(db *gorm.DB) (HousekeepingPolicy, error) {
 }
 
 func RunHousekeeping(db *gorm.DB, dryRun bool) (HousekeepingReport, error) {
-	report := HousekeepingReport{RanAt: time.Now(), DryRun: dryRun, Candidates: []HousekeepingCandidate{}, RemovedPaths: []string{}, Errors: []string{}}
+	report := HousekeepingReport{RanAt: time.Now(), DryRun: dryRun, Candidates: []HousekeepingCandidate{}, RemovedPaths: []string{}, Errors: []string{}, RuntimeSnapshots: RuntimeSnapshotRetentionReport{Errors: []string{}}}
 	policy, err := loadHousekeepingPolicy(db)
 	if err != nil {
 		return report, err
@@ -172,6 +173,12 @@ func RunHousekeeping(db *gorm.DB, dryRun bool) (HousekeepingReport, error) {
 			}
 		}
 	}
+	runtimeReport, runtimeErr := pruneRuntimeSnapshots(db, report.RanAt, dryRun)
+	report.RuntimeSnapshots = runtimeReport
+	if runtimeErr != nil {
+		report.RuntimeSnapshots.Errors = append(report.RuntimeSnapshots.Errors, runtimeErr.Error())
+		report.Errors = append(report.Errors, runtimeErr.Error())
+	}
 	if err := persistHousekeepingReport(db, report); err != nil {
 		return report, err
 	}
@@ -238,7 +245,8 @@ func persistHousekeepingReport(db *gorm.DB, report HousekeepingReport) error {
 	for _, item := range report.Candidates {
 		candidates = append(candidates, models.JSONMap{"path": item.Path, "jobId": item.JobID, "testEncodeId": item.TestEncodeID, "reason": item.Reason, "sizeBytes": item.SizeBytes, "modifiedAt": item.ModifiedAt})
 	}
-	value := models.JSONMap{"ranAt": report.RanAt.UTC().Format(time.RFC3339), "dryRun": report.DryRun, "candidates": candidates, "removedPaths": report.RemovedPaths, "recoveredBytes": report.RecoveredBytes, "errors": report.Errors}
+	runtimeSnapshots := models.JSONMap{"rowsConsidered": report.RuntimeSnapshots.RowsConsidered, "referencedKept": report.RuntimeSnapshots.ReferencedKept, "latestKept": report.RuntimeSnapshots.LatestKept, "recentUnreferencedKept": report.RuntimeSnapshots.RecentUnreferencedKept, "pruneCandidates": report.RuntimeSnapshots.PruneCandidates, "deleted": report.RuntimeSnapshots.Deleted, "errors": report.RuntimeSnapshots.Errors}
+	value := models.JSONMap{"ranAt": report.RanAt.UTC().Format(time.RFC3339), "dryRun": report.DryRun, "candidates": candidates, "removedPaths": report.RemovedPaths, "recoveredBytes": report.RecoveredBytes, "errors": report.Errors, "runtimeSnapshots": runtimeSnapshots}
 	setting := models.AppSetting{Key: "housekeepingLastRun", Value: value}
 	return db.Where(models.AppSetting{Key: setting.Key}).Assign(models.AppSetting{Value: value}).FirstOrCreate(&setting).Error
 }

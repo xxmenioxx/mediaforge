@@ -198,10 +198,10 @@ func genericEncoderRecommendation(profile models.Profile, intent quality.Quality
 }
 
 func (h AssetHandler) activeEncoderCapability(encoder string) (capabilities.EncoderCapability, string) {
-	if snapshot, err := runtimeinfo.Latest(h.db); err == nil {
+	if snapshot, err := runtimeinfo.Current(h.db); err == nil {
 		if raw, ok := snapshot.Encoders[encoder]; ok {
 			if capability, decoded := capabilities.DecodeEncoderCapability(raw); decoded {
-				return capability, "active_runtime_snapshot"
+				return capability, "active_runtime_state"
 			}
 		}
 	}

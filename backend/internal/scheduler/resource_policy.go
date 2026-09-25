@@ -30,6 +30,21 @@ type ResourceDecision struct {
 	Reasons      []string                   `json:"reasons"`
 	Limits       MachineLimits              `json:"limits"`
 	Worker       WorkerAvailabilityDecision `json:"worker"`
+	Telemetry    ResourceTelemetryEvidence  `json:"telemetry"`
+}
+
+// ResourceTelemetryEvidence is the current-state evidence used by a dynamic
+// gate. It is plan decision evidence, not immutable runtime provenance.
+type ResourceTelemetryEvidence struct {
+	DetectedAt           time.Time `json:"detectedAt"`
+	AvailableMemoryBytes int64     `json:"availableMemoryBytes"`
+	WorkspaceFreeBytes   int64     `json:"workspaceFreeBytes"`
+	LibraryFreeBytes     int64     `json:"libraryFreeBytes"`
+	BatteryPresent       bool      `json:"batteryPresent"`
+	BatteryPercent       int       `json:"batteryPercent"`
+	PowerSource          string    `json:"powerSource"`
+	OnBattery            bool      `json:"onBattery"`
+	ActiveReservations   int64     `json:"activeReservations"`
 }
 
 func LimitsForProfile(name string) MachineLimits {
@@ -82,20 +97,25 @@ func CanDispatch(db *gorm.DB, plan *models.ExecutionPlan) (bool, []string, error
 }
 
 func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecision, error) {
-	snapshot, err := runtimeinfo.Latest(db)
+	// Dynamic resource gates read the current RuntimeState on every evaluation.
+	// They must not use the plan's historical evidence as a telemetry cache or
+	// mutate its frozen provenance.
+	state, err := runtimeinfo.Current(db)
 	if err != nil {
 		return ResourceDecision{Reasons: []string{"Runtime snapshot is unavailable"}}, err
 	}
-	limits, err := LoadSchedulerLimits(db, snapshot.SelectedProfile)
+	profile := plan.RuntimeProfile
+	if profile == "" {
+		profile = state.SelectedProfile
+	}
+	limits, err := LoadSchedulerLimits(db, profile)
 	if err != nil {
 		return ResourceDecision{}, err
 	}
-	runtimeBehavior, err := LoadRuntimeBehavior(db, snapshot.SelectedProfile)
+	runtimeBehavior, err := LoadRuntimeBehavior(db, profile)
 	if err != nil {
 		return ResourceDecision{}, err
 	}
-	plan.RuntimeProfile = snapshot.SelectedProfile
-	plan.RuntimeSnapshotID = &snapshot.ID
 	plan.Reservation = BuildReservation(*plan)
 	jobType := JobType(jsonString(plan.Reservation, "jobType"))
 	reasons := []string{}
@@ -142,16 +162,18 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 	if jobType == JobTypeLabPreview && lab >= limits.MaxLabJobs {
 		reasons = append(reasons, fmt.Sprintf("Lab job limit reached (%d/%d)", lab, limits.MaxLabJobs))
 	}
-	if snapshot.AvailableMemoryBytes > 0 && snapshot.AvailableMemoryBytes < limits.MinFreeRAMBytes {
+	if state.AvailableMemoryBytes > 0 && state.AvailableMemoryBytes < limits.MinFreeRAMBytes {
 		reasons = append(reasons, fmt.Sprintf("Free RAM is below policy minimum (%d bytes required)", limits.MinFreeRAMBytes))
 	}
 	if plan.WorkspaceMode != WorkspaceModeDirect && plan.EstimatedWorkspaceBytes > limits.MaxWorkspaceBytes {
 		reasons = append(reasons, fmt.Sprintf("Estimated workspace exceeds policy maximum (%d bytes)", limits.MaxWorkspaceBytes))
 	}
-	if plan.WorkspaceMode != WorkspaceModeDirect && freeDisk(snapshot.Disks, "workspace")-plan.EstimatedWorkspaceBytes < limits.MinFreeWorkBytes {
+	workspaceFreeBytes := freeDisk(state.Disks, "workspace")
+	libraryFreeBytes := freeDisk(state.Disks, "library")
+	if plan.WorkspaceMode != WorkspaceModeDirect && workspaceFreeBytes-plan.EstimatedWorkspaceBytes < limits.MinFreeWorkBytes {
 		reasons = append(reasons, "Work disk would fall below its free-space reserve")
 	}
-	if freeDisk(snapshot.Disks, "library")-plan.EstimatedOutputMaxBytes < limits.MinFreeLibraryBytes {
+	if libraryFreeBytes-plan.EstimatedOutputMaxBytes < limits.MinFreeLibraryBytes {
 		reasons = append(reasons, "Library disk would fall below its free-space reserve")
 	}
 	workerDecision, workerErr := EvaluateWorkerAvailability(db, *plan, time.Now())
@@ -159,7 +181,7 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 		return ResourceDecision{}, workerErr
 	}
 	waitingState := ""
-	if snapshot.OnBattery && runtimeBehavior.PauseWhenOnBattery {
+	if state.OnBattery && runtimeBehavior.PauseWhenOnBattery {
 		reasons = append([]string{"Machine is running on battery and runtime policy pauses new jobs"}, reasons...)
 		waitingState = "WAITING_POWER"
 	} else if len(reasons) > 0 {
@@ -168,7 +190,21 @@ func EvaluateResources(db *gorm.DB, plan *models.ExecutionPlan) (ResourceDecisio
 		reasons = append(reasons, workerDecision.Reasons...)
 		waitingState = "WAITING_WORKER"
 	}
-	return ResourceDecision{Allowed: len(reasons) == 0, WaitingState: waitingState, Reasons: reasons, Limits: limits, Worker: workerDecision}, nil
+	decision := ResourceDecision{
+		Allowed: len(reasons) == 0, WaitingState: waitingState, Reasons: reasons, Limits: limits, Worker: workerDecision,
+		Telemetry: ResourceTelemetryEvidence{
+			DetectedAt: state.DetectedAt, AvailableMemoryBytes: state.AvailableMemoryBytes,
+			WorkspaceFreeBytes: workspaceFreeBytes, LibraryFreeBytes: libraryFreeBytes,
+			BatteryPresent: state.BatteryPresent, BatteryPercent: state.BatteryPercent,
+			PowerSource: state.PowerSource, OnBattery: state.OnBattery,
+			ActiveReservations: running,
+		},
+	}
+	if plan.Evaluation == nil {
+		plan.Evaluation = models.JSONMap{}
+	}
+	plan.Evaluation["resources"] = decision
+	return decision, nil
 }
 
 func resourceWaitingState(reasons []string) string {

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/anuelvs/mvforge/backend/internal/capabilities"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -19,31 +20,32 @@ type RuntimeProfilesResponse struct {
 func NewRuntimeHandler(db *gorm.DB) RuntimeHandler { return RuntimeHandler{db: db} }
 
 func (h RuntimeHandler) Latest(c *gin.Context) {
-	snapshot, err := runtimeinfo.Latest(h.db)
+	state, err := runtimeinfo.Current(h.db)
 	if err == gorm.ErrRecordNotFound {
-		snapshot, err = runtimeinfo.DetectAndSave(h.db)
+		state, _, err = runtimeinfo.DetectAndUpsert(h.db)
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, snapshot)
+	c.JSON(http.StatusOK, liveRuntimeResponse(state, nil))
 }
 
 func (h RuntimeHandler) Refresh(c *gin.Context) {
 	capabilities.ResetEncoderCache()
-	snapshot, err := runtimeinfo.DetectAndSave(h.db)
+	capabilities.ResetMetricCapabilityCache()
+	state, transitionID, err := runtimeinfo.DetectAndUpsert(h.db)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, snapshot)
+	c.JSON(http.StatusOK, liveRuntimeResponse(state, transitionID))
 }
 
 func (h RuntimeHandler) Profiles(c *gin.Context) {
 	detected := "desktop_safe"
-	if snapshot, err := runtimeinfo.Latest(h.db); err == nil && snapshot.RecommendedProfile != "" {
-		detected = snapshot.RecommendedProfile
+	if state, err := runtimeinfo.Current(h.db); err == nil && state.RecommendedProfile != "" {
+		detected = state.RecommendedProfile
 	}
 	effective, err := runtimeinfo.ResolveEffectiveRuntimePolicy(h.db, detected)
 	if err != nil {
@@ -51,4 +53,10 @@ func (h RuntimeHandler) Profiles(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, RuntimeProfilesResponse{Profiles: runtimeinfo.OfficialRuntimeProfiles(), Effective: effective})
+}
+
+func liveRuntimeResponse(state models.RuntimeState, transitionID *uint) models.RuntimeState {
+	state.StateKind = "live"
+	state.AuditSnapshotID = transitionID
+	return state
 }

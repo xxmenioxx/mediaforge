@@ -92,7 +92,7 @@ func workerProgressTestDB(t *testing.T, settings models.JSONMap) *gorm.DB {
 		sqlDB.SetMaxOpenConns(8)
 		sqlDB.SetMaxIdleConns(8)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.RuntimeState{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
 		t.Fatal(err)
 	}
 	disks := models.JSONMap{
@@ -106,6 +106,12 @@ func workerProgressTestDB(t *testing.T, settings models.JSONMap) *gorm.DB {
 		AvailableMemoryBytes: 16 << 30,
 		Disks:                disks,
 		Encoders:             encoders,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeState{
+		SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "desktop_balanced",
+		AvailableMemoryBytes: 16 << 30, Disks: disks, Encoders: encoders, StableFingerprint: "worker-test", FingerprintVersion: "v1",
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -410,11 +416,11 @@ func TestWorkerProgressPacingDoesNotBypassSchedulerGuards(t *testing.T) {
 		{
 			name: "resource policy",
 			prepare: func(t *testing.T, db *gorm.DB) {
-				var snapshot models.RuntimeSnapshot
-				if err := db.First(&snapshot).Error; err != nil {
+				var state models.RuntimeState
+				if err := db.Where("singleton_key = ?", models.RuntimeStateSingletonKey).First(&state).Error; err != nil {
 					t.Fatal(err)
 				}
-				if err := db.Model(&snapshot).Update("available_memory_bytes", 1).Error; err != nil {
+				if err := db.Model(&state).Update("available_memory_bytes", 1).Error; err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -491,12 +497,15 @@ func TestConcurrentClaimsRespectSingleWorkerSlot(t *testing.T) {
 	if sqlDB, err := db.DB(); err == nil {
 		sqlDB.SetMaxOpenConns(4)
 	}
-	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.ExecutionPlan{}, &models.RuntimeSnapshot{}, &models.RuntimeState{}, &models.AppSetting{}, &models.SchedulerReservation{}, &models.WorkerNode{}); err != nil {
 		t.Fatal(err)
 	}
 	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(500 << 30)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
 	encoders := models.JSONMap{"libx265": models.JSONMap{"usable": true}}
 	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "desktop_balanced", AvailableMemoryBytes: 16 << 30, Disks: disks, Encoders: encoders}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeState{SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "desktop_balanced", AvailableMemoryBytes: 16 << 30, Disks: disks, Encoders: encoders, StableFingerprint: "worker-progress-test", FingerprintVersion: "v1"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.AppSetting{Key: "workers", Value: models.JSONMap{"defaultWorkerName": "local", "maxConcurrentJobs": 1, "maxJobsPerBatch": 0, "delaySecondsBetweenJobs": 0, "batchCooldownSeconds": 0}}).Error; err != nil {

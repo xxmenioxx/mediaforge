@@ -58,7 +58,7 @@ func EvaluateWorkspace(db *gorm.DB, plan models.ExecutionPlan) (WorkspaceDecisio
 	if err != nil {
 		return WorkspaceDecision{}, err
 	}
-	snapshot, err := runtimeinfo.Latest(db)
+	snapshot, err := runtimeinfo.Current(db)
 	if err != nil {
 		return WorkspaceDecision{}, err
 	}

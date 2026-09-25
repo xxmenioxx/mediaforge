@@ -49,6 +49,7 @@ func Migrate(db *gorm.DB) error {
 		&models.QueueJob{},
 		&models.ExecutionPlan{},
 		&models.RuntimeSnapshot{},
+		&models.RuntimeState{},
 		&models.SchedulerReservation{},
 		&models.WorkerNode{},
 		&models.ScanResult{},
@@ -64,6 +65,9 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	if err := migrateRuntimePolicy(db); err != nil {
+		return err
+	}
+	if err := runtimeinfo.InitializeLegacyState(db); err != nil {
 		return err
 	}
 

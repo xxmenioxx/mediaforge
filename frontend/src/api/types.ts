@@ -1029,9 +1029,14 @@ export type SoftwareVersions = {
   components: SoftwareComponent[];
 };
 
-export type RuntimeSnapshot = {
+export type RuntimeState = {
   id: number;
+  /** The response represents the mutable current host state, not audit history. */
+  stateKind?: 'live';
   detectedAt: string;
+  stableFingerprint?: string;
+  /** Set only when this response captured a new stable-transition audit row. */
+  auditSnapshotId?: number | null;
   os: string;
   architecture: string;
   container: boolean;
@@ -1062,6 +1067,9 @@ export type RuntimeSnapshot = {
   warnings: unknown[];
   createdAt: string;
 };
+
+/** @deprecated Use RuntimeState for current host telemetry. */
+export type RuntimeSnapshot = RuntimeState;
 
 export type RuntimeProfileValues = {
   maxRunningJobs: number; maxVideoJobs: number; maxSoftwareX265Jobs: number; maxHardwareEncodeJobs: number;
@@ -1172,7 +1180,24 @@ export type SchedulerRecoveryReport = {
 };
 
 export type HousekeepingCandidate = { path: string; jobId?: number; reason: string; sizeBytes: number; modifiedAt: string };
-export type HousekeepingReport = { ranAt: string; dryRun: boolean; candidates: HousekeepingCandidate[]; removedPaths: string[]; recoveredBytes: number; errors: string[] };
+export type RuntimeSnapshotRetentionReport = {
+  rowsConsidered: number;
+  referencedKept: number;
+  latestKept: number;
+  recentUnreferencedKept: number;
+  pruneCandidates: number;
+  deleted: number;
+  errors: string[];
+};
+export type HousekeepingReport = {
+  ranAt: string;
+  dryRun: boolean;
+  candidates: HousekeepingCandidate[];
+  removedPaths: string[];
+  recoveredBytes: number;
+  errors: string[];
+  runtimeSnapshots?: RuntimeSnapshotRetentionReport;
+};
 
 export type ExecutionPlan = {
   id: number;
@@ -2372,7 +2397,7 @@ export type QualityRecommendationResponse = {
   requestedProfile: Profile;
   effectiveProfile: Profile;
   recommendation: EncoderRecommendation;
-  capabilitySource: 'active_runtime_snapshot' | 'live_backend_probe';
+  capabilitySource: 'active_runtime_state' | 'active_runtime_snapshot' | 'live_backend_probe';
   ffmpegVideoArguments: string[];
   estimatedOutputMinBytes: number;
   estimatedOutputMaxBytes: number;

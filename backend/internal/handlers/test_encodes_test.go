@@ -703,6 +703,65 @@ func TestTestEncodeFFmpegCommandUsesMigratedGORMColumn(t *testing.T) {
 	}
 }
 
+func TestTestEncodeRuntimeSnapshotBindingIsIdempotent(t *testing.T) {
+	db := testEncodeTestDB(t, "test-encode-runtime-provenance", &models.RuntimeSnapshot{}, &models.RuntimeState{})
+	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "desktop_safe"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeState{
+		SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "desktop_safe",
+		StableFingerprint: "test-encode-runtime", FingerprintVersion: "v1",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	test := models.TestEncode{SourcePath: "/raw/a.mkv", LibraryID: 1, ConfigurationSource: "effective_asset", Status: testEncodeRunning, Phase: "preparing"}
+	if err := db.Create(&test).Error; err != nil {
+		t.Fatal(err)
+	}
+	firstID, err := bindTestEncodeRuntimeSnapshot(db, &test)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstID == nil {
+		t.Fatal("first Test Encode freeze did not bind a runtime snapshot")
+	}
+	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now().Add(time.Minute), SelectedProfile: "laptop_safe"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := bindTestEncodeRuntimeSnapshot(db, &test)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondID == nil || *secondID != *firstID {
+		t.Fatalf("prepared Test Encode changed runtime provenance: first=%v second=%v", *firstID, secondID)
+	}
+	var persisted models.TestEncode
+	if err := db.First(&persisted, test.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.RuntimeSnapshotID == nil || *persisted.RuntimeSnapshotID != *firstID {
+		t.Fatalf("persisted Test Encode provenance changed: %#v", persisted)
+	}
+}
+
+func TestTestEncodeRuntimeSnapshotBindingFailsWithoutCurrentState(t *testing.T) {
+	db := testEncodeTestDB(t, "test-encode-runtime-provenance-missing-state", &models.RuntimeSnapshot{}, &models.RuntimeState{})
+	test := models.TestEncode{SourcePath: "/raw/a.mkv", LibraryID: 1, ConfigurationSource: "effective_asset", Status: testEncodeRunning, Phase: "preparing"}
+	if err := db.Create(&test).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bindTestEncodeRuntimeSnapshot(db, &test); err == nil {
+		t.Fatal("expected Test Encode runtime freeze to fail without current RuntimeState")
+	}
+	var persisted models.TestEncode
+	if err := db.First(&persisted, test.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.RuntimeSnapshotID != nil {
+		t.Fatalf("failed runtime freeze left a partial provenance binding: %#v", persisted)
+	}
+}
+
 func TestTestEncodeValidationReportsTrackAndDurationMismatch(t *testing.T) {
 	plan := MediaJobPlan{
 		Profile: models.Profile{VideoCodec: "x265", AudioCodec: "copy"},

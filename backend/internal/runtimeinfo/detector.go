@@ -43,7 +43,7 @@ func (d *Detector) run() {
 	for {
 		select {
 		case <-ticker.C:
-			if _, err := DetectAndSave(d.db); err != nil {
+			if _, _, err := DetectAndUpsert(d.db); err != nil {
 				log.Printf("runtime detector: %v", err)
 			}
 		case <-d.stop:
@@ -52,7 +52,7 @@ func (d *Detector) run() {
 	}
 }
 
-func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
+func Detect(db *gorm.DB) (models.RuntimeState, error) {
 	snapshot := models.RuntimeSnapshot{
 		DetectedAt: time.Now(), OS: runtime.GOOS, Architecture: runtime.GOARCH,
 		Container: detectContainer(), CPUCores: runtime.NumCPU(),
@@ -118,7 +118,7 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 	snapshot.RecommendedProfile, snapshot.SelectionReasons = SelectProfile(snapshot)
 	effective, err := ResolveEffectiveRuntimePolicy(db, snapshot.RecommendedProfile)
 	if err != nil {
-		return models.RuntimeSnapshot{}, err
+		return models.RuntimeState{}, err
 	}
 	snapshot.SelectedProfile = effective.BaseProfile
 	snapshot.PreferredProfile = effective.PreferredProfile
@@ -127,13 +127,22 @@ func DetectAndSave(db *gorm.DB) (models.RuntimeSnapshot, error) {
 	for _, field := range effective.OverriddenFields {
 		snapshot.AppliedOverrides = append(snapshot.AppliedOverrides, field)
 	}
-	encoded, _ := json.Marshal(effective.Values)
+	encoded, _ := json.Marshal(models.JSONMap{
+		"mode":             effective.Mode,
+		"detectedProfile":  effective.DetectedProfile,
+		"preferredProfile": effective.PreferredProfile,
+		"fallbackProfile":  effective.FallbackProfile,
+		"baseProfile":      effective.BaseProfile,
+		"values":           effective.Values,
+		"overrides":        effective.Overrides,
+		"overriddenFields": effective.OverriddenFields,
+	})
 	_ = json.Unmarshal(encoded, &snapshot.EffectivePolicy)
 	snapshot.SelectionReasons = effective.SelectionReasons
-	if err := db.Create(&snapshot).Error; err != nil {
-		return models.RuntimeSnapshot{}, err
-	}
-	return snapshot, nil
+	state := runtimeStateFromSnapshot(snapshot)
+	state.StableFingerprint = RuntimeStableFingerprint(state)
+	state.FingerprintVersion = RuntimeStableFingerprintVersion
+	return state, nil
 }
 
 func detectGPUUsage() (detected bool, available bool, total float64, media float64, render float64, source string) {
@@ -272,12 +281,6 @@ func diskInfoForPaths(paths []string) (models.JSONMap, error) {
 		selected["probeWarnings"] = warnings
 	}
 	return selected, nil
-}
-
-func Latest(db *gorm.DB) (models.RuntimeSnapshot, error) {
-	var snapshot models.RuntimeSnapshot
-	err := db.Order("detected_at desc").First(&snapshot).Error
-	return snapshot, err
 }
 
 func SelectProfile(snapshot models.RuntimeSnapshot) (string, models.JSONList) {

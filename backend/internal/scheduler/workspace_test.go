@@ -48,7 +48,7 @@ func TestEvaluateWorkspaceFallsBackToDirectMode(t *testing.T) {
 
 func TestEvaluateWorkspaceRejectsDirectModeForNASProfile(t *testing.T) {
 	db := workspaceTestDB(t, 45<<30)
-	if err := db.Model(&models.RuntimeSnapshot{}).Where("1 = 1").Update("selected_profile", "nas_safe").Error; err != nil {
+	if err := db.Model(&models.RuntimeState{}).Where("singleton_key = ?", models.RuntimeStateSingletonKey).Update("selected_profile", "nas_safe").Error; err != nil {
 		t.Fatal(err)
 	}
 	setting := models.AppSetting{Key: "workspace", Value: models.JSONMap{"preferredMode": WorkspaceModeCopyToWork, "fallbackMode": WorkspaceModeDirect, "allowDirectMode": true, "estimateRequiredSpace": true}}
@@ -70,11 +70,11 @@ func workspaceTestDB(t *testing.T, free int64) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.AppSetting{}, &models.RuntimeSnapshot{}); err != nil {
+	if err := db.AutoMigrate(&models.AppSetting{}, &models.RuntimeState{}); err != nil {
 		t.Fatal(err)
 	}
 	disks := models.JSONMap{"workspace": models.JSONMap{"availableBytes": float64(free)}, "library": models.JSONMap{"availableBytes": float64(500 << 30)}}
-	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "desktop_balanced", AvailableMemoryBytes: 16 << 30, Disks: disks}).Error; err != nil {
+	if err := db.Create(&models.RuntimeState{SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "desktop_balanced", AvailableMemoryBytes: 16 << 30, Disks: disks, StableFingerprint: "workspace-test", FingerprintVersion: "v1"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	return db

@@ -5335,7 +5335,7 @@ function AssetConversionOverridePanel({
   readOnly?: boolean;
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const runtimeSnapshot = useQuery({ queryKey: ['runtime-state'], queryFn: api.runtimeState });
   const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const [lastEncoderRecommendation, setLastEncoderRecommendation] =

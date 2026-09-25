@@ -51,6 +51,7 @@ import { AssetDefaultsCard } from '../components/AssetDefaultsCard';
 import type { HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
 import { defaultMVForgePreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { encoderNamesForWorker } from '../utils/workerEncoders';
+import { liveRuntimeStateLabel, runtimeRefreshSuccessMessage } from '../utils/runtimeStatePresentation';
 
 type LibraryType = {
   key: string;
@@ -316,7 +317,7 @@ export function SettingsPage() {
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
-  const runtimeSnapshot = useQuery({ queryKey: ['runtime-snapshot'], queryFn: api.runtimeSnapshot });
+  const runtimeSnapshot = useQuery({ queryKey: ['runtime-state'], queryFn: api.runtimeState });
   const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const runtimeProfilesQuery = useQuery({ queryKey: ['runtime-profiles'], queryFn: api.runtimeProfiles });
   const profilesQuery = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
@@ -340,7 +341,7 @@ export function SettingsPage() {
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
       await queryClient.invalidateQueries({ queryKey: ['libraries'] });
       await queryClient.invalidateQueries({ queryKey: ['runtime-profiles'] });
-      await queryClient.invalidateQueries({ queryKey: ['runtime-snapshot'] });
+      await queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
     },
   });
 
@@ -377,10 +378,10 @@ export function SettingsPage() {
   });
 
   const refreshRuntime = useMutation({
-    mutationFn: api.refreshRuntimeSnapshot,
+    mutationFn: api.refreshRuntime,
     onSuccess: async (snapshot) => {
-      queryClient.setQueryData(['runtime-snapshot'], snapshot);
-      await queryClient.invalidateQueries({ queryKey: ['runtime-snapshot'] });
+      queryClient.setQueryData(['runtime-state'], snapshot);
+      await queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
     },
   });
   const runRecovery = useMutation({
@@ -964,7 +965,7 @@ export function SettingsPage() {
                           <Stack>
                             <Typography variant="h3">Scheduler runtime</Typography>
                             <Typography color="text.secondary" variant="body2">
-                              Persisted machine snapshot used to select the execution policy.
+                              Live host state used to select the execution policy.
                             </Typography>
                           </Stack>
                           <Button onClick={() => refreshRuntime.mutate()} disabled={refreshRuntime.isPending}>
@@ -1043,12 +1044,12 @@ export function SettingsPage() {
 
                             {safeRuntimeList(runtimeSnapshot.data.selectionReasons).length ? <Alert severity="info">{safeRuntimeList(runtimeSnapshot.data.selectionReasons).map(String).join(' · ')}</Alert> : null}
                             {safeRuntimeList(runtimeSnapshot.data.warnings).map((warning, index) => <Alert key={index} severity="warning">{String(warning)}</Alert>)}
-                            <Typography color="text.secondary" variant="caption">Detected {new Date(runtimeSnapshot.data.detectedAt).toLocaleString()}</Typography>
+                            <Typography color="text.secondary" variant="caption">{liveRuntimeStateLabel(runtimeSnapshot.data.detectedAt, (value) => new Date(value).toLocaleString())}</Typography>
                           </Stack>
                         ) : (
-                          <Typography color="text.secondary">No runtime snapshot has been recorded yet.</Typography>
+                          <Typography color="text.secondary">No current runtime state has been detected yet.</Typography>
                         )}
-                        {refreshRuntime.isSuccess ? <Alert severity="success">Runtime refreshed successfully. Snapshot #{refreshRuntime.data.id} was recorded.</Alert> : null}
+                        {refreshRuntime.isSuccess ? <Alert severity="success">{runtimeRefreshSuccessMessage}</Alert> : null}
                         {refreshRuntime.isError ? <Alert severity="error">Refresh failed: {refreshRuntime.error instanceof Error ? refreshRuntime.error.message : 'unknown error'}</Alert> : null}
                       </Stack>
                     </CardContent>
