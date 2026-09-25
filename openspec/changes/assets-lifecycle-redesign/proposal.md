@@ -19,23 +19,28 @@ and exposes the other facts as independent lifecycle dimensions and evidence.
 - Separate `location`, `lifecycle`, `provenance`, `validation`, `publication`,
   `original retention`, active operation, attention, and historical evidence;
   do not replace them with a second persisted workflow state machine.
+- Correct DirectPublication semantics: an active/non-returned
+  `DirectPublication` proves `published_as_is`; any `publicationMode: as_is`
+  value is derived presentation only, with no persisted mode field.
 - Make RAW the source-only inventory, preserving Source Group → Logical Group →
   Path → Asset organization and RAW-specific inheritance and Queue eligibility.
 - Make Library the destination inventory for converted, published-as-is,
   imported/accepted, and legacy/unknown assets; remove Converted, Archive, and
   Reports as top-level inventory contexts without deleting their domain data.
 - Add backend-authoritative mixed-group summaries, persisted-dimension filters,
-  per-asset bulk action eligibility, and RAW↔Library correlation/current
-  publication references.
-- Preserve Queue Remaining and existing episode ordinal authorities: eligibility
-  is resolved per asset, while complete inventory determines ordinals and
-  extras do not consume normal episode positions.
+  per-asset bulk action eligibility, and separate historical source provenance
+  from optional current RAW correlation/current publication references.
+- Preserve Queue Remaining and existing episode ordinal authorities: Queue
+  Remaining delegates to `QueueSelectedAssets`, eligibility is resolved per
+  asset, while complete inventory determines ordinals and extras do not consume
+  normal episode positions.
 - Recast Asset Info as the canonical per-asset lifecycle control surface with a
   persisted-only Overview and lazy Analysis, Tracks, Subtitles, Attachments,
   Conversion, Validation, Publication, Original, Evidence, and History sections.
-- Expose action capabilities from the backend so frontend controls do not infer
-  safety from badges or duplicate Queue, Validation, Publisher, archive, or
-  rename policy.
+- Expose backend-generated but non-authoritative action capabilities so frontend
+  controls do not infer safety from badges or duplicate Queue, Validation,
+  Publisher, archive, or rename policy; mutation endpoints revalidate their
+  canonical guards at execution time.
 - Migrate dashboard counts, filters, deep links, legacy compatibility, and list
   query/index strategy for NAS-safe bounded rendering without ffprobe, FFmpeg,
   full filesystem walks, analysis, validation, or report-body fan-out.
@@ -57,9 +62,9 @@ matching asset lifecycle contract.
 ## Impact
 
 - Backend asset inventory response/types, lifecycle projection and action
-  capability resolution, bulk eligibility, correlation queries, dashboard
-  aggregates, and focused migrations/indexes if implementation evidence requires
-  them.
+  capability projection, bulk eligibility, QueueSelectedAssets adapters,
+  publication/correlation queries, dashboard aggregates, and focused
+  migrations/indexes if implementation evidence requires them.
 - Frontend Assets navigation/list/filter/group projections and Asset Info lazy
   sections, while retaining existing track, subtitle, LAB, Test Encode, rename,
   Queue, report, archive, and restore operations behind their canonical APIs.

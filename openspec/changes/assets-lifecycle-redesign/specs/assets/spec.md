@@ -83,6 +83,24 @@ NOT imply converted provenance.
 - **WHEN** a Library record has no deterministic conversion or direct-publication evidence
 - **THEN** provenance is `legacy_or_unknown` and remains visible in Library
 
+### Requirement: DirectPublication proves as-is provenance without a mode field
+
+An active/non-returned `DirectPublication` whose current destination identity
+matches a Library asset SHALL prove `published_as_is` provenance. The projection
+MAY expose a presentation value such as `publicationMode: as_is`, but that value
+MUST be derived from the DirectPublication evidence; the system MUST NOT add or
+require a persisted DirectPublication publication-mode field.
+
+#### Scenario: DirectPublication-only asset
+
+- **WHEN** an active DirectPublication matches the current Library destination
+- **THEN** the asset is projected as `published_as_is` and any `as_is` mode label is derived rather than persisted
+
+#### Scenario: Returned DirectPublication is historical
+
+- **WHEN** a DirectPublication has `ReturnedAt` set and no active publication authority proves the same destination
+- **THEN** it remains history and cannot by itself prove current as-is provenance
+
 ### Requirement: Validation and publication remain projections of their authorities
 
 Validation SHALL be projected as unavailable, pending, passed,
@@ -97,6 +115,18 @@ Issue #53 remains the authority for Validation Quality Gate behavior and issue
 link to or invoke those authorities but SHALL NOT create parallel validators or
 publishers.
 
+For current-publication selection, a valid converted publication is an
+active/non-retired QueueJob publication whose current destination identity
+matches the Library asset. A valid as-is publication is an active/non-returned
+DirectPublication with that match. Ordering MAY be deterministic within one
+publication authority using its active state, publication timestamp, and
+same-table stable ID. Across QueueJob and DirectPublication, the system MUST
+NOT compare unrelated IDs, `UpdatedAt`, or status specificity. If both claim
+the same current Library asset without canonical supersession/history proving
+which is current, the projection SHALL report an unresolved/conflict current
+publication, `needs_review` attention, and `legacy_or_unknown` or explicit
+conflict provenance; destructive and recovery actions SHALL fail closed.
+
 #### Scenario: Validation evidence is unavailable
 
 - **WHEN** an asset has no canonical validation result
@@ -106,6 +136,36 @@ publishers.
 
 - **WHEN** canonical publication evidence reports a blocked or failed delivery
 - **THEN** the projection exposes that publication state and its bounded reason without converting it into a generic lifecycle status
+
+#### Scenario: QueueJob is the only current publication
+
+- **WHEN** one active/non-retired QueueJob publication matches the current Library destination and no active DirectPublication matches
+- **THEN** the current publication is the QueueJob and provenance is converted
+
+#### Scenario: DirectPublication is the only current publication
+
+- **WHEN** one active/non-returned DirectPublication matches the current Library destination and no active QueueJob publication matches
+- **THEN** the current publication is the DirectPublication and provenance is published-as-is
+
+#### Scenario: Retired QueueJob and active DirectPublication
+
+- **WHEN** a retired QueueJob and an active/non-returned DirectPublication reference the same current Library destination
+- **THEN** the DirectPublication is current as-is and the retired QueueJob remains history
+
+#### Scenario: Active QueueJob and returned DirectPublication
+
+- **WHEN** an active/non-retired QueueJob matches the current Library destination and the DirectPublication for that destination has returned
+- **THEN** the QueueJob is current converted and the returned DirectPublication remains history
+
+#### Scenario: Conflicting active publication authorities
+
+- **WHEN** an active/non-retired QueueJob and an active/non-returned DirectPublication independently claim the same current Library destination without canonical supersession
+- **THEN** the result is unresolved/conflict with needs-review attention, no arbitrary winner is selected, and destructive/recovery actions fail closed
+
+#### Scenario: One publication is provably current among historical revisions
+
+- **WHEN** multiple historical revisions exist and one active publication is identified by its authority's current/non-retired relationship
+- **THEN** that publication is current while all other revisions remain immutable history
 
 ### Requirement: Original retention is independent and safety-bounded
 
@@ -173,22 +233,59 @@ MUST retain independent projections and action eligibility.
 
 ### Requirement: RAW and Library correlation uses canonical identity and history
 
-The backend SHALL answer which RAW asset produced a Library asset and what the
-current Library publication is for a RAW asset using AssetRecord identity and
-canonical Queue/publication relationships. Current publication matching SHALL
-respect active/non-retired records and SHALL survive supported rename/move,
-publication, archive, and restore operations. Filesystem path matching alone
-MUST NOT be the only source of historical identity.
+The backend SHALL expose two separate concepts: `sourceProvenance`, which
+preserves the historical source path/reference recorded by a QueueJob or
+publication authority, and `currentRawCorrelation`, which is an optional
+relationship to a currently known RAW AssetRecord. A matching filesystem path
+MUST NOT bind a newly created/reused RAW AssetRecord to historical work unless
+deterministic canonical evidence proves the identity.
+
+Current converted and as-is publication identities SHALL use their respective
+active canonical publication records and current Library destination identity.
+Supported rename/move, publication, archive, and restore operations SHALL
+preserve explainable history without fabricating current RAW correlation.
 
 If existing records cannot deterministically answer the relationship, the
-implementation SHALL add the smallest durable reference needed to the existing
-publication/provenance record and SHALL not introduce complete-media hashing as
-the default identity mechanism.
+implementation SHALL add only the smallest durable stable reference captured at
+the queue/publication boundary to the existing publication/provenance record
+and SHALL not introduce complete-media hashing as the default identity
+mechanism. Legacy path-only records SHALL preserve `sourceProvenance` while
+leaving `currentRawCorrelation` unresolved.
 
 #### Scenario: A RAW asset has a current converted publication
 
 - **WHEN** a Queue execution links a source path to a non-retired published path
-- **THEN** the projection links the RAW asset to that current Library publication and exposes the execution as history
+- **THEN** the projection preserves the job's source provenance, links the current RAW asset only when canonical identity proves it, and exposes the execution as history
+
+#### Scenario: A RAW asset is directly published as-is
+
+- **WHEN** an active DirectPublication records a source and current Library destination
+- **THEN** the projection exposes the DirectPublication as source provenance and published-as-is publication without inferring conversion
+
+#### Scenario: RAW is renamed before publication
+
+- **WHEN** the supported RAW rename updates the canonical source reference before a Queue publication is created
+- **THEN** the current correlation uses the reconciled canonical identity and the publication records the source relationship that was captured at the queue/publication boundary
+
+#### Scenario: Library is renamed after publication
+
+- **WHEN** #18 reconciliation renames or moves the current Library asset
+- **THEN** the current Library publication correlation follows the reconciled current destination while historical source provenance and retired records remain unchanged
+
+#### Scenario: Original RAW AssetRecord no longer exists
+
+- **WHEN** a historical QueueJob or DirectPublication retains source provenance but its original RAW AssetRecord is absent
+- **THEN** source provenance remains explainable and `currentRawCorrelation` is unresolved rather than fabricated
+
+#### Scenario: A source path is later reused
+
+- **WHEN** a historical `QueueJob.MediaPath` or `DirectPublication.SourcePath` equals the path of a different newly created RAW AssetRecord
+- **THEN** the historical source path is retained but the new AssetRecord is not bound to the old work without deterministic identity evidence
+
+#### Scenario: Legacy path-only provenance
+
+- **WHEN** a legacy job has only a source path and no durable source AssetRecord reference
+- **THEN** the path is shown as historical source provenance, current RAW correlation is unresolved, and no full-file hash is required or invented
 
 #### Scenario: A Library asset is renamed
 
@@ -212,18 +309,54 @@ summaries, and counts MUST NOT be used as the authority for action safety.
 - **WHEN** an asset has active Queue or maintenance work
 - **THEN** the affected actions are disabled or rejected with a backend reason while unrelated assets remain actionable
 
+### Requirement: Action capabilities are advisory projections over canonical guards
+
+The backend SHALL generate deterministic `AssetActionCapabilities` with
+bounded reasons for UI presentation, but the projection MUST NOT become a
+second implementation of rename, move, Queue, validation, publication,
+archive, restore, original deletion, or track/subtitle/attachment mutation
+policy. Each real mutation endpoint SHALL revalidate its canonical
+operation/domain guard at execution time. A capability response MAY be stale
+and SHALL NOT be treated as authorization, a transaction lock, or a substitute
+for the mutation guard.
+
+#### Scenario: Capability becomes stale before mutation
+
+- **WHEN** Asset Info reports archive allowed and Queue work starts before the archive request is submitted
+- **THEN** the canonical archive endpoint revalidates current eligibility and rejects the stale request if active work makes it unsafe
+
+#### Scenario: Capability reason reflects a canonical guard
+
+- **WHEN** a rename, restore, or delete-original operation is blocked by active work, missing identity, or an unsafe root
+- **THEN** the capability exposes the bounded canonical reason and the endpoint enforces the same guard independently
+
 ### Requirement: Queue Remaining preserves eligibility and complete-inventory ordinals
 
-Queue Remaining SHALL reuse canonical Queue eligibility and existing episode
-ordinal/name authorities. It SHALL skip assets already published or otherwise
-not eligible, queue remaining eligible RAW assets, preserve ordinal gaps caused
-by skipped members, and exclude extras/additional material from normal episode
-positions. Queue eligibility MUST NOT compact or renumber the complete inventory.
+Queue Remaining SHALL be an adapter over `QueueSelectedAssets`: preview SHALL
+pass the complete logical-group Asset IDs with `commit=false`, and commit SHALL
+pass the same canonical selection with `commit=true`. The adapter MAY add
+current-publication skip information, but MUST NOT create a parallel
+eligibility engine or alter Queue semantics. Canonical Queue outcomes SHALL be
+mapped to the Assets vocabulary of selectable, eligible, skipped, and blocked
+with bounded reasons.
+
+It SHALL skip assets already published or otherwise not eligible, queue
+remaining eligible RAW assets, preserve ordinal gaps caused by skipped members,
+and exclude extras/additional material from normal episode positions. Queue
+eligibility MUST NOT compact or renumber the complete inventory. Ordinals SHALL
+come from the existing complete-inventory ordering (`assetSequenceLess`,
+`episodeSequencePositions`, and existing multi-episode/direct-publication
+naming authorities), not an Assets-specific ordinal service.
 
 #### Scenario: Published members are skipped
 
 - **WHEN** a season has published E01 and E02 plus eligible RAW E03 and E04
-- **THEN** Queue Remaining skips E01/E02 and queues E03/E04 using their canonical S02E03/S02E04 positions
+- **THEN** Queue Remaining previews/commits through `QueueSelectedAssets`, skips E01/E02, and queues E03/E04 using their canonical S02E03/S02E04 positions
+
+#### Scenario: Queue results are adapted without new eligibility rules
+
+- **WHEN** `QueueSelectedAssets` returns selected/eligible, queued, skipped, or failed results for the complete group
+- **THEN** Queue Remaining maps those outcomes to selectable/eligible, queued, skipped, or blocked with the original per-asset reason and does not recompute eligibility
 
 #### Scenario: Extras do not consume episode positions
 

@@ -18,7 +18,7 @@ The current backend and frontend boundaries are:
 | Queue lifecycle | Queue claim/preparation/freeze semantics in `docs/specs/003-queue-claim-freeze/` and worker claim/prepare flow | Assets must not freeze or prepare jobs |
 | Validation | `QueueJob.ValidationStatus`, score, report, and existing validation handlers | #53 owns the future Quality Gate |
 | Converted publication | non-retired `QueueJob` records with `PublishedPath`, `PublishedAt`, and `PublicationRetiredAt` | Current Library AssetRecord does not alone identify its source job |
-| Published as-is | `models.DirectPublication` with `SourcePath`, `PublishedPath`, `LibraryID`, `ReturnedAt` | Must remain provenance evidence, not a status bucket |
+| Published as-is | `models.DirectPublication` with `SourcePath`, `PublishedPath`, `LibraryID`, `PublishedFingerprint`, `PublishedAt`, and `ReturnedAt` | Must remain provenance evidence; it has no persisted `publicationMode` |
 | Original retention | `QueueJob.OriginalArchivedPath`, archive AssetRecords, retention expiry, and existing archive/restore/delete guards | Archive is currently exposed as an inventory |
 | Analysis | persisted `models.ScanResult`, snapshots, and existing analysis/snapshot endpoints | #52 owns the Analysis lifecycle redesign |
 | Evidence/history | Queue jobs, execution plans, artifacts, reports, notes, logs, and maintenance operations | Reports currently appear as a top-level Assets tab |
@@ -144,21 +144,55 @@ reference on the existing publication/provenance record, with a compatibility
 backfill only where the existing source and publication evidence is
 deterministic. Do not add complete-media hashing as the default.
 
-### 4. Current Library publication and RAW↔Library correlation
+### 4. Publication identity, current publication, and RAW correlation
 
-For converted work, the resolver matches a current Library `AssetRecord.Path`
-to the active, non-retired QueueJob publication path and retains the QueueJob's
-`MediaPath` as the source-side relationship. For published-as-is work, it
-matches the current Library path to an active `DirectPublication.PublishedPath`
-and uses `DirectPublication.SourcePath` as the source relationship. Current
-selection is deterministic: active/non-retired evidence, then newest
-publication timestamp and stable ID ordering. Retired jobs/publications are
-history only.
+Publication identity and current RAW correlation are separate concepts:
 
-`AssetRecord.SourcePath` remains source-group/path metadata and is not treated as
-the sole publication join, because current published records can lack that
-field. The correlation resolver must expose unresolved/legacy when neither
-canonical relationship can prove the source.
+```text
+sourceProvenance {
+    authority: QueueJob | DirectPublication | other canonical record
+    recordID
+    historicalSourcePath/reference
+}
+
+currentRawCorrelation {
+    assetRecordID: optional
+    state: resolved | unresolved | unavailable
+}
+```
+
+`sourceProvenance` preserves the source path/reference captured by a job or
+publication even when the original RAW AssetRecord no longer exists.
+`currentRawCorrelation` is populated only when deterministic canonical
+evidence binds that historical source to the currently known RAW AssetRecord.
+A current AssetRecord occupying the same path does not prove that it is the
+original source after path reuse.
+
+A valid converted publication is an active/non-retired QueueJob publication
+whose current destination identity matches the Library asset. A valid as-is
+publication is an active/non-returned DirectPublication whose current
+destination identity matches the Library asset. Within one authority, ordering
+may use active/non-retired state, publication timestamp, and that same table's
+stable ID as a final tie breaker.
+
+Across QueueJob and DirectPublication, the resolver MUST NOT compare unrelated
+primary keys, `UpdatedAt`, or status-string specificity. If both independently
+claim the same current Library asset and no canonical supersession/history
+relationship proves which is current, the result is
+`currentPublication = unresolved/conflict`, provenance is
+`legacy_or_unknown` (or an explicit conflict presentation), attention is
+`needs_review`, and destructive/recovery actions fail closed. A retired
+QueueJob plus an active DirectPublication resolves as-is; an active QueueJob
+plus a returned DirectPublication resolves as converted. QueueJob-only and
+DirectPublication-only cases resolve their respective provenance when the
+destination identity matches.
+
+If the existing records cannot guarantee `currentRawCorrelation` across
+rename/move and path reuse, add only the smallest durable stable reference
+captured at the queue/publication boundary to the existing
+publication/provenance record. Do not introduce complete-media hashing as the
+default identity solution. Legacy path-only rows preserve `sourceProvenance`
+but leave `currentRawCorrelation` unresolved.
 
 The existing #18 rename/move reconciliation is the current-path authority. It
 updates the current AssetRecord and ScanResult path, path-keyed overrides and
@@ -171,8 +205,10 @@ reconciled current evidence; it does not implement a second rename path.
 
 Converted provenance is proven by the active/non-retired QueueJob/output
 relationship and the existing MVForge output classification. Published-as-is
-is proven by an active `DirectPublication` (and its existing publication mode),
-not by `AssetRecord.Status == converted` or by a path shape. Accepted/imported
+is proven by an active/non-returned `DirectPublication`, not by
+`AssetRecord.Status == converted` or by a path shape. The projection may expose
+`publicationMode: as_is` for presentation, but that value is derived and no
+persisted DirectPublication mode exists. Accepted/imported
 uses existing accepted/direct-ingest evidence. Any Library record that cannot
 be proven remains legacy/unknown.
 
@@ -219,12 +255,23 @@ avoid frontend joins and N+1 detail calls.
 
 ### 8. Queue Remaining eligibility ownership
 
-Queue remains the sole owner of eligibility. The Assets surface may request a
-preview/commit for all members of a logical group, but it delegates per-asset
-resolution to the existing `QueueSelectedAssets` contract and its effective
-configuration, review, missing, open-job, maintenance, destination, and
-operation checks. The response continues to distinguish eligible, queued,
-skipped, failed, and bounded reasons.
+Queue remains the sole owner of eligibility. Queue Remaining is an adapter over
+`QueueHandler.QueueSelectedAssets`, not a second resolver:
+
+1. Preview expands the complete logical-group Asset IDs and invokes
+   `QueueSelectedAssets(commit=false)`.
+2. Commit uses the same canonical selection and invokes
+   `QueueSelectedAssets(commit=true)`.
+3. The adapter may augment the presentation with current-publication skip
+   information, but it does not reimplement open-job, maintenance, review,
+   missing, destination, configuration, or operation guards.
+
+The existing Queue result vocabulary is mapped without changing Queue
+semantics: selected/eligible describe candidates accepted by the resolver,
+queued describes committed job creation, skipped describes a deliberate
+non-queued outcome, and failed is surfaced as blocked with its bounded reason
+where the Assets UI needs that label. The response continues to preserve the
+canonical per-asset outcome, reason, message, batch, and job identifiers.
 
 Queue Remaining is therefore a selection policy over a complete group, not a
 new queue engine. Already published/current Library members are skipped by
@@ -234,11 +281,14 @@ freeze, or analyze every selected asset.
 
 ### 9. Episode ordinal ownership
 
-Episode ordinals remain owned by the existing complete-inventory ordering and
-multi-episode naming helpers used by Queue/worker and direct-publication
+Episode ordinals remain owned by the existing complete-inventory ordering
+helpers, including `assetSequenceLess` and `episodeSequencePositions`, plus
+the existing multi-episode naming helpers and direct-publication episode
 planning. The Assets redesign must call those authorities or expose their
-result; it must not renumber selected rows in TypeScript or introduce an Assets
-ordinal algorithm.
+result; it must not claim a generic pre-existing `episodeOrdinalService`,
+renumber selected rows in TypeScript, or introduce an Assets ordinal
+algorithm. A shared pure helper may be extracted only if required to keep
+Queue and direct-publication ordering identical.
 
 The complete set of records in the relevant source/group determines positions.
 Filtering or selecting only E03/E04 cannot compact them to E01/E02. Existing
@@ -268,7 +318,18 @@ reimplement safety/eligibility rules.
 
 The projection does not grant new capabilities to legacy/unknown records. It
 fails closed for destructive or recovery actions when identity, roots, or
-canonical evidence are insufficient.
+canonical evidence are insufficient. Operation-specific handlers/domain
+guards remain the mutation authority. Capabilities are a deterministic,
+backend-generated read projection for UI enable/disable/reasons, not a security
+or transaction substitute, and may be stale by click time. Every mutation
+endpoint MUST revalidate its canonical guard at execution time; if inline
+guards need reuse, they may be extracted into a shared pure guard, not copied
+into a lifecycle resolver.
+
+For example, if Asset Info reports `archive.allowed = true` and Queue work
+starts before the archive request, the canonical archive endpoint rechecks
+active work and rejects the request if the new state is ineligible. The stale
+capability response cannot authorize the mutation.
 
 ### 11. Asset Info loading and section boundaries
 
@@ -421,6 +482,18 @@ Queue jobs, publications, reports, paths, or media.
   the smallest durable publication reference if deterministic joins are proven
   insufficient.
 
+- **Risk:** An active QueueJob and an active DirectPublication may both claim a
+  Library destination without a cross-authority supersession record.
+  **Mitigation:** surface an explicit publication conflict, never compare
+  unrelated IDs or timestamps, preserve both histories, and fail closed for
+  destructive/recovery actions.
+
+- **Risk:** An action-capability response can become stale between read and
+  mutation.
+  **Mitigation:** keep capabilities advisory and require the canonical
+  operation guard to revalidate at mutation time, including active-work and
+  root-safety checks.
+
 - **Risk:** Existing list construction loads broad persisted sets and can create
   slow joins on a NAS.  
   **Mitigation:** batch maps, bounded aggregates, pagination/lazy sections,
@@ -460,17 +533,17 @@ Queue jobs, publications, reports, paths, or media.
 ## Explicit Design Questions
 
 1. **Canonical RAW/Library distinction:** location is source-root RAW versus configured destination-root Library; stages and evidence are not locations.
-2. **Current Library publication:** active non-retired QueueJob publication or active DirectPublication, selected deterministically by current path and publication evidence.
-3. **Correlation across rename/move:** #18 reconciliation updates current AssetRecord and active publication references; historical rows remain unchanged.
+2. **Current Library publication:** a valid active/non-retired QueueJob publication or active/non-returned DirectPublication whose current destination identity matches; same-authority ties are deterministic, but cross-authority conflicts are unresolved rather than guessed.
+3. **Correlation across rename/move:** #18 reconciliation updates current AssetRecord and active publication references; historical rows remain unchanged. Historical `sourceProvenance` is separate from optional `currentRawCorrelation`.
 4. **Persisted versus derived:** persisted canonical records hold facts; the lifecycle projection, counts, badges, filters, attention, and actions are derived.
-5. **New lifecycle table:** no; it would duplicate transitions. Add only a minimal publication reference if deterministic correlation tests require it.
+5. **New lifecycle table:** no; it would duplicate transitions. Add only a minimal stable publication/provenance reference captured at the queue/publication boundary if deterministic correlation tests require it.
 6. **Mixed groups:** member projections remain authoritative; groups expose deterministic counts/badges only.
-7. **Queue Remaining eligibility:** QueueHandler's existing per-asset eligibility contract.
-8. **Episode ordinals:** complete-inventory ordering and existing worker/direct-publication naming authorities.
-9. **Converted versus published-as-is:** active QueueJob/output evidence versus active DirectPublication evidence; no path/status inference.
+7. **Queue Remaining eligibility:** `QueueHandler.QueueSelectedAssets` directly owns preview/commit checks; Assets only supplies complete selection and maps canonical results.
+8. **Episode ordinals:** complete-inventory ordering through `assetSequenceLess`, `episodeSequencePositions`, existing multi-episode naming helpers, and direct-publication planning; no generic ordinal service is assumed.
+9. **Converted versus published-as-is:** active QueueJob/output evidence versus active/non-returned DirectPublication evidence; presentation `as_is` is derived and no DirectPublication mode is persisted.
 10. **Archived originals:** QueueJob `OriginalArchivedPath` plus archive AssetRecord/retention evidence, linked through current publication correlation.
 11. **Legacy assets:** visible in Library with legacy/unknown provenance and unresolved correlation where necessary.
-12. **Action eligibility:** backend `AssetActionCapabilities` projection with bounded reasons.
+12. **Action eligibility:** backend `AssetActionCapabilities` projection with bounded reasons, generated from canonical operation guards; each mutation endpoint revalidates at execution time and the projection is never authorization.
 13. **Asset Info loading:** persisted Overview immediately; Analysis, reports, scans, subtitles, validation, publication, original, and history sections lazy.
 14. **Reports/history:** existing artifact/report/job/plan/log records, linked and lazy; no new store.
 15. **Revisions/current publication:** active non-retired publication is current; retired jobs/publications are immutable history.
