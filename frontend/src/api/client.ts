@@ -684,6 +684,7 @@ export const api = {
       status: 'current' | 'missing' | 'changed' | 'stale' | 'legacy' | 'unavailable';
       requiresAnalysis: boolean;
       staleComponents: string[];
+      analysisEvidence?: import('./types').AssetAnalysisEvidence;
     }>(`/api/scan?path=${encodeURIComponent(path)}`),
   startSnapshotOperation: ({ path, force = false, analysisSeconds = 20 }: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) =>
     request<SnapshotOperation>('/api/scan/operations', {

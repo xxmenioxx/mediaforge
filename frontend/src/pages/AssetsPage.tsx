@@ -104,7 +104,7 @@ export function AssetsPage() {
   const [validationFilter, setValidationFilter] = useState(searchParams.get('validation') ?? '');
   const [workflowFilter, setWorkflowFilter] = useState(searchParams.get('workflow') ?? '');
   const [attentionFilter, setAttentionFilter] = useState(searchParams.get('attention') ?? '');
-  const [assetQuery, setAssetQuery] = useState('');
+  const [assetQuery, setAssetQuery] = useState(searchParams.get('asset') ?? '');
   const [mediaArea, setMediaArea] = useState('');
 	const [sourceGroupId, setSourceGroupId] = useState(0);
   const legacyTab = searchParams.get('tab');
@@ -161,6 +161,12 @@ export function AssetsPage() {
   const convertedCount = assets.data?.counts?.converted ?? safeArray(assets.data?.converted).length;
   const acceptedCount = safeArray(assets.data?.accepted).length;
   const sourceGroups = safeArray(assets.data?.sourceGroups);
+  const legacyAssetPath = searchParams.get('asset') ?? '';
+  useEffect(() => {
+    if (!legacyAssetPath || !sourceGroups.length) return;
+    const containing = sourceGroups.find((group) => safeArray(group.logicalGroups).some((logical) => safeArray(logical.assetPaths).some((path) => safeArray(path.assets).some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)))));
+    if (containing) setSourceGroupId(containing.id);
+  }, [legacyAssetPath, assets.data?.sourceGroups]);
   const libraryGroups = safeArray(assets.data?.libraryGroups);
   const canonicalLibraryGroups = libraryGroups.length ? libraryGroups : safeArray(assets.data?.convertedGroups);
   const statusGroups = safeArray(
@@ -192,6 +198,7 @@ export function AssetsPage() {
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         {assets.isError ? <Alert severity="warning">Unable to read library paths from the backend container.</Alert> : null}
         {unsupportedLegacyTab ? <Alert severity="info">This Assets link is no longer a supported inventory context. Open RAW or Library and use the persisted lifecycle filters.</Alert> : null}
+        <LegacyAnalysisRecords settings={settings.data ?? []} />
 
         <Card>
           <CardContent sx={{ py: 1.25 }}>
@@ -334,6 +341,7 @@ export function AssetsPage() {
 					queueJobs={jobs.data ?? []}
 					runningSnapshotPaths={runningSnapshotPaths}
 					query={assetQuery}
+					legacyAssetPath={legacyAssetPath}
 				/>
 			</AssetsErrorBoundary>
           ) : (
@@ -361,6 +369,26 @@ export function AssetsPage() {
       </Box>
     </>
   );
+}
+
+function LegacyAnalysisRecords({ settings }: { settings: AppSetting[] }) {
+  const [open, setOpen] = useState(false);
+  const value = settings.find((setting) => setting.key === 'analysisRecords')?.value.records;
+  const records = Array.isArray(value) ? value.filter((record): record is Record<string, unknown> => Boolean(record && typeof record === 'object')) : [];
+  if (!records.length) return null;
+  return <Box sx={{ mb: 1.5 }}>
+    <Button size="small" onClick={() => setOpen((current) => !current)} aria-expanded={open}>Legacy Analysis decisions ({records.length})</Button>
+    <Collapse in={open}>
+      <Stack spacing={1} sx={{ mt: 1 }}>
+        <Alert severity="info">Saved decisions and notes are preserved as legacy records. Asset Info History shows an annotation only when the full source-evidence identity matches; path equality alone is never sufficient.</Alert>
+        {records.map((record, index) => <Card variant="outlined" key={String(record.id ?? index)}><CardContent sx={{ py: 1 }}>
+          <Typography fontWeight={700}>{String(record.assetName ?? 'Legacy asset')} · {String(record.decision ?? 'No decision')}</Typography>
+          <Typography variant="body2" color="text.secondary">Legacy record · {String(record.assetPath ?? 'source path unavailable')} · {String(record.createdAt ?? '')}</Typography>
+          {record.notes ? <Typography variant="body2" sx={{ mt: 0.5 }}>{String(record.notes)}</Typography> : null}
+        </CardContent></Card>)}
+      </Stack>
+    </Collapse>
+  </Box>;
 }
 
 function AssetTabLabel({ label, count, color }: { label: string; count: number; color: 'warning' | 'success' | 'primary' | 'default' }) {
@@ -737,7 +765,7 @@ type AssetCollection = {
 };
 
 function UnprocessedAssetsView({
-	sourceGroup, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query,
+	sourceGroup, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query, legacyAssetPath,
 }: {
 	sourceGroup?: AssetSourceGroup;
 	libraries: Library[];
@@ -749,6 +777,7 @@ function UnprocessedAssetsView({
 	queueJobs: QueueJob[];
 	runningSnapshotPaths: Set<string>;
 	query: string;
+	legacyAssetPath: string;
 }) {
 	const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(() => new Set());
 	if (!sourceGroup) return <CardContent><Alert severity="info">No Unprocessed Source Groups found.</Alert></CardContent>;
@@ -761,19 +790,20 @@ function UnprocessedAssetsView({
 				<Typography variant="body2" color="text.secondary">{countLabel(sourceGroup.assetCount, 'asset')} · {countLabel(sourceGroup.titleCount, 'title')} · {countLabel(sourceGroup.pathCount, 'path')} · {formatBytes(sourceGroup.totalSizeBytes)}</Typography>
 				{selectedSelectableAssetsForLogicalGroups(sourceGroup.logicalGroups, selectedAssetIds).length ? <UnprocessedSelectionToolbar selectedAssetIds={selectedAssetIds} logicalGroups={sourceGroup.logicalGroups} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} queueJobs={queueJobs} onClear={() => setSelectedAssetIds(new Set())} /> : null}
 			</Box>
-			<Stack spacing={1.25}>{logicalGroups.map((logicalGroup) => <UnprocessedLogicalGroup key={logicalGroup.id} logicalGroup={logicalGroup} selectedAssetIds={selectedAssetIds} onAssetSelectionChange={(assetIds, selected) => setSelectedAssetIds((current) => { const next = new Set(current); for (const assetId of assetIds) { if (selected) next.add(assetId); else next.delete(assetId); } return next; })} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} />)}{!logicalGroups.length ? <Alert severity="info">No Unprocessed assets match this search.</Alert> : null}</Stack>
+			<Stack spacing={1.25}>{logicalGroups.map((logicalGroup) => <UnprocessedLogicalGroup key={logicalGroup.id} logicalGroup={logicalGroup} legacyAssetPath={legacyAssetPath} selectedAssetIds={selectedAssetIds} onAssetSelectionChange={(assetIds, selected) => setSelectedAssetIds((current) => { const next = new Set(current); for (const assetId of assetIds) { if (selected) next.add(assetId); else next.delete(assetId); } return next; })} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} />)}{!logicalGroups.length ? <Alert severity="info">No Unprocessed assets match this search.</Alert> : null}</Stack>
 		</Box>
 	);
 }
 
 type PreparedSelectionQueue = QueueSelectedAssetsResponse;
 
-function UnprocessedLogicalGroup({ logicalGroup, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths }: {
-	logicalGroup: AssetLogicalGroup; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>;
+function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths }: {
+	logicalGroup: AssetLogicalGroup; legacyAssetPath: string; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>;
 }) {
 	const queryClient = useQueryClient();
-	const [expanded, setExpanded] = useState(false);
-	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
+	const targetPath = safeArray(logicalGroup.assetPaths).find((path) => safeArray(path.assets).some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)));
+	const [expanded, setExpanded] = useState(Boolean(targetPath));
+	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set(targetPath && !targetPath.isLogicalGroupRoot ? [targetPath.id] : []));
 	const [titleSnapshotsOpen, setTitleSnapshotsOpen] = useState(false);
 	const paths = safeArray(logicalGroup.assetPaths);
 	const assets = selectableAssetsForPaths(paths);
@@ -842,7 +872,7 @@ function UnprocessedLogicalGroup({ logicalGroup, selectedAssetIds, onAssetSelect
 		return <Box sx={{ overflowX: 'auto' }}><Table size="small" sx={{ minWidth: 720, tableLayout: 'fixed' }}><TableHead><TableRow><TableCell padding="checkbox" sx={{ width: 48 }} /><TableCell>Asset</TableCell><TableCell sx={{ width: 180 }}>Status</TableCell><TableCell sx={{ width: 100 }}>Size</TableCell><TableCell align="center" sx={{ width: 220 }}>Actions</TableCell></TableRow></TableHead><TableBody>{visibleAssets.map((asset) => {
 			const effective = asset.id ? effectiveConfigurations.data?.configurations[String(asset.id)] : undefined;
 			const track = trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey);
-			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupRelativePath={path.relativePath} groupPath={path.path} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)} bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
+			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} autoOpenAssetInfo={normalizePath(asset.path) === normalizePath(legacyAssetPath)} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupRelativePath={path.relativePath} groupPath={path.path} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)} bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
 		})}</TableBody></Table></Box>;
 	};
 	return <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
@@ -1536,6 +1566,30 @@ function SnapshotStateChip({ status }: { status: 'current' | 'missing' | 'change
   const labels = { current: 'Current', missing: 'Missing', changed: 'Changed', stale: 'Stale', legacy: 'Incomplete', unavailable: 'Corrupt / unavailable', running: 'Running' };
   const color = status === 'current' ? 'success' : status === 'running' ? 'primary' : status === 'missing' || status === 'unavailable' ? 'default' : 'warning';
   return <Chip size="small" label={labels[status]} color={color} />;
+}
+
+function analysisEvidenceLabel(status?: string) {
+  switch (status) {
+    case 'missing': return 'Missing';
+    case 'ready': return 'Ready';
+    case 'stale': return 'Stale';
+    case 'unavailable': return 'Unavailable';
+    default: return 'Unavailable';
+  }
+}
+
+function latestSnapshotAnalysisStatus(snapshot?: Awaited<ReturnType<typeof api.latestSnapshot>>) {
+  if (snapshot?.analysisEvidence?.status) return snapshot.analysisEvidence.status;
+  // Older server responses already classify persisted evidence through these
+  // fields. Keep the UI compatible without inferring identity from its path.
+  if (!snapshot?.snapshot) return snapshot?.status === 'unavailable' ? 'unavailable' : 'missing';
+  if (snapshot.requiresAnalysis || snapshot.status === 'stale' || snapshot.status === 'changed' || snapshot.status === 'legacy') return 'stale';
+  return snapshot.status === 'unavailable' ? 'unavailable' : 'ready';
+}
+
+function AnalysisEvidenceChip({ status }: { status: 'missing' | 'ready' | 'stale' | 'unavailable' }) {
+  const color = status === 'ready' ? 'success' : status === 'stale' ? 'warning' : 'default';
+  return <Chip size="small" label={analysisEvidenceLabel(status)} color={color} />;
 }
 
 function ArchivedAssetTable({
@@ -2619,7 +2673,7 @@ export function AssetInfoOverview({ asset, libraries }: { asset: Asset; librarie
       )}
       <Box>
         <Typography variant="caption" color="text.secondary">Integration evidence</Typography>
-        <Typography>{evidence?.hasAnalysis ? 'Analysis evidence available' : 'Analysis unavailable'}</Typography>
+        <Typography>Analysis · {analysisEvidenceLabel(evidence?.analysis?.status)}</Typography>
         <Typography variant="caption" color="text.secondary">Validation and Publisher details remain unavailable/pending until their canonical evidence exists.</Typography>
       </Box>
       {blockedActions.length ? (
@@ -2646,6 +2700,7 @@ function associatedJobForCurrentPublication(asset: Asset, jobs: QueueJob[]) {
 
 function AssetRow({
   asset,
+	autoOpenAssetInfo = false,
 	compactUnprocessed = false,
   libraries,
   profiles,
@@ -2672,6 +2727,7 @@ function AssetRow({
   archivePathAssets = [],
 }: {
   asset: Asset;
+	autoOpenAssetInfo?: boolean;
 	compactUnprocessed?: boolean;
   libraries: Library[];
   profiles: Profile[];
@@ -2759,6 +2815,13 @@ function AssetRow({
   const assetEditDraftRef = useRef(assetEditDraft);
   const assetEditPathRef = useRef(asset.path);
   const assetEditDirty = !assetInfoDocumentsEqual(persistedAssetEdit, assetEditDraft);
+
+  useEffect(() => {
+    if (autoOpenAssetInfo) {
+      setSnapshotTab('overview');
+      setShowSnapshotDialog(true);
+    }
+  }, [autoOpenAssetInfo]);
   const conversionDraft = assetEditDraft.conversion;
   const category = firstCategory(assetEditDraft.metadata.categories) || groupCategory;
   const authoritativeAssetEdit = assetInfoEditDocument(assetMetadata, normalizeAssetConversionOverride(asset.conversion));
@@ -2790,9 +2853,35 @@ function AssetRow({
   const storedSnapshot = useQuery({
     queryKey: ['assetSnapshot', asset.path],
     queryFn: () => api.latestSnapshot(asset.path),
-    enabled: showSnapshotDialog && ['analysis', 'tracks', 'subtitles', 'advisor', 'conversion', 'test-encode'].includes(snapshotTab) && !asset.missing,
+    enabled: showSnapshotDialog && ['analysis', 'tracks', 'subtitles', 'advisor', 'conversion', 'test-encode', 'history'].includes(snapshotTab) && !asset.missing,
     staleTime: 0,
   });
+  const legacyAnalysisSettings = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.settings,
+    enabled: showSnapshotDialog && snapshotTab === 'history',
+  });
+  const legacyAnalysisRecords = (() => {
+    const raw = legacyAnalysisSettings.data?.find((setting) => setting.key === 'analysisRecords')?.value.records;
+    if (!Array.isArray(raw)) return [];
+    const snapshot = storedSnapshot.data?.snapshot;
+    const identity = storedSnapshot.data?.analysisEvidence?.sourceIdentity;
+    if (!snapshot || !identity?.matchesCurrentSourceRevision || !identity.snapshotUpdatedAt) return [];
+    return raw.filter((value): value is Record<string, unknown> => {
+      if (!value || typeof value !== 'object') return false;
+      const record = value as Record<string, unknown>;
+      const scan = record.scan;
+      if (!scan || typeof scan !== 'object') return false;
+      const legacyScan = scan as Partial<ScanResult>;
+      const cache = legacyScan.rawProbe?.snapshotCache;
+      const fingerprint = cache && typeof cache === 'object' ? (cache as Record<string, unknown>).fingerprint : undefined;
+      const legacyIdentity = fingerprint && typeof fingerprint === 'object' ? fingerprint as Record<string, unknown> : undefined;
+      return record.assetPath === asset.path && legacyScan.path === snapshot.path &&
+        legacyScan.id === identity.snapshotId && legacyScan.sizeBytes === identity.sizeBytes &&
+        legacyScan.updatedAt === identity.snapshotUpdatedAt &&
+        legacyIdentity?.sizeBytes === identity.sizeBytes && legacyIdentity?.mtimeNs === identity.modifiedAtUnixNano;
+    });
+  })();
   const snapshot = useMutation({
     mutationFn: async (input: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) => {
       let operation = await api.startSnapshotOperation(input);
@@ -2807,16 +2896,12 @@ function AssetRow({
       }
       return operation.result;
     },
-    onSuccess: async (scan) => {
-      queryClient.setQueryData(['assetSnapshot', asset.path], {
-        found: true,
-        snapshot: scan,
-        status: 'current',
-        requiresAnalysis: false,
-        staleComponents: [],
-      });
-      await queryClient.invalidateQueries({ queryKey: ['assets'] });
-      await queryClient.invalidateQueries({ queryKey: ['snapshotOperations'] });
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assetSnapshot', asset.path] }),
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        queryClient.invalidateQueries({ queryKey: ['snapshotOperations'] }),
+      ]);
     },
   });
   const snapshotData = storedSnapshot.data?.snapshot ?? snapshot.data ?? null;
@@ -4419,7 +4504,7 @@ async function generateExternalSubtitle(
             </Stack>
             {storedSnapshotExists && !refreshRequired ? (
               <Button startIcon={<RefreshIcon />} variant="outlined" size="small" onClick={refreshSnapshot} disabled={asset.missing || operationPending}>
-                Rescan
+                Refresh analysis
               </Button>
             ) : null}
           </Stack>
@@ -4463,7 +4548,7 @@ async function generateExternalSubtitle(
             {snapshot.isError ? (
               <Alert severity="warning">Could not scan this asset: {snapshot.error instanceof Error ? snapshot.error.message : 'unknown backend error'}</Alert>
             ) : null}
-            {snapshotTab !== 'overview' && !asset.missing && !storedSnapshot.isLoading && !operationPending && !storedSnapshotExists ? (
+            {snapshotTab !== 'overview' && snapshotTab !== 'analysis' && !asset.missing && !storedSnapshot.isLoading && !operationPending && !storedSnapshotExists ? (
               <Alert
                 severity="info"
                 action={<Button color="inherit" size="small" onClick={() => snapshot.mutate({ path: asset.path })} disabled={!assetInfoCapability(asset, 'refreshAnalysis').allowed}>{assetInfoCapability(asset, 'refreshAnalysis').allowed ? 'Analyze asset' : assetInfoCapability(asset, 'refreshAnalysis').reason || 'Analysis unavailable'}</Button>}
@@ -4471,18 +4556,10 @@ async function generateExternalSubtitle(
                 No snapshot available
               </Alert>
             ) : null}
-            {snapshotTab !== 'overview' && !asset.missing && !operationPending && refreshRequired ? (
-              <Alert
-                severity="warning"
-                action={<Button color="inherit" size="small" onClick={refreshSnapshot} disabled={!assetInfoCapability(asset, 'refreshAnalysis').allowed}>Rescan</Button>}
-              >
-                Snapshot needs refresh
-              </Alert>
-            ) : null}
             <>
                 <Tabs value={snapshotTab} onChange={(_, value: AssetInfoSection) => setSnapshotTab(value)} variant="scrollable" allowScrollButtonsMobile>
                   <Tab value="overview" label="Asset Information" />
-                  <Tab value="analysis" label="Technical Snapshot" />
+                  <Tab value="analysis" label="Analysis" />
                   <Tab value="tracks" label="Tracks" />
                   <Tab value="subtitles" label="Subtitles" />
                   <Tab value="attachments" label="Attachments" />
@@ -4496,9 +4573,26 @@ async function generateExternalSubtitle(
                   <Tab value="test-encode" label="Test Encode" />
                 </Tabs>
                 {snapshotTab === 'analysis' ? <Box>
-                  <Box sx={{ pt: 1.5 }}>
-                    {snapshotData ? <><MediaSnapshotDetails scan={snapshotData} section="general" /><DirectPlaySnapshotComparison scan={snapshotData} job={associatedJob} /></> : <Alert severity="info">Analysis unavailable. Select Analyze asset only when a fresh analysis is required.</Alert>}
-                  </Box>
+                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                    <Stack direction="row" alignItems="center" spacing={1}>
+                      <Typography variant="h3">Source evidence</Typography>
+                      {storedSnapshot.isLoading ? <LinearProgress sx={{ flex: 1 }} /> : <AnalysisEvidenceChip status={latestSnapshotAnalysisStatus(storedSnapshot.data) ?? 'unavailable'} />}
+                    </Stack>
+                    {storedSnapshot.isError ? <Alert severity="warning">Analysis evidence is unavailable: {storedSnapshot.error instanceof Error ? storedSnapshot.error.message : 'the backend could not classify the current snapshot'}</Alert> : null}
+                    {latestSnapshotAnalysisStatus(storedSnapshot.data) === 'stale' ? (
+                      <Alert severity="warning">
+                        Snapshot evidence is stale{storedSnapshot.data.analysisEvidence?.staleComponents?.length ? ` · ${storedSnapshot.data.analysisEvidence.staleComponents.join(', ')}` : ''}. Refresh it explicitly to analyze the current source revision.
+                      </Alert>
+                    ) : null}
+                    {latestSnapshotAnalysisStatus(storedSnapshot.data) === 'missing' ? <Alert severity="info">No snapshot available for the current source revision.</Alert> : null}
+                    {latestSnapshotAnalysisStatus(storedSnapshot.data) === 'unavailable' ? <Alert severity="warning">Analysis evidence is unavailable{storedSnapshot.data?.analysisEvidence?.unavailableReason ? `: ${storedSnapshot.data.analysisEvidence.unavailableReason}` : ''}.</Alert> : null}
+                    {(latestSnapshotAnalysisStatus(storedSnapshot.data) === 'missing' || latestSnapshotAnalysisStatus(storedSnapshot.data) === 'stale' || (latestSnapshotAnalysisStatus(storedSnapshot.data) === 'unavailable' && storedSnapshot.data?.requiresAnalysis)) ? (
+                      <Button variant="contained" onClick={refreshSnapshot} disabled={operationPending || asset.missing || !assetInfoCapability(asset, 'refreshAnalysis').allowed} sx={{ alignSelf: 'flex-start' }}>
+                        {latestSnapshotAnalysisStatus(storedSnapshot.data) === 'missing' ? 'Analyze asset' : 'Refresh analysis'}
+                      </Button>
+                    ) : null}
+                    {snapshotData ? <><MediaSnapshotDetails scan={snapshotData} /><DirectPlaySnapshotComparison scan={snapshotData} job={associatedJob} /></> : null}
+                  </Stack>
                 </Box> : null}
                 {snapshotTab === 'tracks' || snapshotTab === 'subtitles' ? <Box>
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
@@ -4821,6 +4915,7 @@ async function generateExternalSubtitle(
                     <Typography color="text.secondary">Current publication is resolved by Phase A. Historical executions and retired publications remain separate and immutable.</Typography>
                     {historyJobs.length ? historyJobs.map((job) => <Typography key={job.id}>Queue job #{job.id} · {job.publishedPath || job.outputPath || job.mediaPath}{job.id === asset.lifecycle?.currentPublication?.id ? ' · current' : ' · historical'}</Typography>) : null}
                     {asset.lifecycle?.evidenceSummary?.directPublicationIds?.map((id) => <Typography key={id}>Direct publication #{id} · historical/current distinction remains backend-resolved</Typography>)}
+                    {legacyAnalysisRecords.map((record, index) => <Alert key={String(record.id ?? index)} severity="info"><strong>Legacy Analysis decision:</strong> {String(record.decision ?? 'No decision')} · {String(record.createdAt ?? '')}{record.notes ? ` · ${String(record.notes)}` : ''}</Alert>)}
                   </Stack>
                 </Box> : null}
                 {snapshotTab === 'advisor' ? <Box>

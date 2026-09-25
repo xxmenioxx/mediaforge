@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -155,6 +157,71 @@ func TestResolveAssetLifecycleProjectionPublicationAuthorities(t *testing.T) {
 			}
 			if test.wantConflict && projection.Actions.DeleteOriginal.Allowed {
 				t.Fatal("conflicting publication authorities must fail closed for original deletion")
+			}
+		})
+	}
+}
+
+func TestResolveAssetAnalysisEvidenceStatesAndIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source.mkv")
+	if err := os.WriteFile(path, []byte("fixture source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := completeAnalysisSnapshot(path, info)
+	snapshot.ID = 17
+	snapshot.UpdatedAt = time.Date(2026, 9, 25, 12, 0, 0, 123456789, time.UTC)
+	stampSnapshotCacheMetadata(&snapshot, path, info)
+	record := models.AssetRecord{Path: path, SizeBytes: info.Size(), ModifiedAt: info.ModTime()}
+	legacy := snapshot
+	legacy.RawProbe = models.JSONMap{}
+	partial := completeAnalysisSnapshot(path, info)
+	partial.ID = snapshot.ID + 1
+	partial.UpdatedAt = snapshot.UpdatedAt.Add(time.Second)
+	stampSnapshotCacheMetadata(&partial, path, info)
+	cache := partial.RawProbe["snapshotCache"].(models.JSONMap)
+	components := models.JSONMap{}
+	for key, value := range cache["components"].(models.JSONMap) {
+		components[key] = value
+	}
+	cache["components"] = components
+	components["cadence"] = 0
+
+	tests := []struct {
+		name   string
+		record models.AssetRecord
+		scans  []models.ScanResult
+		policy AnalysisPolicy
+		want   string
+	}{
+		{name: "missing", record: record, want: assetAnalysisMissing},
+		{name: "ready", record: record, scans: []models.ScanResult{snapshot}, want: assetAnalysisReady},
+		{name: "stale source revision", record: models.AssetRecord{Path: path, SizeBytes: info.Size() + 1, ModifiedAt: info.ModTime()}, scans: []models.ScanResult{snapshot}, want: assetAnalysisStale},
+		{name: "stale scanner policy", record: record, scans: []models.ScanResult{snapshot}, policy: analysisPolicyPreset("fast"), want: assetAnalysisStale},
+		{name: "stale component evidence", record: record, scans: []models.ScanResult{partial}, want: assetAnalysisStale},
+		{name: "legacy identity unavailable", record: record, scans: []models.ScanResult{legacy}, want: assetAnalysisUnavailable},
+		{name: "missing asset unavailable", record: models.AssetRecord{Path: path, Missing: true}, scans: []models.ScanResult{snapshot}, want: assetAnalysisUnavailable},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			evidence := resolveAssetAnalysisEvidence(testCase.record, testCase.scans, testCase.policy, 20)
+			if evidence.Status != testCase.want {
+				t.Fatalf("status=%q want %q evidence=%#v", evidence.Status, testCase.want, evidence)
+			}
+			if testCase.name == "ready" && (evidence.SourceIdentity == nil || !evidence.SourceIdentity.MatchesCurrentSourceRevision || evidence.SourceIdentity.SnapshotID != snapshot.ID) {
+				t.Fatalf("ready evidence lacks matching source identity: %#v", evidence)
+			}
+			if testCase.name == "stale source revision" && (evidence.SourceIdentity == nil || evidence.SourceIdentity.MatchesCurrentSourceRevision || !reflect.DeepEqual(evidence.StaleComponents, []string{"source"})) {
+				t.Fatalf("stale source evidence was not fenced: %#v", evidence)
+			}
+			if testCase.name == "legacy identity unavailable" && evidence.UnavailableReason != "source_identity_unavailable" {
+				t.Fatalf("legacy evidence was given an unsafe identity: %#v", evidence)
+			}
+			if testCase.name == "stale component evidence" && !reflect.DeepEqual(evidence.StaleComponents, []string{"cadence"}) {
+				t.Fatalf("partial component provenance was not retained: %#v", evidence)
 			}
 		})
 	}

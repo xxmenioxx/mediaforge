@@ -1,37 +1,37 @@
 ## 1. Canonical evidence state and identity
 
-- [ ] 1.1 Trace every current AnalysisPage action and persisted `ScanResult`
+- [x] 1.1 Trace every current AnalysisPage action and persisted `ScanResult`
   consumer; map each to an existing backend authority and classify any legacy
   decision/notes behavior without introducing a new analysis domain model.
-- [ ] 1.2 Extend the existing asset lifecycle evidence projection with
+- [x] 1.2 Extend the existing asset lifecycle evidence projection with
   backend-authoritative `missing`, `ready`, `stale`, and `unavailable` states,
   source identity, stale components, and bounded reasons; verify legacy or
   ambiguous identities never become current from path equality alone.
-- [ ] 1.3 Reuse existing scanner cache, source revision, component refresh,
+- [x] 1.3 Reuse existing scanner cache, source revision, component refresh,
   operation status, and policy rules; verify incremental refresh preserves
   reused and failed component provenance and does not create a second pipeline.
-- [ ] 1.4 Add focused backend contract coverage for each state, path reuse,
+- [x] 1.4 Add focused backend contract coverage for each state, path reuse,
   stale component refresh, partial evidence, inaccessible/missing source, and
   unavailable/legacy identity without relying on real media or NAS access.
 
 ## 2. Asset Info and route migration
 
-- [ ] 2.1 Make Asset Info Analysis consume the canonical evidence projection and
+- [x] 2.1 Make Asset Info Analysis consume the canonical evidence projection and
   existing lazy snapshot API; verify opening Asset Info/Overview performs zero
   scan, ffprobe, FFmpeg, OCR, Advisor, LAB, or other heavy work.
-- [ ] 2.2 Expose existing AS-IS, cadence/GOP, HDR/color, audio, subtitle, and
+- [x] 2.2 Expose existing AS-IS, cadence/GOP, HDR/color, audio, subtitle, and
   other available evidence in the existing Analysis section with explicit
   Analyze/Refresh actions and distinct state presentation; preserve Advisor
   and Profile LAB as separate explicit capabilities.
-- [ ] 2.3 Remove the standalone Analysis page/navigation and add safe
+- [x] 2.3 Remove the standalone Analysis page/navigation and add safe
   compatibility redirects for `/analysis`, `/scanner`, and supported legacy
   query forms; verify asset identity/context is preserved, Overview opens
   first, and redirects never start analysis.
-- [ ] 2.4 Preserve every existing `analysisRecords` decision and note. Project
+- [x] 2.4 Preserve every existing `analysisRecords` decision and note. Project
   only deterministically matched entries as read-only legacy History
   annotations; keep unmatched entries accessible and visibly unlinked, and
   verify path reuse never causes false association or data loss.
-- [ ] 2.5 Add focused frontend coverage for lazy loading, Overview's zero-heavy-
+- [x] 2.5 Add focused frontend coverage for lazy loading, Overview's zero-heavy-
   work invariant, missing/ready/stale/unavailable states, explicit refresh,
   route compatibility, and legacy decision visibility.
 

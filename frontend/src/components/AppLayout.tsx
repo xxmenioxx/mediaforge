@@ -24,7 +24,6 @@ import FactCheckIcon from '@mui/icons-material/FactCheck';
 import PublishIcon from '@mui/icons-material/Publish';
 import SettingsIcon from '@mui/icons-material/Settings';
 import ScienceIcon from '@mui/icons-material/Science';
-import TroubleshootIcon from '@mui/icons-material/Troubleshoot';
 import AltRouteIcon from '@mui/icons-material/AltRoute';
 import MenuIcon from '@mui/icons-material/Menu';
 import CloseIcon from '@mui/icons-material/Close';
@@ -49,7 +48,6 @@ const navSections: NavSection[] = [
     items: [
       { label: 'Dashboard', path: '/', icon: <DashboardIcon /> },
       { label: 'Assets', path: '/assets', icon: <VideoLibraryIcon /> },
-      { label: 'Analysis', path: '/analysis', icon: <TroubleshootIcon /> },
       { label: 'Profile Lab', path: '/profile-lab', icon: <ScienceIcon /> },
     ],
   },

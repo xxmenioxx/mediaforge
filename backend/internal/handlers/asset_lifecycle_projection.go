@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -128,11 +129,35 @@ type AssetCurrentRawCorrelation struct {
 }
 
 type AssetLifecycleEvidenceSummary struct {
-	QueueJobIDs          []uint `json:"queueJobIds,omitempty"`
-	DirectPublicationIDs []uint `json:"directPublicationIds,omitempty"`
-	HasAnalysis          bool   `json:"hasAnalysis"`
-	OriginalArchivedPath string `json:"originalArchivedPath,omitempty"`
+	QueueJobIDs          []uint                `json:"queueJobIds,omitempty"`
+	DirectPublicationIDs []uint                `json:"directPublicationIds,omitempty"`
+	HasAnalysis          bool                  `json:"hasAnalysis"`
+	Analysis             AssetAnalysisEvidence `json:"analysis"`
+	OriginalArchivedPath string                `json:"originalArchivedPath,omitempty"`
 }
+
+type AssetAnalysisEvidence struct {
+	Status            string                       `json:"status"`
+	SourceIdentity    *AssetAnalysisSourceIdentity `json:"sourceIdentity,omitempty"`
+	StaleComponents   []string                     `json:"staleComponents,omitempty"`
+	UnavailableReason string                       `json:"unavailableReason,omitempty"`
+}
+
+type AssetAnalysisSourceIdentity struct {
+	Path                         string `json:"path"`
+	SnapshotID                   uint   `json:"snapshotId,omitempty"`
+	SizeBytes                    int64  `json:"sizeBytes"`
+	ModifiedAtUnixNano           int64  `json:"modifiedAtUnixNano"`
+	SnapshotUpdatedAt            string `json:"snapshotUpdatedAt,omitempty"`
+	MatchesCurrentSourceRevision bool   `json:"matchesCurrentSourceRevision"`
+}
+
+const (
+	assetAnalysisMissing     = "missing"
+	assetAnalysisReady       = "ready"
+	assetAnalysisStale       = "stale"
+	assetAnalysisUnavailable = "unavailable"
+)
 
 type AssetActionCapability struct {
 	Allowed bool   `json:"allowed"`
@@ -190,6 +215,8 @@ type AssetLifecycleProjectionInput struct {
 	DirectPublications []models.DirectPublication
 	Maintenance        []models.AssetMaintenanceOperation
 	ScanResults        []models.ScanResult
+	AnalysisPolicy     AnalysisPolicy
+	AnalysisSeconds    int
 	Review             AssetReviewState
 	ArchiveRoot        string
 }
@@ -229,6 +256,7 @@ func ResolveAssetLifecycleProjection(input AssetLifecycleProjectionInput) AssetL
 	}
 
 	location := assetLifecycleLocation(record, libraries)
+	analysis := resolveAssetAnalysisEvidence(record, input.ScanResults, input.AnalysisPolicy, input.AnalysisSeconds)
 	evidence := collectAssetPublicationEvidence(record, input, libraries)
 	currentQueue := selectCurrentPublication(evidence, assetPublicationAuthorityQueue)
 	currentDirect := selectCurrentPublication(evidence, assetPublicationAuthorityDirect)
@@ -247,7 +275,8 @@ func ResolveAssetLifecycleProjection(input AssetLifecycleProjectionInput) AssetL
 		EvidenceSummary: AssetLifecycleEvidenceSummary{
 			QueueJobIDs:          uniqueSortedQueueIDs(evidence),
 			DirectPublicationIDs: uniqueSortedDirectIDs(evidence),
-			HasAnalysis:          hasScanForRecord(record, input.ScanResults),
+			HasAnalysis:          analysis.Status == assetAnalysisReady,
+			Analysis:             analysis,
 		},
 	}
 
@@ -336,6 +365,70 @@ func ResolveAssetLifecycleProjection(input AssetLifecycleProjectionInput) AssetL
 		OriginalArchived:      projection.Original == AssetOriginalArchived,
 	})
 	return projection
+}
+
+func resolveAssetAnalysisEvidence(record models.AssetRecord, scans []models.ScanResult, policy AnalysisPolicy, analysisSeconds int) AssetAnalysisEvidence {
+	if record.Missing {
+		return AssetAnalysisEvidence{Status: assetAnalysisUnavailable, UnavailableReason: "asset_missing"}
+	}
+	path := cleanAssetLifecyclePath(record.Path)
+	var scan *models.ScanResult
+	for index := range scans {
+		if cleanAssetLifecyclePath(scans[index].Path) == path {
+			scan = &scans[index]
+			break
+		}
+	}
+	if scan == nil {
+		return AssetAnalysisEvidence{Status: assetAnalysisMissing}
+	}
+	identity := assetAnalysisSourceIdentity(*scan)
+	if identity == nil || identity.SnapshotID == 0 || record.SizeBytes <= 0 || record.ModifiedAt.IsZero() {
+		return AssetAnalysisEvidence{Status: assetAnalysisUnavailable, SourceIdentity: identity, UnavailableReason: "source_identity_unavailable"}
+	}
+	identity.MatchesCurrentSourceRevision = identity.Path == path && identity.SizeBytes == record.SizeBytes && identity.ModifiedAtUnixNano == record.ModifiedAt.UnixNano()
+	if policy.Mode == "" {
+		policy = balancedAnalysisPolicy()
+	}
+	if analysisSeconds <= 0 {
+		analysisSeconds = 20
+	}
+	fingerprintMatches, legacy, staleComponents := snapshotCacheStateForSourceRevision(*scan, path, record.SizeBytes, record.ModifiedAt.UnixNano(), true, policy, analysisSeconds)
+	if legacy {
+		return AssetAnalysisEvidence{Status: assetAnalysisUnavailable, SourceIdentity: identity, UnavailableReason: "source_identity_unavailable"}
+	}
+	if !fingerprintMatches {
+		staleComponents = append(staleComponents, "source")
+	}
+	if snapshotRequiresFrameStructureRefresh(*scan) && !slices.Contains(staleComponents, "frameStructure") {
+		staleComponents = append(staleComponents, "frameStructure")
+	}
+	staleComponents = uniqueStrings(staleComponents)
+	sort.Strings(staleComponents)
+	if !fingerprintMatches || len(staleComponents) > 0 {
+		return AssetAnalysisEvidence{Status: assetAnalysisStale, SourceIdentity: identity, StaleComponents: staleComponents}
+	}
+	return AssetAnalysisEvidence{Status: assetAnalysisReady, SourceIdentity: identity}
+}
+
+func assetAnalysisSourceIdentity(scan models.ScanResult) *AssetAnalysisSourceIdentity {
+	cache, ok := snapshotCacheMap(scan.RawProbe["snapshotCache"])
+	if !ok {
+		return nil
+	}
+	fingerprint, ok := snapshotCacheMap(cache["fingerprint"])
+	if !ok {
+		return nil
+	}
+	path := cleanAssetLifecyclePath(stringFromUnknown(fingerprint["path"]))
+	if path == "" {
+		return nil
+	}
+	return &AssetAnalysisSourceIdentity{
+		Path: path, SnapshotID: scan.ID, SizeBytes: jsonInt64(fingerprint["sizeBytes"]),
+		ModifiedAtUnixNano: jsonInt64(fingerprint["mtimeNs"]),
+		SnapshotUpdatedAt:  scan.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}
 }
 
 // ResolveAssetActionCapabilities renders advisory UI capabilities from
@@ -808,16 +901,6 @@ func assetLifecycleRootSafe(record models.AssetRecord, location string, librarie
 	return false
 }
 
-func hasScanForRecord(record models.AssetRecord, scans []models.ScanResult) bool {
-	path := cleanAssetLifecyclePath(record.Path)
-	for _, scan := range scans {
-		if cleanAssetLifecyclePath(scan.Path) == path {
-			return true
-		}
-	}
-	return false
-}
-
 func uniqueSortedQueueIDs(evidence []assetPublicationEvidence) []uint {
 	seen := map[uint]struct{}{}
 	for _, item := range evidence {
@@ -984,10 +1067,11 @@ func (h AssetHandler) assetLifecycleProjections(records []models.AssetRecord) (m
 	}
 	var scans []models.ScanResult
 	if h.db.Migrator().HasTable(&models.ScanResult{}) {
-		if err := h.db.Find(&scans).Error; err != nil {
+		if err := h.db.Order("updated_at desc, id desc").Find(&scans).Error; err != nil {
 			return nil, err
 		}
 	}
+	policy := analysisPolicy(h.db)
 	reviews := map[string]AssetReviewState{}
 	archiveRoot := "/media/originals_archive"
 	if h.db.Migrator().HasTable(&models.AppSetting{}) {
@@ -1002,7 +1086,8 @@ func (h AssetHandler) assetLifecycleProjections(records []models.AssetRecord) (m
 		projection := ResolveAssetLifecycleProjection(AssetLifecycleProjectionInput{
 			Record: record, Records: records, Libraries: libraries, QueueJobs: jobs,
 			DirectPublications: directPublications, Maintenance: maintenance,
-			ScanResults: scans, Review: reviewForPath(filepath.Clean(record.Path), reviews),
+			ScanResults: scans, AnalysisPolicy: policy, AnalysisSeconds: 20,
+			Review:      reviewForPath(filepath.Clean(record.Path), reviews),
 			ArchiveRoot: archiveRoot,
 		})
 		copyProjection := projection
