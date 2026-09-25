@@ -4246,14 +4246,40 @@ func runPreviewLogicalMetricValueAtWithRunner(ctx context.Context, sourcePath, s
 	return NewFiniteMetricValue(value)
 }
 
-// canonicalComparisonDomainFilters is the one comparison-domain constructor
-// used by canonical perceptual evidence. The legacy frame projection may
-// supply its own filters, but a window metric must always have both explicit
-// branches and the same square-pixel/pixel-format normalization.
+// canonicalComparisonDomainFilters is the compatibility constructor used by
+// tests and callers which already own the comparison geometry. The profile-
+// aware constructor below is the production path because source geometry is
+// not safe to reuse after a frozen crop/scale/cadence transform.
 func canonicalComparisonDomainFilters(source, candidate previewVideoCharacteristics, referenceTransform, normalization string) (string, string) {
-	reference := joinPreviewFilters(referenceTransform, normalization, squarePixelFrameFilter(source), "format=yuv420p", "setsar=1")
-	output := joinPreviewFilters(squarePixelFrameFilter(candidate), "format=yuv420p", "setsar=1")
+	return canonicalComparisonDomainFiltersWithExpectedGeometry(source, candidate, referenceTransform, normalization, 0, 0)
+}
+
+func canonicalComparisonDomainFiltersWithExpectedGeometry(source, candidate previewVideoCharacteristics, referenceTransform, normalization string, expectedWidth, expectedHeight int) (string, string) {
+	transformedReference := strings.TrimSpace(referenceTransform) != "" || strings.TrimSpace(normalization) != ""
+	referenceGeometry := squarePixelFrameFilter(source)
+	if transformedReference {
+		// The frozen transform owns the pre/post-transform geometry. Applying a
+		// SAR-derived source filter here would calculate from the wrong domain
+		// and can undo an intentional crop or upscale.
+		referenceGeometry = "setsar=1"
+	}
+	candidateGeometry := squarePixelFrameFilter(candidate)
+	if expectedWidth > 0 && expectedHeight > 0 && (candidate.Width != expectedWidth || candidate.Height != expectedHeight || strings.TrimSpace(candidate.SampleAspectRatio) != "1:1") {
+		candidateGeometry = fmt.Sprintf("scale=%d:%d:flags=lanczos,setsar=1", expectedWidth, expectedHeight)
+	}
+	reference := joinPreviewFilters(referenceTransform, normalization, referenceGeometry, "format=yuv420p", "setsar=1", "setpts=PTS-STARTPTS")
+	output := joinPreviewFilters(candidateGeometry, "format=yuv420p", "setsar=1", "setpts=PTS-STARTPTS")
 	return reference, output
+}
+
+func canonicalComparisonDomainFiltersForProfile(source, candidate previewVideoCharacteristics, profile models.Profile, normalization string) (string, string) {
+	raw := models.JSONMap{
+		"width": source.Width, "height": source.Height, "sampleAspectRatio": source.SampleAspectRatio,
+		"displayAspectRatio": source.DisplayAspectRatio, "fieldOrder": source.FieldOrder,
+	}
+	_, expected := fidelityExpectedOutput(profile, canonicalFidelitySource{raw: raw, effective: raw})
+	expectedWidth, expectedHeight := int(numberFromUnknown(expected["width"])), int(numberFromUnknown(expected["height"]))
+	return canonicalComparisonDomainFiltersWithExpectedGeometry(source, candidate, perceptualReferenceFilter(profile), normalization, expectedWidth, expectedHeight)
 }
 
 func canonicalWindowMetricArgs(sourcePath, sourceStart string, sourceFilter string, outputPath, outputStart string, outputFilter string, duration float64, metricFilter string) []string {
@@ -4268,7 +4294,7 @@ func canonicalWindowMetricArgs(sourcePath, sourceStart string, sourceFilter stri
 	}
 	args = append(args, "-t", boundedDuration, "-i", outputPath)
 	return append(args,
-		"-filter_complex", fmt.Sprintf("[0:v:0]%s[reference];[1:v:0]%s[candidate];[reference][candidate]%s", joinPreviewFilters(sourceFilter), joinPreviewFilters(outputFilter), metricFilter),
+		"-filter_complex", fmt.Sprintf("[0:v:0]%s[reference];[1:v:0]%s[candidate];[reference][candidate]%s", joinPreviewFilters(sourceFilter, "setpts=PTS-STARTPTS"), joinPreviewFilters(outputFilter, "setpts=PTS-STARTPTS"), metricFilter),
 		"-an", "-sn", "-dn", "-f", "null", "-",
 	)
 }

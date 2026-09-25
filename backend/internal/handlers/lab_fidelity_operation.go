@@ -195,6 +195,9 @@ type labPreviewEvidenceCacheEntry struct {
 	Evidence      labPreviewArtifactEvidence
 	Metrics       *previewFrameMetrics
 	MetricResults map[string]MetricResult
+	Reference     *ReferenceIdentity
+	Pair          *ComparisonPairIdentity
+	EvidenceSet   *PerceptualEvidenceSet
 	UpdatedAt     time.Time
 }
 
@@ -300,6 +303,47 @@ func labPreviewEvidenceCachePutMetricResult(result MetricResult) {
 	labPreviewEvidence.items[key] = labPreviewEvidenceCacheEntry{
 		MetricResults: map[string]MetricResult{result.Identity.Identity: result}, UpdatedAt: time.Now(),
 	}
+}
+
+// These identity-keyed entries deliberately live in the existing bounded LAB
+// evidence cache. They are material evidence, not a second media cache.
+func labPreviewEvidenceCacheGetReference(identity string) (ReferenceIdentity, bool) {
+	entry, ok := labPreviewEvidenceCacheGet("reference:" + identity)
+	if !ok || entry.Reference == nil {
+		return ReferenceIdentity{}, false
+	}
+	return *entry.Reference, true
+}
+
+func labPreviewEvidenceCachePutReference(reference ReferenceIdentity) {
+	value := reference
+	labPreviewEvidenceCachePut("reference:"+reference.Identity, labPreviewEvidenceCacheEntry{Reference: &value, UpdatedAt: time.Now()})
+}
+
+func labPreviewEvidenceCacheGetPair(identity string) (ComparisonPairIdentity, bool) {
+	entry, ok := labPreviewEvidenceCacheGet("pair:" + identity)
+	if !ok || entry.Pair == nil {
+		return ComparisonPairIdentity{}, false
+	}
+	return *entry.Pair, true
+}
+
+func labPreviewEvidenceCachePutPair(pair ComparisonPairIdentity) {
+	value := pair
+	labPreviewEvidenceCachePut("pair:"+pair.Identity, labPreviewEvidenceCacheEntry{Pair: &value, UpdatedAt: time.Now()})
+}
+
+func labPreviewEvidenceCacheGetEvidenceSet(identity string) (PerceptualEvidenceSet, bool) {
+	entry, ok := labPreviewEvidenceCacheGet("evidence-set:" + identity)
+	if !ok || entry.EvidenceSet == nil {
+		return PerceptualEvidenceSet{}, false
+	}
+	return *entry.EvidenceSet, true
+}
+
+func labPreviewEvidenceCachePutEvidenceSet(set PerceptualEvidenceSet) {
+	value := set
+	labPreviewEvidenceCachePut("evidence-set:"+set.Identity, labPreviewEvidenceCacheEntry{EvidenceSet: &value, UpdatedAt: time.Now()})
 }
 
 func labSourceProbeKey(descriptor *compatiblePreviewDescriptor) string {
@@ -739,23 +783,42 @@ func labPerceptualWindowEvidence(ctx context.Context, descriptor *compatiblePrev
 	if err != nil {
 		return PerceptualWindowEvidence{}, err
 	}
-	alignment, err := canonicalEvidenceHash("alignment", models.JSONMap{
-		"contract":              perceptualAlignmentContractVersion,
-		"sourceStartSeconds":    window.Start,
-		"sourceDurationSeconds": window.Duration,
-		"candidateStartSeconds": 0,
-		"timestampDomain":       "normalized-zero-based",
-		"toleranceFrames":       1,
+	referenceProfile := models.Profile{}
+	if descriptor.EffectivePreviewProfile != nil {
+		referenceProfile = *descriptor.EffectivePreviewProfile
+	} else if descriptor.PreviewProfile != nil {
+		referenceProfile = *descriptor.PreviewProfile
+	}
+	candidateRevision, err := canonicalEvidenceHash("candidate-revision", models.JSONMap{
+		"artifactId": descriptor.ArtifactID, "generationToken": descriptor.GenerationToken,
+		"generationVersion": descriptor.GenerationVersion, "cachePath": descriptor.CachePath,
 	})
 	if err != nil {
 		return PerceptualWindowEvidence{}, err
 	}
+	candidateTimeline, err := canonicalEvidenceHash("candidate-timeline", models.JSONMap{
+		"kind": "compatible_preview", "artifactId": descriptor.ArtifactID,
+		"generationToken": descriptor.GenerationToken, "generationVersion": descriptor.GenerationVersion,
+		"revision": candidateRevision, "segmentStartSeconds": 0, "segmentDurationSeconds": window.Duration,
+	})
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	alignmentValue := perceptualAlignmentEvidenceForWindow(window.Start, window.Duration, 0, window.Duration,
+		perceptualAlignmentMode(referenceProfile, false), sourceRevision, transform, candidateTimeline)
+	alignment, err := canonicalEvidenceHash("alignment", alignmentValue)
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	referenceFilter, candidateFilter := canonicalComparisonDomainFiltersForProfile(evidence.Source, evidence.Output, referenceProfile, descriptor.Normalization.Filter)
 	domain, err := canonicalEvidenceHash("comparison-domain", models.JSONMap{
 		"source":                evidence.Source,
 		"candidate":             evidence.Output,
 		"normalization":         labNormalizationMap(descriptor.Normalization),
 		"pixelFormat":           "yuv420p",
 		"squarePixelDimensions": true,
+		"referenceFilter":       referenceFilter,
+		"candidateFilter":       candidateFilter,
 	})
 	if err != nil {
 		return PerceptualWindowEvidence{}, err
@@ -765,24 +828,22 @@ func labPerceptualWindowEvidence(ctx context.Context, descriptor *compatiblePrev
 		SourceRevision: sourceRevision, SourceStreamIdentity: "0:v:0",
 		TransformIdentity: transform, TransformVersion: perceptualEvidenceSchemaVersion,
 		NormalizationProvenance: labNormalizationMap(descriptor.Normalization), AlignmentIdentity: alignment,
-		Alignment:                perceptualAlignmentEvidence(window.Start, window.Duration, 0, window.Duration),
+		Alignment:                alignmentValue,
 		ComparisonDomainIdentity: domain,
 	})
 	if err != nil {
 		return PerceptualWindowEvidence{}, err
 	}
-	candidateRevision, err := canonicalEvidenceHash("candidate-revision", models.JSONMap{
-		"artifactId": descriptor.ArtifactID, "generationToken": descriptor.GenerationToken,
-		"generationVersion": descriptor.GenerationVersion, "cachePath": descriptor.CachePath,
-	})
-	if err != nil {
-		return PerceptualWindowEvidence{}, err
+	if cached, cacheHit := labPreviewEvidenceCacheGetReference(reference.Identity); cacheHit {
+		reference = cached
+	} else {
+		labPreviewEvidenceCachePutReference(reference)
 	}
 	candidate, err := ComputeCandidateIdentity(CandidateIdentity{
 		Kind: "compatible_preview", ArtifactID: descriptor.ArtifactID,
 		GenerationToken: descriptor.GenerationToken, GenerationVersion: descriptor.GenerationVersion,
 		OutputRevision: candidateRevision, ConfigurationIdentity: descriptor.CanonicalEncodeSignature, SourceRevision: sourceRevision, StreamIdentity: "0:v:0",
-		SegmentStartSeconds: 0, SegmentDurationSeconds: window.Duration, TimelineIdentity: alignment,
+		SegmentStartSeconds: 0, SegmentDurationSeconds: window.Duration, TimelineIdentity: candidateTimeline,
 	})
 	if err != nil {
 		return PerceptualWindowEvidence{}, err
@@ -804,14 +865,12 @@ func labPerceptualWindowEvidence(ctx context.Context, descriptor *compatiblePrev
 	if err != nil {
 		return PerceptualWindowEvidence{}, err
 	}
-
-	referenceProfile := models.Profile{}
-	if descriptor.EffectivePreviewProfile != nil {
-		referenceProfile = *descriptor.EffectivePreviewProfile
-	} else if descriptor.PreviewProfile != nil {
-		referenceProfile = *descriptor.PreviewProfile
+	if cached, cacheHit := labPreviewEvidenceCacheGetPair(pair.Identity); cacheHit {
+		pair = cached
+	} else {
+		labPreviewEvidenceCachePutPair(pair)
 	}
-	referenceFilter, candidateFilter := canonicalComparisonDomainFilters(evidence.Source, evidence.Output, perceptualReferenceFilter(referenceProfile), descriptor.Normalization.Filter)
+
 	runtimeSnapshot := capabilities.CachedMetricCapabilities(ctx)
 	capabilityValues := make([]MetricCapability, 0, len(runtimeSnapshot.Metrics))
 	results := make([]MetricResult, 0, len(runtimeSnapshot.Metrics))
@@ -1110,9 +1169,25 @@ func labPerceptualEvidenceSet(plan SamplingPlan, descriptor *compatiblePreviewDe
 		})
 		requested = append(requested, newMetricDescriptor(PerceptualMetric(rawCapability.Metric), rawCapability.Provider, rawCapability.ProviderVersion, rawCapability.InvocationContract, rawCapability.ModelIdentity, rawCapability.RuntimeCapabilityIdentity, "higher_is_better"))
 	}
-	return BuildPerceptualEvidenceSet(plan, sourceRevision, runtimeSnapshot.RuntimeCapabilityIdentity, requested, windowEvidence, capabilityValues, nil, models.JSONMap{
+	provenance := models.JSONMap{
 		"owner": "LabFidelityOperation", "metricWork": "sequential_under_lab_fidelity_heavy_slot",
-	})
+	}
+	if descriptor != nil {
+		profile := descriptor.EffectivePreviewProfile
+		if profile == nil {
+			profile = descriptor.PreviewProfile
+		}
+		if profile != nil {
+			if raw := profile.WorkerConfig[restorationAnalysisSnapshotKey]; raw != nil {
+				provenance["restorationAnalysis"] = raw
+			}
+		}
+	}
+	set, err := BuildPerceptualEvidenceSet(plan, sourceRevision, runtimeSnapshot.RuntimeCapabilityIdentity, requested, windowEvidence, capabilityValues, nil, provenance)
+	if err == nil {
+		labPreviewEvidenceCachePutEvidenceSet(set)
+	}
+	return set, err
 }
 
 func labFidelityOperationResultWithIdentity(input labFidelityOperationInput, operation *LabFidelityOperation, descriptor *compatiblePreviewDescriptor, windows []models.JSONMap, plan SamplingPlan, totalWindows int, complete bool) models.JSONMap {

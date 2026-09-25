@@ -5608,11 +5608,12 @@ export function PerceptualEvidencePanel({ evidence }: { evidence?: PerceptualEvi
                   const median = aggregate.median as { kind?: string; value?: number } | undefined;
                   const p10 = aggregate.lowerPercentileP10 as { kind?: string; value?: number } | undefined;
                   const worst = aggregate.worstValue as { kind?: string; value?: number } | undefined;
+                  const worstWindow = typeof aggregate.worstWindowIdentity === 'string' ? aggregate.worstWindowIdentity : 'unavailable';
                   return (
                     <Chip
                       key={`${metric}-${index}`}
                       size="small"
-                      label={`${metric} · median ${perceptualMetricValueLabel(metric, median)} · p10 ${perceptualMetricValueLabel(metric, p10)} · worst ${perceptualMetricValueLabel(metric, worst)}`}
+                      label={`${metric} · median ${perceptualMetricValueLabel(metric, median)} · p10 ${perceptualMetricValueLabel(metric, p10)} · worst ${perceptualMetricValueLabel(metric, worst)} · worst window ${worstWindow}`}
                     />
                   );
                 })}

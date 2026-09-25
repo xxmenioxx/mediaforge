@@ -39,6 +39,22 @@ func frozenSamplingPlanSourceMatches(path string, plan SamplingPlan) (bool, erro
 	return current == plan.SourceRevision && current == plan.SourceFingerprint, nil
 }
 
+// probePerceptualCharacteristics reuses the existing bounded LAB source-probe
+// cache for stream-global candidate/reference characteristics. The revision
+// is part of the key, so a same-path replacement cannot reuse probe evidence.
+func probePerceptualCharacteristics(path, revision string) (previewVideoCharacteristics, error) {
+	key := "perceptual-probe:" + path + ":" + revision
+	if value, ok := labSourceProbeGet(key); ok {
+		return value, nil
+	}
+	value, err := probePreviewCharacteristics(path)
+	if err != nil {
+		return previewVideoCharacteristics{}, err
+	}
+	labSourceProbePut(key, value)
+	return value, nil
+}
+
 func unavailablePerceptualEvidenceSet(plan SamplingPlan, sourceRevision, status, reason string) (PerceptualEvidenceSet, error) {
 	set, err := BuildPerceptualEvidenceSet(plan, sourceRevision, "", nil, nil, nil, []string{reason}, models.JSONMap{"status": status})
 	if err != nil {
@@ -97,10 +113,18 @@ func collectPerceptualEvidenceForArtifact(ctx context.Context, plan SamplingPlan
 		}
 		windowEvidence = append(windowEvidence, evidence)
 	}
-	return BuildPerceptualEvidenceSet(plan, input.SourceRevision, runtimeSnapshot.RuntimeCapabilityIdentity, requested, windowEvidence, capabilityValues, warnings, models.JSONMap{
+	provenance := models.JSONMap{
 		"owner": "shared-perceptual-provider", "candidateKind": input.CandidateKind,
 		"metricWork": "sequential", "candidateCoverageWindowCount": len(covered),
-	})
+	}
+	if raw := profile.WorkerConfig[restorationAnalysisSnapshotKey]; raw != nil {
+		provenance["restorationAnalysis"] = raw
+	}
+	set, setErr := BuildPerceptualEvidenceSet(plan, input.SourceRevision, runtimeSnapshot.RuntimeCapabilityIdentity, requested, windowEvidence, capabilityValues, warnings, provenance)
+	if setErr == nil {
+		labPreviewEvidenceCachePutEvidenceSet(set)
+	}
+	return set, setErr
 }
 
 func collectPerceptualEvidenceUnderHeavySlot(ctx context.Context, plan SamplingPlan, profile models.Profile, input perceptualArtifactInput) (PerceptualEvidenceSet, error) {
@@ -140,19 +164,24 @@ func collectPerceptualArtifactWindow(ctx context.Context, plan SamplingPlan, pro
 	} else {
 		candidateStart = math.Max(0, window.StartSeconds-input.SegmentStartSeconds)
 	}
-	alignment, err := canonicalEvidenceHash("alignment", models.JSONMap{
-		"contract": perceptualAlignmentContractVersion, "sourceStartSeconds": window.StartSeconds,
-		"sourceDurationSeconds": window.DurationSeconds, "candidateStartSeconds": candidateStart,
-		"candidateDurationSeconds": input.SegmentDuration, "toleranceFrames": 1,
-		"timestampDomain": "normalized-zero-based",
+	candidateTimeline, err := canonicalEvidenceHash("candidate-timeline", models.JSONMap{
+		"kind": input.CandidateKind, "revision": input.CandidateRevision,
+		"configurationIdentity": input.ConfigurationIdentity, "segmentStartSeconds": input.SegmentStartSeconds, "segmentDurationSeconds": input.SegmentDuration,
 	})
+	if err != nil {
+		return PerceptualWindowEvidence{}, err
+	}
+	mappingMode := perceptualAlignmentMode(profile, input.FullOutput)
+	alignmentValue := perceptualAlignmentEvidenceForWindow(window.StartSeconds, window.DurationSeconds, candidateStart, input.SegmentDuration,
+		mappingMode, sourceRevision, transformIdentity, candidateTimeline)
+	alignment, err := canonicalEvidenceHash("alignment", alignmentValue)
 	if err != nil {
 		return PerceptualWindowEvidence{}, err
 	}
 	sourceFilter, candidateFilter := "null", "null"
 	if comparable {
-		sourceCharacteristics, sourceErr := probePreviewCharacteristics(input.SourcePath)
-		candidateCharacteristics, candidateErr := probePreviewCharacteristics(input.CandidatePath)
+		sourceCharacteristics, sourceErr := probePerceptualCharacteristics(input.SourcePath, sourceRevision)
+		candidateCharacteristics, candidateErr := probePerceptualCharacteristics(input.CandidatePath, input.CandidateRevision)
 		if sourceErr != nil || candidateErr != nil {
 			comparable = false
 			if sourceErr != nil {
@@ -161,7 +190,7 @@ func collectPerceptualArtifactWindow(ctx context.Context, plan SamplingPlan, pro
 				transformReason = "canonical comparison candidate probe failed: " + candidateErr.Error()
 			}
 		} else {
-			sourceFilter, candidateFilter = canonicalComparisonDomainFilters(sourceCharacteristics, candidateCharacteristics, perceptualReferenceFilter(profile), "")
+			sourceFilter, candidateFilter = canonicalComparisonDomainFiltersForProfile(sourceCharacteristics, candidateCharacteristics, profile, "")
 		}
 	}
 	comparisonDomain, err := canonicalEvidenceHash("comparison-domain", models.JSONMap{
@@ -176,17 +205,15 @@ func collectPerceptualArtifactWindow(ctx context.Context, plan SamplingPlan, pro
 		SourceRevision: sourceRevision, SourceStreamIdentity: "0:v:0",
 		TransformIdentity: transformIdentity, TransformVersion: perceptualEvidenceSchemaVersion,
 		NormalizationProvenance: models.JSONMap{"mode": "preview-normalized", "filter": sourceFilter},
-		AlignmentIdentity:       alignment, Alignment: perceptualAlignmentEvidence(window.StartSeconds, window.DurationSeconds, candidateStart, input.SegmentDuration), ComparisonDomainIdentity: comparisonDomain,
+		AlignmentIdentity:       alignment, Alignment: alignmentValue, ComparisonDomainIdentity: comparisonDomain,
 	})
 	if err != nil {
 		return PerceptualWindowEvidence{}, err
 	}
-	candidateTimeline, err := canonicalEvidenceHash("candidate-timeline", models.JSONMap{
-		"kind": input.CandidateKind, "revision": input.CandidateRevision,
-		"configurationIdentity": input.ConfigurationIdentity, "segmentStartSeconds": input.SegmentStartSeconds, "segmentDurationSeconds": input.SegmentDuration,
-	})
-	if err != nil {
-		return PerceptualWindowEvidence{}, err
+	if cached, cacheHit := labPreviewEvidenceCacheGetReference(reference.Identity); cacheHit {
+		reference = cached
+	} else {
+		labPreviewEvidenceCachePutReference(reference)
 	}
 	candidateBase, err := ComputeCandidateIdentity(CandidateIdentity{
 		Kind: input.CandidateKind, ArtifactID: input.CandidateArtifactID,
@@ -216,6 +243,11 @@ func collectPerceptualArtifactWindow(ctx context.Context, plan SamplingPlan, pro
 	})
 	if err != nil {
 		return PerceptualWindowEvidence{}, err
+	}
+	if cached, cacheHit := labPreviewEvidenceCacheGetPair(pair.Identity); cacheHit {
+		pair = cached
+	} else {
+		labPreviewEvidenceCachePutPair(pair)
 	}
 
 	results := make([]MetricResult, 0, len(capabilityValues))
@@ -305,6 +337,9 @@ func perceptualReferenceTransform(profile models.Profile) (string, bool, string,
 	if (cadenceOperation != "" && !strings.EqualFold(cadenceOperation, "preserve") || executionPlan["upscale"] != nil || executionPlan["restoration"] != nil) && frozenFilterChain == "" {
 		return identity, false, "canonical reference requires the frozen Frame Fidelity video transform; raw source comparison was not used", nil
 	}
+	if (workerIntValue(worker["effectiveOutputWidth"], 0) > 0 || workerIntValue(worker["effectiveOutputHeight"], 0) > 0) && frozenFilterChain == "" {
+		return identity, false, "canonical reference requires the frozen Frame Fidelity output geometry transform; raw source comparison was not used", nil
+	}
 	// A non-empty chain is the already resolved physical representation owned
 	// by Frame Fidelity. It may contain cadence, field, crop, scale, restoration
 	// and color stages; do not reinterpret those stages here.
@@ -367,11 +402,64 @@ func validationProbeDuration(probe map[string]any) float64 {
 }
 
 func perceptualAlignmentEvidence(sourceStart, duration, candidateStart, candidateDuration float64) AlignmentEvidence {
+	mappingMode := "preserved_or_preview_segment"
+	if candidateStart != 0 {
+		mappingMode = "trimmed_candidate_segment"
+	}
+	return perceptualAlignmentEvidenceForWindow(sourceStart, duration, candidateStart, candidateDuration, mappingMode, "source-timeline", "reference-timeline", "candidate-timeline")
+}
+
+func perceptualAlignmentEvidenceForWindow(sourceStart, duration, candidateStart, candidateDuration float64, mappingMode, sourceTimeline, referenceTimeline, candidateTimeline string) AlignmentEvidence {
+	if strings.TrimSpace(mappingMode) == "" {
+		mappingMode = "pts_timeline_mapping"
+	}
+	if strings.TrimSpace(sourceTimeline) == "" {
+		sourceTimeline = "source-timeline"
+	}
+	if strings.TrimSpace(referenceTimeline) == "" {
+		referenceTimeline = "reference-timeline"
+	}
+	if strings.TrimSpace(candidateTimeline) == "" {
+		candidateTimeline = "candidate-timeline"
+	}
+	timelineIdentity, _ := canonicalEvidenceHash("timeline", models.JSONMap{
+		"contract": perceptualAlignmentContractVersion, "source": sourceTimeline, "reference": referenceTimeline,
+		"candidate": candidateTimeline, "sourceStart": sourceStart, "duration": duration,
+		"candidateStart": candidateStart, "candidateDuration": candidateDuration, "mappingMode": mappingMode,
+	})
 	return AlignmentEvidence{
-		ContractVersion: perceptualAlignmentContractVersion,
-		SourceStartPTS:  sourceStart, SourceEndPTS: sourceStart + duration,
+		ContractVersion: perceptualAlignmentContractVersion, TimelineIdentity: timelineIdentity,
+		SourceTimelineIdentity: sourceTimeline, ReferenceTimelineIdentity: referenceTimeline, CandidateTimelineIdentity: candidateTimeline,
+		TimestampOrigin: "normalized-zero-based", MappingMode: mappingMode, FramePairingMode: "pts_with_tolerance",
+		SourceStartPTS: sourceStart, SourceEndPTS: sourceStart + duration,
 		ReferenceStartPTS: 0, ReferenceEndPTS: duration,
 		CandidateStartPTS: candidateStart, CandidateEndPTS: candidateStart + math.Min(duration, candidateDuration),
 		ToleranceSeconds: 1.0 / 30.0,
 	}
+}
+
+func perceptualAlignmentMode(profile models.Profile, fullOutput bool) string {
+	base := "trimmed_candidate_segment"
+	if fullOutput {
+		base = "full_output_source_timeline"
+	}
+	executionPlan := frozenFidelityExecutionPlan(profile)
+	cadence := strings.ToLower(strings.TrimSpace(stringFromUnknown(executionPlan["effectiveCadenceOperation"])))
+	fieldMode := strings.ToLower(strings.TrimSpace(stringFromUnknown(profile.WorkerConfig["fieldStructureMode"])))
+	filters := strings.ToLower(perceptualReferenceFilter(profile))
+	suffix := ""
+	switch {
+	case strings.Contains(cadence, "inverse_telecine") || strings.Contains(cadence, "ivtc") || strings.Contains(filters, "fieldmatch") && strings.Contains(filters, "decimate"):
+		suffix = "ivtc"
+	case fieldMode == "deinterlace" || strings.Contains(filters, "bwdif") || strings.Contains(filters, "yadif"):
+		suffix = "deinterlace"
+	case strings.TrimSpace(stringFromUnknown(executionPlan["effectiveOutputFrameRate"])) != "" && cadence != "" && cadence != "preserve":
+		suffix = "fps_conversion"
+	case cadence != "" && cadence != "preserve":
+		suffix = "cadence_transform"
+	}
+	if suffix == "" {
+		return base
+	}
+	return base + "+" + suffix
 }

@@ -6,6 +6,8 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"github.com/anuelvs/mvforge/backend/internal/models"
 )
 
 func testPerceptualPlan() SamplingPlan {
@@ -81,7 +83,7 @@ func TestCanonicalWindowMetricUsesBoundedComparisonAndValidBranches(t *testing.T
 	if !strings.Contains(joined, "-t 20.000") || strings.Contains(joined, "-frames:v 1") {
 		t.Fatalf("canonical metric args were not bounded independently of legacy frame mode: %s", joined)
 	}
-	if !strings.Contains(joined, "[0:v:0]setsar=1,format=yuv420p[reference];[1:v:0]setsar=1,format=yuv420p[candidate]") {
+	if !strings.Contains(joined, "[0:v:0]setsar=1,format=yuv420p,setpts=PTS-STARTPTS[reference];[1:v:0]setsar=1,format=yuv420p,setpts=PTS-STARTPTS[candidate]") {
 		t.Fatalf("canonical comparison graph did not contain explicit reference/candidate branches: %s", joined)
 	}
 	for _, tc := range []struct {
@@ -151,6 +153,36 @@ func TestCanonicalMetricResultCacheSeparatesProviderIdentity(t *testing.T) {
 	}
 }
 
+func TestPerceptualMaterialCacheReusesExactReferencePairAndSetOnly(t *testing.T) {
+	resetLabFidelityEvidenceForTest()
+	t.Cleanup(resetLabFidelityEvidenceForTest)
+	pair := testPair(t, "generation-cache")
+	ref := pair.Reference
+	labPreviewEvidenceCachePutReference(ref)
+	if got, ok := labPreviewEvidenceCacheGetReference(ref.Identity); !ok || got.Identity != ref.Identity {
+		t.Fatalf("exact reference material was not reusable: %#v %t", got, ok)
+	}
+	labPreviewEvidenceCachePutPair(pair)
+	if got, ok := labPreviewEvidenceCacheGetPair(pair.Identity); !ok || got.Identity != pair.Identity {
+		t.Fatalf("exact comparison pair was not reusable: %#v %t", got, ok)
+	}
+	set, err := BuildPerceptualEvidenceSet(testPerceptualPlan(), "source-1", "runtime-a", nil, []PerceptualWindowEvidence{{
+		WindowIdentity: "window-primary", Primary: true, Status: "covered", PairIdentity: &pair,
+	}}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labPreviewEvidenceCachePutEvidenceSet(set)
+	if got, ok := labPreviewEvidenceCacheGetEvidenceSet(set.Identity); !ok || got.Identity != set.Identity {
+		t.Fatalf("exact evidence set was not reusable across operation retry: %#v %t", got, ok)
+	}
+
+	changed := testPair(t, "generation-replacement")
+	if _, ok := labPreviewEvidenceCacheGetPair(changed.Identity); ok {
+		t.Fatal("candidate generation replacement reused an unrelated pair")
+	}
+}
+
 func testPair(t *testing.T, candidateRevision string) ComparisonPairIdentity {
 	t.Helper()
 	reference, err := ComputeReferenceIdentity(ReferenceIdentity{
@@ -187,6 +219,93 @@ func testPair(t *testing.T, candidateRevision string) ComparisonPairIdentity {
 		t.Fatal(err)
 	}
 	return pair
+}
+
+func testPairForWindow(t *testing.T, planID, windowID, sourceRevision, candidateRevision string) ComparisonPairIdentity {
+	t.Helper()
+	reference, err := ComputeReferenceIdentity(ReferenceIdentity{
+		SamplingPlanIdentity: planID, SamplingWindowIdentity: windowID, SourceRevision: sourceRevision,
+		SourceStreamIdentity: "0:v:0", TransformIdentity: "transform-1", TransformVersion: "frame-fidelity-v1",
+		AlignmentIdentity: "alignment-" + windowID, Alignment: perceptualAlignmentEvidence(600, 20, 0, 20), ComparisonDomainIdentity: "domain-" + windowID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := ComputeCandidateIdentity(CandidateIdentity{
+		Kind: "final_output", ArtifactID: "final-output", GenerationToken: "final-generation", GenerationVersion: 1,
+		OutputRevision: candidateRevision, SourceRevision: sourceRevision, StreamIdentity: "0:v:0",
+		SegmentStartSeconds: 0, SegmentDurationSeconds: 1800, TimelineIdentity: "final-timeline",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coverage, err := ComputeCandidateCoverage(CandidateCoverage{
+		SourceStartSeconds: 0, SourceDurationSeconds: 1800, CoveredWindowIdentities: []string{"primary", "hard-a", "hard-b"},
+		SegmentMappingIdentity: "final-timeline", SourceTimelineIdentity: sourceRevision, CandidateTimelineIdentity: "final-timeline",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mustComparisonPair(t, ComparisonPairIdentity{
+		SamplingPlanIdentity: planID, SamplingWindowIdentity: windowID, Reference: reference, Candidate: candidate,
+		CoverageIdentity: coverage.Identity, SegmentMappingIdentity: coverage.SegmentMappingIdentity,
+		AlignmentIdentity: reference.AlignmentIdentity, ComparisonDomainIdentity: reference.ComparisonDomainIdentity,
+		SourceRevision: sourceRevision, CandidateRevision: candidateRevision,
+	})
+}
+
+func mustComparisonPair(t *testing.T, pair ComparisonPairIdentity) ComparisonPairIdentity {
+	t.Helper()
+	result, err := ComputeComparisonPairIdentity(pair)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func TestFinalOutputSharesOneCandidateAcrossDistinctWindowPairs(t *testing.T) {
+	plan := SamplingPlan{PlanIdentity: "final-plan", SourceRevision: "source-final", SelectedWindows: []SamplingWindow{
+		{Identity: "primary", Primary: true, StartSeconds: 600, DurationSeconds: 20},
+		{Identity: "hard-a", StartSeconds: 900, DurationSeconds: 20},
+		{Identity: "hard-b", StartSeconds: 1200, DurationSeconds: 20},
+	}}
+	pairs := []ComparisonPairIdentity{
+		testPairForWindow(t, plan.PlanIdentity, "primary", plan.SourceRevision, "output-revision-1"),
+		testPairForWindow(t, plan.PlanIdentity, "hard-a", plan.SourceRevision, "output-revision-1"),
+		testPairForWindow(t, plan.PlanIdentity, "hard-b", plan.SourceRevision, "output-revision-1"),
+	}
+	if pairs[0].Candidate.Identity != pairs[1].Candidate.Identity || pairs[1].Candidate.Identity != pairs[2].Candidate.Identity {
+		t.Fatal("final output candidate was duplicated instead of shared")
+	}
+	if pairs[0].Identity == pairs[1].Identity || pairs[1].Identity == pairs[2].Identity {
+		t.Fatal("distinct final-output windows lost their material pair identity")
+	}
+	windows := make([]PerceptualWindowEvidence, 0, len(pairs))
+	coverage, err := ComputeCandidateCoverage(CandidateCoverage{
+		SourceStartSeconds: 0, SourceDurationSeconds: 1800, CoveredWindowIdentities: []string{"primary", "hard-a", "hard-b"},
+		SegmentMappingIdentity: "final-timeline", SourceTimelineIdentity: plan.SourceRevision, CandidateTimelineIdentity: "final-timeline",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range pairs {
+		windows = append(windows, PerceptualWindowEvidence{WindowIdentity: pair.SamplingWindowIdentity, Status: "covered", Reference: &pair.Reference, Candidate: &pair.Candidate, Coverage: &coverage, PairIdentity: &pair})
+	}
+	set, err := BuildPerceptualEvidenceSet(plan, plan.SourceRevision, "runtime-final", nil, windows, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.CandidateManifest) != 1 || len(set.ReferenceManifest) != 3 || len(set.Windows) != 3 {
+		t.Fatalf("final-output manifests did not preserve shared candidate/distinct references: candidates=%d refs=%d windows=%d", len(set.CandidateManifest), len(set.ReferenceManifest), len(set.Windows))
+	}
+	replacedOutput := testPairForWindow(t, plan.PlanIdentity, "primary", plan.SourceRevision, "output-revision-2")
+	if replacedOutput.Identity == pairs[0].Identity || replacedOutput.Candidate.Identity == pairs[0].Candidate.Identity {
+		t.Fatal("final-output revision replacement did not invalidate the referencing pair/candidate")
+	}
+	changedSource := testPairForWindow(t, plan.PlanIdentity, "primary", "source-final-replaced", "output-revision-1")
+	if changedSource.Identity == pairs[0].Identity {
+		t.Fatal("source revision replacement reused the old final-output pair")
+	}
 }
 
 func TestMetricValueJSONRoundTripAndNaNRejection(t *testing.T) {
@@ -338,5 +457,41 @@ func TestAggregatePSNRPositiveInfinityAndWorstIdentity(t *testing.T) {
 	}
 	if aggregates[0].TotalFrozenWindows != len(plan.SelectedWindows) {
 		t.Fatalf("aggregate must retain frozen window count: %#v", aggregates[0])
+	}
+}
+
+func TestPerceptualEvidenceLifecycleIsBoundedAndOperationAgnostic(t *testing.T) {
+	plan := SamplingPlan{PlanIdentity: "lifecycle-plan", SourceRevision: "source-lifecycle", SelectedWindows: []SamplingWindow{
+		{Identity: "primary", Primary: true, StartSeconds: 0, DurationSeconds: 20},
+		{Identity: "hard", StartSeconds: 200, DurationSeconds: 20},
+	}}
+	pair := testPair(t, "lifecycle-generation")
+	descriptor := newMetricDescriptor(PerceptualMetricPSNR, "ffmpeg.filter.psnr", "1", "bounded-v1", "", "runtime-a", "higher_is_better")
+	resultIdentity, err := ComputeMetricResultIdentity(pair, descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := NewPositiveInfinityMetricValue()
+	windows := []PerceptualWindowEvidence{
+		{WindowIdentity: "primary", Primary: true, Status: "covered", Reference: &pair.Reference, Candidate: &pair.Candidate, PairIdentity: &pair, Metrics: []MetricResult{{Identity: resultIdentity, Status: PerceptualMetricAvailable, Value: &value}}},
+		{WindowIdentity: "hard", Status: "not_covered", ComparableReason: "candidate segment does not represent this frozen window"},
+	}
+	first, err := BuildPerceptualEvidenceSet(plan, "source-lifecycle", "runtime-a", []MetricDescriptor{descriptor}, windows, nil, nil, models.JSONMap{"operationId": "operation-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := BuildPerceptualEvidenceSet(plan, "source-lifecycle", "runtime-a", []MetricDescriptor{descriptor}, windows, nil, nil, models.JSONMap{"operationId": "operation-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Identity != second.Identity || first.Windows[0].PairIdentity.Identity != second.Windows[0].PairIdentity.Identity {
+		t.Fatal("operation retry changed material/set evidence identity")
+	}
+	encoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > 64*1024 {
+		t.Fatalf("persisted evidence was not bounded/provenance-safe: bytes=%d", len(encoded))
 	}
 }

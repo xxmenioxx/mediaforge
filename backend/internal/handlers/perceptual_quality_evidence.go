@@ -165,20 +165,27 @@ type CandidateManifestEntry struct {
 // AlignmentEvidence is bounded bookkeeping for the source -> reference ->
 // candidate time map. It deliberately excludes decoded frames and raw stderr.
 type AlignmentEvidence struct {
-	ContractVersion      string  `json:"contractVersion"`
-	SourceStartPTS       float64 `json:"sourceStartPTS"`
-	SourceEndPTS         float64 `json:"sourceEndPTS"`
-	ReferenceStartPTS    float64 `json:"referenceStartPTS"`
-	ReferenceEndPTS      float64 `json:"referenceEndPTS"`
-	CandidateStartPTS    float64 `json:"candidateStartPTS"`
-	CandidateEndPTS      float64 `json:"candidateEndPTS"`
-	ToleranceSeconds     float64 `json:"toleranceSeconds"`
-	SourceFrameCount     int     `json:"sourceFrameCount"`
-	ReferenceFrameCount  int     `json:"referenceFrameCount"`
-	CandidateFrameCount  int     `json:"candidateFrameCount"`
-	DroppedFrameCount    int     `json:"droppedFrameCount"`
-	DuplicatedFrameCount int     `json:"duplicatedFrameCount"`
-	UnmatchedFrameCount  int     `json:"unmatchedFrameCount"`
+	ContractVersion           string  `json:"contractVersion"`
+	TimelineIdentity          string  `json:"timelineIdentity"`
+	SourceTimelineIdentity    string  `json:"sourceTimelineIdentity"`
+	ReferenceTimelineIdentity string  `json:"referenceTimelineIdentity"`
+	CandidateTimelineIdentity string  `json:"candidateTimelineIdentity"`
+	TimestampOrigin           string  `json:"timestampOrigin"`
+	MappingMode               string  `json:"mappingMode"`
+	FramePairingMode          string  `json:"framePairingMode"`
+	SourceStartPTS            float64 `json:"sourceStartPTS"`
+	SourceEndPTS              float64 `json:"sourceEndPTS"`
+	ReferenceStartPTS         float64 `json:"referenceStartPTS"`
+	ReferenceEndPTS           float64 `json:"referenceEndPTS"`
+	CandidateStartPTS         float64 `json:"candidateStartPTS"`
+	CandidateEndPTS           float64 `json:"candidateEndPTS"`
+	ToleranceSeconds          float64 `json:"toleranceSeconds"`
+	SourceFrameCount          int     `json:"sourceFrameCount"`
+	ReferenceFrameCount       int     `json:"referenceFrameCount"`
+	CandidateFrameCount       int     `json:"candidateFrameCount"`
+	DroppedFrameCount         int     `json:"droppedFrameCount"`
+	DuplicatedFrameCount      int     `json:"duplicatedFrameCount"`
+	UnmatchedFrameCount       int     `json:"unmatchedFrameCount"`
 }
 
 type ReferenceManifestEntry struct {
@@ -516,8 +523,44 @@ func BuildPerceptualEvidenceSet(plan SamplingPlan, sourceRevision, runtimeCapabi
 			set.ReferenceManifest = appendUniqueReferenceManifest(set.ReferenceManifest, ReferenceManifestEntry{Reference: *window.Reference})
 		}
 	}
+	set.ArtifactEvidence = artifactEvidenceFromProvenance(provenance)
 	set.Aggregates = AggregatePerceptualMetricsForRequested(ordered, set.RequestedMetrics)
 	return ComputePerceptualEvidenceSetIdentity(set)
+}
+
+// artifactEvidenceFromProvenance only projects deterministic signals that
+// already belong to the frozen restoration-analysis authority. It deliberately
+// omits unavailable categories rather than inventing a perceptual signal.
+func artifactEvidenceFromProvenance(provenance models.JSONMap) []ArtifactEvidence {
+	if provenance == nil {
+		return nil
+	}
+	raw, ok := provenance["restorationAnalysis"]
+	if !ok || raw == nil {
+		return nil
+	}
+	analysis := restorationEvidenceFromRaw(raw)
+	result := make([]ArtifactEvidence, 0, 3)
+	appendSignal := func(kind string, signal RestorationSignalEvidence) {
+		if signal.Availability != "available" && signal.Availability != "ambiguous" {
+			return
+		}
+		evidence := models.JSONMap{
+			"availability": signal.Availability, "severity": signal.Severity,
+			"confidence": signal.Confidence, "supportingEvidence": signal.SupportingEvidence,
+		}
+		if signal.Value != nil {
+			evidence["value"] = *signal.Value
+		}
+		result = append(result, ArtifactEvidence{Kind: kind, Status: signal.Availability, Evidence: evidence})
+	}
+	appendSignal("blocking", analysis.Blocking)
+	appendSignal("blur_detail_loss", analysis.EdgeDetail)
+	appendSignal("banding", analysis.Banding)
+	appendSignal("ringing_halo", analysis.Ringing)
+	// RestorationAnalysis has no canonical temporal-instability signal. Keep
+	// that category absent until an authoritative signal exists.
+	return result
 }
 
 func appendUniqueCandidateManifest(values []CandidateManifestEntry, entry CandidateManifestEntry) []CandidateManifestEntry {
