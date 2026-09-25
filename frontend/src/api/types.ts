@@ -117,10 +117,15 @@ export type AssetLifecycleProjection = {
   original: string;
   activeOperation?: { kind?: string; status?: string; stage?: string };
   attention?: string[];
-  currentPublication?: { state?: string; authority?: string; id?: number; path?: string };
-  sourceProvenance?: Array<{ sourcePath?: string; authority?: string; jobId?: number; publicationId?: number }>;
-  currentRawCorrelation?: { state?: string; assetRecordId?: number; path?: string };
-  evidenceSummary?: Record<string, unknown>;
+  currentPublication?: { state?: string; authority?: string; id?: number; publishedPath?: string; path?: string; publishedAt?: string };
+  sourceProvenance?: Array<{ sourcePath?: string; authority?: string; recordId?: number; sourceAssetRecordId?: number; jobId?: number; publicationId?: number; publishedPath?: string; current?: boolean; publishedAt?: string }>;
+  currentRawCorrelation?: { state?: string; rawAssetRecordId?: number; assetRecordId?: number; libraryAssetId?: number; path?: string };
+  evidenceSummary?: {
+    queueJobIds?: number[];
+    directPublicationIds?: number[];
+    hasAnalysis?: boolean;
+    originalArchivedPath?: string;
+  };
   actions?: Record<string, { allowed: boolean; reason?: string }>;
 };
 

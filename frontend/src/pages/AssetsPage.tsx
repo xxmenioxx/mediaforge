@@ -67,7 +67,7 @@ import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLifecycleProjection, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -2523,6 +2523,124 @@ function AssetGroupRow({
   );
 }
 
+type AssetInfoActionKey =
+  | 'rename'
+  | 'move'
+  | 'queue'
+  | 'reconvert'
+  | 'lab'
+  | 'refreshAnalysis'
+  | 'manageTracks'
+  | 'manageSubtitles'
+  | 'manageAttachments'
+  | 'cancelWork'
+  | 'reviewValidation'
+  | 'retryValidation'
+  | 'publish'
+  | 'retryPublication'
+  | 'archive'
+  | 'restore'
+  | 'deleteArchivedOriginal'
+  | 'viewReports'
+  | 'viewHistory';
+
+function assetInfoCapability(asset: Asset, key: AssetInfoActionKey) {
+  const capability = asset.lifecycle?.actions?.[key];
+  return capability ?? { allowed: true };
+}
+
+function lifecyclePresentationValue(value: string | undefined, fallback = 'unavailable') {
+  if (!value) return fallback;
+  return value.replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+export function AssetInfoOverview({ asset, libraries }: { asset: Asset; libraries: Library[] }) {
+  const lifecycle: AssetLifecycleProjection | undefined = asset.lifecycle;
+  const publication = lifecycle?.currentPublication;
+  const evidence = lifecycle?.evidenceSummary;
+  const destination = libraries.find((library) => library.id === asset.libraryId);
+  const blockedActions = Object.entries(lifecycle?.actions ?? {})
+    .filter(([, capability]) => !capability.allowed)
+    .slice(0, 5);
+  const publicationConflict = publication?.state === 'conflict' || publication?.state === 'unresolved' || publication?.state === 'unresolved_conflict';
+
+  return (
+    <Stack spacing={1.5} data-testid="asset-info-overview">
+      <Typography variant="h3">Asset information</Typography>
+      <Typography variant="subtitle1">Overview</Typography>
+      <Grid container spacing={1.5}>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <Typography variant="caption" color="text.secondary">Name</Typography>
+          <Typography sx={{ wordBreak: 'break-word' }}>{asset.fileName || asset.path}</Typography>
+        </Grid>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <Typography variant="caption" color="text.secondary">Location</Typography>
+          <Typography>{lifecyclePresentationValue(lifecycle?.location, asset.libraryId > 0 ? 'library' : 'raw')}</Typography>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+          <Typography variant="caption" color="text.secondary">Lifecycle</Typography>
+          <Typography>{lifecyclePresentationValue(lifecycle?.lifecycle)}</Typography>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+          <Typography variant="caption" color="text.secondary">Provenance</Typography>
+          <Typography>{lifecyclePresentationValue(lifecycle?.provenance, 'legacy or unknown')}</Typography>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+          <Typography variant="caption" color="text.secondary">Validation</Typography>
+          <Typography>{lifecyclePresentationValue(lifecycle?.validation)}</Typography>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+          <Typography variant="caption" color="text.secondary">Original retention</Typography>
+          <Typography>{lifecyclePresentationValue(lifecycle?.original, 'unknown')}</Typography>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+          <Typography variant="caption" color="text.secondary">Destination</Typography>
+          <Typography sx={{ wordBreak: 'break-word' }}>{destination?.name || asset.libraryName || (asset.libraryId > 0 ? `Library #${asset.libraryId}` : 'RAW source')}</Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{assetSubpath(asset, libraries)}</Typography>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+          <Typography variant="caption" color="text.secondary">Active operation</Typography>
+          <Typography>{lifecycle?.activeOperation ? lifecyclePresentationValue(lifecycle.activeOperation.kind || lifecycle.activeOperation.stage || lifecycle.activeOperation.status) : 'None'}</Typography>
+        </Grid>
+      </Grid>
+      {lifecycle?.attention?.length ? <Alert severity="warning">Attention: {lifecycle.attention.join(' · ')}</Alert> : null}
+      {publicationConflict ? (
+        <Alert severity="warning">Current publication is unresolved because independent publication authorities conflict. Recovery and destructive actions remain blocked.</Alert>
+      ) : (
+        <Box>
+          <Typography variant="caption" color="text.secondary">Current publication</Typography>
+          <Typography>{publication?.id ? `${lifecyclePresentationValue(publication.state, 'published')} · ${publication.authority || 'canonical'} #${publication.id}` : lifecyclePresentationValue(publication?.state, lifecycle?.publication === 'unpublished' ? 'No current publication' : 'Unavailable')}</Typography>
+          {(publication?.publishedPath || publication?.path) ? <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{publication.publishedPath || publication.path}</Typography> : null}
+          {publication?.publishedAt ? <Typography variant="caption" color="text.secondary">Published {formatDate(publication.publishedAt)}</Typography> : null}
+        </Box>
+      )}
+      <Box>
+        <Typography variant="caption" color="text.secondary">Integration evidence</Typography>
+        <Typography>{evidence?.hasAnalysis ? 'Analysis evidence available' : 'Analysis unavailable'}</Typography>
+        <Typography variant="caption" color="text.secondary">Validation and Publisher details remain unavailable/pending until their canonical evidence exists.</Typography>
+      </Box>
+      {blockedActions.length ? (
+        <Stack spacing={0.25}>
+          <Typography variant="caption" color="text.secondary">Backend action capabilities</Typography>
+          {blockedActions.map(([key, capability]) => <Typography key={key} variant="body2" color="text.secondary">{lifecyclePresentationValue(key)} unavailable{capability.reason ? `: ${capability.reason}` : ''}</Typography>)}
+        </Stack>
+      ) : null}
+    </Stack>
+  );
+}
+
+function associatedJobForCurrentPublication(asset: Asset, jobs: QueueJob[]) {
+  // Phase A is authoritative whenever the projection is present. Keep the
+  // path-based lookup only for pre-projection compatibility responses.
+  if (!asset.lifecycle) return associatedJobForAsset(asset, jobs);
+  const current = asset.lifecycle?.currentPublication;
+  if (current) {
+    if (current.authority !== 'queue_job' || !current.id) return undefined;
+    return jobs.find((job) => job.id === current.id);
+  }
+  return undefined;
+}
+
 function AssetRow({
   asset,
 	compactUnprocessed = false,
@@ -2597,12 +2715,14 @@ function AssetRow({
   const selectedTrackProfile = trackProfiles.find((profile) => profile.key === effectiveTrackProfileKey);
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(groupLibraryId);
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
+  type AssetInfoSection = 'overview' | 'analysis' | 'tracks' | 'subtitles' | 'attachments' | 'publication' | 'advisor' | 'conversion' | 'validation' | 'original' | 'evidence' | 'history' | 'test-encode';
+  const [snapshotTab, setSnapshotTab] = useState<AssetInfoSection>('overview');
+  const [selectedEvidenceJobId, setSelectedEvidenceJobId] = useState<number | null>(null);
   const assetScopeConfigurations = useQuery({
     queryKey: ['assetScopeConfigurations'],
     queryFn: api.assetScopeConfigurations,
-    enabled: showSnapshotDialog && mode === 'unprocessed',
+    enabled: showSnapshotDialog && mode === 'unprocessed' && snapshotTab === 'overview',
   });
-  const [snapshotTab, setSnapshotTab] = useState(0);
   const [renameFileName, setRenameFileName] = useState(asset.fileName);
   const [snapshotOperation, setSnapshotOperation] = useState<SnapshotOperation | null>(null);
   const [editingSubtitle, setEditingSubtitle] = useState<ExternalSubtitle | null>(null);
@@ -2667,7 +2787,7 @@ function AssetRow({
   const storedSnapshot = useQuery({
     queryKey: ['assetSnapshot', asset.path],
     queryFn: () => api.latestSnapshot(asset.path),
-    enabled: showSnapshotDialog && !asset.missing,
+    enabled: showSnapshotDialog && ['analysis', 'tracks', 'subtitles', 'advisor', 'conversion', 'test-encode'].includes(snapshotTab) && !asset.missing,
     staleTime: 0,
   });
   const snapshot = useMutation({
@@ -2702,6 +2822,7 @@ function AssetRow({
     queryFn: () => api.suggestProfile(asset.path),
     enabled:
       showSnapshotDialog &&
+      snapshotTab === 'advisor' &&
       Boolean(snapshotData) &&
       !asset.missing &&
       asset.status !== 'converted' &&
@@ -2714,12 +2835,22 @@ function AssetRow({
   const externalSubtitles = useQuery({
     queryKey: ['externalSubtitles', asset.path],
     queryFn: () => api.externalAssetSubtitles(asset.path),
-    enabled: showSnapshotDialog && asset.status !== 'archive' && !asset.missing,
+    enabled: showSnapshotDialog && snapshotTab === 'subtitles' && asset.status !== 'archive' && !asset.missing,
   });
   const subtitleEligibility = useQuery({
     queryKey: ['subtitleEligibility', asset.path],
     queryFn: () => api.subtitleEligibility(asset.path),
-    enabled: showSnapshotDialog && !asset.missing,
+    enabled: showSnapshotDialog && snapshotTab === 'subtitles' && !asset.missing,
+  });
+  const evidenceArtifacts = useQuery({
+    queryKey: ['assetEvidenceArtifacts', selectedEvidenceJobId],
+    queryFn: () => api.jobArtifacts(selectedEvidenceJobId as number),
+    enabled: showSnapshotDialog && snapshotTab === 'evidence' && selectedEvidenceJobId !== null,
+  });
+  const evidencePlans = useQuery({
+    queryKey: ['assetEvidencePlans', selectedEvidenceJobId],
+    queryFn: () => api.executionPlans(selectedEvidenceJobId as number),
+    enabled: showSnapshotDialog && snapshotTab === 'evidence' && selectedEvidenceJobId !== null,
   });
   const advisor = useQuery({
     queryKey: ['advisor', 'asset-row', asset.path, effectiveProfileId],
@@ -2904,12 +3035,18 @@ function AssetRow({
   const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is';
   const isArchive = mode === 'archive' || asset.status === 'archive';
   const canGenerateTestEncode = testEncodeEligibleAsset(asset, mode);
+  const labCapability = assetInfoCapability(asset, 'lab');
+  const renameCapability = assetInfoCapability(asset, 'rename');
   const rowColumnCount = compactUnprocessed ? 5 : isConverted
     ? bulkSelectionEnabled ? 8 : 7
     : isArchive
       ? bulkSelectionEnabled ? 7 : 6
       : isAccepted ? 5 : 10;
-  const associatedJob = associatedJobForAsset(asset, queueJobs);
+  const associatedJob = associatedJobForCurrentPublication(asset, queueJobs);
+  const historyJobIds = new Set(asset.lifecycle?.evidenceSummary?.queueJobIds ?? []);
+  const historyJobs = historyJobIds.size
+    ? queueJobs.filter((job) => historyJobIds.has(job.id)).sort((left, right) => right.id - left.id)
+    : associatedJob ? [associatedJob] : [];
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive || isPublishedAsIs || isAccepted;
   const renameLocked = hasOpenJob || createJob.isPending || isArchive || isPublishedAsIs || isAccepted;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
@@ -3013,12 +3150,12 @@ function AssetRow({
     updateAssetDestination.mutate({ selection: 'value', libraryId });
   }
   useEffect(() => {
-    if (!showSnapshotDialog || asset.missing) {
+    if (!showSnapshotDialog || snapshotTab !== 'subtitles' || asset.missing) {
       return;
     }
 
   void restoreSubtitleOperations();
-  }, [showSnapshotDialog, asset.path]);
+  }, [showSnapshotDialog, snapshotTab, asset.path]);
   useEffect(() => {
     if (assetEditPathRef.current !== asset.path) {
       assetEditPathRef.current = asset.path;
@@ -3036,7 +3173,8 @@ function AssetRow({
 
   function openSnapshotDialog(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
-    setSnapshotTab(0);
+    setSnapshotTab('overview');
+    setSelectedEvidenceJobId(null);
     setShowSnapshotDialog(true);
   }
 
@@ -3054,6 +3192,7 @@ function AssetRow({
     setShowSnapshotDialog(false);
     snapshot.reset();
     setSnapshotOperation(null);
+    setSelectedEvidenceJobId(null);
   }
 
   function openPreviewDialog(event: MouseEvent<HTMLButtonElement>) {
@@ -3081,7 +3220,7 @@ function AssetRow({
     });
     const next = cleanConversionOverride(draft);
     setConversionDraft(next);
-    setSnapshotTab(5);
+    setSnapshotTab('conversion');
     return 'Recommendations were applied to the draft. Save Asset Info to commit them.';
   }
 
@@ -3839,7 +3978,7 @@ async function generateExternalSubtitle(
                   variant="outlined"
                   startIcon={<InfoOutlinedIcon />}
                   aria-label="Click para evaluar"
-                  disabled={!confidenceEnabled || effectiveProfileId <= 0}
+                  disabled={!confidenceEnabled || effectiveProfileId <= 0 || !assetInfoCapability(asset, 'refreshAnalysis').allowed}
                   onClick={() => setShowAdvisorDialog(true)}
                   sx={{ minWidth: 64 }}
                 >
@@ -3927,7 +4066,7 @@ async function generateExternalSubtitle(
                     <IconButton
                       color="primary"
                       onClick={recoverArchivedAsset}
-                      disabled={asset.missing || recoverAsset.isPending || deleteArchiveAssets.isPending}
+                      disabled={!assetInfoCapability(asset, 'restore').allowed || asset.missing || recoverAsset.isPending || deleteArchiveAssets.isPending}
                       aria-label={`Recover ${asset.fileName}`}
                       sx={actionIconSx}
                     >
@@ -3940,7 +4079,7 @@ async function generateExternalSubtitle(
                     <IconButton
                       color="error"
                       onClick={(event) => requestArchiveDeletion(event, [asset.path])}
-                      disabled={asset.missing || deleteArchiveAssets.isPending}
+                      disabled={!assetInfoCapability(asset, 'deleteArchivedOriginal').allowed || asset.missing || deleteArchiveAssets.isPending}
                       aria-label={`Permanently delete ${asset.fileName}`}
                       sx={actionIconSx}
                     >
@@ -3954,7 +4093,7 @@ async function generateExternalSubtitle(
                       <IconButton
                         color="error"
                         onClick={(event) => requestArchiveDeletion(event, archivePathAssets.map((candidate) => candidate.path))}
-                        disabled={deleteArchiveAssets.isPending}
+                        disabled={!assetInfoCapability(asset, 'deleteArchivedOriginal').allowed || deleteArchiveAssets.isPending}
                         aria-label={`Permanently delete Archive path ${groupRelativePath}`}
                         sx={actionIconSx}
                       >
@@ -4008,7 +4147,7 @@ async function generateExternalSubtitle(
             {isConverted ? (
               <Tooltip title={asset.missing ? 'Complete safe restoration from the archived original' : deleteConvertedAsset.isPending ? 'Safe deletion is in progress' : 'Safely delete converted asset and restore archived original to Raw'}>
                 <span onClick={(event) => event.stopPropagation()}>
-                  <IconButton color="error" onClick={safelyDeleteConvertedAsset} disabled={deleteConvertedAsset.isPending} aria-label={`Safely delete ${asset.fileName}`} sx={actionIconSx}>
+                  <IconButton color="error" onClick={safelyDeleteConvertedAsset} disabled={!assetInfoCapability(asset, 'deleteArchivedOriginal').allowed || deleteConvertedAsset.isPending} aria-label={`Safely delete ${asset.fileName}`} sx={actionIconSx}>
                     <DeleteForeverIcon />
                   </IconButton>
                 </span>
@@ -4016,7 +4155,7 @@ async function generateExternalSubtitle(
             ) : isPublishedAsIs ? (
               <Tooltip title={returnPublishedAsIs.isPending ? 'Returning asset to Raw' : 'Remove from Library and return the original file to Raw'}>
                 <span onClick={(event) => event.stopPropagation()}>
-                  <IconButton color="error" onClick={returnPublishedAsIsAsset} disabled={returnPublishedAsIs.isPending} aria-label={`Return ${asset.fileName} to Raw`} sx={actionIconSx}>
+                  <IconButton color="error" onClick={returnPublishedAsIsAsset} disabled={!assetInfoCapability(asset, 'restore').allowed || returnPublishedAsIs.isPending} aria-label={`Return ${asset.fileName} to Raw`} sx={actionIconSx}>
                     <DeleteForeverIcon />
                   </IconButton>
                 </span>
@@ -4026,7 +4165,7 @@ async function generateExternalSubtitle(
                 <IconButton
                   color="primary"
                   onClick={queueAsset}
-				  disabled={profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !canQueueWithSelection || !selectedLibraryId || isBlockedByReview || hasOpenJob}
+                  disabled={!assetInfoCapability(asset, 'queue').allowed || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !canQueueWithSelection || !selectedLibraryId || isBlockedByReview || hasOpenJob}
                   aria-label={`Queue ${asset.fileName}`}
                   sx={actionIconSx}
                 >
@@ -4039,7 +4178,7 @@ async function generateExternalSubtitle(
                 <IconButton
                   color="warning"
                   onClick={queueAsset}
-				  disabled={profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !canQueueWithSelection || isBlockedByReview || hasOpenJob}
+                  disabled={!assetInfoCapability(asset, 'reconvert').allowed || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !canQueueWithSelection || isBlockedByReview || hasOpenJob}
                   aria-label={`Replace ${asset.fileName}`}
                   sx={actionIconSx}
                 >
@@ -4321,42 +4460,47 @@ async function generateExternalSubtitle(
             {snapshot.isError ? (
               <Alert severity="warning">Could not scan this asset: {snapshot.error instanceof Error ? snapshot.error.message : 'unknown backend error'}</Alert>
             ) : null}
-            {!asset.missing && !storedSnapshot.isLoading && !operationPending && !storedSnapshotExists ? (
+            {snapshotTab !== 'overview' && !asset.missing && !storedSnapshot.isLoading && !operationPending && !storedSnapshotExists ? (
               <Alert
                 severity="info"
-                action={<Button color="inherit" size="small" onClick={() => snapshot.mutate({ path: asset.path })}>Analyze asset</Button>}
+                action={<Button color="inherit" size="small" onClick={() => snapshot.mutate({ path: asset.path })} disabled={!assetInfoCapability(asset, 'refreshAnalysis').allowed}>{assetInfoCapability(asset, 'refreshAnalysis').allowed ? 'Analyze asset' : assetInfoCapability(asset, 'refreshAnalysis').reason || 'Analysis unavailable'}</Button>}
               >
                 No snapshot available
               </Alert>
             ) : null}
-            {!asset.missing && !operationPending && refreshRequired ? (
+            {snapshotTab !== 'overview' && !asset.missing && !operationPending && refreshRequired ? (
               <Alert
                 severity="warning"
-                action={<Button color="inherit" size="small" onClick={refreshSnapshot}>Rescan</Button>}
+                action={<Button color="inherit" size="small" onClick={refreshSnapshot} disabled={!assetInfoCapability(asset, 'refreshAnalysis').allowed}>Rescan</Button>}
               >
                 Snapshot needs refresh
               </Alert>
             ) : null}
-            {storedSnapshotExists ? (
-              <>
-                <Tabs value={snapshotTab} onChange={(_, value: number) => setSnapshotTab(value)} variant="scrollable" allowScrollButtonsMobile>
-                  <Tab label="Asset Information" />
-                  <Tab label="Technical Snapshot" />
-                  <Tab label="Tracks" />
-                  <Tab label="Job Information" />
-                  <Tab label="MVForge Suggestions" />
-                  <Tab label="Quick Asset Overrides" />
-                  <Tab label="Test Encode" />
+            <>
+                <Tabs value={snapshotTab} onChange={(_, value: AssetInfoSection) => setSnapshotTab(value)} variant="scrollable" allowScrollButtonsMobile>
+                  <Tab value="overview" label="Asset Information" />
+                  <Tab value="analysis" label="Technical Snapshot" />
+                  <Tab value="tracks" label="Tracks" />
+                  <Tab value="subtitles" label="Subtitles" />
+                  <Tab value="attachments" label="Attachments" />
+                  <Tab value="publication" label="Job Information" />
+                  <Tab value="advisor" label="MVForge Suggestions" />
+                  <Tab value="conversion" label="Quick Asset Overrides" />
+                  <Tab value="validation" label="Validation" />
+                  <Tab value="original" label="Original" />
+                  <Tab value="evidence" label="Evidence" />
+                  <Tab value="history" label="History" />
+                  <Tab value="test-encode" label="Test Encode" />
                 </Tabs>
-                <Box hidden={snapshotTab !== 1}>
+                {snapshotTab === 'analysis' ? <Box>
                   <Box sx={{ pt: 1.5 }}>
-                    <MediaSnapshotDetails scan={snapshotData} section="general" />
-                    <DirectPlaySnapshotComparison scan={snapshotData} job={associatedJob} />
+                    {snapshotData ? <><MediaSnapshotDetails scan={snapshotData} section="general" /><DirectPlaySnapshotComparison scan={snapshotData} job={associatedJob} /></> : <Alert severity="info">Analysis unavailable. Select Analyze asset only when a fresh analysis is required.</Alert>}
                   </Box>
-                </Box>
-                <Box hidden={snapshotTab !== 2}>
+                </Box> : null}
+                {snapshotTab === 'tracks' || snapshotTab === 'subtitles' ? <Box>
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
-                    <TrackMaintenancePanel path={asset.path} active={showSnapshotDialog && snapshotTab === 2} hasOpenJob={hasOpenJob} />
+                    {snapshotTab === 'tracks' ? <Box>
+                    {snapshotData ? <><TrackMaintenancePanel path={asset.path} active={showSnapshotDialog && snapshotTab === 'tracks'} hasOpenJob={hasOpenJob || !assetInfoCapability(asset, 'manageTracks').allowed} />
                     {!isConverted && !isArchive ? <><Typography variant="h3">Conversion track selection</Typography><MediaSnapshotDetails
                       scan={snapshotData}
                       section="tracks"
@@ -4366,17 +4510,17 @@ async function generateExternalSubtitle(
                           : {
                               video: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'video'),
-                                disabled: rowLocked,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
                                 onToggle: (index, keep) => toggleSnapshotStream('video', index, keep),
                               },
                               audio: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'audio'),
-                                disabled: rowLocked,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
                                 onToggle: (index, keep) => toggleSnapshotStream('audio', index, keep),
                               },
                               subtitle: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'subtitle'),
-                                disabled: rowLocked,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
                                 onToggle: (index, keep) => toggleSnapshotStream('subtitle', index, keep),
                               },
                             }
@@ -4387,17 +4531,17 @@ async function generateExternalSubtitle(
                           : {
                               video: {
                                 values: conversionDraft.videoMetadata ?? {},
-                                disabled: rowLocked,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
                                 onChange: (index, patch) => updateStreamMetadata('video', index, patch),
                               },
                               audio: {
                                 values: conversionDraft.audioMetadata ?? {},
-                                disabled: rowLocked,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
                                 onChange: (index, patch) => updateStreamMetadata('audio', index, patch),
                               },
                               subtitle: {
                                 values: conversionDraft.subtitleMetadata ?? {},
-                                disabled: rowLocked,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
                                 onChange: (index, patch) => updateStreamMetadata('subtitle', index, patch),
                               },
                             }
@@ -4431,6 +4575,10 @@ async function generateExternalSubtitle(
                         </TextField>;
                       })}
                     </Stack> : null}</> : null}
+                    </> : <Alert severity="info">Track evidence is unavailable until a persisted Analysis snapshot exists.</Alert>}
+                    </Box> : null}
+                    {snapshotTab === 'subtitles' ? <Box>
+                    {snapshotData ? <>
                     {isArchive ? (
                       <Alert severity="info">
                         The archived original is used as the subtitle source. Generated files are saved beside its active converted asset.
@@ -4444,8 +4592,8 @@ async function generateExternalSubtitle(
                       onGenerate={generateExternalSubtitle}
                       onRegenerate={regenerateEmbeddedSubtitle}
                       onCancel={cancelExternalSubtitle}
-                      disabled={hasOpenJob}
-                      translationDisabled={rowLocked}
+                      disabled={hasOpenJob || !assetInfoCapability(asset, 'manageSubtitles').allowed}
+                      translationDisabled={rowLocked || !assetInfoCapability(asset, 'manageSubtitles').allowed}
                       onTranslate={(streamIndex) => setTranslationSource({ type: 'embedded', embedded: { streamIndex } })}
                     />
                     {!isArchive ? (
@@ -4455,8 +4603,8 @@ async function generateExternalSubtitle(
                         loading={externalSubtitles.isLoading}
                         deleting={deleteExternalSubtitle.isPending}
                         renaming={renameExternalSubtitle.isPending}
-                        disabled={hasOpenJob}
-                        translationDisabled={rowLocked}
+                        disabled={hasOpenJob || !assetInfoCapability(asset, 'manageSubtitles').allowed}
+                        translationDisabled={rowLocked || !assetInfoCapability(asset, 'manageSubtitles').allowed}
                         onTranslate={(subtitle) => setTranslationSource({ type: 'external', external: { subtitlePath: subtitle.path } })}
                         onAnalyze={analyzeExternalSubtitle}
                         qualityReports={subtitleQualityReports}
@@ -4487,7 +4635,7 @@ async function generateExternalSubtitle(
                       assetPath={asset.path}
                       eligibility={subtitleEligibility.data?.composition}
                       loading={subtitleEligibility.isLoading}
-                      disabled={hasOpenJob}
+                      disabled={hasOpenJob || !assetInfoCapability(asset, 'manageSubtitles').allowed}
                       operation={subtitleCompositionOperation}
                       error={subtitleCompositionError}
                       onCompose={composeSubtitles}
@@ -4500,17 +4648,19 @@ async function generateExternalSubtitle(
                       <Alert severity="warning">{externalSubtitles.error instanceof Error ? externalSubtitles.error.message : 'Could not list external subtitles.'}</Alert>
                     ) : null}
                     {deleteExternalSubtitle.isError ? <Alert severity="warning">{deleteExternalSubtitle.error instanceof Error ? deleteExternalSubtitle.error.message : 'Subtitle deletion failed.'}</Alert> : null}
+                    </> : <Alert severity="info">Subtitle controls are unavailable until a persisted Analysis snapshot exists.</Alert>}
+                    </Box> : null}
                   </Stack>
-                </Box>
-                <Box hidden={snapshotTab !== 0}>
+                </Box> : null}
+                <Box hidden={snapshotTab !== 'overview'}>
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
-                    <Typography variant="h3">Asset information</Typography>
+                    <AssetInfoOverview asset={asset} libraries={libraries} />
                     <Grid container spacing={1.5} alignItems="flex-start">
                       <Grid size={{ xs: 12, md: 6 }}>
                         <Stack direction="row" spacing={1} alignItems="flex-start">
-                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={renameLocked || asset.missing || renameAsset.isPending || saveAssetEdit.isPending} fullWidth helperText="File name only; the asset remains in its current folder." />
+                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={renameLocked || !renameCapability.allowed || asset.missing || renameAsset.isPending || saveAssetEdit.isPending} fullWidth helperText={renameCapability.allowed ? 'File name only; the asset remains in its current folder.' : `Rename unavailable: ${renameCapability.reason || 'backend denied'}`} />
                           <Button size="small" variant="contained" onClick={() => renameAsset.mutate({ path: asset.path, fileName: renameFileName })} disabled={ renameLocked || asset.missing || renameAsset.isPending || !renameFileName.trim() || renameFileName.trim() === asset.fileName
-                            || saveAssetEdit.isPending
+                            || saveAssetEdit.isPending || !renameCapability.allowed
                           }>Rename</Button>
                         </Stack>
                       </Grid>
@@ -4602,16 +4752,75 @@ async function generateExternalSubtitle(
                     </Grid>
                   </Stack>
                 </Box>
-                <Box hidden={snapshotTab !== 3}>
-                  <Box sx={{ pt: 1.5 }}>
+                {snapshotTab === 'publication' ? <Box>
+                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                    <Typography variant="h3">Current publication</Typography>
+                    {asset.lifecycle?.currentPublication?.state === 'conflict' || asset.lifecycle?.currentPublication?.state === 'unresolved' || asset.lifecycle?.currentPublication?.state === 'unresolved_conflict' ? (
+                      <Alert severity="warning">Current publication is unresolved because canonical publication authorities conflict. Recovery and destructive actions are blocked.</Alert>
+                    ) : (
+                      <Typography>{asset.lifecycle?.currentPublication?.id ? `${lifecyclePresentationValue(asset.lifecycle.currentPublication.state, 'published')} · ${asset.lifecycle.currentPublication.authority || 'canonical'} #${asset.lifecycle.currentPublication.id}` : lifecyclePresentationValue(asset.lifecycle?.publication, 'unavailable')}</Typography>
+                    )}
+                    {asset.lifecycle?.currentPublication?.publishedPath ? <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{asset.lifecycle.currentPublication.publishedPath}</Typography> : null}
                     {associatedJob ? (
                       <FinalDetailsSummary asset={asset} job={associatedJob} />
                     ) : (
                       <Alert severity="info">No job is currently associated with this asset.</Alert>
                     )}
-                  </Box>
-                </Box>
-                <Box hidden={snapshotTab !== 4}>
+                  </Stack>
+                </Box> : null}
+                {snapshotTab === 'attachments' ? <Box>
+                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                    <Typography variant="h3">Attachments</Typography>
+                    <Typography color="text.secondary">Attachment management uses the existing Track Maintenance authority and loads only when this section is selected.</Typography>
+                    <TrackMaintenancePanel path={asset.path} active={showSnapshotDialog && snapshotTab === 'attachments'} hasOpenJob={hasOpenJob || !assetInfoCapability(asset, 'manageAttachments').allowed} />
+                  </Stack>
+                </Box> : null}
+                {snapshotTab === 'validation' ? <Box>
+                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                    <Typography variant="h3">Validation</Typography>
+                    <Typography>{lifecyclePresentationValue(asset.lifecycle?.validation)}</Typography>
+                    <Alert severity="info">Validation is a projection of canonical evidence. Opening this section does not run Validation or invent a Quality Gate result.</Alert>
+                  </Stack>
+                </Box> : null}
+                {snapshotTab === 'original' ? <Box>
+                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                    <Typography variant="h3">Original retention</Typography>
+                    <Typography>{lifecyclePresentationValue(asset.lifecycle?.original, 'unknown')}</Typography>
+                    {asset.lifecycle?.evidenceSummary?.originalArchivedPath ? <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>Archived path: {asset.lifecycle.evidenceSummary.originalArchivedPath}</Typography> : null}
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      {isArchive ? <Button variant="outlined" onClick={recoverArchivedAsset} disabled={!assetInfoCapability(asset, 'restore').allowed || asset.missing || recoverAsset.isPending || deleteArchiveAssets.isPending}>Restore original</Button> : null}
+                      {isArchive ? <Button color="error" variant="outlined" onClick={(event) => requestArchiveDeletion(event, [asset.path])} disabled={!assetInfoCapability(asset, 'deleteArchivedOriginal').allowed || asset.missing || deleteArchiveAssets.isPending}>Delete archived original</Button> : null}
+                    </Stack>
+                    {!isArchive ? <Alert severity="info">Archive and restore policy remains owned by the canonical backend handlers. The Library publication is never targeted by original deletion.</Alert> : null}
+                  </Stack>
+                </Box> : null}
+                {snapshotTab === 'evidence' ? <Box>
+                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                    <Typography variant="h3">Evidence</Typography>
+                    <Typography color="text.secondary">Reports, frozen plans, validation evidence, logs, snapshots, and maintenance records remain in their existing stores and are loaded on demand.</Typography>
+                    {historyJobs.length ? historyJobs.map((job) => <Stack key={job.id} direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1}>
+                      <Typography>Queue job #{job.id} · {job.status}{job.publicationRetiredAt ? ' · historical' : ''}</Typography>
+                      <Button size="small" variant="outlined" onClick={() => setSelectedEvidenceJobId(job.id)}>Load report summary</Button>
+                    </Stack>) : <Typography color="text.secondary">No Queue evidence is linked to this asset.</Typography>}
+                    {asset.lifecycle?.evidenceSummary?.directPublicationIds?.map((id) => <Typography key={id}>AS-IS publication #{id} · summary available from canonical publication evidence</Typography>)}
+                    {selectedEvidenceJobId !== null ? <Box>
+                      {evidenceArtifacts.isLoading ? <LinearProgress /> : null}
+                      {evidenceArtifacts.isError ? <Alert severity="warning">Could not load evidence for Queue job #{selectedEvidenceJobId}.</Alert> : null}
+                      {evidenceArtifacts.data ? <Typography variant="body2">Queue job #{selectedEvidenceJobId} evidence loaded: {evidenceArtifacts.data.resultPath || evidenceArtifacts.data.asIsPath || 'body available on demand'}.</Typography> : null}
+                      {evidencePlans.isLoading ? <LinearProgress /> : null}
+                      {evidencePlans.data?.map((plan) => <Typography key={plan.id} variant="body2">Frozen Queue plan v{plan.version} · {plan.status} · {plan.selectedEncoder || 'encoder pending'}</Typography>)}
+                    </Box> : null}
+                  </Stack>
+                </Box> : null}
+                {snapshotTab === 'history' ? <Box>
+                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                    <Typography variant="h3">History</Typography>
+                    <Typography color="text.secondary">Current publication is resolved by Phase A. Historical executions and retired publications remain separate and immutable.</Typography>
+                    {historyJobs.length ? historyJobs.map((job) => <Typography key={job.id}>Queue job #{job.id} · {job.publishedPath || job.outputPath || job.mediaPath}{job.id === asset.lifecycle?.currentPublication?.id ? ' · current' : ' · historical'}</Typography>) : null}
+                    {asset.lifecycle?.evidenceSummary?.directPublicationIds?.map((id) => <Typography key={id}>Direct publication #{id} · historical/current distinction remains backend-resolved</Typography>)}
+                  </Stack>
+                </Box> : null}
+                {snapshotTab === 'advisor' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     {!isConverted && !isArchive && profileSuggestion.isPending ? <Alert severity="info">Comparing the snapshot with available profiles…</Alert> : null}
                     {!isConverted && !isArchive && profileSuggestion.isError ? (
@@ -4630,15 +4839,15 @@ async function generateExternalSubtitle(
                     {isConverted ? <Alert severity="info">This is already a converted asset. Re-processing recommendations should be evaluated from its archived original.</Alert> : null}
                     {isArchive ? <Alert severity="info">Recover the archived original before applying a suggested profile.</Alert> : null}
                   </Stack>
-                </Box>
-                <Box hidden={snapshotTab !== 5}>
+                </Box> : null}
+                {snapshotTab === 'conversion' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     {!isArchive ? (
                       <AssetConversionOverridePanel
                         assetPath={asset.path}
                         draft={conversionDraft}
                         profile={profiles.find((profile) => profile.id === effectiveProfileId)}
-                        scan={snapshotData}
+                        scan={snapshotData ?? undefined}
                         onChange={updateConversionDraft}
                         onChangeMany={(patch) => setConversionDraft((current) => ({ ...current, ...patch }))}
                         onSave={saveConversionOverrides}
@@ -4648,8 +4857,8 @@ async function generateExternalSubtitle(
                       />
                     ) : <Alert severity="info">Archived originals are immutable. Recover the asset before configuring conversion overrides.</Alert>}
                   </Stack>
-                </Box>
-                <Box hidden={snapshotTab !== 6}>
+                </Box> : null}
+                {snapshotTab === 'test-encode' ? <Box>
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
                     <Stack spacing={0.5}>
                       <Typography variant="h3">Test Encode</Typography>
@@ -4665,7 +4874,7 @@ async function generateExternalSubtitle(
                           onChange={selectAssetVideoProfile}
                           label="Video profile"
                           size="small"
-                          disabled={asset.missing || hasOpenJob || updateProfileAssignment.isPending}
+                          disabled={asset.missing || hasOpenJob || updateProfileAssignment.isPending || !labCapability.allowed}
                           allowInherit
                         />
                       </Grid>
@@ -4674,7 +4883,7 @@ async function generateExternalSubtitle(
                       <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Destination Library</Typography><Typography>{libraries.find((library) => library.id === selectedLibraryId)?.name || 'Choose when generating'}</Typography></Grid>
                     </Grid>
                     {!canGenerateTestEncode ? (
-                      <Alert severity="info">Generate Test Encode is unavailable for Converted, Archive, or Published as-is assets.</Alert>
+                      <Alert severity="info">{labCapability.allowed ? 'Generate Test Encode is unavailable for Converted, Archive, or Published as-is assets.' : `Generate Test Encode unavailable: ${labCapability.reason || 'backend denied'}`}</Alert>
                     ) : (
                       <Tooltip title={hasOpenJob ? 'Asset has an active Queue job' : !effectiveProfileId ? 'Select an effective video profile first' : updateProfileAssignment.isPending ? 'Saving the current asset configuration' : 'Generate a short real encode from the persisted effective asset configuration'}>
                         <span style={{ alignSelf: 'flex-start' }}>
@@ -4683,7 +4892,7 @@ async function generateExternalSubtitle(
                             variant="contained"
                             color="secondary"
                             onClick={openAssetTestEncode}
-                            disabled={asset.missing || hasOpenJob || !effectiveProfileId || updateProfileAssignment.isPending}
+                            disabled={asset.missing || hasOpenJob || !effectiveProfileId || updateProfileAssignment.isPending || !labCapability.allowed}
                           >
                             Generate Test Encode
                           </Button>
@@ -4691,9 +4900,8 @@ async function generateExternalSubtitle(
                       </Tooltip>
                     )}
                   </Stack>
-                </Box>
+                </Box> : null}
               </>
-            ) : null}
             {saveAssetEdit.isSuccess ? <Alert severity="success">Asset Info saved.</Alert> : null}
             {assetEditQueueMessage ? <Alert severity="warning">{assetEditQueueMessage}</Alert> : null}
             {saveAssetEdit.isError ? (
@@ -4752,7 +4960,7 @@ async function generateExternalSubtitle(
               helperText="Keep the asset name prefix and use an .srt or .ass extension."
               fullWidth
               autoFocus
-              disabled={hasOpenJob}
+              disabled={hasOpenJob || !assetInfoCapability(asset, 'manageSubtitles').allowed}
             />
             {renameExternalSubtitle.isError ? <Alert severity="warning">{renameExternalSubtitle.error instanceof Error ? renameExternalSubtitle.error.message : 'Subtitle rename failed.'}</Alert> : null}
             <Stack direction="row" spacing={1} justifyContent="flex-end">
