@@ -1,8 +1,12 @@
 ## Purpose
 
 This capability defines the evidence, runtime contracts, and measurable safety
-gates for optimizing MediaForge Docker images without turning image contents
-into a second authority for runtime capabilities.
+gates for optimizing MediaForge Linux/Docker runtime images without turning
+image contents into a second authority for runtime capabilities. Linux-only
+dependencies in this contract are requirements of that image scope, not
+global MVForge runtime requirements. Native macOS/VideoToolbox capability
+support belongs to #161; cross-platform Server/Worker role composition and
+packaging belongs to #162.
 
 ## ADDED Requirements
 
@@ -56,11 +60,15 @@ unchanged.
 
 ### Requirement: The media runtime contract is executable
 
-The runtime image MUST provide usable `ffmpeg` and `ffprobe` binaries through
-the existing discovery path, the FFmpeg filters and codecs used by MediaForge,
-and the dynamically loaded libraries required by those binaries. QSV and VAAPI
-support MUST retain the libva, libdrm, oneVPL, Intel media-driver, driver-file,
-device-access, and loader requirements needed by existing probes and execution.
+The Linux/Docker runtime image MUST provide usable `ffmpeg` and `ffprobe`
+binaries through the existing discovery path, the FFmpeg filters and codecs
+used by MediaForge, and the dynamically loaded libraries required by those
+binaries. Where Linux QSV or VAAPI operation is configured, the image MUST
+retain the libva, libdrm, oneVPL, Intel media-driver, driver-file,
+device-access, and loader requirements needed by existing probes and
+execution. These Linux hardware dependencies MUST NOT be interpreted as
+global MVForge runtime requirements. Native macOS/VideoToolbox capability
+support and cross-platform Server/Worker packaging remain outside #150.
 Metric providers MUST continue to be evaluated by the existing
 `MetricCapabilities` probes, including provider/filter evidence and model
 identity where applicable. A successful `ffmpeg` startup alone MUST NOT count

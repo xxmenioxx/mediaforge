@@ -9,6 +9,10 @@ startup-only or package-presence assumption. Issue #150 establishes a bounded,
 measurable audit and safe optimization plan on the runtime architecture
 introduced by #69 and #149.
 
+This scope covers the Linux/Docker runtime image only. Linux device and media
+stack dependencies described here are not global MVForge runtime
+requirements.
+
 ## What Changes
 
 - Inventory Docker stages, package installs, copied artifacts, runtime-loaded
@@ -70,3 +74,10 @@ reproducible size measurement. It does not own capability architecture,
 RuntimeState or RuntimeSnapshot semantics, FFmpeg pipeline or QSV policy,
 OCR/subtitle/translation architecture, worker scheduling, or media-quality
 policy. Desirable findings outside those boundaries become follow-up work.
+
+Platform and packaging ownership is split across issues: #150 owns Linux/Docker
+runtime image optimization; #161 owns native macOS and VideoToolbox runtime
+capability support; #162 owns cross-platform Server/Worker role composition
+and packaging. Linux-specific dependencies such as `/dev/dri`, VAAPI, libva,
+Intel media drivers, `vainfo`, and `vpl-inspect` apply only to the Linux/Docker
+image and must not be treated as global MVForge runtime requirements.

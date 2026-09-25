@@ -7,6 +7,12 @@ copies the application binaries, FFmpeg/ffprobe, Intel media prefixes, SeConv
 and native libraries, then installs Debian runtime packages for media, OCR,
 SQLite, SSH, and healthchecks.
 
+This design audits and optimizes the Linux/Docker image. Its hardware device,
+driver, and diagnostic dependencies are Linux image requirements only, not
+global MVForge runtime requirements. #150 owns this image scope; #161 owns
+native macOS/VideoToolbox runtime capability support; #162 owns cross-platform
+Server/Worker role composition and packaging.
+
 The current runtime authority is in the application: FFmpeg encoder listing
 and smoke tests, QSV/VAAPI initialization, metric filter/model probes, and
 OCR readiness/execution determine actual availability. `RuntimeState` is live
@@ -27,9 +33,10 @@ capability flags.
 - Keep build toolchains and source trees out of the final runtime image.
 - Identify safe opportunities to reduce copied prefixes, duplicate artifacts,
   package footprint, invalidation, and build time, subject to runtime proof.
-- Preserve actual FFmpeg/ffprobe, software filters/codecs, QSV/VAAPI,
-  libva/oneVPL/media-driver loading, metric probing, OCR/subtitle behavior,
-  healthchecks, backups, remote execution, and diagnostics.
+- Preserve actual FFmpeg/ffprobe, software filters/codecs, and Linux/Docker
+  QSV/VAAPI, libva/oneVPL/media-driver loading, plus metric probing,
+  OCR/subtitle behavior, healthchecks, backups, remote execution, and
+  diagnostics.
 - Compare current-origin/main and optimized image size/layers with the same
   reproducible method, or report measurement unavailable.
 - Make each implementation task independently verifiable and reversible.
@@ -86,8 +93,8 @@ marking a dependency removable.
 | SeConv build/download | `curl`, `unzip`, archive and NuGet extraction tools | SeConv and native Skia/HarfBuzz extraction | Build-time | Required build-only | `backend/Dockerfile:204-233` | Keep out of final image except copied `seconv` and native libraries. |
 | FFmpeg tools | `ffmpeg`, `ffprobe` and `/opt/ffmpeg/lib` | Scanning, previews, conversion, validation, workers, subtitle/OCR extraction, runtime and metric probes | Runtime | Required | `backend/Dockerfile:256-257`; numerous `exec.Command*` consumers | Retain binary discovery, shared-library closure, filters/codecs, licenses; prove any pruning with `ldd`, loader, and functional tests. |
 | Software FFmpeg codecs/filters | libx264, libx265, SVT-AV1, AOM, dav1d, VPx, AVIF/OpenJPEG, ASS/font, audio, zimg, OpenCL/DRM libraries | Media plans, previews, audio, subtitle and quality validation | Runtime | Required by feature/use | `backend/Dockerfile:240-248`; FFmpeg configure flags `:161-190` | Retain all evidenced providers; do not infer unused from one test path. Validate exact filters/codecs used by current plans. |
-| VAAPI/Intel stack | libva, libdrm, `iHD_drv_video.so`, gmmlib/media-driver, oneVPL/libmfx-gen, driver metadata | FFmpeg QSV/VAAPI initialization, `mvforge-hw-probe`, `/dev/dri` execution | Runtime/dynamically loaded | Required when hardware path is configured; optional on CPU-only host | `backend/Dockerfile:256-260`; `capabilities/ffmpeg.go`; `cmd/hwprobe` | Retain driver files and ELF/plugin closure. Validate with device-enabled smoke probes; package presence is insufficient. |
-| Intel diagnostics | `vpl-inspect`, `vainfo` and their dependencies | `mvforge-hw-probe` diagnostics; direct in-repo caller of installed probe binary not confirmed | Runtime diagnostic/operational | Unknown until command path is resolved | `backend/Dockerfile` builds/copies VPL tooling; `cmd/hwprobe/main.go` invokes tools | Do not remove. Resolve whether hw-probe is shipped/used, then retain or prune with explicit diagnostic compatibility evidence. |
+| Linux VAAPI/Intel stack | libva, libdrm, `iHD_drv_video.so`, gmmlib/media-driver, oneVPL/libmfx-gen, driver metadata | Linux FFmpeg QSV/VAAPI initialization, `mvforge-hw-probe`, `/dev/dri` execution | Linux/Docker runtime, dynamically loaded | Required only when the Linux hardware path is configured; optional on CPU-only Linux hosts; not a global MVForge requirement | `backend/Dockerfile:256-260`; `capabilities/ffmpeg.go`; `cmd/hwprobe` | Retain in the Linux/Docker image and validate with device-enabled probes; package presence is insufficient. Native macOS/VideoToolbox support is owned by #161. |
+| Linux Intel diagnostics | `vpl-inspect`, `vainfo` and their dependencies | Linux `mvforge-hw-probe` diagnostics; direct in-repo caller of installed probe binary not confirmed | Linux/Docker runtime diagnostic/operational | Optional Linux diagnostics; not global MVForge requirements | `backend/Dockerfile` builds/copies VPL tooling; `cmd/hwprobe/main.go` invokes tools | Retain in the Linux image unless explicit diagnostic compatibility evidence permits pruning. Cross-platform Server/Worker packaging is owned by #162. |
 | Metric providers | FFmpeg `ssim`, `psnr`, `xpsnr`, `libvmaf`/MS-SSIM provider and model identity | `ProbeMetricCapabilitiesWithRunner`, quality evidence | Runtime/dynamically loaded | Required where configured; optional provider/model | `backend/internal/capabilities/metrics.go`; #69 tests | Preserve existing probe contract. Verify actual filter/model availability; do not add or remove a provider solely from Docker assumptions. |
 | OCR engine | `tesseract` and `tesseract-ocr` runtime support | Bitmap OCR readiness and execution | Runtime | Required for bitmap OCR | `ocr_lifecycle.go`, `subtitle_ocr.go`; Docker `:247-252` | Retain and run list-languages/readiness checks. Missing engine must remain an explicit existing failure. |
 | OCR language data | `tesseract-ocr-eng`, `-spa`, `-jpn`, `-jpn-vert` and traineddata | Requested language validation and Japanese fallback | Runtime data | Required per configured workflow; packs optional by language | `subtitle_ocr.go:407-546`; Docker `:247-252` | Retain current supported base packs unless usage evidence and product decision explicitly narrow support; validate each configured pack. |
@@ -102,7 +109,7 @@ marking a dependency removable.
 | Remote executor | `openssh-client`/`ssh` | Configured remote command execution | Runtime optional | Required when configured | `remote_executor.go:369`; Docker `:241` | Retain until remote executor validation proves an alternative; absence must fail the existing readiness path. |
 | Shell/base utilities | `sh`, `date`, `mkdir`, `test`, `grep`, `printf`, loader tools | Entrypoint, backup, healthcheck, release/deploy scripts | Runtime/operational | Required | `deploy/nas/backup.sh`, Docker healthcheck, deployment scripts | Preserve Debian base utilities; do not use Go import search as removal evidence. |
 | Timezone data | `tzdata` | Runtime timestamps and configured `TZ` | Runtime | Required for configured timezone behavior | Docker `:248`; NAS Compose `TZ` | Retain unless a measured and behaviorally equivalent alternative is proven. |
-| macOS sleep inhibitor | `caffeinate` | Optional non-Linux worker path | Runtime conditional | Unknown for Linux image | `worker_processes.go:59-72` | Do not add/remove as a Linux image assumption; preserve non-Linux behavior and document platform conditionality. |
+| macOS sleep inhibitor | `caffeinate` | Optional native macOS worker path | Native macOS runtime | Outside #150 Linux/Docker image scope | `worker_processes.go:59-72` | Do not classify as a Linux image dependency; native macOS runtime support is owned by #161 and cross-platform role packaging by #162. |
 
 This map intentionally leaves `sqlite3` operational status, full ELF closures,
 VPL/VAAPI diagnostic use, and actual libvmaf packaging as evidence tasks rather

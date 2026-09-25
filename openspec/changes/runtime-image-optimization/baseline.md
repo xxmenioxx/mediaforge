@@ -6,6 +6,12 @@ image was built from the #150 implementation commit
 `ca73aa2b750d42a35801026757804f6eb45c8b8f`; the later evidence-only changes
 to this OpenSpec record do not change Docker inputs.
 
+These measurements and dependency observations describe the Linux/Docker
+images only. `/dev/dri`, VAAPI, libva, Intel media drivers, `vainfo`, and
+`vpl-inspect` are Linux image or host-conditional dependencies, not global
+MVForge runtime requirements. Native macOS/VideoToolbox belongs to #161;
+cross-platform Server/Worker role composition and packaging belongs to #162.
+
 ## Historical daemon limitation
 
 The first Phase 1 capture was made while the configured Docker socket was
