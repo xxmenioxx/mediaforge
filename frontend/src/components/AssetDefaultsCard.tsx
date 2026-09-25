@@ -14,7 +14,7 @@ import {
 } from '@mui/material';
 import SaveIcon from '@mui/icons-material/Save';
 import DeleteIcon from '@mui/icons-material/DeleteOutline';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { ReactNode } from 'react';
 import type { AppSetting, Profile } from '../api/types';
 import {
@@ -99,7 +99,11 @@ function AssetDefaultsDomainCard({
 
 export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders = {}, saving, onSave }: Props) {
   const [draft, setDraft] = useState<AssetDefaultsValue>(() => assetDefaultsValue(value));
-  useEffect(() => setDraft(assetDefaultsValue(value)), [value]);
+  const [previousValue, setPreviousValue] = useState(value);
+  if (previousValue !== value) {
+    setPreviousValue(value);
+    setDraft(assetDefaultsValue(value));
+  }
   const update = (domain: 'video' | 'audio' | 'tracks', patch: Record<string, unknown>) => setDraft((current) => updateAssetDefaultsDomain(current, domain, patch));
   const videoOptions = profiles.filter((profile) => !profile.disabled).map((profile) => ({ key: String(profile.id), name: profile.name }));
   const encoderOptions = Object.entries(runtimeEncoders)

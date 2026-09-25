@@ -13,7 +13,7 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { SubtitleCompositionCandidate, SubtitleCompositionEligibility, SubtitleCompositionInput, SubtitleExtractionOperation } from '../api/types';
 
 type SubtitleCompositionEligibilityPanelProps = {
@@ -59,11 +59,15 @@ export function SubtitleCompositionEligibilityPanel({ assetPath = '', eligibilit
   const firstEligiblePrimary = useMemo(() => primaryCandidates.find((candidate) => candidate.eligible)?.sourceIdentity ?? '', [primaryCandidates]);
   const [primaryIdentity, setPrimaryIdentity] = useState(firstEligiblePrimary);
   const [supplementalIdentities, setSupplementalIdentities] = useState<string[]>([]);
-
-  useEffect(() => {
+  const [previousSelectionBasis, setPreviousSelectionBasis] = useState({
+    firstEligiblePrimary,
+    policyVersion: eligibility?.policyVersion,
+  });
+  if (previousSelectionBasis.firstEligiblePrimary !== firstEligiblePrimary || previousSelectionBasis.policyVersion !== eligibility?.policyVersion) {
+    setPreviousSelectionBasis({ firstEligiblePrimary, policyVersion: eligibility?.policyVersion });
     setPrimaryIdentity(firstEligiblePrimary);
     setSupplementalIdentities([]);
-  }, [firstEligiblePrimary, eligibility?.policyVersion]);
+  }
 
   if (loading) return <Typography variant="body2" color="text.secondary">Loading subtitle composition eligibility…</Typography>;
   if (!eligibility) return null;

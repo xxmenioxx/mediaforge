@@ -163,11 +163,17 @@ export function AssetsPage() {
   const acceptedCount = safeArray(assets.data?.accepted).length;
   const sourceGroups = safeArray(assets.data?.sourceGroups);
   const legacyAssetPath = searchParams.get('asset') ?? '';
-  useEffect(() => {
-    if (!legacyAssetPath || !sourceGroups.length) return;
-    const containing = sourceGroups.find((group) => safeArray(group.logicalGroups).some((logical) => safeArray(logical.assetPaths).some((path) => safeArray(path.assets).some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)))));
-    if (containing) setSourceGroupId(containing.id);
-  }, [legacyAssetPath, assets.data?.sourceGroups]);
+  const [previousLegacyAssetSelection, setPreviousLegacyAssetSelection] = useState({
+    legacyAssetPath,
+    sourceGroups: assets.data?.sourceGroups,
+  });
+  if (previousLegacyAssetSelection.legacyAssetPath !== legacyAssetPath || previousLegacyAssetSelection.sourceGroups !== assets.data?.sourceGroups) {
+    setPreviousLegacyAssetSelection({ legacyAssetPath, sourceGroups: assets.data?.sourceGroups });
+    if (legacyAssetPath && sourceGroups.length) {
+      const containing = sourceGroups.find((group) => safeArray(group.logicalGroups).some((logical) => safeArray(logical.assetPaths).some((path) => safeArray(path.assets).some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)))));
+      if (containing) setSourceGroupId(containing.id);
+    }
+  }
   const libraryGroups = safeArray(assets.data?.libraryGroups);
   const canonicalLibraryGroups = libraryGroups.length ? libraryGroups : safeArray(assets.data?.convertedGroups);
   const statusGroups = safeArray(
@@ -676,10 +682,11 @@ function AssetTable({
   const filteredGroups = filterAssetGroups(visibleGroups, query);
 	const pagedGroups = filteredGroups.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
   const showConfidence = mode !== 'archive' && mode !== 'converted';
-
-  useEffect(() => {
+  const [previousPageBasis, setPreviousPageBasis] = useState({ query, mode, groupCount: visibleGroups.length });
+  if (previousPageBasis.query !== query || previousPageBasis.mode !== mode || previousPageBasis.groupCount !== visibleGroups.length) {
+    setPreviousPageBasis({ query, mode, groupCount: visibleGroups.length });
     setPage(0);
-  }, [query, mode, visibleGroups.length]);
+  }
 
 	if (mode === 'archive') {
 		return <ArchivedAssetTable groups={visibleGroups} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} query={query} emptyLabel={emptyLabel} />;

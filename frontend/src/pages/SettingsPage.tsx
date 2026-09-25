@@ -1966,7 +1966,11 @@ function subtitlePresetValue(settings: SubtitleStylingSettings, id: string): Sub
 export function SubtitleStylingCard({ value, saving, onSave }: { value: SubtitleStylingSettings; saving: boolean; onSave: (value: SubtitleStylingSettings) => void }) {
   const [draft, setDraft] = useState(value);
   const [selectedID, setSelectedID] = useState('MVF_Default');
-  useEffect(() => setDraft(value), [value]);
+  const [previousValue, setPreviousValue] = useState(value);
+  if (previousValue !== value) {
+    setPreviousValue(value);
+    setDraft(value);
+  }
   const preset = subtitlePresetValue(draft, selectedID);
   const updatePreset = (key: keyof SubtitleStylePresetSettings, next: string | number | boolean) => {
     setDraft((current) => {
@@ -2154,6 +2158,7 @@ export function SubtitleTranslationSettingsCard({
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState(value);
   const [readinessOverride, setReadinessOverride] = useState<SubtitleTranslationReadiness | null>(null);
+  const [previousValue, setPreviousValue] = useState(value);
   const testConnection = useMutation({
     mutationFn: api.testSubtitleTranslationConnection,
     onSuccess: async (result) => {
@@ -2175,10 +2180,11 @@ export function SubtitleTranslationSettingsCard({
     },
   });
 
-  useEffect(() => {
+  if (previousValue !== value) {
+    setPreviousValue(value);
     setDraft(value);
     setReadinessOverride(null);
-  }, [value]);
+  }
 
   const persistedReadiness = subtitleTranslationReadinessForSettings(value);
   const readiness = readinessOverride ?? persistedReadiness;

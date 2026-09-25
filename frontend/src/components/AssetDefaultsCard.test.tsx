@@ -23,6 +23,32 @@ const value = {
 };
 
 describe('AssetDefaultsCard', () => {
+  it('resets an edited draft when the authoritative value changes', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const view = render(
+      <AssetDefaultsCard value={value} settings={settings} profiles={profiles} runtimeEncoders={{ libx265: { usable: true } }} saving={false} onSave={onSave} />,
+    );
+
+    await user.click(screen.getByRole('combobox', { name: 'Preferred encoder' }));
+    await user.click(screen.getByRole('option', { name: 'libx265' }));
+    view.rerender(
+      <AssetDefaultsCard
+        value={{ ...value, video: { source: 'custom', custom: { videoCodec: 'x265', preferredEncoder: 'auto' } } }}
+        settings={settings}
+        profiles={profiles}
+        runtimeEncoders={{ libx265: { usable: true } }}
+        saving={false}
+        onSave={onSave}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Save Asset Defaults' }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      video: expect.objectContaining({ custom: expect.objectContaining({ preferredEncoder: 'auto' }) }),
+    }));
+  });
+
   it('renders separate domain sections and saves a profile reference without custom fields', async () => {
     const onSave = vi.fn();
     const user = userEvent.setup();

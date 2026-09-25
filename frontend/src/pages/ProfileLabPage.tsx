@@ -42,7 +42,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import ScienceIcon from '@mui/icons-material/Science';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, ApiRequestError, createCompatiblePreviewOwnerId, waitForCompatiblePreviewReady } from '../api/client';
 import { compatiblePreviewRecoveryMessage, isCompatiblePreviewRecoveryError } from '../api/compatible-preview-recovery';
@@ -913,6 +913,7 @@ export function ProfileLabPage() {
   const allTrackProfiles = useMemo(() => getTrackProfiles(settings.data, true), [settings.data]);
   const [labSection, setLabSection] = useState<LabSection>('video');
   const [assetPath, setAssetPath] = useState('');
+  const [previousAssetPath, setPreviousAssetPath] = useState(assetPath);
   const [start, setStart] = useState('00:00:00');
   const [seconds, setSeconds] = useState(20);
   const [previewNormalization, setPreviewNormalization] = useState<'preserve' | 'normalize_bt709'>('normalize_bt709');
@@ -944,7 +945,8 @@ export function ProfileLabPage() {
   const audioPreviewCancelRef = useRef<AbortController | null>(null);
   const referencePreviewCacheRef =
   useRef<CachedLabReferencePreview | null>(null);
-  const hardwareDefaultAppliedRef = useRef(false);
+  const [referencePreviewCacheSignature, setReferencePreviewCacheSignature] = useState('');
+  const [hardwareDefaultApplied, setHardwareDefaultApplied] = useState(false);
   const [audioDraft, setAudioDraft] = useState<AudioEnhancementProfile>(emptyAudioDraft);
   const [savedAudioProfileKey, setSavedAudioProfileKey] = useState<string | null>(null);
   const [selectedAudioStarterPreset, setSelectedAudioStarterPreset] = useState('');
@@ -984,7 +986,6 @@ export function ProfileLabPage() {
   const [pendingTrackProfileSave, setPendingTrackProfileSave] = useState<TrackProfile | null>(null);
   const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
   const previewsRef = useRef<HTMLDivElement | null>(null);
-  const loadedEditRequestRef = useRef('');
   const selectedAsset = labAssets.find((asset) => asset.path === assetPath) ?? null;
   const selectedGroupPath = useMemo(() => {
     const groups = [
@@ -1011,12 +1012,14 @@ export function ProfileLabPage() {
       return next;
     }, { replace: true });
   }, [setSearchParams]);
-  useEffect(() => {
-    const requestedAssetPath = searchParams.get('assetPath') || '';
+  const requestedAssetPath = searchParams.get('assetPath') || '';
+  const [previousAssetRequest, setPreviousAssetRequest] = useState({ requestedAssetPath, labAssets });
+  if (previousAssetRequest.requestedAssetPath !== requestedAssetPath || previousAssetRequest.labAssets !== labAssets) {
+    setPreviousAssetRequest({ requestedAssetPath, labAssets });
     if (requestedAssetPath && labAssets.some((asset) => asset.path === requestedAssetPath) && assetPath !== requestedAssetPath) {
       setAssetPath(requestedAssetPath);
     }
-  }, [assetPath, labAssets, searchParams]);
+  }
   const selectedHardwareEncoder = videoWorkerValue(videoDraft, 'videoEncoder', 'auto');
   const configuredDefaultWorker = String(settings.data?.find((setting) => setting.key === 'workers')?.value?.defaultWorkerName ?? '');
   const requestedWorkerName = videoWorkerValue(videoDraft, 'targetWorkerName', configuredDefaultWorker);
@@ -1060,9 +1063,8 @@ export function ProfileLabPage() {
   const defaultHardwareEncoder = availableVideoEncoderOptions.find(
     (encoder) => isHardwareEncoderOption(encoder.value) && selectedWorkerEncoders.has(encoder.value),
   )?.value ?? '';
-  useEffect(() => {
-    if (hardwareDefaultAppliedRef.current || !settings.data || !workerNodes.data || savedVideoProfileId || selectedVideoStarterPreset || videoDraft.name.trim()) return;
-    hardwareDefaultAppliedRef.current = true;
+  if (!hardwareDefaultApplied && settings.data && workerNodes.data && !savedVideoProfileId && !selectedVideoStarterPreset && !videoDraft.name.trim()) {
+    setHardwareDefaultApplied(true);
     const preferences = getMVForgePreferences(settings.data);
     const available = new Set(workerNodes.data.filter((worker) => worker.status === 'online').flatMap((worker) => [...encoderNamesForWorker(worker)]));
     setVideoDraft((current) => synchronizeLabAuthoritativeContract(applyMVForgeVideoPreferences(current, preferences, available)));
@@ -1072,9 +1074,10 @@ export function ProfileLabPage() {
       subtitleLanguages: preferences.preferredLanguages,
       defaultAudioLanguage: preferences.preferredLanguages[0] ?? '',
     });
-  }, [savedVideoProfileId, selectedVideoStarterPreset, settings.data, videoDraft.name, workerNodes.data]);
+  }
   const currentAudioFilters = effectiveAudioFilters(audioDraft);
-  const previewAudioFilters = audioFilterChain.trim() || 'anull';
+  const currentAudioFilterChain = audioFilterChainEdited ? audioFilterChain : currentAudioFilters;
+  const previewAudioFilters = currentAudioFilterChain.trim() || 'anull';
 
   const currentReferenceRequestSignature =
     labReferenceRequestSignature(
@@ -1092,28 +1095,31 @@ export function ProfileLabPage() {
       previewNormalization,
       videoDraft,
     );
-  currentVideoRequestSignatureRef.current = currentVideoRequestSignature;
-
-  const videoPreviewStale = videoPreviewNonce > 0 && videoPreviewStatus !== 'loading' && (
-    processedPreviewNormalization !== previewNormalization ||
-    processedVideoDraftSignature !== JSON.stringify(videoDraft) ||
-    processedVideoRequestSignature !== currentVideoRequestSignature ||
-    (lastFidelityInspection?.assetPath === assetPath && lastFidelityInspection.requestSignature !== currentVideoRequestSignature)
-  );
-
-  useEffect(() => {
-    if (referencePreviewCacheRef.current?.signature !== currentReferenceRequestSignature) {
+  const [previousPreviewRequestBasis, setPreviousPreviewRequestBasis] = useState({
+    referenceSignature: currentReferenceRequestSignature,
+    referenceCacheSignature: referencePreviewCacheSignature,
+    videoSignature: currentVideoRequestSignature,
+    processedVideoSignature: processedVideoRequestSignature,
+    fidelityInspection: lastFidelityInspection,
+  });
+  if (
+    previousPreviewRequestBasis.referenceSignature !== currentReferenceRequestSignature ||
+    previousPreviewRequestBasis.referenceCacheSignature !== referencePreviewCacheSignature ||
+    previousPreviewRequestBasis.videoSignature !== currentVideoRequestSignature ||
+    previousPreviewRequestBasis.processedVideoSignature !== processedVideoRequestSignature ||
+    previousPreviewRequestBasis.fidelityInspection !== lastFidelityInspection
+  ) {
+    setPreviousPreviewRequestBasis({
+      referenceSignature: currentReferenceRequestSignature,
+      referenceCacheSignature: referencePreviewCacheSignature,
+      videoSignature: currentVideoRequestSignature,
+      processedVideoSignature: processedVideoRequestSignature,
+      fidelityInspection: lastFidelityInspection,
+    });
+    if (referencePreviewCacheSignature !== currentReferenceRequestSignature) {
       setProcessedReferencePreviewRequestId('');
     }
     if (processedVideoRequestSignature && processedVideoRequestSignature !== currentVideoRequestSignature) {
-      const activeFidelityOperation = labFidelityOperationRef.current;
-      if (activeFidelityOperation && ['queued', 'running'].includes(activeFidelityOperation.status)) {
-        void api.cancelLabFidelityOperation(activeFidelityOperation.id).catch(() => undefined);
-      }
-      fidelityAbortRef.current?.abort();
-      videoPreviewCancelRef.current?.abort();
-      labFidelityOperationRef.current = null;
-      labFidelityRunIdentityRef.current = null;
       setLabFidelityOperation(null);
       setProcessedVideoPreviewRequestId('');
       setVideoPreviewNonce(0);
@@ -1125,7 +1131,30 @@ export function ProfileLabPage() {
     ) {
       setLastFidelityInspection(null);
     }
-  }, [assetPath, currentReferenceRequestSignature, currentVideoRequestSignature, lastFidelityInspection, processedVideoRequestSignature]);
+  }
+  useLayoutEffect(() => {
+    currentVideoRequestSignatureRef.current = currentVideoRequestSignature;
+  }, [currentVideoRequestSignature]);
+
+  const videoPreviewStale = videoPreviewNonce > 0 && videoPreviewStatus !== 'loading' && (
+    processedPreviewNormalization !== previewNormalization ||
+    processedVideoDraftSignature !== JSON.stringify(videoDraft) ||
+    processedVideoRequestSignature !== currentVideoRequestSignature ||
+    (lastFidelityInspection?.assetPath === assetPath && lastFidelityInspection.requestSignature !== currentVideoRequestSignature)
+  );
+
+  useEffect(() => {
+    if (processedVideoRequestSignature && processedVideoRequestSignature !== currentVideoRequestSignature) {
+      const activeFidelityOperation = labFidelityOperationRef.current;
+      if (activeFidelityOperation && ['queued', 'running'].includes(activeFidelityOperation.status)) {
+        void api.cancelLabFidelityOperation(activeFidelityOperation.id).catch(() => undefined);
+      }
+      fidelityAbortRef.current?.abort();
+      videoPreviewCancelRef.current?.abort();
+      labFidelityOperationRef.current = null;
+      labFidelityRunIdentityRef.current = null;
+    }
+  }, [assetPath, currentReferenceRequestSignature, currentVideoRequestSignature, lastFidelityInspection, processedVideoRequestSignature, referencePreviewCacheSignature]);
 
   const videoPreference = videoWorkerValue(videoDraft, 'preferredEncoder', 'software');
   useEffect(() => {
@@ -1138,7 +1167,7 @@ export function ProfileLabPage() {
     }
   }, [defaultHardwareEncoder, selectedHardwareEncoder, selectedWorkerEncoders, videoPreference]);
 
-  useEffect(() => {
+  const editRequest = useMemo(() => {
     const videoProfileId = Number(searchParams.get('videoProfileId') || 0);
     const audioProfileKey = searchParams.get('audioProfileKey') || '';
     const trackProfileKey = searchParams.get('trackProfileKey') || '';
@@ -1153,78 +1182,70 @@ export function ProfileLabPage() {
           : requestedSection === 'video' || requestedSection === 'audio' || requestedSection === 'tracks'
             ? `new:${requestedSection}:${requestedAssetPath}`
             : '';
-    if (!requestKey || loadedEditRequestRef.current === requestKey) {
-      return;
-    }
+    if (!requestKey) return null;
 
     if (videoProfileId > 0) {
       const profile = [...(profiles.data ?? []), ...(adminProfiles.data ?? [])].find((candidate) => candidate.id === videoProfileId);
-      if (!profile) {
-        return;
-      }
-      setLabSection('video');
-      setVideoDraft(profileInputFromSavedProfile(profile));
-      setSavedVideoProfileId(profile.id);
-      setVideoProfileSaveMessage('');
-      setSelectedVideoStarterPreset('');
+      if (!profile) return null;
       const relatedPath = typeof profile.workerConfig?.derivedFromAsset === 'string'
         ? profile.workerConfig.derivedFromAsset
         : '';
       const sourceAsset = labAssets.find((asset) => asset.path === requestedAssetPath)
         ?? labAssets.find((asset) => asset.path === relatedPath)
         ?? labAssets.find((asset) => Boolean(relatedPath) && asset.fileName === relatedPath.split('/').pop());
-      if (sourceAsset) {
-        setAssetPath(sourceAsset.path);
-        persistLabAssetPath(sourceAsset.path);
-      }
+      return { key: requestKey, section: 'video' as const, profile, sourceAsset };
     } else if (audioProfileKey) {
       const profile = audioProfiles.find((candidate) => candidate.key === audioProfileKey);
-      if (!profile) {
-        return;
-      }
-      setLabSection('audio');
-      setAudioDraft({ ...profile, eqBands: normalizeEqBands(profile.eqBands) });
-      setSavedAudioProfileKey(profile.key);
-      setAudioFilterChainEdited(false);
-      setSelectedAudioStarterPreset('');
+      if (!profile) return null;
       const relatedPath = profile.notes.split('\n').map((line) => line.trim()).find((line) => line.startsWith('Lab asset: '))?.slice('Lab asset: '.length) ?? '';
       const sourceAsset = labAssets.find((asset) => asset.path === requestedAssetPath)
         ?? labAssets.find((asset) => asset.path === relatedPath)
         ?? labAssets.find((asset) => Boolean(relatedPath) && asset.fileName === relatedPath.split('/').pop());
-      if (sourceAsset) {
-        setAssetPath(sourceAsset.path);
-        persistLabAssetPath(sourceAsset.path);
-      }
+      return { key: requestKey, section: 'audio' as const, profile, sourceAsset };
     } else if (trackProfileKey) {
       const profile = allTrackProfiles.find((candidate) => candidate.key === trackProfileKey);
-      if (!profile) {
-        return;
-      }
-      setLabSection('tracks');
-      setTrackDraft({ ...profile });
-      setSavedTrackProfileKey(profile.key);
-      setTrackConversionDraft(trackProfileOverride(profile));
+      if (!profile) return null;
       const sourceAsset = labAssets.find((asset) => asset.path === requestedAssetPath)
         ?? labAssets.find((asset) => asset.path === profile.sourceAssetPath)
         ?? labAssets.find((asset) => Boolean(profile.sourceAssetName) && asset.fileName === profile.sourceAssetName);
-      if (sourceAsset) {
-        setAssetPath(sourceAsset.path);
-        persistLabAssetPath(sourceAsset.path);
-      }
+      return { key: requestKey, section: 'tracks' as const, profile, sourceAsset };
     } else if (requestedSection === 'video' || requestedSection === 'audio' || requestedSection === 'tracks') {
-      setLabSection(requestedSection);
-      if (requestedSection === 'video') setSavedVideoProfileId(null);
-      if (requestedSection === 'audio') setSavedAudioProfileKey(null);
-      if (requestedSection === 'tracks') setSavedTrackProfileKey(null);
+      return { key: requestKey, section: requestedSection as LabSection, profile: null, sourceAsset: undefined };
     }
-    loadedEditRequestRef.current = requestKey;
-  }, [adminProfiles.data, allTrackProfiles, audioProfiles, labAssets, persistLabAssetPath, profiles.data, searchParams]);
-
+    return null;
+  }, [adminProfiles.data, allTrackProfiles, audioProfiles, labAssets, profiles.data, searchParams]);
+  const [loadedEditRequestKey, setLoadedEditRequestKey] = useState('');
+  if (editRequest && editRequest.key !== loadedEditRequestKey) {
+    setLoadedEditRequestKey(editRequest.key);
+    setLabSection(editRequest.section);
+    if (editRequest.section === 'video' && editRequest.profile) {
+      setVideoDraft(profileInputFromSavedProfile(editRequest.profile));
+      setSavedVideoProfileId(editRequest.profile.id);
+      setVideoProfileSaveMessage('');
+      setSelectedVideoStarterPreset('');
+    } else if (editRequest.section === 'audio' && editRequest.profile) {
+      setAudioDraft({ ...editRequest.profile, eqBands: normalizeEqBands(editRequest.profile.eqBands) });
+      setSavedAudioProfileKey(editRequest.profile.key);
+      setAudioFilterChainEdited(false);
+      setSelectedAudioStarterPreset('');
+    } else if (editRequest.section === 'tracks' && editRequest.profile) {
+      setTrackDraft({ ...editRequest.profile });
+      setSavedTrackProfileKey(editRequest.profile.key);
+      setTrackConversionDraft(trackProfileOverride(editRequest.profile));
+    } else if (editRequest.section === 'video') {
+      setSavedVideoProfileId(null);
+    } else if (editRequest.section === 'audio') {
+      setSavedAudioProfileKey(null);
+    } else if (editRequest.section === 'tracks') {
+      setSavedTrackProfileKey(null);
+    }
+    if (editRequest.sourceAsset) setAssetPath(editRequest.sourceAsset.path);
+  }
   useEffect(() => {
-    if (!audioFilterChainEdited) {
-      setAudioFilterChain(currentAudioFilters || 'anull');
+    if (editRequest?.sourceAsset && searchParams.get('assetPath') !== editRequest.sourceAsset.path) {
+      persistLabAssetPath(editRequest.sourceAsset.path);
     }
-  }, [audioFilterChainEdited, currentAudioFilters]);
+  }, [editRequest, persistLabAssetPath, searchParams]);
 
   const saveVideoProfileMutation = useMutation({
     mutationFn: async ({ profile, profileId, assignment }: { profile: ProfileInput; profileId: number | null; assignment?: LabProfileAssignment }) => {
@@ -1447,7 +1468,10 @@ export function ProfileLabPage() {
           if (signal?.aborted) throw error;
         }
       }
-      if (!cachedReference) referencePreviewCacheRef.current = null;
+      if (!cachedReference) {
+        referencePreviewCacheRef.current = null;
+        setReferencePreviewCacheSignature('');
+      }
       const conversionRequest = primaryRequestId
         ? { requestId: primaryRequestId }
         : await api.createCompatiblePreviewRequest(conversion, signal);
@@ -1482,7 +1506,10 @@ export function ProfileLabPage() {
       if (!cachedReference && !signal?.aborted) {
         referenceInspection = await api.inspectCompatibleAssetPreview(referenceRequest.requestId, signal);
         const nextCache = cachedLabReferenceFromReadyStatus(referenceSignature, referenceRequest.requestId, referenceInspection, referenceReadyStatus);
-        if (nextCache) referencePreviewCacheRef.current = nextCache;
+        if (nextCache) {
+          referencePreviewCacheRef.current = nextCache;
+          setReferencePreviewCacheSignature(nextCache.signature);
+        }
       }
       while (!['completed', 'failed', 'canceled'].includes(operation.status)) {
         await abortableLabFidelityDelay(2_000, signal);
@@ -1764,56 +1791,33 @@ export function ProfileLabPage() {
     trackSnapshot,
   ]);
 
-  useEffect(() => {
-    if (!currentEncoderRecommendation) {
-      return;
-    }
-
-    const encoder = currentDraftVideoEncoder;
-    const qualityPreset = currentDraftQualityPreset;
-
-    if (
-      !isHardwareEncoderOption(encoder) ||
-      qualityPreset === 'custom'
-    ) {
-      return;
-    }
-
-    const effectiveProfile =
-      currentEncoderRecommendation.effectiveProfile;
-
-    if (!effectiveProfile) {
-      return;
-    }
-
-    setVideoDraft((current) => {
-      const currentSignature = JSON.stringify(current);
-
+  const [appliedRecommendationBasis, setAppliedRecommendationBasis] = useState('');
+  const effectiveRecommendedProfile = currentEncoderRecommendation?.effectiveProfile;
+  if (
+    isHardwareEncoderOption(currentDraftVideoEncoder) &&
+    currentDraftQualityPreset !== 'custom' &&
+    effectiveRecommendedProfile
+  ) {
+    const recommendationBasis = JSON.stringify([
+      currentDraftVideoEncoder,
+      currentDraftQualityPreset,
+      effectiveRecommendedProfile,
+    ]);
+    if (recommendationBasis !== appliedRecommendationBasis) {
+      setAppliedRecommendationBasis(recommendationBasis);
       const next = synchronizeLabAuthoritativeContract({
-        ...effectiveProfile,
-
-        // Keep Lab-only identity fields from the current draft.
-        name: current.name,
-        description: current.description,
-
+        ...effectiveRecommendedProfile,
+        name: videoDraft.name,
+        description: videoDraft.description,
         workerConfig: {
-          ...effectiveProfile.workerConfig,
-
-          // Preserve where this Lab draft came from.
-          derivedFromProfileId:
-            current.workerConfig?.derivedFromProfileId,
-          derivedFromAsset:
-            current.workerConfig?.derivedFromAsset,
+          ...effectiveRecommendedProfile.workerConfig,
+          derivedFromProfileId: videoDraft.workerConfig?.derivedFromProfileId,
+          derivedFromAsset: videoDraft.workerConfig?.derivedFromAsset,
         },
       });
-
-      if (JSON.stringify(next) === currentSignature) {
-        return current;
-      }
-
-      return next;
-    });
-  }, [currentDraftQualityPreset, currentDraftVideoEncoder, currentEncoderRecommendation]);
+      if (JSON.stringify(next) !== JSON.stringify(videoDraft)) setVideoDraft(next);
+    }
+  }
 
   const currentFidelityInspection =
     lastFidelityInspection?.assetPath === assetPath
@@ -1851,22 +1855,18 @@ export function ProfileLabPage() {
       : startProfileSampleEstimate.isPending || sampleEstimateActive
         ? sampleEstimatePhase
         : 'Reading tracks and technical snapshot';
+  const displayedAnalysisElapsedSeconds = labAnalysisPending ? analysisElapsedSeconds : 0;
 
   useEffect(() => {
-    if (!labAnalysisPending) {
-      setAnalysisElapsedSeconds(0);
-      return;
-    }
+    if (!labAnalysisPending) return;
     const startedAt = Date.now();
     const timer = window.setInterval(() => setAnalysisElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
     return () => window.clearInterval(timer);
   }, [labAnalysisPending]);
 
-  useEffect(() => {
-    referencePreviewCacheRef.current = null;
-    // Sample A is generated automatically when an asset is selected. The old
-    // Preview button used to initialize this nonce; without it the entire
-    // Fidelity workbench remained hidden and Sample B actions stayed disabled.
+  if (previousAssetPath !== assetPath) {
+    setPreviousAssetPath(assetPath);
+    setReferencePreviewCacheSignature('');
     setPreviewNonce((current) => assetPath ? current + 1 : 0);
     setAudioPreviewNonce(0);
     setAudioPreviewStatus('idle');
@@ -1878,17 +1878,21 @@ export function ProfileLabPage() {
     setProcessedVideoPreviewRequestId('');
     setProcessedVideoDraftSignature('');
     setProcessedVideoRequestSignature('');
+    setLabFidelityOperation(null);
+    setLastFidelityInspection(null);
+    setLastEncoderRecommendation(undefined);
+  }
+
+  useEffect(() => {
+    referencePreviewCacheRef.current = null;
     const activeFidelityOperation = labFidelityOperationRef.current;
     if (activeFidelityOperation && ['queued', 'running'].includes(activeFidelityOperation.status)) {
       void api.cancelLabFidelityOperation(activeFidelityOperation.id).catch(() => undefined);
     }
     labFidelityOperationRef.current = null;
     labFidelityRunIdentityRef.current = null;
-    setLabFidelityOperation(null);
     resetFidelityInspection();
-    setLastFidelityInspection(null);
     resetEncoderQualityRecommendation();
-    setLastEncoderRecommendation(undefined);
     if (assetPath) {
       automaticSnapshotKey.current = '';
       resetTrackSnapshot();
@@ -2838,6 +2842,7 @@ export function ProfileLabPage() {
     fidelityAbortRef.current?.abort();
     videoPreviewCancelRef.current?.abort();
     referencePreviewCacheRef.current = null;
+    setReferencePreviewCacheSignature('');
 
     setVideoPreviewNonce(0);
     primaryPreviewReadyRef.current = false;
@@ -3085,7 +3090,7 @@ export function ProfileLabPage() {
               ) : null}
               <Stack direction="row" justifyContent="space-between" spacing={2}>
                 <Typography variant="caption" color="text.secondary">The analysis may take several minutes on a slower NAS.</Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>{formatElapsedTime(analysisElapsedSeconds)}</Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>{formatElapsedTime(displayedAnalysisElapsedSeconds)}</Typography>
               </Stack>
               <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
                 <Typography variant="caption">The backend owns the active Fidelity operation.</Typography>
@@ -3571,8 +3576,8 @@ export function ProfileLabPage() {
                         </Button>
                       </Stack>
                       {fidelityInspection.isPending && videoPreviewStatus === 'loading' ? <Alert severity="info">
-                        {analysisElapsedSeconds >= 30
-                          ? `This preview encode is taking longer than usual, but is still running. Elapsed ${formatElapsedTime(analysisElapsedSeconds)}.`
+                        {displayedAnalysisElapsedSeconds >= 30
+                          ? `This preview encode is taking longer than usual, but is still running. Elapsed ${formatElapsedTime(displayedAnalysisElapsedSeconds)}.`
                           : 'Generating previews and validating their video characteristics…'}
                       </Alert> : null}
                       {labFidelityOperation && labFidelityRunning ? (
@@ -4784,7 +4789,7 @@ export function ProfileLabPage() {
                     <Grid size={{ xs: 12 }}>
                       <TextField
                         label="FFmpeg audio filter chain"
-                        value={audioFilterChain}
+                        value={currentAudioFilterChain}
                         onChange={(event) => {
                           setAudioFilterChainEdited(true);
                           setAudioFilterChain(event.target.value);
@@ -5967,10 +5972,10 @@ function VideoPreview({
   onStatusChange?: (status: 'idle' | 'loading' | 'ready' | 'error') => void;
   cancelSignal?: AbortSignal;
 }) {
-  return <VideoPreviewRequest key={`${direct}:${src}`} label={label} src={src} requestId={requestId} direct={direct} onStatusChange={onStatusChange} cancelSignal={cancelSignal} />;
+  return <VideoPreviewRequest label={label} src={src} requestId={requestId} direct={direct} onStatusChange={onStatusChange} cancelSignal={cancelSignal} />;
 }
 
-export function VideoPreviewRequest({ label, src, requestId, direct = false, onStatusChange, cancelSignal }: {
+export function VideoPreviewRequest(props: {
   label: string;
   src?: string;
   requestId?: string;
@@ -5978,14 +5983,24 @@ export function VideoPreviewRequest({ label, src, requestId, direct = false, onS
   onStatusChange?: (status: 'idle' | 'loading' | 'ready' | 'error') => void;
   cancelSignal?: AbortSignal;
 }) {
-  const [videoSrc, setVideoSrc] = useState('');
+  return <VideoPreviewRequestInstance key={`${props.direct ?? false}:${props.src ?? ''}`} {...props} />;
+}
+
+function VideoPreviewRequestInstance({ label, src, requestId, direct = false, onStatusChange, cancelSignal }: {
+  label: string;
+  src?: string;
+  requestId?: string;
+  direct?: boolean;
+  onStatusChange?: (status: 'idle' | 'loading' | 'ready' | 'error') => void;
+  cancelSignal?: AbortSignal;
+}) {
+  const [videoSrc, setVideoSrc] = useState(() => src?.trim() ? src : '');
   const nativeRetryCount = useRef(0);
   const nativeRetryController = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!src?.trim()) {
       onStatusChange?.('idle');
-      setVideoSrc('');
       return;
     }
     const cancel = () => setVideoSrc('');
@@ -5993,7 +6008,6 @@ export function VideoPreviewRequest({ label, src, requestId, direct = false, onS
     onStatusChange?.('loading');
     nativeRetryCount.current = 0;
     nativeRetryController.current?.abort();
-    setVideoSrc(src);
     return () => {
       cancelSignal?.removeEventListener('abort', cancel);
       nativeRetryController.current?.abort();

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SubtitleCompositionEligibility } from '../api/types';
 import { SubtitleCompositionEligibilityPanel } from './SubtitleCompositionEligibilityPanel';
 
@@ -14,7 +14,23 @@ const eligible: SubtitleCompositionEligibility = {
   crossLanguageExplicit: false,
 };
 
+afterEach(cleanup);
+
 describe('SubtitleCompositionEligibilityPanel', () => {
+  it('clears candidate selections when the backend policy basis changes', () => {
+    const { rerender } = render(<SubtitleCompositionEligibilityPanel eligibility={eligible} onCompose={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText(/signs/));
+
+    rerender(<SubtitleCompositionEligibilityPanel eligibility={{
+      ...eligible,
+      policyVersion: 'subtitle-composition-v2',
+      primaryCandidates: [{ ...eligible.primaryCandidates[0], sourceIdentity: 'replacement-primary' }],
+    }} onCompose={vi.fn()} />);
+
+    expect((screen.getByLabelText(/signs/) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('button', { name: 'Compose subtitles' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('uses backend eligibility and does not invent a local candidate decision', () => {
     render(<SubtitleCompositionEligibilityPanel eligibility={{ ...eligible, eligible: false, reason: 'unknown language' }} />);
     expect(screen.getByText('unknown language')).toBeTruthy();
