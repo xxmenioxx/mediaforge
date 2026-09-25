@@ -471,13 +471,13 @@ Queue jobs, publications, reports, paths, or media.
 ## Risks / Trade-offs
 
 - **Risk:** Existing `AssetRecord.Status` and current UI lists contain useful
-  compatibility behavior that may be lost during a projection rewrite.  
+  compatibility behavior that may be lost during a projection rewrite.
   **Mitigation:** keep status as migration input, compare old/new fixtures, and
   do not remove underlying lists or records until the replacement projections
   have focused coverage.
 
 - **Risk:** A current Library path may not be provably related to a RAW source
-  in old installations.  
+  in old installations.
   **Mitigation:** expose unresolved legacy correlation and fail closed; add only
   the smallest durable publication reference if deterministic joins are proven
   insufficient.
@@ -495,15 +495,15 @@ Queue jobs, publications, reports, paths, or media.
   root-safety checks.
 
 - **Risk:** Existing list construction loads broad persisted sets and can create
-  slow joins on a NAS.  
+  slow joins on a NAS.
   **Mitigation:** batch maps, bounded aggregates, pagination/lazy sections,
   explain-plan checks, and no filesystem/media work on list render.
 
-- **Risk:** Group badges could be mistaken for authoritative state.  
+- **Risk:** Group badges could be mistaken for authoritative state.
   **Mitigation:** use neutral count summaries and always render member-level
   lifecycle/provenance/action evidence.
 
-- **Risk:** #52/#53/#54 may evolve their response shapes after #21 lands.  
+- **Risk:** #52/#53/#54 may evolve their response shapes after #21 lands.
   **Mitigation:** isolate adapters, preserve unavailable/pending values, and
   consume canonical fields without duplicating their state machines.
 
