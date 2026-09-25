@@ -112,7 +112,7 @@ relocated by #150.
 | API build | Go/CGo toolchain and module/build caches | backend build stage | build-time | required for build | not present in final image; cache mounts retained |
 | Intel build | libva, gmmlib, media-driver, libvpl, VPL tools, VPL GPU build dependencies | Intel build stages; final `/opt/intel` | build-time + runtime prefix | required runtime | final prefix and `iHD_drv_video.so` retained; loader and probe paths checked |
 | FFmpeg build | FFmpeg/SVT-AV1 compilers, headers, source, archives | FFmpeg build stage; final `/opt/ffmpeg/bin` and `lib` | build-time + runtime prefix | required runtime | build-only inputs do not enter final image; FFmpeg and ffprobe execute and load successfully |
-| FFmpeg/media | `ffmpeg`, `ffprobe`, libva, libdrm, libvpl, Intel driver, FFmpeg shared libs | Go execution paths, `mvforge-hw-probe`, capability probes | runtime | required/optional by capability | software filters/codecs and loader closure pass; hardware stays unavailable without `/dev/dri` |
+| FFmpeg/media | `ffmpeg`, `ffprobe`, libva, libdrm, libvpl, Intel driver, FFmpeg shared libs | Go execution paths, `mvforge-hw-probe`, capability probes | runtime | required/optional by capability | software filters/codecs and loader closure pass; NAS `/dev/dri` validation also passes through the existing probes |
 | metrics | SSIM/PSNR/XPSNR FFmpeg filters; optional libvmaf/model/provider evidence | #69 `MetricCapabilities` probe and cache/reset paths | runtime | SSIM/PSNR/XPSNR required; VMAF/provider optional | filters execute; libvmaf filter is absent and remains an explicit unavailable result; no package flag is added |
 | OCR | `tesseract`, `libtesseract5`, `eng`/`spa`/`jpn`/`jpn_vert`/OSD data | OCR handlers and bitmap subtitle workflow | runtime | required where OCR configured | version, language list, and data presence pass; no language pack removed |
 | subtitle rendering | libass, fontconfig, freetype, fribidi, FFmpeg ASS/SSA/SRT support | subtitle extraction/rendering and sidecar paths | runtime | required | ASS and SRT render smoke checks pass; SSA uses the same FFmpeg subtitle path |
@@ -121,7 +121,7 @@ relocated by #150.
 | backup | `sqlite3`, `libsqlite3-0`, `/bin/sh`, `test`, `mkdir` | `deploy/nas/backup.sh` inner command | runtime/operational | required | disposable `.backup` produced and reopened successfully; production data untouched |
 | health | `curl`, `wget` | backend and frontend Docker healthchecks | runtime/operational | required | both production healthchecks report healthy on a disposable network |
 | remote execution | `openssh-client` and `ssh` | Go `exec.Command` remote executor | runtime/operational | required when configured | `ssh -V` and binary path pass; no configured disposable remote endpoint was available |
-| diagnostics | `mvforge-hw-probe`, `vainfo`, `vpl-inspect` | hardware diagnostic path | runtime/diagnostic | optional hardware | binaries are present; probe returns structured `device_missing`/runtime-incompatible results without `/dev/dri` |
+| diagnostics | `mvforge-hw-probe`, `vainfo`, `vpl-inspect` | hardware diagnostic path | runtime/diagnostic | optional hardware | binaries are present; local no-device probing returns structured unavailable results, while NAS device-enabled probes pass |
 
 No relevant dependency remains classified as an unknown removable candidate.
 Hardware usability is an unavailable environment capability, not evidence that
@@ -159,11 +159,58 @@ without evidence.
   MetricCapabilities, RuntimeState, RuntimeSnapshot, cache-reset, and refresh
   semantics remain application-owned rather than image-owned.
 
-## Hardware limitation
+## NAS device-enabled runtime evidence
 
-The Docker host does not expose `/dev/dri`. Therefore production-style QSV/
-VAAPI validation, Intel media-driver usability, permissions, and hardware
-encoder smoke success are unavailable, not passed. The shipped probe reports
-`device_missing` for the device/VAAPI/QSV paths, while `vainfo` and
-`vpl-inspect` binaries remain present. No image or capability-detection change
-was made to mask this result.
+The local Docker host used for the BEFORE/AFTER image measurements did not
+expose `/dev/dri`; that historical limitation remains recorded above. The
+production-style NAS validation was subsequently run on `MenioServer` using
+the optimized backend image in a disposable container, without production
+mounts:
+
+- NAS Docker Engine is `29.6.2` on `linux/amd64`.
+- `/dev/dri/renderD128` exists with `root:render` ownership and `0660` mode.
+- `vainfo --display drm --device /dev/dri/renderD128` succeeds with VA-API
+  1.22, libva 2.22, and Intel `iHD` media driver 25.2.6; H.264 and HEVC
+  encode entrypoints are exposed.
+- `vpl-inspect` succeeds with the `mfx-gen` hardware implementation, VAAPI
+  acceleration, Intel vendor `0x8086`, and API 2.15.
+- Direct disposable H.264 smoke encodes return zero for both `h264_vaapi` and
+  `h264_qsv`. `mvforge-hw-probe` reports the render device readable/writable,
+  VAAPI `basic_usable`, QSV `fully_usable`, and successful H.264/HEVC/ICQ
+  probes.
+- The disposable API reports `gpuDetected=true`; capability availability and
+  unavailability remain produced by the existing runtime probes, not by image
+  package presence or Docker flags.
+
+The optimized image reports FFmpeg 8.1.2, SSIM/PSNR/XPSNR available through
+the existing `MetricCapabilities` model, VMAF unavailable because no usable
+provider/model identity is present, and MS-SSIM unavailable because no verified
+provider exists. These are explicit model results, not validation failures.
+
+## NAS OCR, subtitle, and operational evidence
+
+- Tesseract 5.5.0 runs in the optimized image and `--list-langs` reports
+  `eng`, `spa`, `jpn`, `jpn_vert`, and `osd`. Disposable PBM invocations exit
+  successfully for each configured language. SeConv reports version 5.0.0.
+  `libSkiaSharp.so` and `libHarfBuzzSharp.so` have no unresolved loader
+  dependencies. The explicit missing-tool failure branch was not separately
+  exercised because no repository fixture exists for it and the NAS image was
+  not modified.
+- The image contains `en_US` and `es_ES` Hunspell dictionary/affix pairs.
+  Focused OCR scoring and dictionary-evidence tests pass. Missing-dictionary
+  degradation was not simulated because no repository fixture exists and the
+  NAS installation was not modified.
+- Focused disposable-fixture tests pass for SRT, ASS, SSA, PGS/VobSub bitmap
+  OCR, canonical `both` reuse, sidecar validation/publication, and configured
+  text/bitmap translation preparation. No repository bitmap media fixture was
+  available beyond those existing test fixtures.
+- A disposable NAS container created and reopened a SQLite backup containing
+  probe value `150`; the backup size was `528384` bytes. `sqlite3`, `ssh`,
+  `sh`, `mkdir`, and `test` are present, and the `mvforge-nas` SSH readiness
+  command succeeds. No production database or media was mounted.
+- The optimized disposable API starts, serves `/api/system/runtime`, and
+  accepts `POST /api/system/runtime/refresh`. Refresh changes `detectedAt`
+  while preserving the stable metric identity.
+- Focused `runtimeinfo`, `handlers`, and `scheduler` tests pass for stable
+  fingerprints, RuntimeState upsert, immutable snapshot references/retention,
+  ExecutionPlan/Test Encode freeze, and the existing cache reset paths.
