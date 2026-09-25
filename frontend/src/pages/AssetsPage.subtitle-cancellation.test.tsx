@@ -4,7 +4,8 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { EmbeddedSubtitleActions, ExternalSubtitleList, subtitleOCRSidecarSelection, subtitleOperationStopsPolling } from './AssetsPage';
+import { EmbeddedSubtitleActions, ExternalSubtitleList } from './AssetsPage';
+import { subtitleOCRSidecarSelection, subtitleOperationStopsPolling } from '../utils/assetPageHelpers';
 
 afterEach(cleanup);
 

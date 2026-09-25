@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PreviewVideoCharacteristics } from '../api/types';
 import { api } from '../api/client';
-import { LAB_COMPARISON_VIEWPORT_POLICY, labComparisonImageSx, labComparisonLayerSx } from '../components/LabComparisonViewport';
+import { LAB_COMPARISON_VIEWPORT_POLICY, labComparisonImageSx, labComparisonLayerSx } from '../utils/labComparisonViewport';
 import { FrameFidelityComparison, PerceptualEvidencePanel, VideoPreviewRequest } from './ProfileLabPage';
 
 afterEach(() => {

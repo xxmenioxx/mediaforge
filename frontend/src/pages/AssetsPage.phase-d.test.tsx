@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Asset, AssetGroup, AssetInventory } from '../api/types';
-import { filterAssetGroups } from './AssetsPage';
-import { buildDashboardSummary } from './DashboardPage';
+import { filterAssetGroups } from '../utils/assetPageHelpers';
+import { buildDashboardSummary } from '../utils/dashboardSummary';
 
 function asset(id: number, lifecycle: Partial<NonNullable<Asset['lifecycle']>>): Asset {
   return {
