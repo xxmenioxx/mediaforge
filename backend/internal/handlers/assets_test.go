@@ -582,6 +582,34 @@ func TestAssetGroupsPreserveImmediateContainingSubpath(t *testing.T) {
 	}
 }
 
+func TestAssetGroupsSummarizeMixedLifecycleMembersWithoutGroupAuthority(t *testing.T) {
+	assets := []Asset{
+		{ID: 1, LibraryID: 7, LibraryName: "Anime", GroupPath: "Series/Season 2", Path: "/library/Series/Season 2/E01.mkv", Status: "converted", Lifecycle: &AssetLifecycleProjection{Lifecycle: AssetLifecyclePublished, Provenance: AssetProvenanceConverted, Validation: AssetValidationPassed, Publication: AssetPublicationPublished}},
+		{ID: 2, LibraryID: 7, LibraryName: "Anime", GroupPath: "Series/Season 2", Path: "/library/Series/Season 2/E02.mkv", Status: "published_as_is", Lifecycle: &AssetLifecycleProjection{Lifecycle: AssetLifecyclePublished, Provenance: AssetProvenancePublishedAsIs, Validation: AssetValidationUnavailable, Publication: AssetPublicationPublished}},
+		{ID: 3, LibraryID: 7, LibraryName: "Anime", GroupPath: "Series/Season 2", Path: "/library/Series/Season 2/E03.mkv", Status: "library", Lifecycle: &AssetLifecycleProjection{Lifecycle: AssetLifecycleQueued, Provenance: AssetProvenanceLegacyOrUnknown, Validation: AssetValidationPending, Publication: AssetPublicationPending}},
+		{ID: 4, LibraryID: 7, LibraryName: "Anime", GroupPath: "Series/Season 2", Path: "/library/Series/Season 2/E04.mkv", Status: "library", Lifecycle: &AssetLifecycleProjection{Lifecycle: AssetLifecycleNeedsReview, Provenance: AssetProvenanceLegacyOrUnknown, Validation: AssetValidationReviewRequired, Publication: AssetPublicationBlocked, Attention: []string{"needs_review"}}},
+		{ID: 5, LibraryID: 7, LibraryName: "Anime", GroupPath: "Series/Season 2", Path: "/library/Series/Season 2/E05.mkv", Status: "library", Lifecycle: &AssetLifecycleProjection{Lifecycle: AssetLifecycleFailed, Provenance: AssetProvenanceLegacyOrUnknown, Validation: AssetValidationFailed, Publication: AssetPublicationFailed}},
+	}
+
+	groups := groupAssets(assets, nil, nil)
+	if len(groups) != 1 {
+		t.Fatalf("mixed members split into %d groups, want one: %#v", len(groups), groups)
+	}
+	group := groups[0]
+	if group.Status != "mixed" {
+		t.Fatalf("group status = %q, want compatibility-only mixed marker", group.Status)
+	}
+	if group.LifecycleSummary.Total != 5 {
+		t.Fatalf("summary total = %d, want 5", group.LifecycleSummary.Total)
+	}
+	if len(group.LifecycleSummary.Provenance) != 3 || len(group.LifecycleSummary.Lifecycle) != 4 {
+		t.Fatalf("unexpected mixed summary: %#v", group.LifecycleSummary)
+	}
+	if group.Assets[0].Lifecycle.Provenance != AssetProvenanceConverted || group.Assets[1].Lifecycle.Provenance != AssetProvenancePublishedAsIs {
+		t.Fatalf("member lifecycle authority was not preserved: %#v", group.Assets)
+	}
+}
+
 func TestRemoveMissingDeletesOnlyAbsentInventoryRecord(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:remove-missing-asset?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -1435,7 +1463,7 @@ func TestApplyLibraryPathRenameRejectsStalePlanAndActiveWork(t *testing.T) {
 			t.Fatal(err)
 		}
 		response := apply(t, db, library, sourcePath, plan.PlanHash)
-		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "open Queue job") {
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "asset has active work") {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
 	})
@@ -1447,7 +1475,7 @@ func TestApplyLibraryPathRenameRejectsStalePlanAndActiveWork(t *testing.T) {
 			t.Fatal(err)
 		}
 		response := apply(t, db, library, sourcePath, plan.PlanHash)
-		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "active maintenance") {
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "asset has active work") {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
 	})
@@ -2472,7 +2500,7 @@ func TestExtractSubtitlesFromArchivePublishesBesideActiveConvertedAsset(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.ScanResult{}, &models.AppSetting{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2542,7 +2570,7 @@ func TestExtractSubtitlesFromArchiveRequiresActiveConvertedPublication(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.ScanResult{}, &models.AppSetting{}); err != nil {
 		t.Fatal(err)
 	}
 	archivePath := filepath.Join(t.TempDir(), "orphan.mkv")
@@ -2816,7 +2844,7 @@ func TestMigratePathMovesAllFilesAndReconcilesConvertedPublication(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+	if err := db.AutoMigrate(&models.AssetRecord{}, &models.Library{}, &models.QueueJob{}, &models.ScanResult{}, &models.AppSetting{}); err != nil {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
@@ -2843,6 +2871,9 @@ func TestMigratePathMovesAllFilesAndReconcilesConvertedPublication(t *testing.T)
 	if err := db.Create(&record).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&models.ScanResult{Path: videoPath, FileName: filepath.Base(videoPath), VideoCodec: "hevc"}).Error; err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now()
 	job := models.QueueJob{
 		MediaPath: filepath.Join(root, "raw", "documentaries", "TATU", "_Ttitle.mkv"),
@@ -2850,6 +2881,14 @@ func TestMigratePathMovesAllFilesAndReconcilesConvertedPublication(t *testing.T)
 		PublishedPath: videoPath, PublishedAt: &now, PlannedPublishedPath: videoPath,
 	}
 	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	retiredAt := now.Add(-time.Hour)
+	historicalJob := models.QueueJob{
+		MediaPath: videoPath, LibraryID: documentaries.ID, ProfileID: 1, Status: JobStatusCompleted,
+		PublishedPath: videoPath, ReplacementTargetPath: videoPath, PublishedAt: &retiredAt, PublicationRetiredAt: &retiredAt,
+	}
+	if err := db.Create(&historicalJob).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
@@ -2891,6 +2930,19 @@ func TestMigratePathMovesAllFilesAndReconcilesConvertedPublication(t *testing.T)
 	}
 	if job.PublishedPath != record.Path || job.LibraryID != series.ID || job.PlannedPublishedPath != videoPath {
 		t.Fatalf("publication was not reconciled while preserving plan: %#v", job)
+	}
+	var scan models.ScanResult
+	if err := db.Where("path = ?", record.Path).First(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	if scan.FileName != filepath.Base(record.Path) {
+		t.Fatalf("current ScanResult was not reconciled: %#v", scan)
+	}
+	if err := db.First(&historicalJob, historicalJob.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if historicalJob.PublishedPath != videoPath || historicalJob.ReplacementTargetPath != videoPath {
+		t.Fatalf("retired Queue history was rewritten: %#v", historicalJob)
 	}
 	overrides := assetConversionOverrides(db)
 	if _, exists := overrides[videoPath]; exists {
@@ -3180,7 +3232,8 @@ func TestDeleteConvertedRestoresArchivedOriginalAndPreservesJob(t *testing.T) {
 	convertedSidecar := strings.TrimSuffix(convertedPath, filepath.Ext(convertedPath)) + ".spa.srt"
 	writeTestFile(t, convertedSidecar, "keep this subtitle")
 	writeTestFile(t, archivePath, "original")
-	job := models.QueueJob{MediaPath: restorePath, LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: convertedPath, OriginalArchivedPath: archivePath}
+	publishedAt := time.Now()
+	job := models.QueueJob{MediaPath: restorePath, LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: convertedPath, PublishedAt: &publishedAt, OriginalArchivedPath: archivePath}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -3241,9 +3294,10 @@ func TestDeleteConvertedLibraryReplacementRestoresOriginalToLibrary(t *testing.T
 	archivePath := filepath.Join(archiveRoot, "library-replacements", "library-7", "Beck", "BECK - 01.mkv")
 	writeTestFile(t, convertedPath, "converted")
 	writeTestFile(t, archivePath, "original library file")
+	publishedAt := time.Now()
 	job := models.QueueJob{
 		MediaPath: originalPath, PublishMode: PublishModeReplaceLibrary, LibraryID: library.ID, ProfileID: 1,
-		Status: JobStatusCompleted, PublishedPath: convertedPath, ReplacementTargetPath: convertedPath, OriginalArchivedPath: archivePath,
+		Status: JobStatusCompleted, PublishedPath: convertedPath, PublishedAt: &publishedAt, ReplacementTargetPath: convertedPath, OriginalArchivedPath: archivePath,
 	}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
@@ -3352,7 +3406,8 @@ func TestDeleteArchiveRequiresConfirmationAndPreservesProvenance(t *testing.T) {
 	if err := db.Create(&record).Error; err != nil {
 		t.Fatal(err)
 	}
-	job := models.QueueJob{MediaPath: "/raw/movies/movie.mkv", Status: JobStatusCompleted, PublishedPath: publishedPath, OriginalArchivedPath: archivePath}
+	publishedAt := time.Now()
+	job := models.QueueJob{MediaPath: "/raw/movies/movie.mkv", Status: JobStatusCompleted, PublishedPath: publishedPath, PublishedAt: &publishedAt, OriginalArchivedPath: archivePath}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -3515,7 +3570,8 @@ func TestDeleteConvertedCanResumeWhenConvertedAlreadyWentMissing(t *testing.T) {
 	archivePath := filepath.Join(archiveRoot, "movie.mkv")
 	restorePath := filepath.Join(rawRoot, "movie.mkv")
 	writeTestFile(t, archivePath, "original")
-	job := models.QueueJob{MediaPath: restorePath, LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: convertedPath, OriginalArchivedPath: archivePath}
+	publishedAt := time.Now()
+	job := models.QueueJob{MediaPath: restorePath, LibraryID: 1, ProfileID: 1, Status: JobStatusCompleted, PublishedPath: convertedPath, PublishedAt: &publishedAt, OriginalArchivedPath: archivePath}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}

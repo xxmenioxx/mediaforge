@@ -171,6 +171,8 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/queue/jobs", queue.Create)
 		api.POST("/queue/batches", queue.CreateBatch)
 		api.POST("/queue/selected-assets", queue.QueueSelectedAssets)
+		api.POST("/assets/queue-remaining/preview", queue.QueueRemainingPreview)
+		api.POST("/assets/queue-remaining/commit", queue.QueueRemainingCommit)
 		api.POST("/queue/jobs/reorder", queue.Reorder)
 		api.POST("/queue/jobs/:id", queue.Update)
 		api.DELETE("/queue/jobs/:id", queue.Dismiss)

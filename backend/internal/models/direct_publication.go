@@ -7,6 +7,7 @@ import "time"
 type DirectPublication struct {
 	ID                   uint       `json:"id" gorm:"primaryKey"`
 	SourcePath           string     `json:"sourcePath" gorm:"not null;index"`
+	SourceAssetRecordID  *uint      `json:"sourceAssetRecordId,omitempty" gorm:"index"`
 	PublishedPath        string     `json:"publishedPath" gorm:"not null;uniqueIndex"`
 	LibraryID            uint       `json:"libraryId" gorm:"not null;index"`
 	PublishedFingerprint string     `json:"publishedFingerprint"`

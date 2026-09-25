@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppLayout } from './components/AppLayout';
 import { DashboardPage } from './pages/DashboardPage';
 import { LibrariesPage } from './pages/LibrariesPage';
@@ -24,6 +24,7 @@ export default function App() {
         <Route index element={<DashboardPage />} />
         <Route path="libraries" element={<LibrariesPage />} />
         <Route path="assets" element={<AssetsPage />} />
+        <Route path="assets/:legacyView" element={<LegacyAssetsRoute />} />
         <Route path="analysis" element={<AnalysisPage />} />
         <Route path="profile-lab" element={<ProfileLabPage />} />
         <Route path="profiles" element={<ProfilesPage />} />
@@ -42,4 +43,26 @@ export default function App() {
       </Route>
     </Routes>
   );
+}
+
+export function LegacyAssetsRoute() {
+  const location = useLocation();
+  const view = location.pathname.split('/').filter(Boolean).at(-1);
+  const params = new URLSearchParams(location.search);
+  params.delete('tab');
+  if (view === 'unprocessed') {
+    params.set('location', 'raw');
+  } else if (view === 'converted') {
+    params.set('location', 'library');
+    params.set('provenance', 'converted');
+  } else if (view === 'archive') {
+    params.set('location', 'library');
+    params.set('original', 'archived');
+  } else if (view === 'reports') {
+    params.set('location', 'library');
+    params.set('evidence', 'reports');
+  } else {
+    return <div role="alert">This Assets route is no longer an inventory context. Open RAW or Library and use the persisted lifecycle filters.</div>;
+  }
+  return <Navigate to={`/assets${params.toString() ? `?${params.toString()}` : ''}`} replace />;
 }

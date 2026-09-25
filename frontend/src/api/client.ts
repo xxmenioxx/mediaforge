@@ -570,6 +570,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
+  queueRemainingPreview: (assetIds: number[]) =>
+    request<QueueSelectedAssetsResponse>('/api/assets/queue-remaining/preview', {
+      method: 'POST',
+      body: JSON.stringify({ assetIds, commit: false }),
+    }),
+  queueRemainingCommit: (assetIds: number[]) =>
+    request<QueueSelectedAssetsResponse>('/api/assets/queue-remaining/commit', {
+      method: 'POST',
+      body: JSON.stringify({ assetIds, commit: true }),
+    }),
   updateQueueJob: ({ jobId, ...job }: QueueJobUpdateInput) =>
     request<QueueJob>(`/api/queue/jobs/${jobId}`, {
       method: 'POST',

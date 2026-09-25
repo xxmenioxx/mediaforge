@@ -150,22 +150,55 @@ var profileSampleEstimateSlot = make(chan struct{}, 1)
 var assetInventorySyncMu sync.Mutex
 
 type AssetInventory struct {
-	SourceGroups      []AssetSourceGroup `json:"sourceGroups"`
-	Unprocessed       []Asset            `json:"unprocessed"`
-	Library           []Asset            `json:"library"`
-	Converted         []Asset            `json:"converted"`
-	Unverified        []Asset            `json:"unverified"`
-	Accepted          []Asset            `json:"accepted"`
-	Archive           []Asset            `json:"archive"`
-	Missing           []Asset            `json:"missing"`
-	UnprocessedGroups []AssetGroup       `json:"unprocessedGroups"`
-	LibraryGroups     []AssetGroup       `json:"libraryGroups"`
-	ConvertedGroups   []AssetGroup       `json:"convertedGroups"`
-	UnverifiedGroups  []AssetGroup       `json:"unverifiedGroups"`
-	AcceptedGroups    []AssetGroup       `json:"acceptedGroups"`
-	ArchiveGroups     []AssetGroup       `json:"archiveGroups"`
-	Reports           AssetReports       `json:"reports"`
-	Sync              AssetSyncInfo      `json:"sync"`
+	SourceGroups      []AssetSourceGroup   `json:"sourceGroups"`
+	Raw               []Asset              `json:"raw"`
+	Unprocessed       []Asset              `json:"unprocessed"`
+	Library           []Asset              `json:"library"`
+	Converted         []Asset              `json:"converted"`
+	Unverified        []Asset              `json:"unverified"`
+	Accepted          []Asset              `json:"accepted"`
+	Archive           []Asset              `json:"archive"`
+	Missing           []Asset              `json:"missing"`
+	UnprocessedGroups []AssetGroup         `json:"unprocessedGroups"`
+	RawGroups         []AssetGroup         `json:"rawGroups"`
+	LibraryGroups     []AssetGroup         `json:"libraryGroups"`
+	ConvertedGroups   []AssetGroup         `json:"convertedGroups"`
+	UnverifiedGroups  []AssetGroup         `json:"unverifiedGroups"`
+	AcceptedGroups    []AssetGroup         `json:"acceptedGroups"`
+	ArchiveGroups     []AssetGroup         `json:"archiveGroups"`
+	Reports           AssetReports         `json:"reports"`
+	Sync              AssetSyncInfo        `json:"sync"`
+	Counts            AssetInventoryCounts `json:"counts"`
+}
+
+// AssetInventoryCounts is a bounded aggregate over the canonical lifecycle
+// projection. RAW and Library are locations; the remaining fields are
+// independent dimensions or evidence and must not be treated as inventories.
+type AssetInventoryCounts struct {
+	Raw                int `json:"raw"`
+	Library            int `json:"library"`
+	Processing         int `json:"processing"`
+	NeedsReview        int `json:"needsReview"`
+	ValidationReview   int `json:"validationReview"`
+	PublicationBlocked int `json:"publicationBlocked"`
+	Converted          int `json:"converted"`
+	OriginalsArchived  int `json:"originalsArchived"`
+	Missing            int `json:"missing"`
+	HistoricalPaths    int `json:"historicalPaths"`
+}
+
+type AssetDimensionCount struct {
+	Value string `json:"value"`
+	Count int    `json:"count"`
+}
+
+type AssetGroupLifecycleSummary struct {
+	Total       int                   `json:"total"`
+	Lifecycle   []AssetDimensionCount `json:"lifecycle"`
+	Provenance  []AssetDimensionCount `json:"provenance"`
+	Validation  []AssetDimensionCount `json:"validation"`
+	Publication []AssetDimensionCount `json:"publication"`
+	Attention   []AssetDimensionCount `json:"attention"`
 }
 
 type AssetSourceGroup struct {
@@ -378,6 +411,7 @@ type Asset struct {
 	Metadata         AssetMetadataState           `json:"metadata"`
 	Conversion       AssetConversionOverrideState `json:"conversion"`
 	PublicationMode  string                       `json:"publicationMode,omitempty"`
+	Lifecycle        *AssetLifecycleProjection    `json:"lifecycle,omitempty"`
 	Technical        *AssetTechnicalInfo          `json:"technical,omitempty"`
 }
 
@@ -392,20 +426,21 @@ type AssetTechnicalInfo struct {
 }
 
 type AssetGroup struct {
-	ID           string             `json:"id"`
-	LibraryID    uint               `json:"libraryId"`
-	LibraryName  string             `json:"libraryName"`
-	Path         string             `json:"path"`
-	RelativePath string             `json:"relativePath"`
-	Status       string             `json:"status"`
-	FileCount    int                `json:"fileCount"`
-	SizeBytes    int64              `json:"sizeBytes"`
-	ModifiedAt   time.Time          `json:"modifiedAt"`
-	Assets       []Asset            `json:"assets"`
-	Review       AssetReviewState   `json:"review"`
-	PathReview   AssetReviewState   `json:"pathReview"`
-	Metadata     AssetMetadataState `json:"metadata"`
-	PathMetadata AssetMetadataState `json:"pathMetadata"`
+	ID               string                     `json:"id"`
+	LibraryID        uint                       `json:"libraryId"`
+	LibraryName      string                     `json:"libraryName"`
+	Path             string                     `json:"path"`
+	RelativePath     string                     `json:"relativePath"`
+	Status           string                     `json:"status"`
+	FileCount        int                        `json:"fileCount"`
+	SizeBytes        int64                      `json:"sizeBytes"`
+	ModifiedAt       time.Time                  `json:"modifiedAt"`
+	Assets           []Asset                    `json:"assets"`
+	Review           AssetReviewState           `json:"review"`
+	PathReview       AssetReviewState           `json:"pathReview"`
+	Metadata         AssetMetadataState         `json:"metadata"`
+	PathMetadata     AssetMetadataState         `json:"pathMetadata"`
+	LifecycleSummary AssetGroupLifecycleSummary `json:"lifecycleSummary"`
 }
 
 type AssetReviewUpdateInput struct {
@@ -731,6 +766,13 @@ func (h AssetHandler) Recover(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "archive file is no longer physically available"})
 		return
 	}
+	if active, err := h.assetHasActiveWork(record); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "check active asset work: " + err.Error()})
+		return
+	} else if active {
+		c.JSON(http.StatusConflict, gin.H{"error": "asset has active work"})
+		return
+	}
 	rawRoot, err := settingPath(h.db, "rawRoot", "/media/raw")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -873,6 +915,11 @@ func (h AssetHandler) permanentlyDeleteArchiveAsset(path string) (int, error) {
 	if record.Missing {
 		return http.StatusNotFound, fmt.Errorf("archive file is no longer physically available")
 	}
+	if active, err := h.assetHasActiveWork(record); err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("check active asset work: %w", err)
+	} else if active {
+		return http.StatusConflict, fmt.Errorf("asset has active work")
+	}
 	archiveRoot, err := originalsArchivePath(h.db)
 	if err != nil {
 		return http.StatusInternalServerError, err
@@ -932,6 +979,13 @@ func (h AssetHandler) DeleteConverted(c *gin.Context) {
 	}
 	if record.Status != "converted" {
 		c.JSON(http.StatusConflict, gin.H{"error": "only a MVForge converted asset can use this recovery-safe delete flow"})
+		return
+	}
+	if active, err := h.assetHasActiveWork(record); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "check active asset work: " + err.Error()})
+		return
+	} else if active {
+		c.JSON(http.StatusConflict, gin.H{"error": "asset has active work"})
 		return
 	}
 	convertedExists := false
@@ -1661,8 +1715,9 @@ func (h AssetHandler) PublishAsIs(c *gin.Context) {
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		for _, record := range publishing {
 			publishedPath := publishedPaths[record.Path]
+			sourceAssetRecordID := record.ID
 			publication := models.DirectPublication{
-				SourcePath: record.Path, PublishedPath: publishedPath, LibraryID: library.ID,
+				SourcePath: record.Path, SourceAssetRecordID: &sourceAssetRecordID, PublishedPath: publishedPath, LibraryID: library.ID,
 				PublishedFingerprint: fingerprints[record.Path], PublishedSizeBytes: record.SizeBytes, PublishedAt: publishedAt,
 			}
 			if err := saveDirectPublication(tx, &publication); err != nil {
@@ -2145,6 +2200,17 @@ func validateLibraryRenamePlanForApply(plan LibraryRenamePlan, library models.Li
 func (h AssetHandler) validateLibraryRenameHasNoActiveWork(plan LibraryRenamePlan) error {
 	queue := NewQueueHandler(h.db)
 	for _, asset := range plan.Assets {
+		var record models.AssetRecord
+		if asset.AssetID > 0 && h.db.First(&record, asset.AssetID).Error == nil {
+			active, err := h.assetHasActiveWork(record)
+			if err != nil {
+				return err
+			}
+			if active {
+				return fmt.Errorf("asset has active work: %s", asset.SourcePath)
+			}
+			continue
+		}
 		active, err := queue.assetHasOpenJob(asset.SourcePath, 0)
 		if err != nil {
 			return err
@@ -2488,20 +2554,16 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 			return
 		}
 	}
-	migratingPaths := make([]string, 0, len(migrating))
 	for _, record := range migrating {
-		migratingPaths = append(migratingPaths, record.Path)
-	}
-	var openJobs int64
-	if err := h.db.Model(&models.QueueJob{}).
-		Where("media_path IN ? AND status IN ?", migratingPaths, []string{JobStatusQueued, JobStatusRunning}).
-		Count(&openJobs).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if openJobs > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "source path has assets with open Queue jobs"})
-		return
+		active, guardErr := h.assetHasActiveWork(record)
+		if guardErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": guardErr.Error()})
+			return
+		}
+		if active {
+			c.JSON(http.StatusConflict, gin.H{"error": "source path has assets with active work"})
+			return
+		}
 	}
 
 	var sourceLibrary models.Library
@@ -2566,13 +2628,20 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 			}).Error; err != nil {
 				return err
 			}
+			if tx.Migrator().HasTable(&models.ScanResult{}) {
+				if err := tx.Model(&models.ScanResult{}).Where("path = ?", oldPath).Updates(map[string]any{
+					"path": newPath, "file_name": filepath.Base(newPath),
+				}).Error; err != nil {
+					return err
+				}
+			}
 			if err := tx.Model(&models.QueueJob{}).
-				Where("published_path = ?", oldPath).
+				Where("published_path = ? AND publication_retired_at IS NULL", oldPath).
 				Updates(map[string]any{"published_path": newPath, "library_id": destinationLibrary.ID, "notes": gorm.Expr("COALESCE(notes, '') || ?", "\nConverted asset migrated to "+newPath)}).Error; err != nil {
 				return err
 			}
 			if err := tx.Model(&models.QueueJob{}).
-				Where("replacement_target_path = ?", oldPath).
+				Where("replacement_target_path = ? AND publication_retired_at IS NULL", oldPath).
 				Update("replacement_target_path", newPath).Error; err != nil {
 				return err
 			}
@@ -5448,6 +5517,10 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	if err := h.db.Order("status asc, library_name asc, relative_path asc").Find(&records).Error; err != nil {
 		return AssetInventory{}, err
 	}
+	lifecycleByID, err := h.assetLifecycleProjections(records)
+	if err != nil {
+		return AssetInventory{}, err
+	}
 	scans := []models.ScanResult{}
 	if h.db.Migrator().HasTable(&models.ScanResult{}) {
 		if err := h.db.Order("updated_at desc, id desc").Find(&scans).Error; err != nil {
@@ -5492,6 +5565,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	}
 
 	inventory := AssetInventory{
+		Raw:               []Asset{},
 		Unprocessed:       []Asset{},
 		Library:           []Asset{},
 		Converted:         []Asset{},
@@ -5500,6 +5574,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 		Archive:           []Asset{},
 		Missing:           []Asset{},
 		UnprocessedGroups: []AssetGroup{},
+		RawGroups:         []AssetGroup{},
 		LibraryGroups:     []AssetGroup{},
 		ConvertedGroups:   []AssetGroup{},
 		UnverifiedGroups:  []AssetGroup{},
@@ -5516,14 +5591,15 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 			continue
 		}
 		asset := assetFromRecord(record)
+		asset.Lifecycle = lifecycleByID[record.ID]
 		asset.Technical = technicalByPath[cleanPath]
 		switch record.Status {
 		case "converted":
-			if directOutputs[cleanPath] {
+			if asset.Lifecycle != nil && asset.Lifecycle.Provenance == AssetProvenancePublishedAsIs {
 				asset.Status = "published_as_is"
 				asset.PublicationMode = "as_is"
 				inventory.Library = append(inventory.Library, asset)
-			} else if mvForgeOutputs[cleanPath] {
+			} else if asset.Lifecycle != nil && asset.Lifecycle.Provenance == AssetProvenanceConverted {
 				asset.Status = "converted"
 				inventory.Converted = append(inventory.Converted, asset)
 				inventory.Library = append(inventory.Library, asset)
@@ -5571,7 +5647,9 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	sortAssets(inventory.Unverified)
 	sortAssets(inventory.Accepted)
 	sortAssets(inventory.Archive)
+	inventory.Raw = append(inventory.Raw, inventory.Unprocessed...)
 	inventory.UnprocessedGroups = groupAssets(inventory.Unprocessed, reviews, metadata)
+	inventory.RawGroups = inventory.UnprocessedGroups
 	inventory.LibraryGroups = groupAssets(inventory.Library, reviews, metadata)
 	inventory.ConvertedGroups = groupAssets(inventory.Converted, reviews, metadata)
 	inventory.UnverifiedGroups = groupAssets(inventory.Unverified, reviews, metadata)
@@ -5585,13 +5663,16 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	sortAssetGroups(inventory.ArchiveGroups)
 	for _, record := range records {
 		if record.Missing && !missing.HistoricalPaths[filepath.Clean(record.Path)] {
-			inventory.Missing = append(inventory.Missing, assetFromRecord(record))
+			asset := assetFromRecord(record)
+			asset.Lifecycle = lifecycleByID[record.ID]
+			inventory.Missing = append(inventory.Missing, asset)
 		}
 	}
 	sortAssets(inventory.Missing)
 	inventory.Reports = assetReports(h.db, inventory, missing)
 	inventory.SourceGroups = buildAssetSourceGroups(h.db, records, technicalByPath, mvForgeOutputs, directOutputs, missing)
 	hydrateSourceGroupAssets(inventory.SourceGroups, inventory.Unprocessed)
+	hydrateSourceGroupLifecycles(inventory.SourceGroups, lifecycleByID)
 
 	var last models.AssetRecord
 	if err := h.db.Order("synced_at desc").First(&last).Error; err == nil {
@@ -5601,6 +5682,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	inventory.Sync.MissingFiles = int64(missing.Total)
 	inventory.Sync.MissingActionable = missing.Actionable
 	inventory.Sync.MissingHistorical = missing.Historical
+	inventory.Counts = assetInventoryCounts(inventory, missing)
 	return inventory, nil
 }
 
@@ -5621,6 +5703,57 @@ func hydrateSourceGroupAssets(groups []AssetSourceGroup, assets []Asset) {
 			}
 		}
 	}
+}
+
+func hydrateSourceGroupLifecycles(groups []AssetSourceGroup, lifecycleByID map[uint]*AssetLifecycleProjection) {
+	for groupIndex := range groups {
+		for logicalIndex := range groups[groupIndex].LogicalGroups {
+			for pathIndex := range groups[groupIndex].LogicalGroups[logicalIndex].AssetPaths {
+				path := &groups[groupIndex].LogicalGroups[logicalIndex].AssetPaths[pathIndex]
+				for assetIndex := range path.Assets {
+					if path.Assets[assetIndex].ID == 0 {
+						continue
+					}
+					path.Assets[assetIndex].Lifecycle = lifecycleByID[path.Assets[assetIndex].ID]
+				}
+			}
+		}
+	}
+}
+
+func assetInventoryCounts(inventory AssetInventory, missing MissingClassification) AssetInventoryCounts {
+	counts := AssetInventoryCounts{
+		Raw:             len(inventory.Raw),
+		Library:         len(inventory.Library),
+		Missing:         missing.Actionable,
+		HistoricalPaths: missing.Historical,
+	}
+	for _, asset := range append(append([]Asset{}, inventory.Raw...), inventory.Library...) {
+		projection := asset.Lifecycle
+		if projection == nil {
+			continue
+		}
+		switch projection.Lifecycle {
+		case AssetLifecyclePreparing, AssetLifecycleProcessing, AssetLifecycleValidating, AssetLifecyclePublishing:
+			counts.Processing++
+		}
+		if projection.Lifecycle == AssetLifecycleNeedsReview || len(projection.Attention) > 0 {
+			counts.NeedsReview++
+		}
+		if projection.Validation == AssetValidationReviewRequired {
+			counts.ValidationReview++
+		}
+		if projection.Publication == AssetPublicationBlocked {
+			counts.PublicationBlocked++
+		}
+		if projection.Provenance == AssetProvenanceConverted {
+			counts.Converted++
+		}
+		if projection.Original == AssetOriginalArchived {
+			counts.OriginalsArchived++
+		}
+	}
+	return counts
 }
 
 func mvForgeOutputPaths(db *gorm.DB) map[string]bool {
@@ -6603,6 +6736,39 @@ func populateConvertedSavings(db *gorm.DB, converted []Asset, report *AssetRepor
 		return
 	}
 	seenOutputs := map[string]bool{}
+	archivedPaths := make([]string, 0, len(jobs))
+	mediaPaths := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		if path := strings.TrimSpace(job.OriginalArchivedPath); path != "" {
+			archivedPaths = append(archivedPaths, filepath.Clean(path))
+		}
+		if path := strings.TrimSpace(job.MediaPath); path != "" {
+			mediaPaths = append(mediaPaths, filepath.Clean(path))
+		}
+	}
+	archivedBytes := map[string]int64{}
+	if len(archivedPaths) > 0 && db.Migrator().HasTable(&models.AssetRecord{}) {
+		var records []models.AssetRecord
+		if err := db.Where("path IN ?", archivedPaths).Find(&records).Error; err == nil {
+			for _, record := range records {
+				if record.SizeBytes > 0 {
+					archivedBytes[filepath.Clean(record.Path)] = record.SizeBytes
+				}
+			}
+		}
+	}
+	scannedBytes := map[string]int64{}
+	if len(mediaPaths) > 0 && db.Migrator().HasTable(&models.ScanResult{}) {
+		var scans []models.ScanResult
+		if err := db.Where("path IN ?", mediaPaths).Order("updated_at desc, id desc").Find(&scans).Error; err == nil {
+			for _, scan := range scans {
+				path := filepath.Clean(scan.Path)
+				if _, exists := scannedBytes[path]; !exists && scan.SizeBytes > 0 {
+					scannedBytes[path] = scan.SizeBytes
+				}
+			}
+		}
+	}
 	for _, job := range jobs {
 		outputPath := filepath.Clean(job.PublishedPath)
 		output, ok := outputs[outputPath]
@@ -6610,7 +6776,10 @@ func populateConvertedSavings(db *gorm.DB, converted []Asset, report *AssetRepor
 			continue
 		}
 		seenOutputs[outputPath] = true
-		sourceBytes := activeConversionOriginalBytes(db, job)
+		sourceBytes := archivedBytes[filepath.Clean(job.OriginalArchivedPath)]
+		if sourceBytes <= 0 {
+			sourceBytes = scannedBytes[filepath.Clean(job.MediaPath)]
+		}
 		if sourceBytes <= 0 || output.SizeBytes <= 0 {
 			continue
 		}
@@ -6619,22 +6788,6 @@ func populateConvertedSavings(db *gorm.DB, converted []Asset, report *AssetRepor
 		report.ConvertedOutputBytes += output.SizeBytes
 	}
 	report.ConvertedSpaceSavedBytes = report.ConvertedOriginalBytes - report.ConvertedOutputBytes
-}
-
-func activeConversionOriginalBytes(db *gorm.DB, job models.QueueJob) int64 {
-	if archivedPath := strings.TrimSpace(job.OriginalArchivedPath); archivedPath != "" && db.Migrator().HasTable(&models.AssetRecord{}) {
-		var record models.AssetRecord
-		if err := db.Where("path = ?", filepath.Clean(archivedPath)).First(&record).Error; err == nil && record.SizeBytes > 0 {
-			return record.SizeBytes
-		}
-	}
-	if db.Migrator().HasTable(&models.ScanResult{}) {
-		var scan models.ScanResult
-		if err := db.Where("path = ?", filepath.Clean(job.MediaPath)).Order("updated_at desc, id desc").First(&scan).Error; err == nil && scan.SizeBytes > 0 {
-			return scan.SizeBytes
-		}
-	}
-	return 0
 }
 
 func originalRetentionDays(db *gorm.DB) int {
@@ -6771,10 +6924,72 @@ func groupAssets(assets []Asset, reviews map[string]AssetReviewState, metadata m
 	for _, key := range order {
 		group := groupsByKey[key]
 		sortAssets(group.Assets)
+		group.LifecycleSummary = summarizeAssetGroupLifecycle(group.Assets)
+		if group.LifecycleSummary.Total > 0 {
+			group.Status = groupStatusCompatibilityValue(group.Assets)
+		}
 		groups = append(groups, *group)
 	}
 
 	return groups
+}
+
+func summarizeAssetGroupLifecycle(assets []Asset) AssetGroupLifecycleSummary {
+	counts := AssetGroupLifecycleSummary{Total: len(assets)}
+	countDimension := func(values map[string]int, value string) {
+		if value != "" {
+			values[value]++
+		}
+	}
+	lifecycle := map[string]int{}
+	provenance := map[string]int{}
+	validation := map[string]int{}
+	publication := map[string]int{}
+	attention := map[string]int{}
+	for _, asset := range assets {
+		if asset.Lifecycle == nil {
+			continue
+		}
+		countDimension(lifecycle, asset.Lifecycle.Lifecycle)
+		countDimension(provenance, asset.Lifecycle.Provenance)
+		countDimension(validation, asset.Lifecycle.Validation)
+		countDimension(publication, asset.Lifecycle.Publication)
+		for _, value := range asset.Lifecycle.Attention {
+			countDimension(attention, value)
+		}
+	}
+	counts.Lifecycle = sortedDimensionCounts(lifecycle)
+	counts.Provenance = sortedDimensionCounts(provenance)
+	counts.Validation = sortedDimensionCounts(validation)
+	counts.Publication = sortedDimensionCounts(publication)
+	counts.Attention = sortedDimensionCounts(attention)
+	return counts
+}
+
+func sortedDimensionCounts(values map[string]int) []AssetDimensionCount {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]AssetDimensionCount, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, AssetDimensionCount{Value: key, Count: values[key]})
+	}
+	return result
+}
+
+func groupStatusCompatibilityValue(assets []Asset) string {
+	if len(assets) == 0 {
+		return ""
+	}
+	status := assets[0].Status
+	for _, asset := range assets[1:] {
+		if asset.Status != status {
+			return "mixed"
+		}
+	}
+	return status
 }
 
 func assetMetadataOverrides(db *gorm.DB) map[string]AssetMetadataState {
@@ -7375,7 +7590,7 @@ func stringSliceFromUnknown(value interface{}) []string {
 }
 
 func assetGroupKey(asset Asset) string {
-	return fmt.Sprintf("%s:%d:%s", strings.TrimSpace(asset.Status), asset.LibraryID, strings.TrimSpace(asset.GroupPath))
+	return fmt.Sprintf("%d:%s", asset.LibraryID, strings.TrimSpace(asset.GroupPath))
 }
 
 func logicalAssetGroupPath(relativePath string) string {
