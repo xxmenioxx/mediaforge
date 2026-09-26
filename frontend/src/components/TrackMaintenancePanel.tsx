@@ -12,6 +12,14 @@ type Props = { path: string; active?: boolean; hasOpenJob?: boolean; canManageTr
 type EditDraft = { stream: TrackMaintenanceStream; title: string; language: string; default: boolean; forced: boolean };
 type AACDraft = { stream: TrackMaintenanceStream; bitrateKbps: number; channels: 'source' | 'stereo'; title: string; language: string; default: boolean };
 
+function attachmentKindLabel(kind: string) {
+  switch (kind.toUpperCase()) {
+    case 'FONT': return 'Fonts';
+    case 'IMAGE': return 'Images';
+    default: return 'Other';
+  }
+}
+
 export function TrackMaintenancePanel({ path, active = true, hasOpenJob = false, canManageTracks = true, canManageAttachments = true }: Props) {
   const client = useQueryClient();
   const [operation, setOperation] = useState<AssetMaintenanceOperation | null>(null);
@@ -65,11 +73,20 @@ export function TrackMaintenancePanel({ path, active = true, hasOpenJob = false,
     {operation ? <Stack spacing={1}><LinearProgress variant="determinate" value={operation.progress} /><Typography variant="body2">{operation.operationType} · {operation.phase} · {operation.progress}%</Typography>{operation.status === 'completed' ? <Alert severity="success">Track maintenance completed, validated, and the technical snapshot was refreshed.</Alert> : null}{operation.errorMessage ? <Alert severity="error">{operation.errorMessage}</Alert> : null}{operation.warning ? <Alert severity="warning">{operation.warning}</Alert> : null}{operation.status === 'completed' || operation.status === 'failed' ? <Button onClick={closeOperation} sx={{ alignSelf: 'flex-start' }}>Close result</Button> : null}</Stack> : null}
     {inventory.data ? <>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Chip size="small" label={`${inventory.data.streams.length} streams`} /><Chip size="small" label={`${inventory.data.chapters} chapters`} /></Stack>
-      <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1 }}><Table size="small"><TableHead><TableRow><TableCell>Stream</TableCell><TableCell>Codec</TableCell><TableCell>Language / title</TableCell><TableCell>Characteristics</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead><TableBody>{inventory.data.streams.map((stream) => <TableRow key={stream.index}><TableCell>#{stream.index} · {stream.type}</TableCell><TableCell>{stream.codec}{stream.profile ? ` · ${stream.profile}` : ''}</TableCell><TableCell>{stream.language || 'und'}{stream.title ? ` · ${stream.title}` : ''}{stream.fileName ? ` · ${stream.fileName}` : ''}</TableCell><TableCell>{[stream.layout || (stream.channels ? `${stream.channels} ch` : ''), stream.width && stream.height ? `${stream.width}×${stream.height}` : '', stream.default ? 'default' : '', stream.forced ? 'forced' : ''].filter(Boolean).join(' · ') || '—'}</TableCell><TableCell align="right"><Stack direction="row" justifyContent="flex-end" spacing={0.5}>
+      <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1 }}><Table size="small"><TableHead><TableRow><TableCell>Stream</TableCell><TableCell>Codec / format</TableCell><TableCell>Language / title</TableCell><TableCell>Characteristics</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead><TableBody>{inventory.data.streams.map((stream) => {
+        const filename = stream.fileName;
+        const title = stream.title;
+        const attachmentDescription = [filename || title || 'Unnamed attachment', filename && title && title !== filename ? title : ''].filter(Boolean).join(' · ');
+        const codecFormat = stream.type === 'attachment'
+          ? [stream.codec, stream.mimeType, stream.attachmentKind?.toUpperCase() === 'FONT' ? stream.fontFormat : ''].filter((value, index, values) => Boolean(value) && values.indexOf(value) === index).join(' · ')
+          : [stream.codec, stream.profile].filter(Boolean).join(' · ');
+        const attachmentKind = stream.type === 'attachment' && stream.attachmentKind ? attachmentKindLabel(stream.attachmentKind) : undefined;
+        return <TableRow key={stream.index} data-testid={stream.type === 'attachment' ? 'asset-track-attachment' : undefined}><TableCell>#{stream.index} · {stream.type}{attachmentKind ? ` · ${attachmentKind}` : ''}</TableCell><TableCell>{codecFormat}</TableCell><TableCell>{stream.type === 'attachment' ? attachmentDescription : [stream.language || 'und', stream.title, stream.fileName].filter(Boolean).join(' · ')}</TableCell><TableCell>{[stream.layout || (stream.channels ? `${stream.channels} ch` : ''), stream.width && stream.height ? `${stream.width}×${stream.height}` : '', stream.default ? 'default' : '', stream.forced ? 'forced' : ''].filter(Boolean).join(' · ') || '—'}</TableCell><TableCell align="right"><Stack direction="row" justifyContent="flex-end" spacing={0.5}>
         {stream.type === 'video' || stream.type === 'audio' || stream.type === 'subtitle' ? <Tooltip title="Edit language, title, and dispositions"><span><IconButton aria-label="Edit language, title, and dispositions" size="small" disabled={!canMutateStream(stream)} onClick={() => setEdit({ stream, title: stream.title ?? '', language: stream.language ?? '', default: stream.default, forced: stream.forced })}><EditIcon fontSize="small" /></IconButton></span></Tooltip> : null}
         {stream.type === 'audio' ? <Tooltip title="Create an additional AAC audio track"><span><IconButton aria-label="Create an additional AAC audio track" size="small" color="primary" disabled={!canMutateStream(stream)} onClick={() => setAAC({ stream, bitrateKbps: 192, channels: 'stereo', title: 'AAC Stereo (MVForge)', language: stream.language ?? '', default: false })}><AddIcon fontSize="small" /></IconButton></span></Tooltip> : null}
         {stream.type !== 'data' ? <Tooltip title="Delete this track"><span><IconButton aria-label="Delete this track" size="small" color="error" disabled={!canMutateStream(stream)} onClick={() => { setRemove(stream); setRemoveConfirmed(false); }}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip> : null}
-      </Stack></TableCell></TableRow>)}</TableBody></Table></TableContainer>
+      </Stack></TableCell></TableRow>;
+      })}</TableBody></Table></TableContainer>
     </> : null}
 
     <Dialog open={Boolean(edit)} onClose={busy ? undefined : () => setEdit(null)} fullWidth maxWidth="sm"><DialogTitle>Edit track #{edit?.stream.index}</DialogTitle><DialogContent dividers><Stack spacing={2}><TextField label="Track title" value={edit?.title ?? ''} onChange={(event) => setEdit((current) => current ? { ...current, title: event.target.value } : current)} /><TextField label="Language" value={edit?.language ?? ''} onChange={(event) => setEdit((current) => current ? { ...current, language: event.target.value.toLowerCase() } : current)} helperText="ISO language code, for example eng, spa, or jpn." /><FormControlLabel control={<Checkbox checked={edit?.default ?? false} onChange={(_, checked) => setEdit((current) => current ? { ...current, default: checked } : current)} />} label="Default track" />{edit?.stream.type === 'subtitle' ? <FormControlLabel control={<Checkbox checked={edit.forced} onChange={(_, checked) => setEdit((current) => current ? { ...current, forced: checked } : current)} />} label="Forced track" /> : null}</Stack></DialogContent><DialogActions><Button disabled={busy} onClick={() => setEdit(null)}>Cancel</Button><Button variant="contained" disabled={busy || !edit} onClick={() => editMutation.mutate()}>Save metadata</Button></DialogActions></Dialog>

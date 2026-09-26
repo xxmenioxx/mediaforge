@@ -230,7 +230,7 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(api.updateAssetConversion).not.toHaveBeenCalled();
   }, 10000);
 
-  it('consolidates attachment and sidecar evidence under Tracks', async () => {
+  it('renders each attachment once with its metadata under Tracks and keeps NFO sidecars there', async () => {
     const path = '/media/raw/movies/Akira/Akira.mkv';
     const snapshot = {
       ...testSnapshot(path),
@@ -243,7 +243,9 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot, status: 'current', requiresAnalysis: false, staleComponents: [] });
     vi.mocked(api.trackMaintenanceInventory).mockResolvedValue({
       path, fingerprint: 'track-fingerprint', streams: [
-        { index: 4, type: 'attachment', codec: 'ttf', fileName: 'SubtitleFont.ttf', default: false, forced: false, attachedPic: false, stillImage: false },
+        { index: 4, type: 'attachment', codec: 'ttf', fileName: 'SubtitleFont.ttf', mimeType: 'font/ttf', title: 'Subtitle font', attachmentKind: 'FONT', fontFormat: 'TTF', default: false, forced: false, attachedPic: false, stillImage: false },
+        { index: 5, type: 'attachment', codec: 'mjpeg', fileName: 'Cover.jpg', mimeType: 'image/jpeg', attachmentKind: 'IMAGE', default: false, forced: false, attachedPic: false, stillImage: false },
+        { index: 6, type: 'attachment', codec: 'bin_data', fileName: 'Extra.bin', mimeType: 'application/octet-stream', attachmentKind: 'ATTACHMENT', default: false, forced: false, attachedPic: false, stillImage: false },
       ], chapters: 0, durationSeconds: 60, maintenanceAllowed: true,
     });
     vi.mocked(api.assetMetadataSidecars).mockResolvedValue([{
@@ -259,13 +261,18 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(within(dialog).queryByRole('tab', { name: 'Subtitles' })).toBeNull();
     await user.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
 
-    const attachments = await within(dialog).findByTestId('asset-track-attachments');
-    expect(within(attachments).getByText('Fonts')).toBeTruthy();
-    expect(within(attachments).getByText('Images')).toBeTruthy();
-    expect(within(attachments).getByText('Other')).toBeTruthy();
-    expect(within(attachments).getByText(/SubtitleFont\.ttf/)).toBeTruthy();
-    expect(within(attachments).getByText(/Cover\.jpg/)).toBeTruthy();
-    expect(within(attachments).getByText(/Extra\.bin/)).toBeTruthy();
+    const attachmentRows = await within(dialog).findAllByTestId('asset-track-attachment');
+    expect(attachmentRows.length).toBe(3);
+    expect(within(dialog).getAllByText(/SubtitleFont\.ttf/).length).toBe(1);
+    expect(within(dialog).getAllByText(/Cover\.jpg/).length).toBe(1);
+    expect(within(dialog).getAllByText(/Extra\.bin/).length).toBe(1);
+    expect(within(dialog).getByText(/Fonts/)).toBeTruthy();
+    expect(within(dialog).getByText(/Images/)).toBeTruthy();
+    expect(within(dialog).getByText(/Other/)).toBeTruthy();
+    expect(within(dialog).getByText(/font\/ttf · TTF/)).toBeTruthy();
+    expect(within(dialog).getByText(/SubtitleFont\.ttf · Subtitle font/)).toBeTruthy();
+    expect(within(dialog).getByText(/image\/jpeg/)).toBeTruthy();
+    expect(within(dialog).getByText(/application\/octet-stream/)).toBeTruthy();
     expect((await within(dialog).findByTestId('asset-nfo-sidecar')).textContent).toContain('Akira.nfo');
     expect(within(dialog).queryByRole('button', { name: /Akira\.nfo/ })).toBeNull();
     expect(api.assetMetadataSidecars).toHaveBeenCalledWith(path);

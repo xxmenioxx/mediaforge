@@ -68,7 +68,7 @@ import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLifecycleProjection, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AttachmentStreamInfo, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLifecycleProjection, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -2675,37 +2675,6 @@ function assetActionReasonMessage(capability: { reason?: string }, fallback = ''
   return capability.reason ? messages[capability.reason] ?? fallback : fallback;
 }
 
-function AssetAttachmentEvidence({ attachments }: { attachments: AttachmentStreamInfo[] }) {
-  const groups = [
-    { label: 'Fonts', kind: 'FONT' },
-    { label: 'Images', kind: 'IMAGE' },
-    { label: 'Other', kind: 'OTHER' },
-  ];
-  return (
-    <Stack spacing={1} data-testid="asset-track-attachments">
-      <Typography variant="h4">Attachments</Typography>
-      {groups.map((group) => {
-        const values = attachments.filter((attachment) => {
-          const kind = attachment.attachmentKind.toUpperCase();
-          return group.kind === 'OTHER' ? kind !== 'FONT' && kind !== 'IMAGE' : kind === group.kind;
-        });
-        return (
-          <Box key={group.label}>
-            <Typography variant="h5">{group.label}</Typography>
-            {values.length ? values.map((attachment) => (
-              <Typography key={attachment.index} variant="body2">
-                #{attachment.index} · {attachment.filename || attachment.title || 'Unnamed attachment'} · {attachment.mimeType || 'Unknown format'}
-                {attachment.fontFormat ? ` · ${attachment.fontFormat}` : ''}
-                {attachment.title ? ` · ${attachment.title}` : ''}
-              </Typography>
-            )) : <Typography variant="body2" color="text.secondary">None found.</Typography>}
-          </Box>
-        );
-      })}
-    </Stack>
-  );
-}
-
 function AssetMetadataSidecars({ values, loading }: { values: AssetMetadataSidecar[]; loading: boolean }) {
   return (
     <Stack spacing={0.75} data-testid="asset-metadata-sidecars">
@@ -4806,7 +4775,6 @@ async function generateExternalSubtitle(
                       translationDisabled={rowLocked || !assetInfoCapability(asset, 'manageSubtitles').allowed}
                       onTranslate={(streamIndex) => setTranslationSource({ type: 'embedded', embedded: { streamIndex } })}
                     />
-                    <AssetAttachmentEvidence attachments={snapshotData.attachmentStreams ?? []} />
                     <Typography variant="h4">Sidecars</Typography>
                     {!isArchive ? (
                     <>

@@ -1943,6 +1943,9 @@ export type TrackMaintenanceStream = {
   language?: string;
   title?: string;
   fileName?: string;
+  mimeType?: string;
+  attachmentKind?: 'FONT' | 'IMAGE' | 'ATTACHMENT' | string;
+  fontFormat?: 'TTF' | 'OTF' | 'TTC' | 'OTC' | string;
   profile?: string;
   width?: number;
   height?: number;
