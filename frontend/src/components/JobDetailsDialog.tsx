@@ -237,7 +237,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                 <FormControlLabel control={<Checkbox size="small" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />} label="Auto-scroll" />
               </Stack>
               {jobLog.isLoading ? <Alert severity="info">Loading job log...</Alert> : null}
-              {jobLog.isError ? <Alert severity="warning">The job log is temporarily unavailable. Refresh to try again.</Alert> : null}
+              {jobLog.isError ? <Alert severity="warning">Unable to load job log: {jobLog.error instanceof Error ? jobLog.error.message : 'Unknown error.'}</Alert> : null}
               {jobLog.data && !jobLog.data.available ? <Alert severity="info">No persisted log is available for this job yet.</Alert> : null}
               {copyError ? <Alert severity="warning">{copyError}</Alert> : null}
               {jobLog.data?.available ? (

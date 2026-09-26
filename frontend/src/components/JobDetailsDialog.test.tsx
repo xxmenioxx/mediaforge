@@ -76,6 +76,16 @@ describe('JobDetailsDialog subtitle stage', () => {
     expect(await screen.findByText('No persisted log is available for this job yet.')).toBeTruthy();
   });
 
+  it('displays a safe ApiRequestError message without exposing response details', async () => {
+    const { api } = await import('../api/client');
+    const { ApiRequestError } = await vi.importActual<typeof import('../api/client')>('../api/client');
+    vi.mocked(api.jobLog).mockRejectedValueOnce(new ApiRequestError('Configured job log storage is unavailable.', 503));
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobDetailsDialog job={jobWithSidecars()} onClose={() => undefined} /></QueryClientProvider>);
+    fireEvent.click(screen.getByRole('tab', { name: 'Job Log' }));
+    expect(await screen.findByText('Unable to load job log: Configured job log storage is unavailable.')).toBeTruthy();
+    expect(screen.queryByText(/stack|response body/i)).toBeNull();
+  });
+
   it('pauses auto-scroll when the reader scrolls away from the bottom', async () => {
     const { api } = await import('../api/client');
     vi.mocked(api.jobLog).mockResolvedValueOnce({ jobId: 42, available: true, content: 'line', truncated: false });
