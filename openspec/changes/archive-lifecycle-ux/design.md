@@ -9,7 +9,7 @@
 - `QueueJob` already records `ID`, `SourceAssetRecordID`, `LibraryID`,
   `PublishedPath`, publication retirement/time, and `OriginalArchivedPath`.
   `AssetRecord` already records its stable row ID, path, size, modified time,
-  archive status, missing state, `ExpiresAt`, and `SyncedAt`.
+  archive status, missing state, `ExpiresAt`, `CreatedAt`, and `SyncedAt`.
 - Publisher's existing `syncPublishedAssetRecords` records an archive
   `AssetRecord` using the configured originals archive root and current
   retention setting. `assetRecordForPublishedPath` supplies the recorded size,
@@ -40,9 +40,12 @@ RAW or Library inventory rows.
 Each projected entry contains only existing evidence:
 
 - archive `AssetRecord` ID when present, recorded path, size, and availability;
-- `archivedAt` from the archive record's `SyncedAt` when that timestamp is
-  available. Do not relabel file `ModifiedAt` or publication time as archive
-  time; legacy rows without a reliable timestamp report it as unknown;
+- `archivedAt` from the canonically linked archive record's `CreatedAt`,
+  meaning the time MVForge recorded that archived-original record. `SyncedAt`
+  is synchronization state and MUST NOT be used as archive time. Do not relabel
+  file `ModifiedAt` or publication `PublishedAt` as archive time; legacy or
+  otherwise untrusted rows without a reliable `CreatedAt` report it as
+  unknown;
 - retention state from the existing lifecycle/retention projection and
   deadline from the existing archive record's `ExpiresAt`, when present;
 - provenance authority and record ID, including the owning QueueJob ID and
@@ -112,11 +115,11 @@ retention-policy semantics change.
 
 ## Data and Migration
 
-No new table, lifecycle model, retention rule, or archive creation path is
-introduced. The inspection is derived from `AssetRecord`, `QueueJob`, the
-existing current-publication resolver, and existing retention evidence. Any
-optional request identity fields extend the existing mutation requests; they
-do not create new mutation endpoints.
+No new table, lifecycle model, retention rule, archive creation path, or
+persisted timestamp is introduced. The inspection is derived from
+`AssetRecord`, `QueueJob`, the existing current-publication resolver, and
+existing retention evidence. Any optional request identity fields extend the
+existing mutation requests; they do not create new mutation endpoints.
 
 ## Risks and Boundaries
 

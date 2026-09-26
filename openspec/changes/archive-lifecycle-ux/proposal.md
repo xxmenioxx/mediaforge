@@ -16,7 +16,9 @@ original from its related Library asset.
   relationship to a Library asset.
 - Show archive path, recorded size and archive time, provenance, retention
   state and deadline, availability, and the existing restore/delete
-  capabilities in the related Library asset context.
+  capabilities in the related Library asset context. Use the canonically
+  linked archive `AssetRecord.CreatedAt` as the recorded archive time; add no
+  timestamp field solely for this UX.
 - Remove the standalone Archived inventory/filter view. Keep inspection under
   the related Library asset.
 - Reuse existing archive records, retention settings, action capabilities,

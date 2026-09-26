@@ -4,9 +4,12 @@
   read-only archived-original inspection projection using existing
   `AssetRecord`, `QueueJob`, current-publication, and retention evidence; add no
   archive table or separate inventory API.
-- [ ] 1.2 Include archive record identity, path, recorded size/time,
-  provenance IDs, availability, retention state/deadline, and relationship
-  state; keep path-only or conflicting relations unresolved.
+- [ ] 1.2 Include archive record identity, path, recorded size, and archive
+  time from the canonically linked `AssetRecord.CreatedAt`; treat
+  `SyncedAt` only as synchronization state and show unknown when `CreatedAt`
+  is not reliable. Include provenance IDs, availability, retention
+  state/deadline, and relationship state; keep path-only or conflicting
+  relations unresolved.
 - [ ] 1.3 Reuse existing `AssetActionCapabilities`, original-retention
   settings/evidence, and archive-record lifecycle; do not change Publisher/#54
   or retention policy semantics.
@@ -45,15 +48,22 @@
 - [ ] 5.2 Cover stable source/publication identity, path reuse, path-only
   legacy evidence, publication conflicts/retirement, and missing/stale archive
   records without arbitrary rebinding.
-- [ ] 5.3 Cover archive metadata and retention evidence, unknown timestamps or
-  deadlines, and unchanged retention-policy behavior.
+- [ ] 5.3 Cover archive metadata and retention evidence; confirm `CreatedAt`
+  is used only for a canonical archive link, later `SyncedAt` changes do not
+  change archived time, `ModifiedAt`/`PublishedAt` are not fallbacks, and
+  untrusted legacy timestamps remain unknown; verify unchanged retention
+  policy behavior.
 - [ ] 5.4 Cover stale capabilities, changed roots/identities, active work,
   symlink/non-regular/out-of-root paths, RAW traversal/collision, explicit
   delete confirmation, and preservation of the current Library publication.
 
 ## 6. Final verification
 
-- [ ] 6.1 Run `openspec validate archive-lifecycle-ux --type change --strict`
+- [ ] 6.1 Run focused backend and frontend regressions for projection
+  identity, archive metadata/timestamps, filtering, contextual inspection,
+  missing/stale records, and safe actions.
+- [ ] 6.2 Run frontend lint and require 0 errors and 0 warnings.
+- [ ] 6.3 Run `openspec validate archive-lifecycle-ux --type change --strict`
   and confirm the change artifacts validate.
-- [ ] 6.2 After implementation is authorized, run the requested focused
-  regressions and report any remaining limitations.
+- [ ] 6.4 Run `./scripts/verify.sh --auto` and require the final result
+  `ALL CHECKS PASSED`.

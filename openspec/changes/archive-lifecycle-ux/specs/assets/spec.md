@@ -21,12 +21,16 @@ The exact `OriginalArchivedPath` on the owning QueueJob MAY locate its archive
 current Library asset. The relationship SHALL use stable QueueJob,
 source-AssetRecord, current-publication, and Library-asset identity from the
 canonical projection. Missing or conflicting identity SHALL remain
-unresolved; retired publication evidence SHALL remain historical. File
-modification time SHALL NOT be presented as archive time. Archive time SHALL
-use the existing archive record's `SyncedAt` only when reliable for that
-record. Retention state and deadline SHALL reuse existing lifecycle/retention
-evidence and `ExpiresAt`; the projection MUST NOT calculate a new deadline or
-change retention policy behavior.
+unresolved; retired publication evidence SHALL remain historical. Archive
+time SHALL use the canonically linked archive `AssetRecord.CreatedAt` as the
+time MVForge recorded that archived-original record. `SyncedAt` is
+synchronization state and MUST NOT be used as archive time. File `ModifiedAt`
+and publication `PublishedAt` MUST NOT be relabeled as archive time. Legacy or
+otherwise untrusted records without a reliable `CreatedAt` SHALL report archive
+time as unknown. Retention state and deadline SHALL reuse existing
+lifecycle/retention evidence and `ExpiresAt`; the projection MUST NOT
+calculate a new deadline or change retention policy behavior. No new
+persisted timestamp SHALL be introduced solely for this UX.
 
 Missing, stale/historical, and unresolved evidence SHALL preserve the recorded
 path and provenance without silently binding to another file or publication.
