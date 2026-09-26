@@ -3,9 +3,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Asset, AssetInventory, AssetPath, ProfileSuggestion, QueueJob, ScanResult, SnapshotOperation } from '../api/types';
+import type { Asset, AssetGroup, AssetInventory, AssetPath, ProfileSuggestion, QueueJob, ScanResult, SnapshotOperation } from '../api/types';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -91,6 +91,10 @@ function activeQueueJob(id: number, mediaPath: string): QueueJob {
     replacementTargetPath: '', originalArchivedPath: '', createdAt: '2026-08-28T00:00:00Z',
     updatedAt: '2026-08-28T00:00:00Z',
   } as QueueJob;
+}
+
+function LocationSearch() {
+  return <output data-testid="location-search">{useLocation().search}</output>;
 }
 
 describe('Unprocessed Assets hierarchy', () => {
@@ -1201,5 +1205,61 @@ describe('Unprocessed Assets hierarchy', () => {
     });
     expect(api.updateProfileAssignment).not.toHaveBeenCalled();
     expect(api.updateAssetScopeConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('keeps Library path actions singular and exposes persisted filters through Advanced', async () => {
+    const user = userEvent.setup();
+    const convertedAsset: Asset = {
+      ...testAsset(201, '/media/library/anime/Akira/Akira.mkv'),
+      libraryId: 1,
+      libraryName: 'Anime',
+      status: 'converted',
+      lifecycle: {
+        location: 'library', lifecycle: 'published', provenance: 'converted', validation: 'passed',
+        publication: 'published', original: 'archived',
+      },
+    };
+    const convertedGroup: AssetGroup = {
+      id: 'akira', libraryId: 1, libraryName: 'Anime', path: '/media/library/anime/Akira', relativePath: 'anime/Akira',
+      status: 'converted', fileCount: 1, sizeBytes: 1024, modifiedAt: '', assets: [convertedAsset],
+      review: convertedAsset.review, pathReview: convertedAsset.review, metadata: convertedAsset.metadata, pathMetadata: convertedAsset.metadata,
+    };
+    vi.mocked(api.assets).mockResolvedValue({
+      ...singleAssetInventory(),
+      sourceGroups: [], unprocessed: [], library: [convertedAsset], converted: [convertedAsset],
+      libraryGroups: [convertedGroup], convertedGroups: [convertedGroup],
+    } as unknown as AssetInventory);
+    vi.mocked(api.settings).mockResolvedValue([{ key: 'paths', value: { rawRoot: '/media/raw', libraryRoot: '/media/library' } }] as never);
+    vi.mocked(api.assetScopeConfigurations).mockResolvedValue([{
+      id: 12, scopeType: 'path', scopeKey: '/media/library/anime/Akira', categorySelection: 'inherit', category: '',
+      destinationSelection: 'inherit', destinationLibraryId: 0, createdAt: '', updatedAt: '',
+    }] as never);
+    render(
+      <MemoryRouter initialEntries={['/assets?location=library&provenance=converted&original=archived']}>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <AssetsPage />
+          <LocationSearch />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('combobox', { name: 'Media area' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Provenance' })).toBeTruthy();
+    expect(screen.getByPlaceholderText('Search path, file, library, status')).toBeTruthy();
+    expect(screen.queryByRole('combobox', { name: 'Original' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Advanced filters, 1 active' }));
+    expect(screen.getByRole('combobox', { name: 'Original' }).textContent).toContain('Archived');
+    await user.click(screen.getByText('/media/library/anime/Akira'));
+    expect(screen.getAllByRole('button', { name: 'Move path' })).toHaveLength(1);
+    expect(screen.getByRole('combobox', { name: 'Move path to library' })).toBeTruthy();
+
+    await user.click(screen.getByRole('combobox', { name: 'Media area' }));
+    await user.click(screen.getByRole('option', { name: 'media/anime' }));
+    await user.type(screen.getByPlaceholderText('Search path, file, library, status'), 'Akira');
+    const persisted = new URLSearchParams(screen.getByTestId('location-search').textContent ?? '');
+    expect(persisted.get('provenance')).toBe('converted');
+    expect(persisted.get('original')).toBe('archived');
+    expect(persisted.get('mediaArea')).toBe('anime');
+    expect(persisted.get('search')).toBe('Akira');
   });
 });

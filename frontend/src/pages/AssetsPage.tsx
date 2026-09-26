@@ -105,8 +105,11 @@ export function AssetsPage() {
   const [validationFilter, setValidationFilter] = useState(searchParams.get('validation') ?? '');
   const [workflowFilter, setWorkflowFilter] = useState(searchParams.get('workflow') ?? '');
   const [attentionFilter, setAttentionFilter] = useState(searchParams.get('attention') ?? '');
-  const [assetQuery, setAssetQuery] = useState(searchParams.get('asset') ?? '');
-  const [mediaArea, setMediaArea] = useState('');
+  const [assetQuery, setAssetQuery] = useState(searchParams.get('search') ?? searchParams.get('asset') ?? '');
+  const [mediaArea, setMediaArea] = useState(searchParams.get('mediaArea') ?? '');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  const activeAdvancedFilters = [originalFilter, validationFilter, workflowFilter, attentionFilter].filter(Boolean).length;
 	const [sourceGroupId, setSourceGroupId] = useState(0);
   const legacyTab = searchParams.get('tab');
   const unsupportedLegacyTab = legacyTab && !['unprocessed', 'library', 'converted', 'archive', 'reports'].includes(legacyTab);
@@ -126,6 +129,14 @@ export function AssetsPage() {
     const next = new URLSearchParams(searchParams);
     next.set('location', 'library');
     if (value) next.set(key, value); else next.delete(key);
+    setSearchParams(next);
+  };
+  const updateSearchFilter = (value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set('search', value); else next.delete('search');
+    // `asset` remains a supported legacy deep link that selects a specific asset.
+    // Once the search field is edited, keep the search term separate from that selection.
+    if (value !== (searchParams.get('search') ?? searchParams.get('asset') ?? '')) next.delete('asset');
     setSearchParams(next);
   };
   const jobs = useQuery({
@@ -225,6 +236,7 @@ export function AssetsPage() {
                   setValidationFilter('');
                   setWorkflowFilter('');
                   setAttentionFilter('');
+                  setMediaArea('');
                   setSearchParams(value === 'library' ? { location: 'library' } : { location: 'raw' });
                 }}
                 variant="scrollable"
@@ -256,30 +268,10 @@ export function AssetsPage() {
                       </TextField>
                   ) : null}
                   {tab === 'library' ? (
-                    <TextField select value={validationFilter} onChange={(event) => { setValidationFilter(event.target.value); updateLibraryFilter('validation', event.target.value); }} label="Validation" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                      <MenuItem value="">All validation</MenuItem><MenuItem value="passed">Passed</MenuItem><MenuItem value="passed_with_warnings">Warnings</MenuItem><MenuItem value="review_required">Review</MenuItem><MenuItem value="failed">Failed</MenuItem><MenuItem value="unavailable">Unavailable</MenuItem>
-                    </TextField>
-                  ) : null}
-                  {tab === 'library' ? (
-                    <TextField select value={originalFilter} onChange={(event) => { setOriginalFilter(event.target.value); updateLibraryFilter('original', event.target.value); }} label="Original" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                      <MenuItem value="">All originals</MenuItem><MenuItem value="available">Available</MenuItem><MenuItem value="archived">Archived</MenuItem><MenuItem value="deleted">Deleted</MenuItem><MenuItem value="unknown">Unknown</MenuItem>
-                    </TextField>
-                  ) : null}
-                  {tab === 'library' ? (
-                    <TextField select value={workflowFilter} onChange={(event) => { setWorkflowFilter(event.target.value); updateLibraryFilter('workflow', event.target.value); }} label="Workflow" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                      <MenuItem value="">All workflow</MenuItem><MenuItem value="available">Ready</MenuItem><MenuItem value="queued">Queued</MenuItem><MenuItem value="processing">Processing</MenuItem><MenuItem value="publishing">Publishing</MenuItem><MenuItem value="needs_review">Needs attention</MenuItem><MenuItem value="failed">Failed</MenuItem>
-                    </TextField>
-                  ) : null}
-                  {tab === 'library' ? (
-                    <TextField select value={attentionFilter} onChange={(event) => { setAttentionFilter(event.target.value); updateLibraryFilter('attention', event.target.value); }} label="Attention" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                      <MenuItem value="">All attention</MenuItem><MenuItem value="needs_review">Needs review</MenuItem><MenuItem value="publication_conflict">Publication conflict</MenuItem>
-                    </TextField>
-                  ) : null}
-                  {tab === 'library' ? (
                     <TextField
                       select
                       value={mediaArea}
-                      onChange={(event) => setMediaArea(event.target.value)}
+                      onChange={(event) => { setMediaArea(event.target.value); updateLibraryFilter('mediaArea', event.target.value); }}
                       label="Media area"
                       size="small"
                       sx={{ width: { xs: '100%', sm: 210 } }}
@@ -290,7 +282,7 @@ export function AssetsPage() {
                   ) : null}
                   <TextField
                       value={assetQuery}
-                      onChange={(event) => setAssetQuery(event.target.value)}
+                      onChange={(event) => { setAssetQuery(event.target.value); updateSearchFilter(event.target.value); }}
                       placeholder="Search path, file, library, status"
                       size="small"
                       sx={{ width: { xs: '100%', sm: 330 } }}
@@ -302,7 +294,36 @@ export function AssetsPage() {
                         ),
                       }}
                   />
+                  {tab === 'library' ? (
+                    <Button
+                      endIcon={<ExpandMoreIcon sx={{ transform: advancedOpen ? 'rotate(180deg)' : 'none', transition: 'transform 150ms ease' }} />}
+                      onClick={() => setAdvancedOpen((current) => !current)}
+                      aria-expanded={advancedOpen}
+                      aria-label={activeAdvancedFilters ? `Advanced filters, ${activeAdvancedFilters} active` : 'Advanced filters'}
+                      sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+                    >
+                      Advanced{activeAdvancedFilters ? ` · ${activeAdvancedFilters} active` : ''}
+                    </Button>
+                  ) : null}
                 </Stack>
+                {tab === 'library' ? (
+                  <Collapse in={advancedOpen} unmountOnExit>
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" sx={{ pt: 1 }}>
+                      <TextField select value={validationFilter} onChange={(event) => { setValidationFilter(event.target.value); updateLibraryFilter('validation', event.target.value); }} label="Validation" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
+                        <MenuItem value="">All validation</MenuItem><MenuItem value="passed">Passed</MenuItem><MenuItem value="passed_with_warnings">Warnings</MenuItem><MenuItem value="review_required">Review</MenuItem><MenuItem value="failed">Failed</MenuItem><MenuItem value="unavailable">Unavailable</MenuItem>
+                      </TextField>
+                      <TextField select value={originalFilter} onChange={(event) => { setOriginalFilter(event.target.value); updateLibraryFilter('original', event.target.value); }} label="Original" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
+                        <MenuItem value="">All originals</MenuItem><MenuItem value="available">Available</MenuItem><MenuItem value="archived">Archived</MenuItem><MenuItem value="deleted">Deleted</MenuItem><MenuItem value="unknown">Unknown</MenuItem>
+                      </TextField>
+                      <TextField select value={workflowFilter} onChange={(event) => { setWorkflowFilter(event.target.value); updateLibraryFilter('workflow', event.target.value); }} label="Workflow" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
+                        <MenuItem value="">All workflow</MenuItem><MenuItem value="available">Ready</MenuItem><MenuItem value="queued">Queued</MenuItem><MenuItem value="processing">Processing</MenuItem><MenuItem value="publishing">Publishing</MenuItem><MenuItem value="needs_review">Needs attention</MenuItem><MenuItem value="failed">Failed</MenuItem>
+                      </TextField>
+                      <TextField select value={attentionFilter} onChange={(event) => { setAttentionFilter(event.target.value); updateLibraryFilter('attention', event.target.value); }} label="Attention" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
+                        <MenuItem value="">All attention</MenuItem><MenuItem value="needs_review">Needs review</MenuItem><MenuItem value="publication_conflict">Publication conflict</MenuItem>
+                      </TextField>
+                    </Stack>
+                  </Collapse>
+                ) : null}
                 <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent={{ xs: 'flex-start', sm: 'flex-end' }} useFlexGap>
                     {tab === 'unprocessed' ? (
                       <><Chip label={`${unprocessedCount} assets`} size="small" /><Chip label={formatBytes(safeArray(assets.data?.unprocessed).reduce((total, asset) => total + asset.sizeBytes, 0))} size="small" /></>
@@ -2359,7 +2380,7 @@ function AssetGroupRow({
                 ) : null}
                 {publishAsIs.isSuccess ? <Alert severity="success">{publishAsIs.data.message}</Alert> : null}
                 {publishAsIs.isError ? <Alert severity="warning">{publishAsIs.error instanceof Error ? publishAsIs.error.message : 'Direct publication failed.'}</Alert> : null}
-                {isLibraryGroup ? (
+                {isLibraryGroup || isConvertedGroup ? (
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" alignItems={{ xs: 'stretch', sm: 'center' }}>
                     {!isReadOnlyGroup ? (
                       <Button
@@ -2382,7 +2403,6 @@ function AssetGroupRow({
                       {selectedAssetPaths.length} of {bulkSelectableAssets.length} selected in this path
                     </Typography>
                     <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'stretch', md: 'center' }}>
-                      {isConvertedGroup ? migrationControls : null}
                       <Button
                         color={isArchiveGroup ? 'primary' : 'error'}
                         variant="outlined"
@@ -2418,10 +2438,6 @@ function AssetGroupRow({
                         </Button>
                       )}
                     </Stack>
-                  </Stack>
-                ) : isConvertedGroup ? (
-                  <Stack direction="row" justifyContent="flex-end">
-                    {migrationControls}
                   </Stack>
                 ) : null}
                 {migratePath.isSuccess ? <Alert severity="success">Path moved to {migratePath.data.destinationPath}. {migratePath.data.assetsMoved} asset(s) reconciled.</Alert> : null}
