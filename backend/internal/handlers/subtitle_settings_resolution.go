@@ -19,15 +19,21 @@ func resolvedSubtitleTrackProfileForAsset(db *gorm.DB, assetPath string) (map[st
 		return nil, err
 	}
 	defaultsSource := "global_settings"
-	if len(defaults) == 0 || len(warnings) > 0 {
-		defaults = defaultAssetDefaultsValue()
+	if len(defaults) == 0 || assetDefaultsWarningsReplaceWholeValue(warnings) {
+		if len(defaults) == 0 {
+			defaults = defaultAssetDefaultsValue()
+		}
 		defaultsSource = "built_in"
 	}
 	globalProfile, err := globalTrackProfileData(db, defaults)
 	if err != nil {
 		return nil, fmt.Errorf("global Tracks defaults: %w", err)
 	}
-	markGlobalSubtitleTrackSources(db, defaults, globalProfile, defaultsSource)
+	tracksSource := defaultsSource
+	if assetDefaultsWarningsReplaceDomain(warnings, "tracks") {
+		tracksSource = "built_in"
+	}
+	markGlobalSubtitleTrackSources(db, defaults, globalProfile, tracksSource)
 
 	effective := EffectiveAssetConfiguration{AssetPath: filepath.Clean(assetPath)}
 	effective.Tracks.Selection = configSelectionInherit

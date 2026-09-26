@@ -181,6 +181,132 @@ func TestResolvedSubtitleAssetProfileInheritsGlobalSettingsAndUsesCanonicalOCRPl
 	}
 }
 
+func TestResolvedSubtitleTrackDefaultsUseDomainNormalizedAssetDefaults(t *testing.T) {
+	t.Run("unrelated invalid Video profile preserves configured Tracks defaults", func(t *testing.T) {
+		db := assetConfigurationTestDB(t)
+		if err := db.AutoMigrate(&models.AppSetting{}, &models.Profile{}); err != nil {
+			t.Fatal(err)
+		}
+		mediaPath := filepath.Clean(filepath.Join(t.TempDir(), "episode.mkv"))
+		defaults := defaultAssetDefaultsValue()
+		video := settingProfileObject(defaults["video"])
+		video["source"] = "profile"
+		video["profileId"] = 999
+		defaults["video"] = video
+		tracks := settingProfileObject(defaults["tracks"])
+		tracks["custom"] = models.JSONMap{
+			"trackDispositionVersion": canonicalTrackDispositionVersion,
+			"subtitleDisposition":     "keep",
+			"subtitleSidecarFormats":  models.JSONList{"ass"},
+			"ocrLanguage":             "spa",
+			"ocrMode":                 "clean",
+			"attachmentPolicy":        "auto",
+			"chapterPolicy":           "keep",
+		}
+		defaults["tracks"] = tracks
+		if err := db.Create(&models.AppSetting{Key: assetDefaultsSettingKey, Value: defaults}).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		normalized, warnings, err := loadAssetDefaultsWithWarnings(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(warnings) == 0 {
+			t.Fatal("expected a warning for the unavailable Video profile")
+		}
+		normalizedTracks := settingProfileObject(assetDefaultsDomain(normalized, "tracks")["custom"])
+		formats := workerSliceValue(normalizedTracks["subtitleSidecarFormats"])
+		if len(formats) != 1 || workerStringValue(formats[0]) != "ass" || workerStringValue(normalizedTracks["ocrLanguage"]) != "spa" || workerStringValue(normalizedTracks["ocrMode"]) != "clean" {
+			t.Fatalf("loader did not preserve configured Tracks defaults: %#v", normalizedTracks)
+		}
+
+		profile, err := resolvedSubtitleTrackProfileForAsset(db, mediaPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scan := models.ScanResult{Path: mediaPath, SubtitleStreams: models.JSONList{map[string]any{
+			"index": 4, "codec": "hdmv_pgs_subtitle", "language": "jpn",
+		}}}
+		plan, err := resolveTrackPlanWithSubtitleOverrides(scan, profile, SubtitleOperationOverrides{Extract: true, StreamIndex: intPointer(4)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.SidecarOutputs) != 1 {
+			t.Fatalf("subtitle outputs=%#v", plan.SidecarOutputs)
+		}
+		decision := plan.SidecarOutputs[0]
+		if decision.Format != "ass" || decision.OCRLanguage != "spa" || decision.OCRMode != "clean" {
+			t.Fatalf("configured Tracks defaults were lost after unrelated warning: %#v", decision)
+		}
+		for _, field := range []string{"format", "ocrLanguage", "ocrMode"} {
+			if source := decision.SettingsSources[field]; source != "global_settings" {
+				t.Fatalf("%s source=%q want global_settings: %#v", field, source, decision.SettingsSources)
+			}
+		}
+	})
+
+	t.Run("unavailable Tracks profile falls back only Tracks", func(t *testing.T) {
+		db := assetConfigurationTestDB(t)
+		if err := db.AutoMigrate(&models.AppSetting{}, &models.Profile{}); err != nil {
+			t.Fatal(err)
+		}
+		mediaPath := filepath.Clean(filepath.Join(t.TempDir(), "episode.mkv"))
+		defaults := defaultAssetDefaultsValue()
+		video := settingProfileObject(defaults["video"])
+		video["custom"] = models.JSONMap{"videoCodec": "hevc"}
+		defaults["video"] = video
+		audio := settingProfileObject(defaults["audio"])
+		audio["custom"] = models.JSONMap{"preferredDefaultLanguage": "jpn"}
+		defaults["audio"] = audio
+		tracks := settingProfileObject(defaults["tracks"])
+		tracks["source"] = "profile"
+		tracks["profileKey"] = "unavailable-tracks-profile"
+		defaults["tracks"] = tracks
+		if err := db.Create(&models.AppSetting{Key: assetDefaultsSettingKey, Value: defaults}).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		normalized, warnings, err := loadAssetDefaultsWithWarnings(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(warnings) == 0 {
+			t.Fatal("expected a warning for the unavailable Tracks profile")
+		}
+		normalizedTracks := assetDefaultsDomain(normalized, "tracks")
+		defaultTracks := assetDefaultsDomain(defaultAssetDefaultsValue(), "tracks")
+		if workerStringValue(normalizedTracks["source"]) != workerStringValue(defaultTracks["source"]) ||
+			workerStringValue(settingProfileObject(normalizedTracks["custom"])["ocrMode"]) != "accurate" ||
+			workerStringValue(workerSliceValue(settingProfileObject(normalizedTracks["custom"])["subtitleSidecarFormats"])[0]) != "srt" {
+			t.Fatalf("invalid Tracks profile did not use the existing Tracks fallback: %#v", normalizedTracks)
+		}
+		if workerStringValue(settingProfileObject(assetDefaultsDomain(normalized, "video")["custom"])["videoCodec"]) != "hevc" ||
+			workerStringValue(settingProfileObject(assetDefaultsDomain(normalized, "audio")["custom"])["preferredDefaultLanguage"]) != "jpn" {
+			t.Fatalf("Tracks fallback changed another valid domain: video=%#v audio=%#v", assetDefaultsDomain(normalized, "video"), assetDefaultsDomain(normalized, "audio"))
+		}
+
+		profile, err := resolvedSubtitleTrackProfileForAsset(db, mediaPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scan := models.ScanResult{Path: mediaPath, SubtitleStreams: models.JSONList{map[string]any{
+			"index": 4, "codec": "hdmv_pgs_subtitle", "language": "jpn",
+		}}}
+		plan, err := resolveTrackPlanWithSubtitleOverrides(scan, profile, SubtitleOperationOverrides{Extract: true, StreamIndex: intPointer(4)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.SidecarOutputs) != 1 {
+			t.Fatalf("subtitle outputs=%#v", plan.SidecarOutputs)
+		}
+		decision := plan.SidecarOutputs[0]
+		if decision.Format != "srt" || decision.OCRMode != "accurate" || decision.SettingsSources["format"] != "built_in" || decision.SettingsSources["ocrMode"] != "built_in" {
+			t.Fatalf("invalid Tracks domain did not retain built-in values and provenance: %#v", decision)
+		}
+	})
+}
+
 func TestResolvedBitmapBothPlansPreserveStreamAndOCRInputs(t *testing.T) {
 	mediaPath := filepath.Join(t.TempDir(), "episode.mkv")
 	stream := FFProbeStream{

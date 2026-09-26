@@ -235,6 +235,25 @@ func loadAssetDefaultsWithWarnings(db *gorm.DB) (models.JSONMap, []string, error
 	return defaultAssetDefaultsValue(), []string{err.Error()}, nil
 }
 
+func assetDefaultsWarningsReplaceWholeValue(warnings []string) bool {
+	for _, warning := range warnings {
+		if !strings.Contains(warning, "using built-in default for ") {
+			return true
+		}
+	}
+	return false
+}
+
+func assetDefaultsWarningsReplaceDomain(warnings []string, domain string) bool {
+	marker := "using built-in default for " + domain
+	for _, warning := range warnings {
+		if strings.Contains(warning, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func mergeJSONMaps(base, overlay models.JSONMap) models.JSONMap {
 	result := models.JSONMap{}
 	for key, value := range base {
