@@ -1571,6 +1571,12 @@ func (h QueueHandler) captureSupplementalProfilesWithSettings(job *models.QueueJ
 		}
 		profile = applyAssetDefaultsAudioToTrackProfile(*job, profile)
 		resolved := resolveTrackProfileForAsset(h.db, job.MediaPath, profile)
+		trackSettingsSource := "asset_profile"
+		if job.TrackProfileKey == assetDefaultsCustomTracksKey {
+			trackSettingsSource = "global_settings"
+		}
+		markSubtitleTrackSources(resolved, trackSettingsSource)
+		resolved[subtitleTrackSourceKey] = trackSettingsSource
 		if storedSettingProfileScope(profile) == "path" && strings.TrimSpace(workerStringValue(resolved["resolvedForAsset"])) == "" {
 			return fmt.Errorf("track profile: a cached asset snapshot is required to resolve a path profile safely")
 		}
@@ -1583,14 +1589,14 @@ func (h QueueHandler) captureSupplementalProfilesWithSettings(job *models.QueueJ
 			return fmt.Errorf("track profile: %w", versionErr)
 		}
 		if applyCurrentSubtitleSettings {
-			resolved = applyPersistedSubtitleStylingSettings(resolved, subtitleStylingPolicyFromDB(h.db))
+			resolved = applyPersistedSubtitleStylingSettings(resolved, subtitleStylingPolicyFromDB(h.db), persistedSubtitleFieldSource(h.db, subtitleStylingPolicyKey))
 		}
 		if !canonical {
 			job.TrackProfileSnapshot = models.JSONMap(resolved)
 			return nil
 		}
 		if applyCurrentSubtitleSettings {
-			resolved = applyPersistedSubtitleSettings(resolved, generateSRTFallbackForASSSetting(h.db))
+			resolved = applyPersistedSubtitleSettings(resolved, generateSRTFallbackForASSSetting(h.db), persistedSubtitleFieldSource(h.db, generateSRTFallbackForASSKey))
 		}
 		trackPlan, err := resolveTrackPlan(scan, resolved)
 		if err != nil {

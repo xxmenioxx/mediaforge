@@ -5357,6 +5357,7 @@ export function EmbeddedSubtitleActions({
                       <MenuItem value="spa">Spanish</MenuItem>
                       <MenuItem value="jpn">Japanese</MenuItem>
                       <MenuItem value="jpn_vert">Japanese vertical</MenuItem>
+                      <MenuItem value="auto">Automatic</MenuItem>
                     </TextField>
                   ) : null}
                   {bitmap ? (
@@ -5379,8 +5380,8 @@ export function EmbeddedSubtitleActions({
                       <MenuItem value="accurate">Accurate</MenuItem>
                     </TextField>
                   ) : null}
-                  <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running' } onClick={() => onGenerate(stream.index, 'srt', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate SRT</Button>
-                  <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? (ocrLanguages[stream.index] || defaultOCRLanguage(stream.language)) : undefined, bitmap ? (ocrModes[stream.index] || 'accurate') : undefined)}>Generate ASS</Button>
+                  <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running' } onClick={() => onGenerate(stream.index, 'srt', bitmap ? ocrLanguages[stream.index] : undefined, bitmap ? ocrModes[stream.index] : undefined)}>Generate SRT</Button>
+                  <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? ocrLanguages[stream.index] : undefined, bitmap ? ocrModes[stream.index] : undefined)}>Generate ASS</Button>
                   {onRegenerate && regenerateAllowed ? <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onRegenerate(stream.index)}>Regenerate styled ASS</Button> : null}
                   {onTranslate ? <Button size="small" variant="outlined" aria-label={`Translate subtitle stream ${stream.index}`} disabled={translationDisabled} onClick={() => onTranslate(stream.index)}>Translate...</Button> : null}
                   {originalStyledFormat ? (

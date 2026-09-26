@@ -37,13 +37,18 @@ func generateSRTFallbackForASSSetting(db *gorm.DB) bool {
 	return generateSRTFallbackForASSValue(setting.Value)
 }
 
-func applyPersistedSubtitleSettings(profile map[string]any, enabled bool) map[string]any {
+func applyPersistedSubtitleSettings(profile map[string]any, enabled bool, sources ...string) map[string]any {
 	if profile == nil {
 		profile = map[string]any{}
 	}
 	profile[subtitleSettingsKey] = map[string]any{
 		generateSRTFallbackForASSKey: enabled,
 	}
+	source := "global_settings"
+	if len(sources) > 0 && strings.TrimSpace(sources[0]) != "" {
+		source = sources[0]
+	}
+	setSubtitleSettingSource(profile, "srtFallback", source)
 	return profile
 }
 

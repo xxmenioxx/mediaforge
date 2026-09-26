@@ -110,6 +110,7 @@ type subtitleExtractionOperation struct {
 	CreatedAt              time.Time                         `json:"createdAt"`
 	UpdatedAt              time.Time                         `json:"updatedAt"`
 	StylePolicyVersion     string                            `json:"stylePolicyVersion,omitempty"`
+	EffectiveSettings      []ResolvedTrackSidecar            `json:"effectiveSettings,omitempty"`
 	translationRequest     *subtitleTranslationOperationRequest
 	restyleRequest         *subtitleRestyleRequest
 	compositionRequest     *subtitleCompositionOperationRequest
@@ -1370,8 +1371,17 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "format must be original, srt, ass, or both"})
 		return
 	}
-	input.GenerateSRTFallbackForASS = generateSRTFallbackForASSSetting(h.db)
-	input.SubtitleStyling = subtitleStylingPolicyFromDB(h.db)
+	if input.OCRMode != "" && !isSupportedOCRMode(input.OCRMode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ocrMode must be raw, clean, or accurate"})
+		return
+	}
+	profile, err := resolvedSubtitleTrackProfileForAsset(h.db, destinationMediaPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot resolve subtitle settings: " + err.Error()})
+		return
+	}
+	input.GenerateSRTFallbackForASS = subtitleSRTFallbackEnabled(profile)
+	input.SubtitleStyling = subtitleStylePolicyFromMap(profile[subtitleStylingPolicyKey])
 	if strings.TrimSpace(input.SourceRevision) == "" {
 		input.SourceRevision, err = mediaFileFingerprint(path)
 		if err != nil {
@@ -1379,9 +1389,22 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 			return
 		}
 	}
-	plans, unsupported := subtitleExtractionPlansForRequest(destinationMediaPath, streams, input)
-	bitmapStreams := selectedBitmapSubtitleStreams(streams, input.StreamIndex)
-	if len(plans) == 0 && len(bitmapStreams) == 0 {
+	operationOverrides := SubtitleOperationOverrides{
+		Extract: true, StreamIndex: input.StreamIndex,
+		Format:      optionalSubtitleOperationValue(input.Format),
+		OCRLanguage: optionalSubtitleOperationValue(input.OCRLanguage),
+		OCRMode:     optionalSubtitleOperationValue(input.OCRMode),
+	}
+	trackPlan, planErr := resolveTrackPlanWithSubtitleOverrides(
+		models.ScanResult{Path: destinationMediaPath, SubtitleStreams: streamSummaries(streams, "subtitle")},
+		profile, operationOverrides,
+	)
+	if planErr != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": planErr.Error()})
+		return
+	}
+	plans, unsupported := subtitleExtractionPlansFromResolvedTrackPlan(destinationMediaPath, streams, trackPlan)
+	if len(plans) == 0 {
 		if len(unsupported) > 0 {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{
 				"error":       "the selected subtitle track cannot be converted to SRT or ASS",
@@ -1397,7 +1420,7 @@ func (h AssetHandler) ExtractSubtitles(c *gin.Context) {
 		return
 	}
 
-	h.startSubtitleExtractionOperation(c, path, destinationMediaPath, plans, bitmapStreams, input)
+	h.startSubtitleExtractionOperation(c, path, destinationMediaPath, plans, nil, input)
 	return
 }
 
@@ -3016,15 +3039,53 @@ func probeStreamSummary(streams []FFProbeStream) string {
 }
 
 type subtitleExtractionPlan struct {
-	StreamIndex int
-	Mode        string
-	Format      string
-	OutputPath  string
-	Decision    ResolvedTrackSidecar
+	StreamIndex  int
+	Mode         string
+	Format       string
+	OutputPath   string
+	Decision     ResolvedTrackSidecar
+	SourceStream FFProbeStream
 }
 
 func subtitleExtractionPlans(mediaPath string, streams []FFProbeStream) ([]subtitleExtractionPlan, []string) {
 	return subtitleExtractionPlansForRequest(mediaPath, streams, SubtitleExtractionInput{})
+}
+
+func optionalSubtitleOperationValue(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func subtitleExtractionPlansFromResolvedTrackPlan(mediaPath string, streams []FFProbeStream, resolved ResolvedTrackPlan) ([]subtitleExtractionPlan, []string) {
+	base := strings.TrimSuffix(mediaPath, filepath.Ext(mediaPath))
+	streamsByIndex := make(map[int]FFProbeStream, len(streams))
+	for _, stream := range streams {
+		if stream.CodecType == "subtitle" {
+			streamsByIndex[stream.Index] = stream
+		}
+	}
+	plans := make([]subtitleExtractionPlan, 0, len(resolved.SidecarOutputs))
+	unsupported := []string{}
+	for _, decision := range resolved.SidecarOutputs {
+		stream, exists := streamsByIndex[decision.StreamIndex]
+		if !exists {
+			unsupported = append(unsupported, fmt.Sprintf("subtitle stream %d is unavailable", decision.StreamIndex))
+			continue
+		}
+		language := safeSubtitleFilenamePart(decision.Language)
+		if language == "" {
+			language = "und"
+		}
+		plans = append(plans, subtitleExtractionPlan{
+			StreamIndex: decision.StreamIndex, Mode: decision.Mode, Format: decision.Format,
+			OutputPath: fmt.Sprintf("%s.%s.%d.%s", base, language, decision.StreamIndex, decision.Format),
+			Decision:   decision, SourceStream: stream,
+		})
+	}
+	return plans, unsupported
 }
 
 func subtitleExtractionPlansForRequest(mediaPath string, streams []FFProbeStream, input SubtitleExtractionInput) ([]subtitleExtractionPlan, []string) {

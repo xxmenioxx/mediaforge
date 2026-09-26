@@ -339,10 +339,18 @@ while :; do sleep 1; done
 			if err := json.Unmarshal(response.Body.Bytes(), &started); err != nil {
 				t.Fatal(err)
 			}
-			waitForFile(t, marker)
+			waitForFileOrSubtitleOperationFailure(t, marker, started.OperationID)
 			progress := waitForSubtitleOperationProgress(t, started.OperationID, 5)
 			if progress.Phase != "ocr" || progress.Processed != 0 || progress.Total != 5 || progress.Progress < 20 {
 				t.Fatalf("bitmap OCR progress was not preserved: %#v", progress)
+			}
+			if len(progress.EffectiveSettings) != len(testCase.expectedFormats) {
+				t.Fatalf("operation did not retain its resolved subtitle settings: %#v", progress.EffectiveSettings)
+			}
+			for _, setting := range progress.EffectiveSettings {
+				if !setting.OCRRequired || setting.OCRLanguage != "auto" || setting.OCRMode != "accurate" {
+					t.Fatalf("operation OCR inputs differ from its resolved settings: %#v", progress.EffectiveSettings)
+				}
 			}
 			response = httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/assets/extract-subtitles/"+started.OperationID+"/cancel", nil))
@@ -484,6 +492,22 @@ func waitForFile(t *testing.T, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %q", path)
+}
+
+func waitForFileOrSubtitleOperationFailure(t *testing.T, path, operationID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		snapshot := snapshotSubtitleOperation(operationID)
+		if snapshot.Status == "error" || snapshot.Status == "cancelled" {
+			t.Fatalf("operation stopped before OCR started: %#v", snapshot)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %q; operation=%#v", path, snapshotSubtitleOperation(operationID))
 }
 
 func writeExecutable(t *testing.T, path, content string) {

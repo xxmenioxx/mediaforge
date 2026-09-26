@@ -75,6 +75,10 @@ func (h AssetHandler) startSubtitleExtractionOperation(
 	if format == "" && len(targets) > 0 {
 		format = targets[0].artifact.Format
 	}
+	effectiveSettings := make([]ResolvedTrackSidecar, 0, len(targets))
+	for _, target := range targets {
+		effectiveSettings = append(effectiveSettings, target.plan.Decision)
+	}
 	now := time.Now()
 	operation := &subtitleExtractionOperation{
 		ID:                     operationID,
@@ -86,6 +90,7 @@ func (h AssetHandler) startSubtitleExtractionOperation(
 		Format:                 format,
 		AssetPath:              sourceMediaPath,
 		StylePolicyVersion:     input.SubtitleStyling.Version,
+		EffectiveSettings:      effectiveSettings,
 		Message:                "Preparing subtitle conversion",
 		CreatedAt:              now,
 		UpdatedAt:              now,
@@ -101,12 +106,13 @@ func (h AssetHandler) startSubtitleExtractionOperation(
 		runSubtitleExtractionOperation(workCtx, operationID, workspace, sourceMediaPath, result, targets)
 	}()
 	c.JSON(202, map[string]any{
-		"operationId": operationID,
-		"status":      "running",
-		"phase":       "preparing",
-		"progress":    1,
-		"streamIndex": streamIndex,
-		"format":      format,
+		"operationId":       operationID,
+		"status":            "running",
+		"phase":             "preparing",
+		"progress":          1,
+		"streamIndex":       streamIndex,
+		"format":            format,
+		"effectiveSettings": effectiveSettings,
 	})
 }
 
@@ -120,6 +126,9 @@ func prepareSubtitleExtractionTargets(
 	targets := make([]subtitleExtractionTarget, 0, len(streamPlans)+2)
 	for _, plan := range streamPlans {
 		stream := FFProbeStream{Index: plan.StreamIndex, CodecName: plan.Decision.Codec, CodecType: "subtitle", Tags: map[string]string{"language": plan.Decision.Language}}
+		if plan.SourceStream.CodecType == "subtitle" {
+			stream = plan.SourceStream
+		}
 		target := subtitleExtractionTarget{
 			plan:           plan,
 			stream:         stream,

@@ -253,28 +253,42 @@ type ResolvedSubtitleTrack struct {
 }
 
 type ResolvedTrackSidecar struct {
-	StreamIndex           int                  `json:"streamIndex"`
-	Codec                 string               `json:"codec,omitempty"`
-	SourceType            string               `json:"sourceType,omitempty"`
-	Language              string               `json:"language,omitempty"`
-	Format                string               `json:"format,omitempty"`
-	RequestedFormat       string               `json:"requestedFormat,omitempty"`
-	Mode                  string               `json:"mode"`
-	OCRRequired           bool                 `json:"ocrRequired"`
-	Title                 string               `json:"title,omitempty"`
-	Default               bool                 `json:"default"`
-	Forced                bool                 `json:"forced"`
-	SourceForced          bool                 `json:"sourceForced"`
-	Role                  SubtitleSemanticRole `json:"role,omitempty"`
-	RoleProvenance        string               `json:"roleProvenance,omitempty"`
-	RoleConfidence        string               `json:"roleConfidence,omitempty"`
-	RoleClassifierVersion string               `json:"roleClassifierVersion,omitempty"`
-	OCRLanguage           string               `json:"ocrLanguage,omitempty"`
-	OCRMode               string               `json:"ocrMode,omitempty"`
-	Stages                []string             `json:"stages,omitempty"`
-	Extension             string               `json:"extension,omitempty"`
-	NamingKey             string               `json:"namingKey,omitempty"`
-	LogicalTransformKey   string               `json:"logicalTransformKey,omitempty"`
+	StreamIndex           int                      `json:"streamIndex"`
+	Codec                 string                   `json:"codec,omitempty"`
+	SourceType            string                   `json:"sourceType,omitempty"`
+	Language              string                   `json:"language,omitempty"`
+	Format                string                   `json:"format,omitempty"`
+	RequestedFormat       string                   `json:"requestedFormat,omitempty"`
+	Mode                  string                   `json:"mode"`
+	OCRRequired           bool                     `json:"ocrRequired"`
+	Title                 string                   `json:"title,omitempty"`
+	Default               bool                     `json:"default"`
+	Forced                bool                     `json:"forced"`
+	SourceForced          bool                     `json:"sourceForced"`
+	Role                  SubtitleSemanticRole     `json:"role,omitempty"`
+	RoleProvenance        string                   `json:"roleProvenance,omitempty"`
+	RoleConfidence        string                   `json:"roleConfidence,omitempty"`
+	RoleClassifierVersion string                   `json:"roleClassifierVersion,omitempty"`
+	OCRLanguage           string                   `json:"ocrLanguage,omitempty"`
+	OCRMode               string                   `json:"ocrMode,omitempty"`
+	SRTFallbackApplied    bool                     `json:"srtFallbackApplied,omitempty"`
+	StylingPolicy         *SubtitleStylingSettings `json:"stylingPolicy,omitempty"`
+	SettingsSources       map[string]string        `json:"settingsSources,omitempty"`
+	Stages                []string                 `json:"stages,omitempty"`
+	Extension             string                   `json:"extension,omitempty"`
+	NamingKey             string                   `json:"namingKey,omitempty"`
+	LogicalTransformKey   string                   `json:"logicalTransformKey,omitempty"`
+}
+
+// SubtitleOperationOverrides carries only values explicitly supplied for one
+// subtitle operation. Nil fields inherit from the resolved Track Profile and
+// Settings passed to the canonical track planner.
+type SubtitleOperationOverrides struct {
+	Extract     bool
+	StreamIndex *int
+	Format      *string
+	OCRLanguage *string
+	OCRMode     *string
 }
 
 type ResolvedDefaultTrack struct {

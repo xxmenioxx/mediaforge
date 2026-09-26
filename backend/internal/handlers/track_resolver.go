@@ -14,6 +14,10 @@ import (
 // concrete decisions. It is intentionally independent from Queue, Lab, Test
 // Encode, and FFmpeg rendering so every caller can share the same decision.
 func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedTrackPlan, error) {
+	return resolveTrackPlanWithSubtitleOverrides(scan, profile, SubtitleOperationOverrides{})
+}
+
+func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[string]any, overrides SubtitleOperationOverrides) (ResolvedTrackPlan, error) {
 	attachmentInventoryAvailable := normalizeScanResultAttachmentStreams(&scan)
 	if err := validateSubtitleRules(profile); err != nil {
 		return ResolvedTrackPlan{}, err
@@ -21,6 +25,9 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 	canonicalDisposition, err := canonicalTrackDispositionProfile(profile)
 	if err != nil {
 		return ResolvedTrackPlan{}, err
+	}
+	if overrides.Extract {
+		canonicalDisposition = true
 	}
 
 	video := resolvedStreams(scan.VideoStreams, selectedProfileIndexes(profile, "keepVideoStreams"))
@@ -65,6 +72,9 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 		if index < 0 {
 			continue
 		}
+		if overrides.Extract && overrides.StreamIndex != nil && index != *overrides.StreamIndex {
+			continue
+		}
 		codec := strings.ToLower(strings.TrimSpace(workerStringValue(stream["codec"])))
 		language := normalizedTrackLanguage(workerStringValue(stream["language"]))
 		role := classifySubtitleRole(scan, stream, profile)
@@ -102,6 +112,9 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 				}
 			}
 		}
+		if overrides.Extract {
+			action = SubtitleDispositionKeepAndExtract
+		}
 		sourceForced := boolValue(stream["forced"], false)
 		effectiveForced := sourceForced || role.Role == SubtitleRoleForced
 		resolved := ResolvedSubtitleTrack{
@@ -111,21 +124,36 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 			RoleOverrideState:     role.OverrideState, RoleSourceSnapshotFingerprint: role.SourceSnapshotFingerprint,
 			RoleStreamSignature: role.StreamSignature, Forced: sourceForced, EffectiveForced: effectiveForced,
 		}
-		if preferredRuleSource[index] {
+		if overrides.Extract {
+			resolved.ActionSource = "operation_override"
+		} else if preferredRuleSource[index] {
 			resolved.ActionSource = "preferred_subtitle_language"
 		}
 		subtitles = append(subtitles, resolved)
 		if action.ExtractsSidecar() {
 			formats := []string{"original"}
+			formatSource := "built_in"
 			if canonicalDisposition {
-				formats = matchingSubtitleSidecarFormats(profile, index, language, role.Role, formats)
+				defaultFormats := formats
+				if overrides.Extract {
+					defaultFormats = []string{"srt"}
+				}
+				formats = matchingSubtitleSidecarFormats(profile, index, language, role.Role, defaultFormats)
+				formatSource = subtitleSidecarFormatSource(profile, index, language, role.Role)
 			} else {
 				if transform, ok := transforms[index]; ok &&
 					strings.TrimSpace(transform.Format) != "" {
 					formats = []string{strings.ToLower(strings.TrimSpace(transform.Format))}
+					formatSource = "asset_profile"
 				}
 			}
-			formats = effectiveSubtitleSidecarFormats(codec, formats, subtitleSRTFallbackEnabled(profile))
+			if overrides.Format != nil {
+				formats = []string{strings.ToLower(strings.TrimSpace(*overrides.Format))}
+				formatSource = "operation_override"
+			}
+			fallbackEnabled := subtitleSRTFallbackEnabled(profile)
+			originalRequestedFormats := append([]string(nil), formats...)
+			formats = effectiveSubtitleSidecarFormats(codec, formats, fallbackEnabled)
 			resolvedFormats := map[string]bool{}
 			for _, requested := range formats {
 				requestedFormats := []string{requested}
@@ -143,18 +171,40 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 					}
 					resolvedFormats[outputKey] = true
 					ocrLanguage, ocrMode := "", ""
+					ocrLanguageSource, ocrModeSource := "built_in", "built_in"
 					sourceType := subtitleSourceType(codec)
 					stages := subtitleArtifactStages(sourceType, mode)
 					if mode == "converted" && isBitmapSubtitleCodecName(codec) {
 						ocrLanguage, ocrMode = "auto", "accurate"
 						if !canonicalDisposition {
 							if transform, ok := transforms[index]; ok {
-								ocrLanguage = fallback(strings.TrimSpace(transform.OCRLanguage), "auto")
-								ocrMode = normalizedOCRMode(transform.OCRMode)
+								if strings.TrimSpace(transform.OCRLanguage) != "" {
+									ocrLanguage = strings.ToLower(strings.TrimSpace(transform.OCRLanguage))
+									ocrLanguageSource = "asset_profile"
+								}
+								if strings.TrimSpace(transform.OCRMode) != "" {
+									ocrMode = normalizedOCRMode(transform.OCRMode)
+									ocrModeSource = "asset_profile"
+								}
 							}
 						} else {
-							ocrLanguage, ocrMode = matchingSubtitleOCRConfig(profile, index, language, role.Role)
+							ocrLanguage, ocrMode, ocrLanguageSource, ocrModeSource = matchingSubtitleOCRConfigWithSources(profile, index, language, role.Role)
 						}
+						if overrides.OCRLanguage != nil {
+							ocrLanguage = strings.ToLower(strings.TrimSpace(*overrides.OCRLanguage))
+							ocrLanguageSource = "operation_override"
+						}
+						if overrides.OCRMode != nil {
+							ocrMode = normalizedOCRMode(*overrides.OCRMode)
+							ocrModeSource = "operation_override"
+						}
+					}
+					fallbackSource, styleSource := subtitleFallbackSettingSource(profile), subtitleStylingSettingSource(profile)
+					fallbackApplied := subtitleSRTFallbackApplied(codec, originalRequestedFormats, format, fallbackEnabled)
+					var stylingPolicy *SubtitleStylingSettings
+					if mode == "converted" && format == "ass" {
+						settings := subtitleStylePolicyFromMap(profile[subtitleStylingPolicyKey]).Settings
+						stylingPolicy = &settings
 					}
 					sidecars = append(sidecars, ResolvedTrackSidecar{
 						StreamIndex: index, Codec: codec, SourceType: sourceType, Language: language, Format: format, RequestedFormat: requested, Mode: mode,
@@ -164,6 +214,11 @@ func resolveTrackPlan(scan models.ScanResult, profile map[string]any) (ResolvedT
 						Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence,
 						RoleClassifierVersion: role.ClassifierVersion,
 						OCRLanguage:           ocrLanguage, OCRMode: ocrMode,
+						SRTFallbackApplied: fallbackApplied, StylingPolicy: stylingPolicy,
+						SettingsSources: map[string]string{
+							"format": formatSource, "ocrLanguage": ocrLanguageSource, "ocrMode": ocrModeSource,
+							"srtFallback": fallbackSource, "styling": styleSource,
+						},
 					})
 					if mode == "converted" && format == "srt" && (codec == "ass" || codec == "ssa") {
 						warnings = append(warnings, fmt.Sprintf("Subtitle stream %d: SRT improves compatibility but does not preserve all ASS styling and positioning.", index))
@@ -360,6 +415,206 @@ func matchingSubtitleSidecarFormats(profile map[string]any, streamIndex int, lan
 	return formats
 }
 
+const (
+	subtitleSettingSourcesKey = "resolvedSubtitleSettingSources"
+	subtitleTrackSourceKey    = "resolvedTrackSettingsSource"
+)
+
+func setSubtitleSettingSource(profile map[string]any, field, source string) {
+	if profile == nil {
+		return
+	}
+	sources := settingProfileObject(profile[subtitleSettingSourcesKey])
+	copy := map[string]any{}
+	for key, value := range sources {
+		copy[key] = value
+	}
+	copy[field] = source
+	profile[subtitleSettingSourcesKey] = copy
+}
+
+func markSubtitleTrackSources(profile map[string]any, source string) {
+	if profile == nil {
+		return
+	}
+	sources := settingProfileObject(profile[subtitleSettingSourcesKey])
+	copy := map[string]any{}
+	for key, value := range sources {
+		copy[key] = value
+	}
+	for key := range map[string]bool{
+		"subtitleSidecarFormats": true, "subtitleSidecarFormatsByStream": true,
+		"subtitleRules": true, "ocrLanguage": true, "ocrMode": true,
+		"subtitleDisposition": true, "defaultSubtitleLanguage": true,
+		"preferredSubtitleRules": true,
+	} {
+		if _, present := profile[key]; present {
+			copy[key] = source
+		}
+	}
+	if rules := workerSliceValue(profile["subtitleRules"]); len(rules) > 0 {
+		copy[subtitleRuleSourcesKey] = repeatedSubtitleRuleSources(len(rules), source)
+	}
+	profile[subtitleSettingSourcesKey] = copy
+}
+
+func mergeSubtitleTrackProfiles(base, overlay map[string]any) map[string]any {
+	if base == nil && overlay == nil {
+		return nil
+	}
+	result := map[string]any{}
+	for key, value := range base {
+		result[key] = value
+	}
+	baseRules := workerSliceValue(result["subtitleRules"])
+	for key, value := range overlay {
+		if key == subtitleSettingSourcesKey || key == subtitleTrackSourceKey {
+			continue
+		}
+		if key == "subtitleRules" {
+			combined := append([]any(nil), baseRules...)
+			combined = append(combined, workerSliceValue(value)...)
+			result[key] = combined
+			continue
+		}
+		if key == "keepVideoStreams" || key == "keepAudioStreams" || key == "keepSubtitleStreams" ||
+			key == "videoMetadata" || key == "audioMetadata" || key == "subtitleMetadata" || key == "subtitleTransforms" {
+			result[key] = value
+			continue
+		}
+		result[key] = value
+	}
+	sources := map[string]any{}
+	for key, value := range settingProfileObject(base[subtitleSettingSourcesKey]) {
+		sources[key] = value
+	}
+	for key, value := range settingProfileObject(overlay[subtitleSettingSourcesKey]) {
+		sources[key] = value
+	}
+	baseRuleSources := subtitleRuleSources(base)
+	overlayRuleSources := subtitleRuleSources(overlay)
+	if len(baseRuleSources)+len(overlayRuleSources) > 0 {
+		sources[subtitleRuleSourcesKey] = append(baseRuleSources, overlayRuleSources...)
+	}
+	result[subtitleSettingSourcesKey] = sources
+	return result
+}
+
+func subtitleProfileSettingSource(profile map[string]any, field string, present bool) string {
+	if !present {
+		return "built_in"
+	}
+	if sources := settingProfileObject(profile[subtitleSettingSourcesKey]); sources != nil {
+		if source := strings.TrimSpace(workerStringValue(sources[field])); source != "" {
+			return source
+		}
+	}
+	if source := strings.TrimSpace(workerStringValue(profile[subtitleTrackSourceKey])); source != "" {
+		return source
+	}
+	return "asset_profile"
+}
+
+func subtitleSidecarFormatSource(profile map[string]any, streamIndex int, language string, role SubtitleSemanticRole) string {
+	source := "built_in"
+	if len(normalizedSubtitleSidecarFormats(profile["subtitleSidecarFormats"])) > 0 {
+		source = subtitleProfileSettingSource(profile, "subtitleSidecarFormats", true)
+	}
+	streamSpecific := false
+	for index, raw := range workerSliceValue(profile["subtitleRules"]) {
+		rule := settingProfileObject(raw)
+		if len(normalizedSubtitleSidecarFormats(rule["sidecarFormats"])) == 0 {
+			continue
+		}
+		matched, specific := subtitleRuleMatches(rule, streamIndex, language, role)
+		if specific {
+			if matched {
+				source = subtitleRuleSettingSource(profile, index)
+				streamSpecific = true
+			}
+			continue
+		}
+		if matched && !streamSpecific {
+			source = subtitleRuleSettingSource(profile, index)
+		}
+	}
+	if byStream := settingProfileObject(profile["subtitleSidecarFormatsByStream"]); byStream != nil {
+		if len(normalizedSubtitleSidecarFormats(byStream[fmt.Sprintf("%d", streamIndex)])) > 0 {
+			return subtitleProfileSettingSource(profile, "subtitleSidecarFormatsByStream", true)
+		}
+	}
+	if byStream, ok := profile["subtitleSidecarFormatsByStream"].(map[int][]string); ok {
+		if len(normalizedSubtitleSidecarFormats(byStream[streamIndex])) > 0 {
+			return subtitleProfileSettingSource(profile, "subtitleSidecarFormatsByStream", true)
+		}
+	}
+	return source
+}
+
+const subtitleRuleSourcesKey = "subtitleRuleSources"
+
+func repeatedSubtitleRuleSources(count int, source string) []any {
+	result := make([]any, count)
+	for index := range result {
+		result[index] = source
+	}
+	return result
+}
+
+func subtitleRuleSources(profile map[string]any) []any {
+	sources := settingProfileObject(profile[subtitleSettingSourcesKey])
+	ruleSources := workerSliceValue(sources[subtitleRuleSourcesKey])
+	rules := workerSliceValue(profile["subtitleRules"])
+	result := make([]any, len(rules))
+	for index := range rules {
+		if index < len(ruleSources) {
+			result[index] = workerStringValue(ruleSources[index])
+		} else {
+			result[index] = subtitleProfileSettingSource(profile, "subtitleRules", len(rules) > 0)
+		}
+	}
+	return result
+}
+
+func subtitleRuleSettingSource(profile map[string]any, ruleIndex int) string {
+	ruleSources := subtitleRuleSources(profile)
+	if ruleIndex >= 0 && ruleIndex < len(ruleSources) {
+		if source := strings.TrimSpace(workerStringValue(ruleSources[ruleIndex])); source != "" {
+			return source
+		}
+	}
+	return subtitleProfileSettingSource(profile, "subtitleRules", len(workerSliceValue(profile["subtitleRules"])) > 0)
+}
+
+func subtitleSRTFallbackApplied(codec string, requestedFormats []string, output string, enabled bool) bool {
+	if !enabled || output != "srt" {
+		return false
+	}
+	hasOriginal, hasASS, hasSRT := false, false, false
+	for _, format := range requestedFormats {
+		switch strings.ToLower(strings.TrimSpace(format)) {
+		case "original":
+			hasOriginal = true
+		case "ass":
+			hasASS = true
+		case "srt", "both":
+			hasSRT = true
+		}
+	}
+	return !hasSRT && ((hasOriginal && subtitleFallbackEligible(codec, "original", true)) || (hasASS && subtitleFallbackEligible(codec, "ass", true)))
+}
+
+func subtitleFallbackSettingSource(profile map[string]any) string {
+	settings := settingProfileObject(profile[subtitleSettingsKey])
+	_, present := settings[generateSRTFallbackForASSKey]
+	return subtitleProfileSettingSource(profile, "srtFallback", present)
+}
+
+func subtitleStylingSettingSource(profile map[string]any) string {
+	_, present := profile[subtitleStylingPolicyKey]
+	return subtitleProfileSettingSource(profile, "styling", present)
+}
+
 func normalizedSubtitleSidecarFormats(raw any) []string {
 	result := []string{}
 	seen := map[string]bool{}
@@ -470,15 +725,23 @@ func resolveSubtitleSidecarFormat(codec, requested string) (format, mode string,
 }
 
 func matchingSubtitleOCRConfig(profile map[string]any, streamIndex int, language string, role SubtitleSemanticRole) (string, string) {
+	ocrLanguage, ocrMode, _, _ := matchingSubtitleOCRConfigWithSources(profile, streamIndex, language, role)
+	return ocrLanguage, ocrMode
+}
+
+func matchingSubtitleOCRConfigWithSources(profile map[string]any, streamIndex int, language string, role SubtitleSemanticRole) (string, string, string, string) {
 	ocrLanguage, ocrMode := "auto", "accurate"
+	ocrLanguageSource, ocrModeSource := "built_in", "built_in"
 	if value := strings.TrimSpace(workerStringValue(profile["ocrLanguage"])); value != "" {
 		ocrLanguage = strings.ToLower(value)
+		ocrLanguageSource = subtitleProfileSettingSource(profile, "ocrLanguage", true)
 	}
 	if value := strings.TrimSpace(workerStringValue(profile["ocrMode"])); value != "" {
 		ocrMode = normalizedOCRMode(value)
+		ocrModeSource = subtitleProfileSettingSource(profile, "ocrMode", true)
 	}
 	streamSpecific := false
-	for _, raw := range workerSliceValue(profile["subtitleRules"]) {
+	for index, raw := range workerSliceValue(profile["subtitleRules"]) {
 		rule := settingProfileObject(raw)
 		matched, specific := subtitleRuleMatches(rule, streamIndex, language, role)
 		if specific {
@@ -491,12 +754,14 @@ func matchingSubtitleOCRConfig(profile map[string]any, streamIndex int, language
 		}
 		if value := strings.TrimSpace(workerStringValue(rule["ocrLanguage"])); value != "" {
 			ocrLanguage = strings.ToLower(value)
+			ocrLanguageSource = subtitleRuleSettingSource(profile, index)
 		}
 		if value := strings.TrimSpace(workerStringValue(rule["ocrMode"])); value != "" {
 			ocrMode = normalizedOCRMode(value)
+			ocrModeSource = subtitleRuleSettingSource(profile, index)
 		}
 	}
-	return ocrLanguage, ocrMode
+	return ocrLanguage, ocrMode, ocrLanguageSource, ocrModeSource
 }
 
 func embeddedASSOrSSAExists(subtitles []ResolvedSubtitleTrack) bool {
