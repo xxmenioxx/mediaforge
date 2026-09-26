@@ -49,8 +49,28 @@ describe('Asset Info subtitle cancellation controls', () => {
 
 		expect(screen.getByText('ASS + SRT compatibility fallback is enabled; selecting ASS also produces converted SRT.')).toBeTruthy();
 		await user.click(screen.getByRole('button', { name: 'Generate ASS' }));
-		expect(onGenerate).toHaveBeenCalledWith(4, 'ass', 'eng', 'accurate');
-		expect(onGenerate).not.toHaveBeenCalledWith(4, 'srt', 'eng', 'accurate');
+		expect(onGenerate).toHaveBeenCalledWith(4, 'ass', undefined, undefined);
+		expect(onGenerate).not.toHaveBeenCalledWith(4, 'srt', undefined, undefined);
+	});
+
+	it('sends only OCR choices the user changed, including explicit automatic language', async () => {
+		const user = userEvent.setup();
+		const onGenerate = vi.fn();
+		render(
+			<EmbeddedSubtitleActions
+				streams={[bitmapStream]}
+				generations={{}}
+				onGenerate={onGenerate}
+				onCancel={vi.fn()}
+			/>,
+		);
+
+		await user.click(screen.getByRole('combobox', { name: 'OCR language' }));
+		await user.click(screen.getByRole('option', { name: 'Automatic' }));
+		await user.click(screen.getByRole('combobox', { name: 'OCR quality' }));
+		await user.click(screen.getByRole('option', { name: 'Raw' }));
+		await user.click(screen.getByRole('button', { name: 'Generate SRT' }));
+		expect(onGenerate).toHaveBeenCalledWith(4, 'srt', 'auto', 'raw');
 	});
 
   it('selects both OCR sidecars from their shared logical transform', () => {
@@ -155,7 +175,7 @@ describe('Asset Info subtitle cancellation controls', () => {
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
     expect(screen.getByText('Subtitle generation cancelled.')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Generate SRT' }));
-    expect(onGenerate).toHaveBeenCalledWith(4, 'srt', 'eng', 'accurate');
+		expect(onGenerate).toHaveBeenCalledWith(4, 'srt', undefined, undefined);
     expect(onCancel).not.toHaveBeenCalled();
   });
 

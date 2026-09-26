@@ -480,11 +480,16 @@ func subtitleStylePolicyMap(policy SubtitleStylePolicy) map[string]any {
 	return result
 }
 
-func applyPersistedSubtitleStylingSettings(profile map[string]any, policy SubtitleStylePolicy) map[string]any {
+func applyPersistedSubtitleStylingSettings(profile map[string]any, policy SubtitleStylePolicy, sources ...string) map[string]any {
 	if profile == nil {
 		profile = map[string]any{}
 	}
 	profile[subtitleStylingPolicyKey] = subtitleStylePolicyMap(policy)
+	source := "global_settings"
+	if len(sources) > 0 && strings.TrimSpace(sources[0]) != "" {
+		source = sources[0]
+	}
+	setSubtitleSettingSource(profile, "styling", source)
 	return profile
 }
 

@@ -200,17 +200,18 @@ func TestResolveTrackPlanSRTFallbackEligibilityAndNormalization(t *testing.T) {
 		wantFormats      []string
 		wantModes        []string
 		wantRequested    []string
+		wantSRTFallback  bool
 		logicalBoth      bool
 		logicalDifferent bool
 	}{
-		{name: "converted ASS enabled", codec: "ass", formats: []string{"ass"}, fallback: true, wantFormats: []string{"srt", "ass"}, wantModes: []string{"converted", "converted"}, wantRequested: []string{"both", "both"}, logicalBoth: true},
-		{name: "converted PGS ASS enabled", codec: "hdmv_pgs_subtitle", formats: []string{"ass"}, fallback: true, wantFormats: []string{"srt", "ass"}, wantModes: []string{"converted", "converted"}, wantRequested: []string{"both", "both"}, logicalBoth: true},
-		{name: "converted VobSub ASS enabled", codec: "dvd_subtitle", formats: []string{"ass"}, fallback: true, wantFormats: []string{"srt", "ass"}, wantModes: []string{"converted", "converted"}, wantRequested: []string{"both", "both"}, logicalBoth: true},
+		{name: "converted ASS enabled", codec: "ass", formats: []string{"ass"}, fallback: true, wantFormats: []string{"srt", "ass"}, wantModes: []string{"converted", "converted"}, wantRequested: []string{"both", "both"}, wantSRTFallback: true, logicalBoth: true},
+		{name: "converted PGS ASS enabled", codec: "hdmv_pgs_subtitle", formats: []string{"ass"}, fallback: true, wantFormats: []string{"srt", "ass"}, wantModes: []string{"converted", "converted"}, wantRequested: []string{"both", "both"}, wantSRTFallback: true, logicalBoth: true},
+		{name: "converted VobSub ASS enabled", codec: "dvd_subtitle", formats: []string{"ass"}, fallback: true, wantFormats: []string{"srt", "ass"}, wantModes: []string{"converted", "converted"}, wantRequested: []string{"both", "both"}, wantSRTFallback: true, logicalBoth: true},
 		{name: "converted SRT enabled", codec: "subrip", formats: []string{"srt"}, fallback: true, wantFormats: []string{"srt"}, wantModes: []string{"converted"}, wantRequested: []string{"srt"}},
 		{name: "explicit converted ASS and SRT enabled", codec: "ass", formats: []string{"ass", "srt"}, fallback: true, wantFormats: []string{"srt", "ass"}, wantModes: []string{"converted", "converted"}, wantRequested: []string{"both", "both"}, logicalBoth: true},
 		{name: "converted ASS disabled", codec: "ass", formats: []string{"ass"}, fallback: false, wantFormats: []string{"ass"}, wantModes: []string{"converted"}, wantRequested: []string{"ass"}},
-		{name: "original native ASS enabled", codec: "ass", formats: []string{"original"}, fallback: true, wantFormats: []string{"ass", "srt"}, wantModes: []string{"original", "converted"}, wantRequested: []string{"original", "srt"}, logicalDifferent: true},
-		{name: "original native SSA enabled", codec: "ssa", formats: []string{"original"}, fallback: true, wantFormats: []string{"ssa", "srt"}, wantModes: []string{"original", "converted"}, wantRequested: []string{"original", "srt"}, logicalDifferent: true},
+		{name: "original native ASS enabled", codec: "ass", formats: []string{"original"}, fallback: true, wantFormats: []string{"ass", "srt"}, wantModes: []string{"original", "converted"}, wantRequested: []string{"original", "srt"}, wantSRTFallback: true, logicalDifferent: true},
+		{name: "original native SSA enabled", codec: "ssa", formats: []string{"original"}, fallback: true, wantFormats: []string{"ssa", "srt"}, wantModes: []string{"original", "converted"}, wantRequested: []string{"original", "srt"}, wantSRTFallback: true, logicalDifferent: true},
 		{name: "original SRT enabled", codec: "subrip", formats: []string{"original"}, fallback: true, wantFormats: []string{"srt"}, wantModes: []string{"original"}, wantRequested: []string{"original"}},
 		{name: "original PGS enabled", codec: "hdmv_pgs_subtitle", formats: []string{"original"}, fallback: true, wantFormats: []string{"sup"}, wantModes: []string{"original"}, wantRequested: []string{"original"}},
 	}
@@ -237,6 +238,12 @@ func TestResolveTrackPlanSRTFallbackEligibilityAndNormalization(t *testing.T) {
 			for index, sidecar := range plan.SidecarOutputs {
 				if sidecar.Format != test.wantFormats[index] || sidecar.Mode != test.wantModes[index] || sidecar.RequestedFormat != test.wantRequested[index] {
 					t.Fatalf("sidecar[%d]=%#v", index, sidecar)
+				}
+				if sidecar.SRTFallbackApplied != (test.wantSRTFallback && sidecar.Format == "srt") {
+					t.Fatalf("sidecar[%d] SRT fallback state=%t want=%t: %#v", index, sidecar.SRTFallbackApplied, test.wantSRTFallback && sidecar.Format == "srt", sidecar)
+				}
+				if (sidecar.Mode == "converted" && sidecar.Format == "ass") != (sidecar.StylingPolicy != nil) {
+					t.Fatalf("sidecar[%d] styling policy applicability was not frozen: %#v", index, sidecar)
 				}
 				if !sidecar.Forced || !sidecar.SourceForced {
 					t.Fatalf("forced metadata was not preserved: %#v", sidecar)
@@ -319,9 +326,14 @@ func TestSubtitleCanonicalPlanParityAcrossAssetProfileAndLab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assetPlans, unsupported := subtitleExtractionPlansForRequest(path, []FFProbeStream{{
-		Index: 3, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng"},
-	}}, SubtitleExtractionInput{StreamIndex: intPointer(3), Format: "srt"})
+	stream := FFProbeStream{Index: 3, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": "eng"}}
+	assetOperationPlan, err := resolveTrackPlanWithSubtitleOverrides(scan, profile, SubtitleOperationOverrides{
+		Extract: true, StreamIndex: intPointer(3), Format: stringPointer("srt"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetPlans, unsupported := subtitleExtractionPlansFromResolvedTrackPlan(path, []FFProbeStream{stream}, assetOperationPlan)
 	if len(unsupported) != 0 || len(assetPlans) != 1 || len(pipeline.SidecarOutputs) != 1 {
 		t.Fatalf("asset=%#v unsupported=%#v pipeline=%#v", assetPlans, unsupported, pipeline.SidecarOutputs)
 	}
@@ -330,6 +342,8 @@ func TestSubtitleCanonicalPlanParityAcrossAssetProfileAndLab(t *testing.T) {
 	compare := func(name string, got, want ResolvedTrackSidecar) {
 		t.Helper()
 		got.Default, got.Forced, got.Title = want.Default, want.Forced, want.Title
+		got.SettingsSources = nil
+		want.SettingsSources = nil
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s subtitle decision diverged: got=%#v want=%#v", name, got, want)
 		}

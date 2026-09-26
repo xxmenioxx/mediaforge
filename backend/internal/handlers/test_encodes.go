@@ -409,6 +409,8 @@ func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONM
 		return explicit, nil
 	}
 	resolved := resolveTrackProfileForAsset(db, mediaPath, cloneTestEncodeJSONMap(profile))
+	markSubtitleTrackSources(resolved, "asset_profile")
+	resolved[subtitleTrackSourceKey] = "asset_profile"
 	canonical, versionErr := canonicalTrackDispositionProfile(resolved)
 	if versionErr != nil {
 		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: %w", versionErr)
@@ -430,8 +432,8 @@ func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONM
 	if len(explicit.SubtitleRoleOverrides) > 0 {
 		resolved["subtitleRoleOverrides"] = bindSubtitleRoleOverrides(scan, explicit.SubtitleRoleOverrides)
 	}
-	resolved = applyPersistedSubtitleSettings(resolved, generateSRTFallbackForASSSetting(db))
-	resolved = applyPersistedSubtitleStylingSettings(resolved, subtitleStylingPolicyFromDB(db))
+	resolved = applyPersistedSubtitleSettings(resolved, generateSRTFallbackForASSSetting(db), persistedSubtitleFieldSource(db, generateSRTFallbackForASSKey))
+	resolved = applyPersistedSubtitleStylingSettings(resolved, subtitleStylingPolicyFromDB(db), persistedSubtitleFieldSource(db, subtitleStylingPolicyKey))
 	trackPlan, err := resolveTrackPlan(scan, resolved)
 	if err != nil {
 		return AssetConversionOverrideState{}, fmt.Errorf("LAB track profile: resolve track plan: %w", err)

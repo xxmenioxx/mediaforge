@@ -484,8 +484,11 @@ func TestAssetDefaultsPreviewTestEncodeQueueParityForUnassignedAsset(t *testing.
 	if !reflect.DeepEqual(previewAudio, testEncode.audio) {
 		t.Fatalf("Preview audio defaults diverged: preview=%#v test=%#v", previewAudio, testEncode.audio)
 	}
-	previewTracks := applyAssetDefaultsAudioToTrackProfile(previewJob, profileDataForQueueJob(previewJob, "tracks"))
-	previewTracks = resolveTrackProfileForAsset(db, mediaPath, previewTracks)
+	previewTracks, err := resolvedSubtitleTrackProfileForAsset(db, mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewTracks = applyAssetDefaultsAudioToTrackProfile(previewJob, previewTracks)
 	previewTrackPlan, err := resolveTrackPlan(scan, previewTracks)
 	if err != nil {
 		t.Fatal(err)

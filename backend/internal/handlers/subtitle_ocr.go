@@ -348,6 +348,15 @@ func normalizedOCRMode(value string) string {
 	}
 }
 
+func isSupportedOCRMode(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "raw", "clean", "accurate":
+		return true
+	default:
+		return false
+	}
+}
+
 func extractPGSSubtitleForOCR(
 	ctx context.Context,
 	mediaPath string,

@@ -35,3 +35,24 @@ describe('subtitle extraction cancellation API mapping', () => {
     );
   });
 });
+
+describe('subtitle extraction optional OCR request fields', () => {
+  it('omits untouched OCR suggestions and preserves explicit values', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ created: [], existing: [], unsupported: [] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.extractAssetSubtitles({ path: '/media/movie.mkv', streamIndex: 4, format: 'srt' });
+    const omittedBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(omittedBody).toEqual({ streamIndex: 4, format: 'srt' });
+
+    await api.extractAssetSubtitles({
+      path: '/media/movie.mkv', streamIndex: 4, format: 'srt', ocrLanguage: 'auto', ocrMode: 'raw',
+    });
+    const explicitBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(explicitBody).toEqual({ streamIndex: 4, format: 'srt', ocrLanguage: 'auto', ocrMode: 'raw' });
+  });
+});

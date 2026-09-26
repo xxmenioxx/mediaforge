@@ -2476,7 +2476,7 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'OCR subtitle' > "$output_file
 		t.Fatalf("unexpected first extraction result: %#v", first)
 	}
 	for _, path := range []string{
-		filepath.Join(root, "Baccano.spa.2.ass"),
+		filepath.Join(root, "Baccano.spa.2.srt"),
 		filepath.Join(root, "Baccano.eng.3.srt"),
 		filepath.Join(root, "Baccano.jpn.4.srt"),
 	} {
