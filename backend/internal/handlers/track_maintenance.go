@@ -34,22 +34,25 @@ const (
 )
 
 type TrackMaintenanceStream struct {
-	Index       int               `json:"index"`
-	Type        string            `json:"type"`
-	Codec       string            `json:"codec"`
-	Language    string            `json:"language,omitempty"`
-	Title       string            `json:"title,omitempty"`
-	FileName    string            `json:"fileName,omitempty"`
-	Profile     string            `json:"profile,omitempty"`
-	Width       int               `json:"width,omitempty"`
-	Height      int               `json:"height,omitempty"`
-	Channels    int               `json:"channels,omitempty"`
-	Layout      string            `json:"layout,omitempty"`
-	Default     bool              `json:"default"`
-	Forced      bool              `json:"forced"`
-	AttachedPic bool              `json:"attachedPic"`
-	StillImage  bool              `json:"stillImage"`
-	Tags        map[string]string `json:"-"`
+	Index          int               `json:"index"`
+	Type           string            `json:"type"`
+	Codec          string            `json:"codec"`
+	Language       string            `json:"language,omitempty"`
+	Title          string            `json:"title,omitempty"`
+	FileName       string            `json:"fileName,omitempty"`
+	MIMEType       string            `json:"mimeType,omitempty"`
+	AttachmentKind string            `json:"attachmentKind,omitempty"`
+	FontFormat     string            `json:"fontFormat,omitempty"`
+	Profile        string            `json:"profile,omitempty"`
+	Width          int               `json:"width,omitempty"`
+	Height         int               `json:"height,omitempty"`
+	Channels       int               `json:"channels,omitempty"`
+	Layout         string            `json:"layout,omitempty"`
+	Default        bool              `json:"default"`
+	Forced         bool              `json:"forced"`
+	AttachedPic    bool              `json:"attachedPic"`
+	StillImage     bool              `json:"stillImage"`
+	Tags           map[string]string `json:"-"`
 }
 
 type TrackMaintenanceInventory struct {
@@ -142,20 +145,22 @@ func (h AssetHandler) maintenanceRuntime() *trackMaintenanceRuntime {
 	return defaultTrackMaintenanceRuntime()
 }
 
+type trackProbeStream struct {
+	Index         int               `json:"index"`
+	CodecType     string            `json:"codec_type"`
+	CodecName     string            `json:"codec_name"`
+	Profile       string            `json:"profile"`
+	Width         int               `json:"width"`
+	Height        int               `json:"height"`
+	Channels      int               `json:"channels"`
+	ChannelLayout string            `json:"channel_layout"`
+	Tags          map[string]string `json:"tags"`
+	Disposition   map[string]int    `json:"disposition"`
+}
+
 type trackProbeResponse struct {
-	Streams []struct {
-		Index         int               `json:"index"`
-		CodecType     string            `json:"codec_type"`
-		CodecName     string            `json:"codec_name"`
-		Profile       string            `json:"profile"`
-		Width         int               `json:"width"`
-		Height        int               `json:"height"`
-		Channels      int               `json:"channels"`
-		ChannelLayout string            `json:"channel_layout"`
-		Tags          map[string]string `json:"tags"`
-		Disposition   map[string]int    `json:"disposition"`
-	} `json:"streams"`
-	Chapters []json.RawMessage `json:"chapters"`
+	Streams  []trackProbeStream `json:"streams"`
+	Chapters []json.RawMessage  `json:"chapters"`
 	Format   struct {
 		Duration string `json:"duration"`
 	} `json:"format"`
@@ -181,16 +186,27 @@ func probeTrackMaintenanceInventory(ctx context.Context, path string) (TrackMain
 	inventory := TrackMaintenanceInventory{Path: filepath.Clean(path), Fingerprint: fingerprint, Chapters: len(response.Chapters)}
 	inventory.DurationSeconds, _ = strconv.ParseFloat(response.Format.Duration, 64)
 	for _, stream := range response.Streams {
-		inventory.Streams = append(inventory.Streams, TrackMaintenanceStream{
-			Index: stream.Index, Type: stream.CodecType, Codec: stream.CodecName, Profile: stream.Profile,
-			Language: stream.Tags["language"], Title: stream.Tags["title"], FileName: stream.Tags["filename"],
-			Width: stream.Width, Height: stream.Height, Channels: stream.Channels, Layout: stream.ChannelLayout,
-			Default: stream.Disposition["default"] == 1, Forced: stream.Disposition["forced"] == 1,
-			AttachedPic: stream.Disposition["attached_pic"] == 1, StillImage: stream.Disposition["still_image"] == 1,
-			Tags: stream.Tags,
-		})
+		inventory.Streams = append(inventory.Streams, trackMaintenanceStreamFromProbe(stream))
 	}
 	return inventory, nil
+}
+
+func trackMaintenanceStreamFromProbe(stream trackProbeStream) TrackMaintenanceStream {
+	fileName := attachmentTagValue(stream.Tags, "filename")
+	mimeType := attachmentTagValue(stream.Tags, "mimetype", "mime_type", "mime-type")
+	attachmentKind, fontFormat := "", ""
+	if stream.CodecType == "attachment" {
+		attachmentKind, fontFormat = classifyAttachment(stream.CodecName, fileName, mimeType)
+	}
+	return TrackMaintenanceStream{
+		Index: stream.Index, Type: stream.CodecType, Codec: stream.CodecName, Profile: stream.Profile,
+		Language: attachmentTagValue(stream.Tags, "language"), Title: attachmentTagValue(stream.Tags, "title"), FileName: fileName,
+		MIMEType: mimeType, AttachmentKind: attachmentKind, FontFormat: fontFormat,
+		Width: stream.Width, Height: stream.Height, Channels: stream.Channels, Layout: stream.ChannelLayout,
+		Default: stream.Disposition["default"] == 1, Forced: stream.Disposition["forced"] == 1,
+		AttachedPic: stream.Disposition["attached_pic"] == 1, StillImage: stream.Disposition["still_image"] == 1,
+		Tags: stream.Tags,
+	}
 }
 
 func validateTrackRemoval(inventory TrackMaintenanceInventory, requested []int) ([]TrackMaintenanceStream, error) {

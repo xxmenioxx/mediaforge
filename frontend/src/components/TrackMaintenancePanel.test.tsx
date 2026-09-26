@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
@@ -19,9 +19,9 @@ const inventory = {
   ],
 };
 
-function renderPanel() {
+function renderPanel(props: { canManageAttachments?: boolean } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><TrackMaintenancePanel path={inventory.path} /></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><TrackMaintenancePanel path={inventory.path} {...props} /></QueryClientProvider>);
 }
 
 describe('TrackMaintenancePanel', () => {
@@ -42,5 +42,15 @@ describe('TrackMaintenancePanel', () => {
     renderPanel();
     expect(await screen.findByText(/Original Raw and Archive assets are protected/i)).toBeTruthy();
     expect((screen.getByRole('button', { name: /create an additional AAC audio track/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('gates attachment maintenance with the manageAttachments capability', async () => {
+    vi.mocked(api.trackMaintenanceInventory).mockResolvedValue({
+      ...inventory,
+      streams: [...inventory.streams, { index: 2, type: 'attachment', codec: 'ttf', fileName: 'SubtitleFont.ttf', default: false, forced: false, attachedPic: false, stillImage: false }],
+    });
+    renderPanel({ canManageAttachments: false });
+    const attachment = await screen.findByTestId('asset-track-attachment');
+    expect((within(attachment).getByRole('button', { name: /delete this track/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

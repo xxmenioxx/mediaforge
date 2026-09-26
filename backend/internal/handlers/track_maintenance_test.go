@@ -235,6 +235,37 @@ func TestTrackMaintenanceAvailabilityProtectsOriginals(t *testing.T) {
 	}
 }
 
+func TestTrackMaintenanceStreamFromProbeIncludesAttachmentMetadata(t *testing.T) {
+	tests := []struct {
+		name           string
+		codec          string
+		filename       string
+		mimeType       string
+		wantKind       string
+		wantFontFormat string
+	}{
+		{name: "font", codec: "ttf", filename: "SubtitleFont.ttf", mimeType: "font/ttf", wantKind: "FONT", wantFontFormat: "TTF"},
+		{name: "image", codec: "mjpeg", filename: "Cover.jpg", mimeType: "image/jpeg", wantKind: "IMAGE"},
+		{name: "other", codec: "bin_data", filename: "Extra.bin", mimeType: "application/octet-stream", wantKind: "ATTACHMENT"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stream := trackProbeStream{
+				Index: 4, CodecType: "attachment", CodecName: test.codec,
+				Tags: map[string]string{"FILENAME": test.filename, "MIME_TYPE": test.mimeType, "TITLE": "Subtitle font"},
+			}
+			got := trackMaintenanceStreamFromProbe(stream)
+			if got.FileName != test.filename || got.Title != "Subtitle font" || got.MIMEType != test.mimeType {
+				t.Fatalf("attachment identity/format = %#v", got)
+			}
+			if got.AttachmentKind != test.wantKind || got.FontFormat != test.wantFontFormat {
+				t.Fatalf("attachment classification = (%q, %q), want (%q, %q)", got.AttachmentKind, got.FontFormat, test.wantKind, test.wantFontFormat)
+			}
+		})
+	}
+}
+
 func TestValidateRemuxedInventoryComparesIdentityNotAbsoluteIndex(t *testing.T) {
 	expected, err := validateTrackRemoval(maintenanceFixture(), []int{2, 4})
 	if err != nil {
