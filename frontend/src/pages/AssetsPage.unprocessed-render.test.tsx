@@ -13,7 +13,7 @@ vi.mock('../api/client', async (importOriginal) => {
     api: {
       ...actual.api,
     queueJobs: vi.fn(), assets: vi.fn(), profiles: vi.fn(), libraries: vi.fn(), settings: vi.fn(), snapshotOperations: vi.fn(),
-    latestSnapshot: vi.fn(), startSnapshotOperation: vi.fn(), snapshotOperation: vi.fn(), externalAssetSubtitles: vi.fn(), subtitleEligibility: vi.fn(), subtitleExtractionOperations: vi.fn(),
+    latestSnapshot: vi.fn(), startSnapshotOperation: vi.fn(), snapshotOperation: vi.fn(), externalAssetSubtitles: vi.fn(), assetMetadataSidecars: vi.fn(), trackMaintenanceInventory: vi.fn(), subtitleEligibility: vi.fn(), subtitleExtractionOperations: vi.fn(),
     suggestProfile: vi.fn(), runtimeState: vi.fn(), workerNodes: vi.fn(), recommendEncoderQuality: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
     configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), queueRemainingPreview: vi.fn(), queueRemainingCommit: vi.fn(), createQueueBatch: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
@@ -49,7 +49,7 @@ function testSnapshot(path = '/media/raw/movies/Akira/Akira.mkv', videoCodec = '
   return {
     id: 1, path, fileName: 'Akira.mkv', container: 'matroska', sizeBytes: 1024, duration: 60, bitrate: 1000,
     videoCodec, width: 1920, height: 1080, hdr: false, audioTracks: 1, subtitleTracks: 0, chapters: 0,
-    videoStreams: [], audioStreams: [], subtitleStreams: [], compatibilityAnalysis: {}, interlaceAnalysis: {}, rawProbe: {},
+    videoStreams: [], audioStreams: [], subtitleStreams: [], attachmentStreams: [], compatibilityAnalysis: {}, interlaceAnalysis: {}, rawProbe: {},
     createdAt: '2026-08-28T00:00:00Z', updatedAt: '2026-08-28T00:00:01Z',
   } as unknown as ScanResult;
 }
@@ -116,6 +116,8 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.settings).mockResolvedValue([]);
     vi.mocked(api.snapshotOperations).mockResolvedValue({ operations: [] });
     vi.mocked(api.latestSnapshot).mockResolvedValue({ found: false, snapshot: null, status: 'missing', requiresAnalysis: true, staleComponents: [] });
+    vi.mocked(api.assetMetadataSidecars).mockResolvedValue([]);
+    vi.mocked(api.trackMaintenanceInventory).mockResolvedValue({ path: '', fingerprint: '', streams: [], chapters: 0, durationSeconds: 0, maintenanceAllowed: true });
     vi.mocked(api.startSnapshotOperation).mockResolvedValue(completedSnapshotOperation());
     vi.mocked(api.snapshotOperation).mockResolvedValue(completedSnapshotOperation());
     vi.mocked(api.suggestProfile).mockResolvedValue(testProfileSuggestion());
@@ -220,12 +222,79 @@ describe('Unprocessed Assets hierarchy', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
     await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    expect(await screen.findByRole('tab', { name: 'MVForge Suggestions' })).toBeTruthy();
     await user.click(await screen.findByRole('tab', { name: 'Test Encode' }));
     await user.click(await screen.findByRole('button', { name: 'Generate Test Encode' }));
 
     expect(await screen.findByRole('dialog', { name: 'Generate Test Encode' })).toBeTruthy();
     expect(api.updateAssetConversion).not.toHaveBeenCalled();
   }, 10000);
+
+  it('consolidates attachment and sidecar evidence under Tracks', async () => {
+    const path = '/media/raw/movies/Akira/Akira.mkv';
+    const snapshot = {
+      ...testSnapshot(path),
+      attachmentStreams: [
+        { index: 4, type: 'attachment' as const, codec: 'ttf', filename: 'SubtitleFont.ttf', mimeType: 'font/ttf', title: 'Subtitle font', attachmentKind: 'FONT', fontFormat: 'TTF' },
+        { index: 5, type: 'attachment' as const, codec: 'mjpeg', filename: 'Cover.jpg', mimeType: 'image/jpeg', attachmentKind: 'IMAGE', fontFormat: '' },
+        { index: 6, type: 'attachment' as const, codec: 'bin_data', filename: 'Extra.bin', mimeType: 'application/octet-stream', attachmentKind: 'ATTACHMENT', fontFormat: '' },
+      ],
+    };
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot, status: 'current', requiresAnalysis: false, staleComponents: [] });
+    vi.mocked(api.trackMaintenanceInventory).mockResolvedValue({
+      path, fingerprint: 'track-fingerprint', streams: [
+        { index: 4, type: 'attachment', codec: 'ttf', fileName: 'SubtitleFont.ttf', default: false, forced: false, attachedPic: false, stillImage: false },
+      ], chapters: 0, durationSeconds: 60, maintenanceAllowed: true,
+    });
+    vi.mocked(api.assetMetadataSidecars).mockResolvedValue([{
+      path: '/media/raw/movies/Akira/Akira.nfo', fileName: 'Akira.nfo', format: 'nfo', sizeBytes: 128, modifiedAt: '2026-08-28T00:00:00Z',
+    }]);
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByRole('tab', { name: 'Attachments' })).toBeNull();
+    expect(within(dialog).queryByRole('tab', { name: 'Subtitles' })).toBeNull();
+    await user.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
+
+    const attachments = await within(dialog).findByTestId('asset-track-attachments');
+    expect(within(attachments).getByText('Fonts')).toBeTruthy();
+    expect(within(attachments).getByText('Images')).toBeTruthy();
+    expect(within(attachments).getByText('Other')).toBeTruthy();
+    expect(within(attachments).getByText(/SubtitleFont\.ttf/)).toBeTruthy();
+    expect(within(attachments).getByText(/Cover\.jpg/)).toBeTruthy();
+    expect(within(attachments).getByText(/Extra\.bin/)).toBeTruthy();
+    expect((await within(dialog).findByTestId('asset-nfo-sidecar')).textContent).toContain('Akira.nfo');
+    expect(within(dialog).queryByRole('button', { name: /Akira\.nfo/ })).toBeNull();
+    expect(api.assetMetadataSidecars).toHaveBeenCalledWith(path);
+  });
+
+  it('does not show backend action-capability diagnostics in Asset Info', async () => {
+    const inventory = singleAssetInventory();
+    inventory.unprocessed[0].lifecycle = {
+      location: 'raw', lifecycle: 'available', provenance: 'legacy_or_unknown', validation: 'unavailable', publication: 'unpublished', original: 'unknown',
+      currentPublication: { state: 'unpublished' },
+      actions: {
+        rename: { allowed: false, reason: 'unsupported' },
+        queue: { allowed: false, reason: 'not_raw' },
+        lab: { allowed: false, reason: 'unsupported' },
+      },
+    };
+    vi.mocked(api.assets).mockResolvedValue(inventory);
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByTestId('asset-info-overview');
+
+    expect(within(dialog).queryByText('Backend action capabilities')).toBeNull();
+    expect(dialog.textContent).not.toContain('not_raw');
+    expect(dialog.textContent).not.toContain('unsupported');
+  });
 
   it('shows one title-scoped Snapshots surface with root and nested assets', async () => {
     vi.mocked(api.latestSnapshot).mockImplementation(async (path) => path.endsWith('/Akira.mkv')
@@ -427,7 +496,8 @@ describe('Unprocessed Assets hierarchy', () => {
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByText('Library')).toBeTruthy();
     expect(within(dialog).getByText('Converted')).toBeTruthy();
-    expect(within(dialog).getByText(/active Queue operation/)).toBeTruthy();
+    expect(within(dialog).queryByText(/active Queue operation/)).toBeNull();
+    expect(within(dialog).queryByText('Backend action capabilities')).toBeNull();
     expect(within(dialog).getByText(/Analysis · Unavailable/)).toBeTruthy();
     expect(api.latestSnapshot).not.toHaveBeenCalled();
     expect(api.externalAssetSubtitles).not.toHaveBeenCalled();
@@ -781,7 +851,12 @@ describe('Unprocessed Assets hierarchy', () => {
       relativePath: 'Akira/Converted Episode.mkv',
       groupPath: 'Akira',
       fileName: 'Converted Episode.mkv',
-      status: 'converted',
+      status: 'unverified',
+      lifecycle: {
+        location: 'library', lifecycle: 'published', provenance: 'converted', validation: 'passed', publication: 'published', original: 'archived',
+        currentPublication: { state: 'published', id: 120 },
+        actions: { rename: { allowed: true }, lab: { allowed: false, reason: 'not_raw' } },
+      },
     } as Asset;
     const convertedGroup = {
       id: 'converted-akira',
@@ -825,6 +900,8 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(await screen.findByRole('button', { name: 'Asset Info Converted Episode.mkv' }));
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('tab', { name: 'Asset Information' }));
+    expect(within(dialog).queryByRole('tab', { name: 'MVForge Suggestions' })).toBeNull();
+    expect(within(dialog).queryByRole('tab', { name: 'Test Encode' })).toBeNull();
     const renameInput = within(dialog).getByLabelText('Rename file');
     expect(renameInput).toHaveProperty('disabled', false);
     fireEvent.change(renameInput, { target: { value: 'Akira - S01E01.mkv' } });

@@ -368,6 +368,14 @@ export type ExternalSubtitle = {
   eligibility?: SubtitleSourceEligibility;
 };
 
+export type AssetMetadataSidecar = {
+  path: string;
+  fileName: string;
+  format: 'nfo';
+  sizeBytes: number;
+  modifiedAt: string;
+};
+
 export type SubtitleModeEligibility = {
   eligible: boolean;
   reason?: string;

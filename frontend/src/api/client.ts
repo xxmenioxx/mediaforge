@@ -429,6 +429,10 @@ export const api = {
     request<ExternalSubtitle[]>(
       `/api/assets/external-subtitles?path=${encodeURIComponent(path)}`,
     ),
+  assetMetadataSidecars: (path: string) =>
+    request<import('./types').AssetMetadataSidecar[]>(
+      `/api/assets/metadata-sidecars?path=${encodeURIComponent(path)}`,
+    ),
   externalAssetSubtitleContent: (input: { path: string; subtitlePath: string }) =>
     request<{ path: string; content: string }>(`/api/assets/external-subtitles/content?path=${encodeURIComponent(input.path)}&subtitlePath=${encodeURIComponent(input.subtitlePath)}`),
   updateExternalAssetSubtitle: (input: { path: string; subtitlePath: string; content: string }) =>

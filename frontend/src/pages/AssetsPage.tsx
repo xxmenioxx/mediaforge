@@ -68,7 +68,7 @@ import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLifecycleProjection, AssetLogicalGroup, AssetSourceGroup, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLifecycleProjection, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AttachmentStreamInfo, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -81,7 +81,7 @@ import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
 import { assetInfoDiscardDraft, assetInfoDocumentsEqual, assetInfoEditDocument, assetInfoRefreshReconciliation, assetInfoSaveFailureReconciliation, assetInfoSaveReconciliation, type AssetInfoEditDocument } from '../utils/assetInfoEditing';
 import { patchAssetInventoryAsset } from '../utils/assetInventoryPatch';
-import { testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
+import { hidePreConversionActionsForAsset, testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
 import { customUpscaleHeightError, smartUpscaleControlsDisabled } from '../upscale';
 import { hierarchicalSelectionState, selectableAssetsForPaths, selectedSelectableAssetsForLogicalGroups } from '../utils/unprocessedAssetSelection';
 import {
@@ -2657,6 +2657,68 @@ function assetInfoCapability(asset: Asset, key: AssetInfoActionKey) {
   return capability ?? { allowed: true };
 }
 
+function assetActionReasonMessage(capability: { reason?: string }, fallback = '') {
+  const messages: Record<string, string> = {
+    unsupported: 'This action is unavailable for this asset.',
+    identity_unresolved: 'Asset identity is unavailable for this action.',
+    active_work: 'An active operation must finish before this action is available.',
+    missing: 'The asset file is missing.',
+    unsafe_root: 'This asset is outside a supported Library location.',
+    unknown_provenance: 'The asset provenance is unknown.',
+    publication_conflict: 'Resolve the publication conflict before continuing.',
+    needs_review: 'Review this asset before continuing.',
+    not_raw: 'This action is available for RAW source assets.',
+    not_library: 'This action is available for Library assets.',
+    original_unavailable: 'No retained original is available.',
+    already_archived: 'The original is already archived.',
+  };
+  return capability.reason ? messages[capability.reason] ?? fallback : fallback;
+}
+
+function AssetAttachmentEvidence({ attachments }: { attachments: AttachmentStreamInfo[] }) {
+  const groups = [
+    { label: 'Fonts', kind: 'FONT' },
+    { label: 'Images', kind: 'IMAGE' },
+    { label: 'Other', kind: 'OTHER' },
+  ];
+  return (
+    <Stack spacing={1} data-testid="asset-track-attachments">
+      <Typography variant="h4">Attachments</Typography>
+      {groups.map((group) => {
+        const values = attachments.filter((attachment) => {
+          const kind = attachment.attachmentKind.toUpperCase();
+          return group.kind === 'OTHER' ? kind !== 'FONT' && kind !== 'IMAGE' : kind === group.kind;
+        });
+        return (
+          <Box key={group.label}>
+            <Typography variant="h5">{group.label}</Typography>
+            {values.length ? values.map((attachment) => (
+              <Typography key={attachment.index} variant="body2">
+                #{attachment.index} · {attachment.filename || attachment.title || 'Unnamed attachment'} · {attachment.mimeType || 'Unknown format'}
+                {attachment.fontFormat ? ` · ${attachment.fontFormat}` : ''}
+                {attachment.title ? ` · ${attachment.title}` : ''}
+              </Typography>
+            )) : <Typography variant="body2" color="text.secondary">None found.</Typography>}
+          </Box>
+        );
+      })}
+    </Stack>
+  );
+}
+
+function AssetMetadataSidecars({ values, loading }: { values: AssetMetadataSidecar[]; loading: boolean }) {
+  return (
+    <Stack spacing={0.75} data-testid="asset-metadata-sidecars">
+      <Typography variant="h5">Metadata sidecars</Typography>
+      {loading ? <LinearProgress /> : values.length ? values.map((sidecar) => (
+        <Typography key={sidecar.path} data-testid="asset-nfo-sidecar" variant="body2">
+          {sidecar.fileName} · {formatBytes(sidecar.sizeBytes)} · {formatDate(sidecar.modifiedAt)} · Read only
+        </Typography>
+      )) : <Typography variant="body2" color="text.secondary">No metadata sidecars found.</Typography>}
+    </Stack>
+  );
+}
+
 function lifecyclePresentationValue(value: string | undefined, fallback = 'unavailable') {
   if (!value) return fallback;
   return value.replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
@@ -2667,9 +2729,6 @@ export function AssetInfoOverview({ asset, libraries }: { asset: Asset; librarie
   const publication = lifecycle?.currentPublication;
   const evidence = lifecycle?.evidenceSummary;
   const destination = libraries.find((library) => library.id === asset.libraryId);
-  const blockedActions = Object.entries(lifecycle?.actions ?? {})
-    .filter(([, capability]) => !capability.allowed)
-    .slice(0, 5);
   const publicationConflict = publication?.state === 'conflict' || publication?.state === 'unresolved' || publication?.state === 'unresolved_conflict';
 
   return (
@@ -2727,12 +2786,6 @@ export function AssetInfoOverview({ asset, libraries }: { asset: Asset; librarie
         <Typography>Analysis · {analysisEvidenceLabel(evidence?.analysis?.status)}</Typography>
         <Typography variant="caption" color="text.secondary">Validation and Publisher details remain unavailable/pending until their canonical evidence exists.</Typography>
       </Box>
-      {blockedActions.length ? (
-        <Stack spacing={0.25}>
-          <Typography variant="caption" color="text.secondary">Backend action capabilities</Typography>
-          {blockedActions.map(([key, capability]) => <Typography key={key} variant="body2" color="text.secondary">{lifecyclePresentationValue(key)} unavailable{capability.reason ? `: ${capability.reason}` : ''}</Typography>)}
-        </Stack>
-      ) : null}
     </Stack>
   );
 }
@@ -2823,8 +2876,9 @@ function AssetRow({
   const selectedTrackProfile = trackProfiles.find((profile) => profile.key === effectiveTrackProfileKey);
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(groupLibraryId);
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
-  type AssetInfoSection = 'overview' | 'analysis' | 'tracks' | 'subtitles' | 'attachments' | 'publication' | 'advisor' | 'conversion' | 'validation' | 'original' | 'evidence' | 'history' | 'test-encode';
+  type AssetInfoSection = 'overview' | 'analysis' | 'tracks' | 'publication' | 'advisor' | 'conversion' | 'validation' | 'original' | 'evidence' | 'history' | 'test-encode';
   const [snapshotTab, setSnapshotTab] = useState<AssetInfoSection>('overview');
+  const hidePreConversionActions = hidePreConversionActionsForAsset(asset);
   const [selectedEvidenceJobId, setSelectedEvidenceJobId] = useState<number | null>(null);
   const assetScopeConfigurations = useQuery({
     queryKey: ['assetScopeConfigurations'],
@@ -2905,7 +2959,7 @@ function AssetRow({
   const storedSnapshot = useQuery({
     queryKey: ['assetSnapshot', asset.path],
     queryFn: () => api.latestSnapshot(asset.path),
-    enabled: showSnapshotDialog && ['analysis', 'tracks', 'subtitles', 'advisor', 'conversion', 'test-encode', 'history'].includes(snapshotTab) && !asset.missing,
+    enabled: showSnapshotDialog && ['analysis', 'tracks', 'advisor', 'conversion', 'test-encode', 'history'].includes(snapshotTab) && !asset.missing,
     staleTime: 0,
   });
   const legacyAnalysisSettings = useQuery({
@@ -2964,6 +3018,7 @@ function AssetRow({
       showSnapshotDialog &&
       snapshotTab === 'advisor' &&
       Boolean(snapshotData) &&
+      !hidePreConversionActions &&
       !asset.missing &&
       asset.status !== 'converted' &&
       asset.status !== 'archive' &&
@@ -2975,12 +3030,17 @@ function AssetRow({
   const externalSubtitles = useQuery({
     queryKey: ['externalSubtitles', asset.path],
     queryFn: () => api.externalAssetSubtitles(asset.path),
-    enabled: showSnapshotDialog && snapshotTab === 'subtitles' && asset.status !== 'archive' && !asset.missing,
+    enabled: showSnapshotDialog && snapshotTab === 'tracks' && asset.status !== 'archive' && !asset.missing,
+  });
+  const metadataSidecars = useQuery({
+    queryKey: ['assetMetadataSidecars', asset.path],
+    queryFn: () => api.assetMetadataSidecars(asset.path),
+    enabled: showSnapshotDialog && snapshotTab === 'tracks' && !asset.missing,
   });
   const subtitleEligibility = useQuery({
     queryKey: ['subtitleEligibility', asset.path],
     queryFn: () => api.subtitleEligibility(asset.path),
-    enabled: showSnapshotDialog && snapshotTab === 'subtitles' && !asset.missing,
+    enabled: showSnapshotDialog && snapshotTab === 'tracks' && !asset.missing,
   });
   const evidenceArtifacts = useQuery({
     queryKey: ['assetEvidenceArtifacts', selectedEvidenceJobId],
@@ -3566,7 +3626,7 @@ function AssetRow({
   }, [asset.path, setSubtitleCompositionOperation, setSubtitleGenerations, waitForSubtitleOperation]);
 
   useEffect(() => {
-    if (!showSnapshotDialog || snapshotTab !== 'subtitles' || asset.missing) return;
+    if (!showSnapshotDialog || snapshotTab !== 'tracks' || asset.missing) return;
     void restoreSubtitleOperations();
   }, [showSnapshotDialog, snapshotTab, asset.missing, restoreSubtitleOperations]);
 
@@ -4605,7 +4665,7 @@ async function generateExternalSubtitle(
             {snapshotTab !== 'overview' && snapshotTab !== 'analysis' && !asset.missing && !storedSnapshot.isLoading && !operationPending && !storedSnapshotExists ? (
               <Alert
                 severity="info"
-                action={<Button color="inherit" size="small" onClick={() => snapshot.mutate({ path: asset.path })} disabled={!assetInfoCapability(asset, 'refreshAnalysis').allowed}>{assetInfoCapability(asset, 'refreshAnalysis').allowed ? 'Analyze asset' : assetInfoCapability(asset, 'refreshAnalysis').reason || 'Analysis unavailable'}</Button>}
+                action={<Button color="inherit" size="small" onClick={() => snapshot.mutate({ path: asset.path })} disabled={!assetInfoCapability(asset, 'refreshAnalysis').allowed}>{assetInfoCapability(asset, 'refreshAnalysis').allowed ? 'Analyze asset' : assetActionReasonMessage(assetInfoCapability(asset, 'refreshAnalysis'), 'Analysis unavailable')}</Button>}
               >
                 No snapshot available
               </Alert>
@@ -4615,16 +4675,14 @@ async function generateExternalSubtitle(
                   <Tab value="overview" label="Asset Information" />
                   <Tab value="analysis" label="Analysis" />
                   <Tab value="tracks" label="Tracks" />
-                  <Tab value="subtitles" label="Subtitles" />
-                  <Tab value="attachments" label="Attachments" />
                   <Tab value="publication" label="Job Information" />
-                  <Tab value="advisor" label="MVForge Suggestions" />
+                  {!hidePreConversionActions ? <Tab value="advisor" label="MVForge Suggestions" /> : null}
                   <Tab value="conversion" label="Quick Asset Overrides" />
                   <Tab value="validation" label="Validation" />
                   <Tab value="original" label="Original" />
                   <Tab value="evidence" label="Evidence" />
                   <Tab value="history" label="History" />
-                  <Tab value="test-encode" label="Test Encode" />
+                  {canGenerateTestEncode && !hidePreConversionActions ? <Tab value="test-encode" label="Test Encode" /> : null}
                 </Tabs>
                 {snapshotTab === 'analysis' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
@@ -4648,10 +4706,10 @@ async function generateExternalSubtitle(
                     {snapshotData ? <><MediaSnapshotDetails scan={snapshotData} /><DirectPlaySnapshotComparison scan={snapshotData} job={associatedJob} /></> : null}
                   </Stack>
                 </Box> : null}
-                {snapshotTab === 'tracks' || snapshotTab === 'subtitles' ? <Box>
+                {snapshotTab === 'tracks' ? <Box>
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
                     {snapshotTab === 'tracks' ? <Box>
-                    {snapshotData ? <><TrackMaintenancePanel path={asset.path} active={showSnapshotDialog && snapshotTab === 'tracks'} hasOpenJob={hasOpenJob || !assetInfoCapability(asset, 'manageTracks').allowed} />
+                    {snapshotData ? <><TrackMaintenancePanel path={asset.path} active={showSnapshotDialog && snapshotTab === 'tracks'} hasOpenJob={hasOpenJob} canManageTracks={assetInfoCapability(asset, 'manageTracks').allowed} canManageAttachments={assetInfoCapability(asset, 'manageAttachments').allowed} />
                     {!isConverted && !isArchive ? <><Typography variant="h3">Conversion track selection</Typography><MediaSnapshotDetails
                       scan={snapshotData}
                       section="tracks"
@@ -4728,7 +4786,8 @@ async function generateExternalSubtitle(
                     </Stack> : null}</> : null}
                     </> : <Alert severity="info">Track evidence is unavailable until a persisted Analysis snapshot exists.</Alert>}
                     </Box> : null}
-                    {snapshotTab === 'subtitles' ? <Box>
+                    {snapshotTab === 'tracks' ? <Box>
+                    <Typography variant="h4">Subtitles</Typography>
                     {snapshotData ? <>
                     {isArchive ? (
                       <Alert severity="info">
@@ -4747,8 +4806,11 @@ async function generateExternalSubtitle(
                       translationDisabled={rowLocked || !assetInfoCapability(asset, 'manageSubtitles').allowed}
                       onTranslate={(streamIndex) => setTranslationSource({ type: 'embedded', embedded: { streamIndex } })}
                     />
+                    <AssetAttachmentEvidence attachments={snapshotData.attachmentStreams ?? []} />
+                    <Typography variant="h4">Sidecars</Typography>
                     {!isArchive ? (
                     <>
+                    <Typography variant="h5">Subtitle sidecars</Typography>
                     <ExternalSubtitleList
                         values={subtitleEligibility.data?.external ?? externalSubtitles.data ?? []}
                         loading={externalSubtitles.isLoading}
@@ -4800,6 +4862,9 @@ async function generateExternalSubtitle(
                     ) : null}
                     {deleteExternalSubtitle.isError ? <Alert severity="warning">{deleteExternalSubtitle.error instanceof Error ? deleteExternalSubtitle.error.message : 'Subtitle deletion failed.'}</Alert> : null}
                     </> : <Alert severity="info">Subtitle controls are unavailable until a persisted Analysis snapshot exists.</Alert>}
+                    {!snapshotData ? <Typography variant="h4">Sidecars</Typography> : null}
+                    <AssetMetadataSidecars values={metadataSidecars.data ?? []} loading={metadataSidecars.isLoading} />
+                    {metadataSidecars.isError ? <Alert severity="warning">Could not list metadata sidecars: {metadataSidecars.error instanceof Error ? metadataSidecars.error.message : 'unknown backend error'}</Alert> : null}
                     </Box> : null}
                   </Stack>
                 </Box> : null}
@@ -4809,7 +4874,7 @@ async function generateExternalSubtitle(
                     <Grid container spacing={1.5} alignItems="flex-start">
                       <Grid size={{ xs: 12, md: 6 }}>
                         <Stack direction="row" spacing={1} alignItems="flex-start">
-                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={renameLocked || !renameCapability.allowed || asset.missing || renameAsset.isPending || saveAssetEdit.isPending} fullWidth helperText={renameCapability.allowed ? 'File name only; the asset remains in its current folder.' : `Rename unavailable: ${renameCapability.reason || 'backend denied'}`} />
+                          <TextField size="small" label="Rename file" value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} disabled={renameLocked || !renameCapability.allowed || asset.missing || renameAsset.isPending || saveAssetEdit.isPending} fullWidth helperText={renameCapability.allowed ? 'File name only; the asset remains in its current folder.' : assetActionReasonMessage(renameCapability, 'Rename unavailable.')} />
                           <Button size="small" variant="contained" onClick={() => renameAsset.mutate({ path: asset.path, fileName: renameFileName })} disabled={ renameLocked || asset.missing || renameAsset.isPending || !renameFileName.trim() || renameFileName.trim() === asset.fileName
                             || saveAssetEdit.isPending || !renameCapability.allowed
                           }>Rename</Button>
@@ -4919,13 +4984,6 @@ async function generateExternalSubtitle(
                     )}
                   </Stack>
                 </Box> : null}
-                {snapshotTab === 'attachments' ? <Box>
-                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
-                    <Typography variant="h3">Attachments</Typography>
-                    <Typography color="text.secondary">Attachment management uses the existing Track Maintenance authority and loads only when this section is selected.</Typography>
-                    <TrackMaintenancePanel path={asset.path} active={showSnapshotDialog && snapshotTab === 'attachments'} hasOpenJob={hasOpenJob || !assetInfoCapability(asset, 'manageAttachments').allowed} />
-                  </Stack>
-                </Box> : null}
                 {snapshotTab === 'validation' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     <Typography variant="h3">Validation</Typography>
@@ -4986,7 +5044,7 @@ async function generateExternalSubtitle(
                     {legacyAnalysisRecords.map((record, index) => <Alert key={String(record.id ?? index)} severity="info"><strong>Legacy Analysis decision:</strong> {String(record.decision ?? 'No decision')} · {String(record.createdAt ?? '')}{record.notes ? ` · ${String(record.notes)}` : ''}</Alert>)}
                   </Stack>
                 </Box> : null}
-                {snapshotTab === 'advisor' ? <Box>
+                {snapshotTab === 'advisor' && !hidePreConversionActions ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     {!isConverted && !isArchive && profileSuggestion.isPending ? <Alert severity="info">Comparing the snapshot with available profiles…</Alert> : null}
                     {!isConverted && !isArchive && profileSuggestion.isError ? (
@@ -5024,7 +5082,7 @@ async function generateExternalSubtitle(
                     ) : <Alert severity="info">Archived originals are immutable. Recover the asset before configuring conversion overrides.</Alert>}
                   </Stack>
                 </Box> : null}
-                {snapshotTab === 'test-encode' ? <Box>
+                {snapshotTab === 'test-encode' && canGenerateTestEncode && !hidePreConversionActions ? <Box>
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
                     <Stack spacing={0.5}>
                       <Typography variant="h3">Test Encode</Typography>
@@ -5049,7 +5107,7 @@ async function generateExternalSubtitle(
                       <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Destination Library</Typography><Typography>{libraries.find((library) => library.id === selectedLibraryId)?.name || 'Choose when generating'}</Typography></Grid>
                     </Grid>
                     {!canGenerateTestEncode ? (
-                      <Alert severity="info">{labCapability.allowed ? 'Generate Test Encode is unavailable for Converted, Archive, or Published as-is assets.' : `Generate Test Encode unavailable: ${labCapability.reason || 'backend denied'}`}</Alert>
+                      <Alert severity="info">{labCapability.allowed ? 'Generate Test Encode is unavailable for this asset.' : `Test Encode unavailable: ${assetActionReasonMessage(labCapability, 'Test Encode is unavailable for this asset.')}`}</Alert>
                     ) : (
                       <Tooltip title={hasOpenJob ? 'Asset has an active Queue job' : !effectiveProfileId ? 'Select an effective video profile first' : updateProfileAssignment.isPending ? 'Saving the current asset configuration' : 'Generate a short real encode from the persisted effective asset configuration'}>
                         <span style={{ alignSelf: 'flex-start' }}>
