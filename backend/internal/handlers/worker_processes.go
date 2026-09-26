@@ -42,8 +42,15 @@ func (h WorkerHandler) startFFmpegJob(jobID uint, args []string, durationSeconds
 	if err != nil {
 		return err
 	}
+	jobLog, logErr := openPersistentJobLogWriter(h.db, jobID)
+	if logErr != nil {
+		applog.Event("warning", "ffmpeg", "job_log_unavailable", map[string]any{"jobId": jobID}, logErr)
+	}
 
 	if err := cmd.Start(); err != nil {
+		if jobLog != nil {
+			_ = jobLog.Close()
+		}
 		applog.Event("error", "ffmpeg", "process_start_failed", map[string]any{"jobId": jobID}, err)
 		return err
 	}
@@ -51,7 +58,7 @@ func (h WorkerHandler) startFFmpegJob(jobID uint, args []string, durationSeconds
 	h.startSleepInhibitor(cmd.Process.Pid)
 
 	registerRunningJobProcess(jobID, cmd)
-	go h.monitorFFmpegJob(jobID, cmd, stdout, stderr, durationSeconds)
+	go h.monitorFFmpegJob(jobID, cmd, stdout, stderr, durationSeconds, jobLog)
 
 	return nil
 }
@@ -74,11 +81,22 @@ func (h WorkerHandler) startSleepInhibitor(processID int) {
 	}
 }
 
-func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.ReadCloser, stderr io.ReadCloser, durationSeconds float64) {
+func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.ReadCloser, stderr io.ReadCloser, durationSeconds float64, jobLog io.WriteCloser) {
+	if jobLog != nil {
+		defer jobLog.Close()
+	}
+	var logWriter io.Writer
+	if jobLog != nil {
+		logWriter = jobLog
+	}
 	var stderrBuffer bytes.Buffer
 	stderrDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(&stderrBuffer, stderr)
+		if logWriter != nil {
+			_, _ = io.Copy(io.MultiWriter(&stderrBuffer, logWriter), stderr)
+		} else {
+			_, _ = io.Copy(&stderrBuffer, stderr)
+		}
 		close(stderrDone)
 	}()
 
@@ -87,6 +105,9 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 	lastSaved := time.Now()
 	for scanner.Scan() {
 		line := scanner.Text()
+		if logWriter != nil {
+			_, _ = io.WriteString(logWriter, "[ffmpeg] "+line+"\n")
+		}
 		if nextProgress, ok := progressFromFFmpegLine(line, durationSeconds); ok {
 			if nextProgress > lastProgress && (nextProgress-lastProgress >= 2 || time.Since(lastSaved) > 2*time.Second) {
 				if err := h.updateRunningJobProgress(jobID, nextProgress); err == nil {

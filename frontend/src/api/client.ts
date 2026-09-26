@@ -24,6 +24,7 @@ import type {
   ExecutionPlan,
   ExternalSubtitle,
   JobArtifactsResponse,
+  JobLogResponse,
   Profile,
   ProfileInput,
   ProfileAssignment,
@@ -599,6 +600,7 @@ export const api = {
       method: 'DELETE',
     }),
   jobArtifacts: (jobId: number) => request<JobArtifactsResponse>(`/api/queue/jobs/${jobId}/artifacts`),
+  jobLog: (jobId: number, tail = 1000) => request<JobLogResponse>(`/api/queue/jobs/${jobId}/log?tail=${tail}`),
   executionPlans: (jobId: number) => request<ExecutionPlan[]>(`/api/queue/jobs/${jobId}/execution-plans`),
   reviewExecutionPlan: ({ jobId, planId, approve }: { jobId: number; planId: number; approve: boolean }) =>
     request<ExecutionPlan>(`/api/queue/jobs/${jobId}/execution-plans/${planId}/${approve ? 'approve' : 'reject'}`, {

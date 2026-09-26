@@ -3,11 +3,14 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/applog"
@@ -17,6 +20,7 @@ import (
 )
 
 const maxLogReadBytes = 1024 * 1024
+const jobLogOutputMarker = "\nFFmpeg output\n"
 
 type LogHandler struct {
 	db *gorm.DB
@@ -32,6 +36,13 @@ type LogFile struct {
 
 type LogFileContent struct {
 	Name      string `json:"name"`
+	Content   string `json:"content"`
+	Truncated bool   `json:"truncated"`
+}
+
+type JobLogContent struct {
+	JobID     uint   `json:"jobId"`
+	Available bool   `json:"available"`
 	Content   string `json:"content"`
 	Truncated bool   `json:"truncated"`
 }
@@ -121,6 +132,77 @@ func (h LogHandler) ReadFile(c *gin.Context) {
 	c.JSON(http.StatusOK, LogFileContent{Name: name, Content: content, Truncated: truncated})
 }
 
+// ReadJobLog returns the canonical persistent log generated for one QueueJob.
+func (h LogHandler) ReadJobLog(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid job id"})
+		return
+	}
+
+	var job models.QueueJob
+	if err := h.db.First(&job, uint(id)).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load job"})
+		return
+	}
+
+	tail := 1000
+	if raw := c.Query("tail"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tail must be a positive line count"})
+			return
+		}
+		tail = parsed
+	}
+	if tail > 5000 {
+		tail = 5000
+	}
+
+	logDir, err := h.configuredLogDir()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not resolve log storage"})
+		return
+	}
+	if strings.TrimSpace(logDir) == "" {
+		logDir = os.Getenv("MVFORGE_LOG_DIR")
+	}
+	if strings.TrimSpace(logDir) == "" {
+		logDir = "/media/reports/logs"
+	}
+	name := fmt.Sprintf("job-%d.log", job.ID)
+	path := filepath.Join(logDir, name)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		c.JSON(http.StatusOK, JobLogContent{JobID: job.ID, Available: false})
+		return
+	}
+	if err := validateJobLogFile(path); err != nil {
+		c.JSON(http.StatusOK, JobLogContent{JobID: job.ID, Available: false})
+		return
+	}
+	if job.Status != JobStatusRunning && !hasRunningJobProcess(job.ID) {
+		if err := refreshJobLogFile(h.db, job, path); err != nil {
+			c.JSON(http.StatusOK, JobLogContent{JobID: job.ID, Available: false})
+			return
+		}
+	}
+	content, truncated, err := readLogFile(path)
+	if err != nil {
+		c.JSON(http.StatusOK, JobLogContent{JobID: job.ID, Available: false})
+		return
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) > tail {
+		lines = lines[len(lines)-tail:]
+		truncated = true
+	}
+	c.JSON(http.StatusOK, JobLogContent{JobID: job.ID, Available: true, Content: strings.Join(lines, "\n"), Truncated: truncated})
+}
+
 func (h LogHandler) prepareLogFiles() (string, error) {
 	logDir, err := h.configuredLogDir()
 	if err != nil {
@@ -162,12 +244,114 @@ func (h LogHandler) prepareLogFiles() (string, error) {
 
 	for _, job := range jobs {
 		name := fmt.Sprintf("job-%d.log", job.ID)
-		if err := os.WriteFile(filepath.Join(logDir, name), []byte(jobLog(h.db, job)), 0o644); err != nil {
+		if job.Status == JobStatusRunning || hasRunningJobProcess(job.ID) {
+			continue
+		}
+		if err := refreshJobLogFile(h.db, job, filepath.Join(logDir, name)); err != nil {
 			return "", err
 		}
 	}
 
 	return logDir, nil
+}
+
+func refreshJobLogFile(db *gorm.DB, job models.QueueJob, path string) error {
+	if err := validateJobLogFile(path); err != nil {
+		return err
+	}
+	output := ""
+	if content, err := os.ReadFile(path); err == nil {
+		if _, existingOutput, found := strings.Cut(string(content), jobLogOutputMarker); found {
+			output = existingOutput
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(path, []byte(jobLog(db, job)+jobLogOutputMarker+output), 0o644)
+}
+
+func validateJobLogFile(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("job log is not a regular file")
+	}
+	return nil
+}
+
+type persistentJobLogWriter struct {
+	mu     sync.Mutex
+	file   *os.File
+	path   string
+	header string
+}
+
+func (w *persistentJobLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.file.Write(p)
+	if err != nil {
+		return n, err
+	}
+	info, err := w.file.Stat()
+	if err != nil || info.Size() <= 2*maxLogReadBytes {
+		return n, err
+	}
+	tail, _, err := readLogFile(w.path)
+	if err != nil {
+		return n, err
+	}
+	if _, output, found := strings.Cut(tail, jobLogOutputMarker); found {
+		tail = output
+	}
+	if err := w.file.Close(); err != nil {
+		return n, err
+	}
+	if err := os.WriteFile(w.path, []byte(w.header+tail), 0o644); err != nil {
+		return n, err
+	}
+	w.file, err = os.OpenFile(w.path, os.O_APPEND|os.O_WRONLY, 0o644)
+	return n, err
+}
+
+func (w *persistentJobLogWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.file.Close()
+}
+
+func openPersistentJobLogWriter(db *gorm.DB, jobID uint) (io.WriteCloser, error) {
+	var job models.QueueJob
+	if err := db.First(&job, jobID).Error; err != nil {
+		return nil, err
+	}
+	logDir, err := configuredLogDir(db)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(logDir) == "" {
+		logDir = os.Getenv("MVFORGE_LOG_DIR")
+	}
+	if strings.TrimSpace(logDir) == "" {
+		logDir = "/media/reports/logs"
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(logDir, fmt.Sprintf("job-%d.log", job.ID))
+	if err := refreshJobLogFile(db, job, path); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	return &persistentJobLogWriter{file: file, path: path, header: jobLog(db, job) + jobLogOutputMarker}, nil
 }
 
 func logFileCategory(name string) string {
@@ -431,16 +615,23 @@ func jobLog(db *gorm.DB, job models.QueueJob) string {
 }
 
 func readLogFile(path string) (string, bool, error) {
-	content, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return "", false, err
 	}
-
-	if len(content) <= maxLogReadBytes {
-		return string(content), false, nil
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", false, err
 	}
-
-	return string(content[len(content)-maxLogReadBytes:]), true, nil
+	truncated := info.Size() > maxLogReadBytes
+	if truncated {
+		if _, err := file.Seek(-maxLogReadBytes, io.SeekEnd); err != nil {
+			return "", false, err
+		}
+	}
+	content, err := io.ReadAll(io.LimitReader(file, maxLogReadBytes))
+	return string(content), truncated, err
 }
 
 func safeLogFileName(name string) bool {

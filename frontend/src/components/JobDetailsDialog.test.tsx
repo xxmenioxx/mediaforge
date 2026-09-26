@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { QueueJob } from '../api/types';
 
@@ -9,6 +9,7 @@ vi.mock('../api/client', () => ({
   api: {
     jobArtifacts: vi.fn().mockResolvedValue({ warnings: [] }),
     executionPlans: vi.fn().mockResolvedValue([]),
+    jobLog: vi.fn().mockResolvedValue({ jobId: 42, available: true, content: 'job log line', truncated: false }),
     reviewExecutionPlan: vi.fn(),
   },
 }));
@@ -49,5 +50,71 @@ describe('JobDetailsDialog subtitle stage', () => {
 	 expect(screen.getByText('CustomFont.ttf')).toBeTruthy();
 	 expect(screen.getByText('FONT · TTF')).toBeTruthy();
 	 expect(screen.getByText('FONT · OTF')).toBeTruthy();
+  });
+
+  it('loads the selected job log only after the Job Log tab opens and supports refresh and copy', async () => {
+    const { api } = await import('../api/client');
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobDetailsDialog job={jobWithSidecars()} onClose={() => undefined} /></QueryClientProvider>);
+
+    expect(api.jobLog).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Job Log' }));
+    expect(await screen.findByText('job log line')).toBeTruthy();
+    expect(api.jobLog).toHaveBeenCalledWith(42);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(api.jobLog).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('job log line'));
+  });
+
+  it('keeps an explicit unavailable state for missing logs', async () => {
+    const { api } = await import('../api/client');
+    vi.mocked(api.jobLog).mockResolvedValueOnce({ jobId: 42, available: false, content: '', truncated: false });
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobDetailsDialog job={jobWithSidecars()} onClose={() => undefined} /></QueryClientProvider>);
+    fireEvent.click(screen.getByRole('tab', { name: 'Job Log' }));
+    expect(await screen.findByText('No persisted log is available for this job yet.')).toBeTruthy();
+  });
+
+  it('displays a safe ApiRequestError message without exposing response details', async () => {
+    const { api } = await import('../api/client');
+    const { ApiRequestError } = await vi.importActual<typeof import('../api/client')>('../api/client');
+    vi.mocked(api.jobLog).mockRejectedValueOnce(new ApiRequestError('Configured job log storage is unavailable.', 503));
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobDetailsDialog job={jobWithSidecars()} onClose={() => undefined} /></QueryClientProvider>);
+    fireEvent.click(screen.getByRole('tab', { name: 'Job Log' }));
+    expect(await screen.findByText('Unable to load job log: Configured job log storage is unavailable.')).toBeTruthy();
+    expect(screen.queryByText(/stack|response body/i)).toBeNull();
+  });
+
+  it('pauses auto-scroll when the reader scrolls away from the bottom', async () => {
+    const { api } = await import('../api/client');
+    vi.mocked(api.jobLog).mockResolvedValueOnce({ jobId: 42, available: true, content: 'line', truncated: false });
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobDetailsDialog job={jobWithSidecars()} onClose={() => undefined} /></QueryClientProvider>);
+    fireEvent.click(screen.getByRole('tab', { name: 'Job Log' }));
+    await screen.findByText('line');
+    const viewer = screen.getAllByLabelText('Job log').at(-1)!;
+    Object.defineProperty(viewer, 'scrollHeight', { configurable: true, value: 200 });
+    Object.defineProperty(viewer, 'clientHeight', { configurable: true, value: 100 });
+    Object.defineProperty(viewer, 'scrollTop', { configurable: true, value: 0 });
+    fireEvent.scroll(viewer);
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Auto-scroll' })).toHaveProperty('checked', false));
+  });
+
+  it('polls a running job log only while the tab is active', async () => {
+    const { api } = await import('../api/client');
+    vi.mocked(api.jobLog).mockClear();
+    vi.useFakeTimers();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    const view = render(<QueryClientProvider client={client}><JobDetailsDialog job={jobWithSidecars()} onClose={() => undefined} /></QueryClientProvider>);
+    fireEvent.click(screen.getByRole('tab', { name: 'Job Log' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(api.jobLog).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(api.jobLog).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole('tab', { name: 'Pipeline' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(api.jobLog).toHaveBeenCalledTimes(2);
+    view.unmount();
+    vi.useRealTimers();
   });
 });

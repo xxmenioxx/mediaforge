@@ -3,10 +3,12 @@ import {
   Box,
   Button,
   Chip,
+  Checkbox,
   Dialog,
   DialogContent,
   DialogTitle,
   Divider,
+  FormControlLabel,
   Grid,
   Stack,
   Tab,
@@ -14,7 +16,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import HourglassTopIcon from '@mui/icons-material/HourglassTop';
@@ -32,6 +34,9 @@ type JobDetailsDialogProps = {
 export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState(0);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [copyError, setCopyError] = useState('');
+  const logViewerRef = useRef<HTMLPreElement | null>(null);
   const artifacts = useQuery({
     queryKey: ['jobArtifacts', job?.id],
     queryFn: () => api.jobArtifacts(job?.id ?? 0),
@@ -43,6 +48,17 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
     enabled: Boolean(job),
     refetchInterval: (query) => query.state.data?.some((plan) => plan.status === 'pending_evaluation') ? 2000 : false,
   });
+  const jobLog = useQuery({
+    queryKey: ['jobLog', job?.id],
+    queryFn: () => api.jobLog(job?.id ?? 0),
+    enabled: Boolean(job) && tab === 4,
+    refetchInterval: job?.status === 'running' ? 2000 : false,
+  });
+  useEffect(() => {
+    if (tab === 4 && autoScroll && logViewerRef.current) {
+      logViewerRef.current.scrollTop = logViewerRef.current.scrollHeight;
+    }
+  }, [autoScroll, jobLog.data?.content, tab]);
   const reviewPlan = useMutation({
     mutationFn: api.reviewExecutionPlan,
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['executionPlans', job?.id] }),
@@ -95,6 +111,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
             <Tab label="Original snapshot" />
             <Tab label={result ? 'Final result' : 'Planned result'} />
             <Tab label="Execution plan" />
+            <Tab label="Job Log" />
           </Tabs>
           {tab === 0 ? (
             <PipelineStages job={job} />
@@ -156,7 +173,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
               <InfoBlock title="Notes" value={job.notes} />
               <ArtifactBlock title={result ? 'Result JSON' : 'Planned job JSON'} value={result ?? plannedJob(job, asIs)} />
             </Stack>
-          ) : (
+          ) : tab === 3 ? (
             <Stack spacing={2}>
               {executionPlans.isLoading ? <Alert severity="info">Loading execution plans...</Alert> : null}
               {!activePlan && !executionPlans.isLoading ? <Alert severity="info">No execution plan has been generated for this job.</Alert> : null}
@@ -204,6 +221,41 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                   <ArtifactBlock title="Execution Plan JSON" value={activePlan as unknown as Record<string, unknown>} />
                 </>
               ) : null}
+            </Stack>
+          ) : (
+            <Stack spacing={1.5}>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Button size="small" onClick={() => void jobLog.refetch()} disabled={jobLog.isFetching}>Refresh</Button>
+                <Button size="small" onClick={() => void (async () => {
+                  setCopyError('');
+                  try {
+                    await navigator.clipboard.writeText(jobLog.data?.content ?? '');
+                  } catch {
+                    setCopyError('Could not copy the job log to the clipboard.');
+                  }
+                })()} disabled={!jobLog.data?.available}>Copy</Button>
+                <FormControlLabel control={<Checkbox size="small" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />} label="Auto-scroll" />
+              </Stack>
+              {jobLog.isLoading ? <Alert severity="info">Loading job log...</Alert> : null}
+              {jobLog.isError ? <Alert severity="warning">Unable to load job log: {jobLog.error instanceof Error ? jobLog.error.message : 'Unknown error.'}</Alert> : null}
+              {jobLog.data && !jobLog.data.available ? <Alert severity="info">No persisted log is available for this job yet.</Alert> : null}
+              {copyError ? <Alert severity="warning">{copyError}</Alert> : null}
+              {jobLog.data?.available ? (
+                <Box
+                  component="pre"
+                  ref={logViewerRef}
+                  onScroll={(event) => {
+                    const element = event.currentTarget;
+                    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight <= 8;
+                    if (!atBottom && autoScroll) setAutoScroll(false);
+                  }}
+                  sx={{ m: 0, p: 1.5, maxHeight: '55vh', overflow: 'auto', bgcolor: 'background.default', border: 1, borderColor: 'divider', borderRadius: 1, fontFamily: 'monospace', fontSize: '0.8rem', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
+                  aria-label="Job log"
+                >
+                  {jobLog.data.content || 'The persisted job log is empty.'}
+                </Box>
+              ) : null}
+              {jobLog.data?.truncated ? <Typography variant="caption" color="text.secondary">Showing the bounded tail of this log.</Typography> : null}
             </Stack>
           )}
         </Stack>
