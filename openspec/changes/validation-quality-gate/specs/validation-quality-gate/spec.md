@@ -6,7 +6,7 @@ Defines the canonical, auditable quality decision between a completed Queue exec
 
 ### Requirement: Validation runs bind immutable execution and Result evidence
 
-Every Validation run SHALL have a stable run identity, validator contract version, ruleset identity and version, Queue execution identity, frozen plan identity/version, and produced Result identity. The run SHALL record the expected and actual values it evaluates and SHALL remain immutable after completion. A run without verifiable plan or Result identity SHALL NOT be treated as a passing decision.
+Every Validation run SHALL have a stable run identity, validator contract version, ruleset identity and version, Queue execution identity, frozen plan identity/version, and read-only references to the produced Result identity. The existing `kind=result` job artifact SHALL remain the actual-result authority and SHALL carry the stable Result artifact/generation identity and bounded output revision/fingerprint. #53 SHALL extend that artifact contract; it SHALL NOT add a second Result store, a parallel media-result model, or a Validation-owned artifact identity. A ValidationRun SHALL reference the identity carried by the canonical Result artifact and SHALL record the expected and actual values it evaluates. It SHALL remain immutable after completion. A run without verifiable plan or Result identity SHALL NOT be treated as a passing decision.
 
 #### Scenario: Completed output is evaluated against its frozen execution
 - **WHEN** a completed Queue execution has a matching frozen plan and produced Result
@@ -15,6 +15,10 @@ Every Validation run SHALL have a stable run identity, validator contract versio
 #### Scenario: Evidence identity is missing or changed
 - **WHEN** the plan identity is unavailable or the produced artifact no longer matches the Result identity
 - **THEN** Validation records an unverified finding and returns `REVIEW_REQUIRED` without treating the evidence as a clean pass
+
+#### Scenario: Perceptual evidence represents the same produced Result
+- **WHEN** #69 CandidateIdentity or perceptual evidence represents the same produced Result as the `kind=result` artifact
+- **THEN** it references that artifact's canonical generation and output revision instead of creating an independent Validation identity
 
 ### Requirement: Validation evaluates required rule categories
 
@@ -66,11 +70,19 @@ The Review Center SHALL default to results with `REVIEW_REQUIRED`, `FAIL`, or an
 
 ### Requirement: Overrides are auditable and do not alter evidence or findings
 
-An authorized user override SHALL record the actor, non-empty reason, timestamp, override contract version, targeted Validation run, and the findings or handoff decision it covers. An override SHALL be a separate auditable event and SHALL NOT edit the immutable Validation outcome, rule results, frozen plan, or produced Result evidence. Evidence identity or integrity failures SHALL not be bypassed by an override.
+An interactive override SHALL record a server-assigned actor reference, non-empty user-supplied reason, timestamp, override contract version, targeted Validation run, and the findings or handoff decision it covers. In the current local/self-hosted V1, the server SHALL assign `local_operator` to interactive operator actions and `system` to automatic/system actions. The client SHALL NOT supply a trusted actor identity. The actor reference SHALL support a future server-verified authenticated principal without changing ValidationRun or override semantics. This capability SHALL NOT introduce login, authentication, or authorization infrastructure. An override SHALL be a separate append-only auditable event and SHALL NOT edit the immutable Validation outcome, rule results, frozen plan, or produced Result evidence. Evidence identity or integrity failures SHALL not be bypassed by an override.
 
-#### Scenario: User overrides an eligible review decision
-- **WHEN** an authorized user provides a reason for an eligible Validation finding
-- **THEN** the system records a versioned override linked to that run and preserves the original outcome and rule report
+#### Scenario: Local operator overrides an eligible review decision
+- **WHEN** an interactive operator provides a reason for an eligible Validation finding
+- **THEN** the server records the actor as `local_operator` and stores a versioned override linked to that run while preserving the original outcome and rule report
+
+#### Scenario: System action creates an audit event
+- **WHEN** an automatic/system action creates an override-related audit event
+- **THEN** the server records the actor as `system`
+
+#### Scenario: Client attempts to provide a trusted actor
+- **WHEN** a client includes an actor identity in an override request
+- **THEN** the server ignores or rejects that identity and records only the server-assigned actor
 
 #### Scenario: Override reason is missing or evidence identity is invalid
 - **WHEN** the override has no reason or the finding is an evidence identity or integrity failure
@@ -118,7 +130,7 @@ Validation SHALL reuse matching ffprobe and Result evidence already collected fo
 
 ### Requirement: Validation preserves adjacent pipeline and evidence ownership
 
-Validation SHALL operate only after conversion has produced a Result. It SHALL NOT perform or replace #46 pre-conversion Preflight, encode or repair media, or perform #54 publication and delivery. Matching #69 perceptual/frame evidence MAY be reused as supplemental evidence, but SHALL NOT be the sole authority for a pass. The report SHALL preserve `report.frameFidelity` as a sibling report alongside other specialized reports such as `report.colorPolicy`.
+Validation SHALL operate only after conversion has produced a Result. It SHALL NOT perform or replace #46 pre-conversion Preflight, encode or repair media, or perform #54 publication and delivery. Matching #69 perceptual/frame evidence MAY be reused as supplemental evidence, but SHALL NOT be the sole authority for a pass. When #69 CandidateIdentity represents the same produced Result, it SHALL reference the canonical Result generation/output revision. The report SHALL preserve `report.frameFidelity` as a sibling report alongside other specialized reports such as `report.colorPolicy`.
 
 #### Scenario: Preflight remains the pre-conversion owner
 - **WHEN** a job has #46 Preflight evidence before conversion
@@ -126,7 +138,7 @@ Validation SHALL operate only after conversion has produced a Result. It SHALL N
 
 #### Scenario: Matching frame evidence supplements the rule results
 - **WHEN** matching #69 perceptual or frame-fidelity evidence exists for the frozen plan and Result
-- **THEN** Validation may reference it as supplemental evidence, preserves `report.frameFidelity` as a sibling of `report.colorPolicy`, and still evaluates the required rules
+- **THEN** Validation may reference it as supplemental evidence using the canonical Result generation/output revision, preserves `report.frameFidelity` as a sibling of `report.colorPolicy`, and still evaluates the required rules
 
 #### Scenario: Publisher receives an eligible result
 - **WHEN** Validation or an eligible override authorizes handoff

@@ -5,11 +5,12 @@ Validation is the post-conversion safety gate between a completed Queue job and 
 ## What Changes
 
 - Define Validation as a rule-oriented quality gate over the frozen Queue execution and the produced Result evidence, with explicit outcomes and rule-level expected/actual values.
-- Bind each immutable Validation run to stable plan and Result identities; retain override and revalidation history without creating another source of media evidence.
+- Extend the existing `kind=result` artifact with the canonical Result generation/output identity, and bind each immutable Validation run to that Result and frozen plan without creating a second Result authority.
+- Record overrides with server-assigned actor semantics for the current local deployment, while keeping the actor reference extensible for a future authenticated-principal authority.
 - Make the Review Center focus on `REVIEW_REQUIRED`, `FAIL`, and actionable warnings; keep clean passing jobs discoverable in History.
 - Define controlled auto-advancement and requeue boundaries, plus bounded evidence reuse for Validation.
 
-Out of scope: #46 pre-conversion Preflight, #54 publication and delivery behavior, changes to #69 perceptual/frame evidence production, changes to #165 `report.frameFidelity`, encoder policy, and any re-encoding from Validation.
+Out of scope: #46 pre-conversion Preflight, #54 publication and delivery behavior, changes to #69 perceptual/frame evidence production, changes to #165 `report.frameFidelity`, encoder policy, any re-encoding from Validation, and login/authentication/authorization infrastructure.
 
 ## Capabilities
 
@@ -25,4 +26,4 @@ None. The current OpenSpec inventory has no Validation, Queue lifecycle, History
 
 - Backend Validation, Queue execution snapshots, existing job Result artifacts, and the current publisher eligibility boundary.
 - Validation API and Review Center behavior; Queue job summary fields and History discovery.
-- SQLite compatibility and migration behavior for versioned Validation records, overrides, and existing report/status projections.
+- Existing Result artifact contract, plus SQLite compatibility for versioned Validation records, overrides, and report/status projections; no second Result store or parallel media-result model.
