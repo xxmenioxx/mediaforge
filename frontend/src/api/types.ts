@@ -1311,6 +1311,13 @@ export type JobArtifactsResponse = {
   warnings?: string[];
 };
 
+export type JobLogResponse = {
+  jobId: number;
+  available: boolean;
+  content: string;
+  truncated: boolean;
+};
+
 export type AnalysisBackfillResponse = {
   imported: number;
   corrected: number;
