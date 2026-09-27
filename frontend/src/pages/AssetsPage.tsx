@@ -2519,6 +2519,35 @@ function lifecyclePresentationValue(value: string | undefined, fallback = 'unava
   return value.replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function validationOutcomeLabel(outcome?: QueueJob['validationOutcome']) {
+  switch (outcome) {
+    case 'PASS': return 'Passed';
+    case 'PASS_WITH_WARNINGS': return 'Passed with warnings';
+    case 'REVIEW_REQUIRED': return 'Review required';
+    case 'FAIL': return 'Failed';
+    default: return outcome ? lifecyclePresentationValue(outcome) : 'Outcome unavailable';
+  }
+}
+
+function validationEvidencePresentation(job: QueueJob | undefined, lifecycleStatus?: string) {
+  const score = job && job.validationScore > 0 ? job.validationScore : undefined;
+  if (job?.validationRunId) {
+    return {
+      kind: 'canonical' as const,
+      runId: job.validationRunId,
+      outcomeLabel: validationOutcomeLabel(job.validationOutcome),
+      overridePresent: job.validationOverridePresent,
+      hasActionableWarnings: job.validationHasActionableWarnings,
+      score,
+    };
+  }
+
+  const status = job?.validationStatus || lifecycleStatus;
+  return status
+    ? { kind: 'legacy' as const, statusLabel: lifecyclePresentationValue(status), score }
+    : { kind: 'unavailable' as const, score };
+}
+
 export function AssetInfoOverview({ asset, libraries, status }: { asset: Asset; libraries: Library[]; status: string }) {
   const publication = asset.lifecycle?.currentPublication;
   const destination = libraries.find((library) => library.id === asset.libraryId);
@@ -3035,6 +3064,16 @@ function AssetRow({
     ? bulkSelectionEnabled ? 8 : 7
     : isAccepted ? 5 : 10;
   const associatedJob = associatedJobForCurrentPublication(asset, queueJobs);
+  const currentPublication = asset.lifecycle?.currentPublication;
+  const validationEvidence = validationEvidencePresentation(associatedJob, asset.lifecycle?.validation);
+  const validationIntegrationState = validationEvidence.kind === 'canonical'
+    ? `${validationEvidence.outcomeLabel} · run ${validationEvidence.runId}`
+    : validationEvidence.kind === 'legacy'
+      ? `Legacy/unbound · ${validationEvidence.statusLabel}`
+      : 'Unavailable';
+  const publicationIntegrationState = currentPublication
+    ? lifecyclePresentationValue(currentPublication.state, 'Unavailable')
+    : 'No current publication';
   const historyJobIds = new Set([
     ...(asset.lifecycle?.evidenceSummary?.queueJobIds ?? []),
     ...(associatedJob ? [associatedJob.id] : []),
@@ -4756,20 +4795,29 @@ async function generateExternalSubtitle(
                 {snapshotTab === 'publication' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     <Typography variant="h3">Current publication</Typography>
-                    {asset.lifecycle?.currentPublication?.state === 'conflict' || asset.lifecycle?.currentPublication?.state === 'unresolved' || asset.lifecycle?.currentPublication?.state === 'unresolved_conflict' ? (
+                    {currentPublication?.state === 'conflict' || currentPublication?.state === 'unresolved' || currentPublication?.state === 'unresolved_conflict' ? (
                       <Alert severity="warning">Current publication is unresolved because canonical publication authorities conflict. Recovery and destructive actions are blocked.</Alert>
                     ) : (
-                      <Typography>{lifecyclePresentationValue(asset.lifecycle?.currentPublication?.state || asset.lifecycle?.publication, 'No current publication')}</Typography>
+                      <Typography>{lifecyclePresentationValue(currentPublication?.state || asset.lifecycle?.publication, 'No current publication')}</Typography>
                     )}
-                    {asset.lifecycle?.currentPublication?.publishedPath ? <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{asset.lifecycle.currentPublication.publishedPath}</Typography> : null}
-                    {asset.lifecycle?.currentPublication?.publishedAt ? <Typography variant="body2" color="text.secondary">Published {formatDate(asset.lifecycle.currentPublication.publishedAt)}</Typography> : null}
+                    {currentPublication?.authority ? <Typography variant="body2" color="text.secondary">Authority · {currentPublication.authority}</Typography> : null}
+                    {currentPublication?.id !== undefined ? <Typography variant="body2" color="text.secondary">Identity · {currentPublication.authority === 'queue_job' ? `Queue job #${currentPublication.id}` : `Publication #${currentPublication.id}`}</Typography> : null}
+                    {currentPublication?.publishedPath ? <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{currentPublication.publishedPath}</Typography> : null}
+                    {currentPublication?.publishedAt ? <Typography variant="body2" color="text.secondary">Published {formatDate(currentPublication.publishedAt)}</Typography> : null}
                   </Stack>
                 </Box> : null}
                 {snapshotTab === 'validation' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     <Typography variant="h3">Validation</Typography>
-                    <Typography>{lifecyclePresentationValue(associatedJob?.validationStatus || asset.lifecycle?.validation, 'No validation evidence')}</Typography>
-                    {associatedJob && associatedJob.validationScore > 0 ? <Typography variant="body2" color="text.secondary">Latest score · {associatedJob.validationScore}/100</Typography> : null}
+                    {validationEvidence.kind === 'canonical' ? <>
+                      <Typography>Outcome · {validationEvidence.outcomeLabel}</Typography>
+                      <Typography variant="body2" color="text.secondary">Validation run · {validationEvidence.runId}</Typography>
+                      <Typography variant="body2" color="text.secondary">Override present · {validationEvidence.overridePresent === undefined ? 'Not recorded' : validationEvidence.overridePresent ? 'Yes' : 'No'}</Typography>
+                      <Typography variant="body2" color="text.secondary">Actionable warnings · {validationEvidence.hasActionableWarnings === undefined ? 'Not recorded' : validationEvidence.hasActionableWarnings ? 'Yes' : 'No'}</Typography>
+                    </> : validationEvidence.kind === 'legacy' ? (
+                      <Typography>Legacy/unbound validation status · {validationEvidence.statusLabel}</Typography>
+                    ) : <Typography>No validation evidence</Typography>}
+                    {validationEvidence.score ? <Typography variant="body2" color="text.secondary">Latest score · {validationEvidence.score}/100</Typography> : null}
                     {associatedJob ? <FinalValidationEvidence job={associatedJob} /> : null}
                   </Stack>
                 </Box> : null}
@@ -4835,12 +4883,14 @@ async function generateExternalSubtitle(
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     <Typography variant="h3">Integration evidence</Typography>
                     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                      {asset.lifecycle?.evidenceSummary?.analysis ? <Chip size="small" label={`Analysis · ${analysisEvidenceLabel(asset.lifecycle.evidenceSummary.analysis.status)}`} /> : null}
+                      <Chip size="small" label={`Analysis · ${analysisEvidenceLabel(asset.lifecycle?.evidenceSummary?.analysis?.status)}`} />
+                      <Chip size="small" label={`Validation · ${validationIntegrationState}`} />
+                      <Chip size="small" label={`Publication · ${publicationIntegrationState}`} />
                       {(asset.lifecycle?.evidenceSummary?.queueJobIds?.length ?? 0) > 0 ? <Chip size="small" label={`${asset.lifecycle?.evidenceSummary?.queueJobIds?.length} Queue jobs`} /> : null}
                       {(asset.lifecycle?.evidenceSummary?.directPublicationIds?.length ?? 0) > 0 ? <Chip size="small" label={`${asset.lifecycle?.evidenceSummary?.directPublicationIds?.length} direct publications`} /> : null}
                       {(asset.lifecycle?.archivedOriginals?.length ?? 0) > 0 ? <Chip size="small" label={`${asset.lifecycle?.archivedOriginals?.length} archived originals`} /> : null}
                     </Stack>
-                    {!asset.lifecycle?.evidenceSummary?.analysis && !asset.lifecycle?.evidenceSummary?.queueJobIds?.length && !asset.lifecycle?.evidenceSummary?.directPublicationIds?.length && !asset.lifecycle?.archivedOriginals?.length ? <Typography color="text.secondary">No linked integration evidence.</Typography> : null}
+                    {!asset.lifecycle?.evidenceSummary?.analysis && validationEvidence.kind === 'unavailable' && !currentPublication && !asset.lifecycle?.evidenceSummary?.queueJobIds?.length && !asset.lifecycle?.evidenceSummary?.directPublicationIds?.length && !asset.lifecycle?.archivedOriginals?.length ? <Typography color="text.secondary">No linked integration evidence.</Typography> : null}
                   </Stack>
                 </Box> : null}
                 {snapshotTab === 'advisor' && !hidePreConversionActions ? <Box>
