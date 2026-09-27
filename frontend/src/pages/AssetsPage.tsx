@@ -67,7 +67,7 @@ import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLifecycleProjection, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -2519,88 +2519,78 @@ function lifecyclePresentationValue(value: string | undefined, fallback = 'unava
   return value.replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
-export function AssetInfoOverview({ asset, libraries }: { asset: Asset; libraries: Library[] }) {
-  const lifecycle: AssetLifecycleProjection | undefined = asset.lifecycle;
-  const publication = lifecycle?.currentPublication;
-  const evidence = lifecycle?.evidenceSummary;
-  const archivedOriginals = lifecycle?.archivedOriginals ?? [];
+export function AssetInfoOverview({ asset, libraries, status }: { asset: Asset; libraries: Library[]; status: string }) {
+  const publication = asset.lifecycle?.currentPublication;
   const destination = libraries.find((library) => library.id === asset.libraryId);
-  const publicationConflict = publication?.state === 'conflict' || publication?.state === 'unresolved' || publication?.state === 'unresolved_conflict';
+  const provenance = asset.lifecycle?.provenance ?? asset.status;
+  const source = provenance === 'converted'
+    ? 'Converted by MVForge'
+    : provenance === 'published_as_is'
+      ? 'Published as-is by MVForge'
+      : provenance === 'imported' || provenance === 'accepted'
+        ? 'Imported'
+        : 'Original asset';
 
   return (
     <Stack spacing={1.5} data-testid="asset-info-overview">
-      <Typography variant="h3">Asset information</Typography>
-      <Typography variant="subtitle1">Overview</Typography>
+      <Typography variant="h3">Overview</Typography>
       <Grid container spacing={1.5}>
-        <Grid size={{ xs: 12, md: 6 }}>
-          <Typography variant="caption" color="text.secondary">Name</Typography>
-          <Typography sx={{ wordBreak: 'break-word' }}>{asset.fileName || asset.path}</Typography>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <Typography variant="caption" color="text.secondary">Status</Typography>
+          <Typography>{status}</Typography>
         </Grid>
-        <Grid size={{ xs: 12, md: 6 }}>
-          <Typography variant="caption" color="text.secondary">Location</Typography>
-          <Typography>{lifecyclePresentationValue(lifecycle?.location, asset.libraryId > 0 ? 'library' : 'raw')}</Typography>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <Typography variant="caption" color="text.secondary">Library</Typography>
+          <Typography>{destination?.name || asset.libraryName || 'RAW source'}</Typography>
         </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-          <Typography variant="caption" color="text.secondary">Lifecycle</Typography>
-          <Typography>{lifecyclePresentationValue(lifecycle?.lifecycle)}</Typography>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <Typography variant="caption" color="text.secondary">Published</Typography>
+          <Typography>{publication?.publishedAt ? formatDate(publication.publishedAt) : '—'}</Typography>
         </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-          <Typography variant="caption" color="text.secondary">Provenance</Typography>
-          <Typography>{lifecyclePresentationValue(lifecycle?.provenance, 'legacy or unknown')}</Typography>
-        </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-          <Typography variant="caption" color="text.secondary">Validation</Typography>
-          <Typography>{lifecyclePresentationValue(lifecycle?.validation)}</Typography>
-        </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-          <Typography variant="caption" color="text.secondary">Original retention</Typography>
-          <Typography>{lifecyclePresentationValue(lifecycle?.original, 'unknown')}</Typography>
-        </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-          <Typography variant="caption" color="text.secondary">Destination</Typography>
-          <Typography sx={{ wordBreak: 'break-word' }}>{destination?.name || asset.libraryName || (asset.libraryId > 0 ? `Library #${asset.libraryId}` : 'RAW source')}</Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{assetSubpath(asset, libraries)}</Typography>
-        </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-          <Typography variant="caption" color="text.secondary">Active operation</Typography>
-          <Typography>{lifecycle?.activeOperation ? lifecyclePresentationValue(lifecycle.activeOperation.kind || lifecycle.activeOperation.stage || lifecycle.activeOperation.status) : 'None'}</Typography>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <Typography variant="caption" color="text.secondary">Source</Typography>
+          <Typography>{source}</Typography>
         </Grid>
       </Grid>
-      {lifecycle?.attention?.length ? <Alert severity="warning">Attention: {lifecycle.attention.join(' · ')}</Alert> : null}
-      {publicationConflict ? (
-        <Alert severity="warning">Current publication is unresolved because independent publication authorities conflict. Recovery and destructive actions remain blocked.</Alert>
-      ) : (
-        <Box>
-          <Typography variant="caption" color="text.secondary">Current publication</Typography>
-          <Typography>{publication?.id ? `${lifecyclePresentationValue(publication.state, 'published')} · ${publication.authority || 'canonical'} #${publication.id}` : lifecyclePresentationValue(publication?.state, lifecycle?.publication === 'unpublished' ? 'No current publication' : 'Unavailable')}</Typography>
-          {(publication?.publishedPath || publication?.path) ? <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{publication.publishedPath || publication.path}</Typography> : null}
-          {publication?.publishedAt ? <Typography variant="caption" color="text.secondary">Published {formatDate(publication.publishedAt)}</Typography> : null}
-        </Box>
-      )}
-      <Box>
-        <Typography variant="caption" color="text.secondary">Integration evidence</Typography>
-        <Typography>Analysis · {analysisEvidenceLabel(evidence?.analysis?.status)}</Typography>
-        <Typography variant="caption" color="text.secondary">Validation and Publisher details remain unavailable/pending until their canonical evidence exists.</Typography>
-      </Box>
-      {archivedOriginals.length ? <Box>
-        <Typography variant="h4" sx={{ mb: 1 }}>Archived originals</Typography>
-        <Stack spacing={1}>
-          {archivedOriginals.map((original) => <Box key={`${original.queueJobId}-${original.assetRecordId ?? original.path}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
-            <Stack spacing={0.5}>
-              <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{original.path}</Typography>
-              <Typography variant="body2">Size · {formatBytes(original.sizeBytes)}</Typography>
-              <Typography variant="body2">Archive time · {original.archivedAt ? formatDate(original.archivedAt) : 'Unknown'}</Typography>
-              <Typography variant="body2">Provenance · Queue job #{original.queueJobId} · Source AssetRecord #{original.provenance.sourceAssetRecordId ?? 'unknown'}</Typography>
-              <Typography variant="body2">Relationship · {lifecyclePresentationValue(original.relationship)} · Availability · {lifecyclePresentationValue(original.availability)}</Typography>
-              <Typography variant="body2">Retention · {lifecyclePresentationValue(original.retentionState)}{original.retentionDeadline ? ` · until ${formatDate(original.retentionDeadline)}` : ' · no recorded deadline'}</Typography>
-              <Typography variant="caption" color="text.secondary">Restore · {original.restore?.allowed ? 'Available' : assetActionReasonMessage(original.restore ?? {}, 'Unavailable')}</Typography>
-              <Typography variant="caption" color="text.secondary">Delete · {original.deleteArchivedOriginal?.allowed ? 'Available' : assetActionReasonMessage(original.deleteArchivedOriginal ?? {}, 'Unavailable')}</Typography>
-            </Stack>
-          </Box>)}
-        </Stack>
-      </Box> : null}
     </Stack>
   );
+}
+
+export function ArchivedOriginalDetails({
+  original,
+  onRecover,
+  onDelete,
+  recovering = false,
+  deleting = false,
+  canMutate = false,
+}: {
+  original: AssetArchivedOriginalProjection;
+  onRecover?: (event: MouseEvent<HTMLButtonElement>, original: AssetArchivedOriginalProjection) => void;
+  onDelete?: (event: MouseEvent<HTMLButtonElement>, original: AssetArchivedOriginalProjection) => void;
+  recovering?: boolean;
+  deleting?: boolean;
+  canMutate?: boolean;
+}) {
+  return <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+    <Stack spacing={1}>
+      <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{original.path}</Typography>
+      <Typography variant="body2">Size · {formatBytes(original.sizeBytes)}</Typography>
+      <Typography variant="body2">Archive time · {original.archivedAt ? formatDate(original.archivedAt) : 'Unknown'}</Typography>
+      <Typography variant="body2">Provenance · Queue job #{original.queueJobId} · Source AssetRecord #{original.provenance.sourceAssetRecordId ?? 'unknown'}</Typography>
+      <Typography variant="body2">Relationship · {lifecyclePresentationValue(original.relationship)} · Availability · {lifecyclePresentationValue(original.availability)}</Typography>
+      <Typography variant="body2">Retention · {lifecyclePresentationValue(original.retentionState)}{original.retentionDeadline ? ` · until ${formatDate(original.retentionDeadline)}` : ' · no recorded deadline'}</Typography>
+      <Typography variant="caption" color="text.secondary">Restore · {original.restore?.allowed ? 'Available' : assetActionReasonMessage(original.restore ?? {}, 'Unavailable')}</Typography>
+      <Typography variant="caption" color="text.secondary">Delete · {original.deleteArchivedOriginal?.allowed ? 'Available' : assetActionReasonMessage(original.deleteArchivedOriginal ?? {}, 'Unavailable')}</Typography>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+        <Button variant="outlined" onClick={(event) => onRecover?.(event, original)} disabled={!canMutate || !onRecover || !original.restore?.allowed || recovering}>
+          Restore original
+        </Button>
+        <Button color="error" variant="outlined" onClick={(event) => onDelete?.(event, original)} disabled={!canMutate || !onDelete || !original.deleteArchivedOriginal?.allowed || deleting}>
+          Delete archived original
+        </Button>
+      </Stack>
+    </Stack>
+  </Box>;
 }
 
 function associatedJobForCurrentPublication(asset: Asset, jobs: QueueJob[]) {
@@ -2685,7 +2675,7 @@ function AssetRow({
   const selectedTrackProfile = trackProfiles.find((profile) => profile.key === effectiveTrackProfileKey);
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(groupLibraryId);
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
-  type AssetInfoSection = 'overview' | 'analysis' | 'tracks' | 'publication' | 'advisor' | 'conversion' | 'validation' | 'original' | 'evidence' | 'history' | 'test-encode';
+  type AssetInfoSection = 'overview' | 'analysis' | 'tracks' | 'execution' | 'publication' | 'validation' | 'original' | 'evidence' | 'history' | 'integration' | 'advisor' | 'conversion' | 'test-encode';
   const [snapshotTab, setSnapshotTab] = useState<AssetInfoSection>('overview');
   const hidePreConversionActions = hidePreConversionActionsForAsset(asset);
   const [selectedEvidenceJobId, setSelectedEvidenceJobId] = useState<number | null>(null);
@@ -3045,10 +3035,14 @@ function AssetRow({
     ? bulkSelectionEnabled ? 8 : 7
     : isAccepted ? 5 : 10;
   const associatedJob = associatedJobForCurrentPublication(asset, queueJobs);
-  const historyJobIds = new Set(asset.lifecycle?.evidenceSummary?.queueJobIds ?? []);
-  const historyJobs = historyJobIds.size
-    ? queueJobs.filter((job) => historyJobIds.has(job.id)).sort((left, right) => right.id - left.id)
-    : associatedJob ? [associatedJob] : [];
+  const historyJobIds = new Set([
+    ...(asset.lifecycle?.evidenceSummary?.queueJobIds ?? []),
+    ...(associatedJob ? [associatedJob.id] : []),
+  ]);
+  const historyJobs = queueJobs.filter((job) => historyJobIds.has(job.id)).sort((left, right) => right.id - left.id);
+  const jobInformationTabs: AssetInfoSection[] = ['execution', 'validation', 'original', 'evidence', 'history', 'publication', 'integration'];
+  const isJobInformationTab = jobInformationTabs.includes(snapshotTab);
+  const assetInfoMainTab = isJobInformationTab ? 'job-information' : snapshotTab === 'tracks' ? 'tracks' : 'overview';
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isPublishedAsIs || isAccepted;
   const renameLocked = hasOpenJob || createJob.isPending || isPublishedAsIs || isAccepted;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
@@ -4411,7 +4405,7 @@ async function generateExternalSubtitle(
             {snapshot.isError ? (
               <Alert severity="warning">Could not scan this asset: {snapshot.error instanceof Error ? snapshot.error.message : 'unknown backend error'}</Alert>
             ) : null}
-            {snapshotTab !== 'overview' && snapshotTab !== 'analysis' && !asset.missing && !storedSnapshot.isLoading && !operationPending && !storedSnapshotExists ? (
+            {['tracks', 'advisor', 'conversion', 'test-encode'].includes(snapshotTab) && !asset.missing && !storedSnapshot.isLoading && !operationPending && !storedSnapshotExists ? (
               <Alert
                 severity="info"
                 action={<Button color="inherit" size="small" onClick={() => snapshot.mutate({ path: asset.path })} disabled={!assetInfoCapability(asset, 'refreshAnalysis').allowed}>{assetInfoCapability(asset, 'refreshAnalysis').allowed ? 'Analyze asset' : assetActionReasonMessage(assetInfoCapability(asset, 'refreshAnalysis'), 'Analysis unavailable')}</Button>}
@@ -4420,19 +4414,52 @@ async function generateExternalSubtitle(
               </Alert>
             ) : null}
             <>
-                <Tabs value={snapshotTab} onChange={(_, value: AssetInfoSection) => setSnapshotTab(value)} variant="scrollable" allowScrollButtonsMobile>
-                  <Tab value="overview" label="Asset Information" />
-                  <Tab value="analysis" label="Analysis" />
+                <Tabs
+                  aria-label="Asset Info sections"
+                  value={assetInfoMainTab}
+                  onChange={(_, value: 'overview' | 'tracks' | 'job-information') => {
+                    if (value === 'job-information') setSnapshotTab(isJobInformationTab ? snapshotTab : 'execution');
+                    else setSnapshotTab(value);
+                  }}
+                  variant="scrollable"
+                  allowScrollButtonsMobile
+                >
+                  <Tab value="overview" label="Overview" onClick={() => setSnapshotTab('overview')} />
                   <Tab value="tracks" label="Tracks" />
-                  <Tab value="publication" label="Job Information" />
-                  {!hidePreConversionActions ? <Tab value="advisor" label="MVForge Suggestions" /> : null}
-                  <Tab value="conversion" label="Quick Asset Overrides" />
-                  <Tab value="validation" label="Validation" />
-                  <Tab value="original" label="Original" />
-                  <Tab value="evidence" label="Evidence" />
-                  <Tab value="history" label="History" />
-                  {canGenerateTestEncode && !hidePreConversionActions ? <Tab value="test-encode" label="Test Encode" /> : null}
+                  <Tab value="job-information" label="Job Information" />
                 </Tabs>
+                {assetInfoMainTab === 'overview' ? (
+                  <Tabs
+                    aria-label="Overview sections"
+                    value={snapshotTab}
+                    onChange={(_, value: AssetInfoSection) => setSnapshotTab(value)}
+                    variant="scrollable"
+                    allowScrollButtonsMobile
+                  >
+                    <Tab value="overview" label="Summary" />
+                    <Tab value="analysis" label="Analysis" />
+                    {!hidePreConversionActions ? <Tab value="advisor" label="MVForge Suggestions" /> : null}
+                    <Tab value="conversion" label="Quick Asset Overrides" />
+                    {canGenerateTestEncode && !hidePreConversionActions ? <Tab value="test-encode" label="Test Encode" /> : null}
+                  </Tabs>
+                ) : null}
+                {assetInfoMainTab === 'job-information' ? (
+                  <Tabs
+                    aria-label="Job Information sections"
+                    value={snapshotTab}
+                    onChange={(_, value: AssetInfoSection) => setSnapshotTab(value)}
+                    variant="scrollable"
+                    allowScrollButtonsMobile
+                  >
+                    <Tab value="execution" label="Execution / Result" />
+                    <Tab value="validation" label="Validation" />
+                    <Tab value="original" label="Original" />
+                    <Tab value="evidence" label="Evidence" />
+                    <Tab value="history" label="History" />
+                    <Tab value="publication" label="Current publication" />
+                    <Tab value="integration" label="Integration evidence" />
+                  </Tabs>
+                ) : null}
                 {snapshotTab === 'analysis' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     <Stack direction="row" alignItems="center" spacing={1}>
@@ -4611,7 +4638,7 @@ async function generateExternalSubtitle(
                 </Box> : null}
                 <Box hidden={snapshotTab !== 'overview'}>
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
-                    <AssetInfoOverview asset={asset} libraries={libraries} />
+                    <AssetInfoOverview asset={asset} libraries={libraries} status={pipelineState.label} />
                     <Grid container spacing={1.5} alignItems="flex-start">
                       <Grid size={{ xs: 12, md: 6 }}>
                         <Stack direction="row" spacing={1} alignItems="flex-start">
@@ -4694,42 +4721,56 @@ async function generateExternalSubtitle(
                         {updateAssetDestination.isError ? <Alert severity="warning">{updateAssetDestination.error instanceof Error ? updateAssetDestination.error.message : 'Could not save the asset Destination.'}</Alert> : null}
                       </Stack>
                     ) : null}
-                    <Grid container spacing={1.5}>
-					  <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Video profile applied{profileAssignmentSource(associatedJob, 'video')}</Typography><Typography>{associatedJob ? profiles.find((profile) => profile.id === associatedJob.profileId)?.name || `Profile #${associatedJob.profileId}` : profiles.find((profile) => profile.id === effectiveProfileId)?.name || 'None'}</Typography></Grid>
-					  <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Audio profile applied{profileAssignmentSource(associatedJob, 'audio')}</Typography><Typography>{associatedJob?.audioProfileKey || effectiveAudioProfileKey || 'None'}</Typography></Grid>
-					  <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Tracks profile applied{profileAssignmentSource(associatedJob, 'tracks')}</Typography><Typography>{associatedJob?.trackProfileKey || selectedTrackProfile?.name || selectedTrackProfile?.key || conversionDraft.trackProfileKey || 'None'}</Typography></Grid>
-                      {mode === 'unprocessed' ? <Grid size={{ xs: 12, sm: 6 }}>
-                        <Typography variant="caption" color="text.secondary">
-                          Destination applied{assetDestinationMode === 'inherit' ? ' · inherited' : assetDestinationMode === 'value' ? ' · asset override' : ''}
-                        </Typography>
-                        <Typography>{assetDestinationMode === 'disabled' ? 'Disabled' : libraries.find((library) => library.id === selectedLibraryId)?.name || 'None'}</Typography>
-                      </Grid> : null}
-                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Advisor score</Typography><Typography>{advisor.data ? `${advisor.data.score}/100` : 'Not evaluated'}</Typography></Grid>
-                      <Grid size={{ xs: 12, sm: 6 }}><Typography variant="caption" color="text.secondary">Direct Play score</Typography><Typography>{associatedJob ? directPlayScoreLabel(associatedJob) : 'Not evaluated'}</Typography></Grid>
-                    </Grid>
+                    {mode === 'unprocessed' ? <Box>
+                      <Typography variant="caption" color="text.secondary">Destination applied{assetDestinationMode === 'inherit' ? ' · inherited' : assetDestinationMode === 'value' ? ' · asset override' : ''}</Typography>
+                      <Typography>{assetDestinationMode === 'disabled' ? 'Disabled' : libraries.find((library) => library.id === selectedLibraryId)?.name || 'None'}</Typography>
+                    </Box> : null}
                   </Stack>
                 </Box>
+                {snapshotTab === 'execution' ? <Box>
+                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                    <Typography variant="h3">Execution / Result</Typography>
+                    {associatedJob ? (
+                      <FinalDetailsSummary asset={asset} job={associatedJob} />
+                    ) : historyJobs.length ? (
+                      <Alert severity="info">No current execution is linked. See History for linked executions.</Alert>
+                    ) : (
+                      <Alert severity="info">No MVForge processing history is linked to this asset.</Alert>
+                    )}
+                    {associatedJob ? <Grid container spacing={1.5}>
+                      <Grid size={{ xs: 12, sm: 6 }}>
+                        <Typography variant="caption" color="text.secondary">Video profile</Typography>
+                        <Typography>{profiles.find((profile) => profile.id === associatedJob.profileId)?.name || 'Not recorded'}</Typography>
+                      </Grid>
+                      <Grid size={{ xs: 12, sm: 6 }}>
+                        <Typography variant="caption" color="text.secondary">Audio profile</Typography>
+                        <Typography>{associatedJob.audioProfileKey || 'Not recorded'}</Typography>
+                      </Grid>
+                      <Grid size={{ xs: 12, sm: 6 }}>
+                        <Typography variant="caption" color="text.secondary">Tracks profile</Typography>
+                        <Typography>{associatedJob.trackProfileKey || 'Not recorded'}</Typography>
+                      </Grid>
+                    </Grid> : null}
+                  </Stack>
+                </Box> : null}
                 {snapshotTab === 'publication' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     <Typography variant="h3">Current publication</Typography>
                     {asset.lifecycle?.currentPublication?.state === 'conflict' || asset.lifecycle?.currentPublication?.state === 'unresolved' || asset.lifecycle?.currentPublication?.state === 'unresolved_conflict' ? (
                       <Alert severity="warning">Current publication is unresolved because canonical publication authorities conflict. Recovery and destructive actions are blocked.</Alert>
                     ) : (
-                      <Typography>{asset.lifecycle?.currentPublication?.id ? `${lifecyclePresentationValue(asset.lifecycle.currentPublication.state, 'published')} · ${asset.lifecycle.currentPublication.authority || 'canonical'} #${asset.lifecycle.currentPublication.id}` : lifecyclePresentationValue(asset.lifecycle?.publication, 'unavailable')}</Typography>
+                      <Typography>{lifecyclePresentationValue(asset.lifecycle?.currentPublication?.state || asset.lifecycle?.publication, 'No current publication')}</Typography>
                     )}
                     {asset.lifecycle?.currentPublication?.publishedPath ? <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{asset.lifecycle.currentPublication.publishedPath}</Typography> : null}
-                    {associatedJob ? (
-                      <FinalDetailsSummary asset={asset} job={associatedJob} />
-                    ) : (
-                      <Alert severity="info">No job is currently associated with this asset.</Alert>
-                    )}
+                    {asset.lifecycle?.currentPublication?.publishedAt ? <Typography variant="body2" color="text.secondary">Published {formatDate(asset.lifecycle.currentPublication.publishedAt)}</Typography> : null}
                   </Stack>
                 </Box> : null}
                 {snapshotTab === 'validation' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     <Typography variant="h3">Validation</Typography>
-                    <Typography>{lifecyclePresentationValue(asset.lifecycle?.validation)}</Typography>
-                    <Alert severity="info">Validation is a projection of canonical evidence. Opening this section does not run Validation or invent a Quality Gate result.</Alert>
+                    <Typography>{lifecyclePresentationValue(associatedJob?.validationStatus || asset.lifecycle?.validation, 'No validation evidence')}</Typography>
+                    {associatedJob && associatedJob.validationScore > 0 ? <Typography variant="body2" color="text.secondary">Latest score · {associatedJob.validationScore}/100</Typography> : null}
+                    {associatedJob ? <FinalValidationEvidence job={associatedJob} /> : null}
                   </Stack>
                 </Box> : null}
                 {snapshotTab === 'original' ? <Box>
@@ -4737,23 +4778,16 @@ async function generateExternalSubtitle(
                     <Typography variant="h3">Original retention</Typography>
                     <Typography>{lifecyclePresentationValue(asset.lifecycle?.original, 'unknown')}</Typography>
                     {asset.lifecycle?.archivedOriginals?.length ? asset.lifecycle.archivedOriginals.map((original) => (
-                      <Box key={`${original.queueJobId}-${original.assetRecordId ?? original.path}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
-                        <Stack spacing={1}>
-                          <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{original.path}</Typography>
-                          <Typography variant="body2" color="text.secondary">Queue job #{original.queueJobId} · {lifecyclePresentationValue(original.relationship)} · {lifecyclePresentationValue(original.availability)}</Typography>
-                          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                            <Button variant="outlined" onClick={(event) => recoverArchivedAsset(event, original)} disabled={!original.restore?.allowed || !archivedOriginalMutationInput(original) || recoverAsset.isPending}>
-                              Restore original
-                            </Button>
-                            <Button color="error" variant="outlined" onClick={(event) => requestArchiveDeletion(event, original)} disabled={!original.deleteArchivedOriginal?.allowed || !archivedOriginalMutationInput(original) || deleteArchiveAsset.isPending}>
-                              Delete archived original
-                            </Button>
-                          </Stack>
-                          {!original.restore?.allowed ? <Typography variant="caption" color="text.secondary">Restore unavailable: {assetActionReasonMessage(original.restore ?? {}, 'This archived original is not currently restorable.')}</Typography> : null}
-                          {!original.deleteArchivedOriginal?.allowed ? <Typography variant="caption" color="text.secondary">Delete unavailable: {assetActionReasonMessage(original.deleteArchivedOriginal ?? {}, 'This archived original is not currently deletable.')}</Typography> : null}
-                        </Stack>
-                      </Box>
-                    )) : <Alert severity="info">No archived-original evidence is linked to this Library asset.</Alert>}
+                      <ArchivedOriginalDetails
+                        key={`${original.queueJobId}-${original.assetRecordId ?? original.path}`}
+                        original={original}
+                        onRecover={recoverArchivedAsset}
+                        onDelete={requestArchiveDeletion}
+                        recovering={recoverAsset.isPending}
+                        deleting={deleteArchiveAsset.isPending}
+                        canMutate={Boolean(archivedOriginalMutationInput(original))}
+                      />
+                    )) : <Alert severity="info">No archived originals linked to this asset.</Alert>}
                     <Alert severity="info">Restore leaves the current Library publication intact. Deletion preserves Queue and publication provenance.</Alert>
                   </Stack>
                 </Box> : null}
@@ -4764,7 +4798,7 @@ async function generateExternalSubtitle(
                     {historyJobs.length ? historyJobs.map((job) => <Stack key={job.id} direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1}>
                       <Typography>Queue job #{job.id} · {job.status}{job.publicationRetiredAt ? ' · historical' : ''}</Typography>
                       <Button size="small" variant="outlined" onClick={() => setSelectedEvidenceJobId(job.id)}>Load report summary</Button>
-                    </Stack>) : <Typography color="text.secondary">No Queue evidence is linked to this asset.</Typography>}
+                    </Stack>) : <Typography color="text.secondary">No linked job evidence.</Typography>}
                     {asset.lifecycle?.evidenceSummary?.directPublicationIds?.map((id) => <Typography key={id}>AS-IS publication #{id} · summary available from canonical publication evidence</Typography>)}
                     {selectedEvidenceJobId !== null ? <Box>
                       {evidenceArtifacts.isLoading ? <LinearProgress /> : null}
@@ -4778,7 +4812,6 @@ async function generateExternalSubtitle(
                 {snapshotTab === 'history' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     <Typography variant="h3">History</Typography>
-                    <Typography color="text.secondary">Current publication is resolved by Phase A. Historical executions and retired publications remain separate and immutable.</Typography>
                     {historyJobs.length ? historyJobs.map((job) => {
                       const frozenEvidence = job.profileSnapshot.sourceAnalysisEvidence as {
                         status?: string;
@@ -4787,15 +4820,27 @@ async function generateExternalSubtitle(
                       } | undefined;
                       const evidenceIsLinked = job.sourceAssetRecordId === asset.id && frozenEvidence?.sourceAssetRecordId === asset.id;
                       return <Box key={job.id}>
-                        <Typography>Queue result #{job.id} · {job.publishedPath || job.outputPath || job.mediaPath}{job.id === asset.lifecycle?.currentPublication?.id ? ' · current' : ' · historical'}</Typography>
+                        <Typography>Queue result #{job.id} · {job.publishedPath || job.outputPath || job.mediaPath}{asset.lifecycle?.currentPublication?.authority === 'queue_job' && job.id === asset.lifecycle.currentPublication.id ? ' · current' : ' · historical'}</Typography>
                         {evidenceIsLinked ? <Typography variant="body2" color="text.secondary">
                           Source evidence {frozenEvidence?.sourceIdentity?.snapshotId ? `snapshot #${frozenEvidence.sourceIdentity.snapshotId}` : 'unavailable'} · {analysisEvidenceLabel(frozenEvidence?.status)} · {frozenEvidence?.sourceIdentity?.path || 'source identity unavailable'} → frozen plan {job.activeExecutionPlanId ? `#${job.activeExecutionPlanId}` : 'not available'} → Queue result #{job.id}
-                        </Typography> : <Typography variant="body2" color="text.secondary">Source evidence link unresolved; no path-only match is used.</Typography>}
-                        <Typography variant="caption" color="text.secondary">Validation record link pending (#53)</Typography>
+                        </Typography> : <Typography variant="body2" color="text.secondary">Source evidence not linked.</Typography>}
                       </Box>;
                     }) : null}
                     {asset.lifecycle?.evidenceSummary?.directPublicationIds?.map((id) => <Typography key={id}>Direct publication #{id} · historical/current distinction remains backend-resolved</Typography>)}
                     {legacyAnalysisRecords.map((record, index) => <Alert key={String(record.id ?? index)} severity="info"><strong>Legacy Analysis decision:</strong> {String(record.decision ?? 'No decision')} · {String(record.createdAt ?? '')}{record.notes ? ` · ${String(record.notes)}` : ''}</Alert>)}
+                    {!historyJobs.length && !asset.lifecycle?.evidenceSummary?.directPublicationIds?.length && !legacyAnalysisRecords.length ? <Alert severity="info">No MVForge processing history is linked to this asset.</Alert> : null}
+                  </Stack>
+                </Box> : null}
+                {snapshotTab === 'integration' ? <Box>
+                  <Stack spacing={1.5} sx={{ pt: 1.5 }}>
+                    <Typography variant="h3">Integration evidence</Typography>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      {asset.lifecycle?.evidenceSummary?.analysis ? <Chip size="small" label={`Analysis · ${analysisEvidenceLabel(asset.lifecycle.evidenceSummary.analysis.status)}`} /> : null}
+                      {(asset.lifecycle?.evidenceSummary?.queueJobIds?.length ?? 0) > 0 ? <Chip size="small" label={`${asset.lifecycle?.evidenceSummary?.queueJobIds?.length} Queue jobs`} /> : null}
+                      {(asset.lifecycle?.evidenceSummary?.directPublicationIds?.length ?? 0) > 0 ? <Chip size="small" label={`${asset.lifecycle?.evidenceSummary?.directPublicationIds?.length} direct publications`} /> : null}
+                      {(asset.lifecycle?.archivedOriginals?.length ?? 0) > 0 ? <Chip size="small" label={`${asset.lifecycle?.archivedOriginals?.length} archived originals`} /> : null}
+                    </Stack>
+                    {!asset.lifecycle?.evidenceSummary?.analysis && !asset.lifecycle?.evidenceSummary?.queueJobIds?.length && !asset.lifecycle?.evidenceSummary?.directPublicationIds?.length && !asset.lifecycle?.archivedOriginals?.length ? <Typography color="text.secondary">No linked integration evidence.</Typography> : null}
                   </Stack>
                 </Box> : null}
                 {snapshotTab === 'advisor' && !hidePreConversionActions ? <Box>
@@ -6354,7 +6399,7 @@ function DirectPlaySnapshotComparison({ scan, job }: { scan: ScanResult; job?: Q
   );
 }
 
-function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; job?: QueueJob; compact?: boolean }) {
+function FinalDetailsSummary({ asset, job }: { asset: Asset; job: QueueJob }) {
   const report = job?.validationReport ?? {};
   const mode = stringFromRecord(report, 'processingMode') || modeFromNotes(job?.notes ?? '');
   const audioProfile = job?.audioProfileKey || audioProfileFromNotes(job?.notes ?? '');
@@ -6365,19 +6410,12 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
   const requestedEncoder = stringFromRecord(workerConfig, 'videoEncoder') ||
     stringFromRecord(job?.profileSnapshot ?? {}, 'preferredEncoder') ||
     'Unknown';
-  const colorPolicy = recordFromRecord(report, 'colorPolicy');
-  const sourceColor = recordFromRecord(colorPolicy, 'source');
-  const outputColor = recordFromRecord(colorPolicy, 'output');
-  const frameFidelity = recordFromRecord(report, 'frameFidelity');
-  const frameFidelityFields = recordFromRecord(frameFidelity, 'fields');
-
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 2, bgcolor: 'rgba(79,179,255,0.035)' }}>
       <Stack spacing={1.5}>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
           <Chip label={status} color={job?.status === 'failed' ? 'error' : 'success'} size="small" />
           {job ? <Chip label={job.executionNumber ? `Job #${job.executionNumber}` : 'Pending'} size="small" /> : null}
-          {job?.validationStatus ? <Chip label={`Validation: ${job.validationStatus} ${job.validationScore}/100`} size="small" /> : null}
         </Stack>
         <Typography fontWeight={700}>What changed</Typography>
         <Stack spacing={0.75}>
@@ -6395,7 +6433,7 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
               Published path: {job.publishedPath}
             </Typography>
           ) : null}
-          {job?.outputPath && !compact ? (
+          {job.outputPath ? (
             <Typography color="text.secondary" sx={{ wordBreak: 'break-all' }}>
               Staging/output path: {job.outputPath}
             </Typography>
@@ -6450,71 +6488,10 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
               >
                 {command}
               </Box>
-            ) : (
-              <Alert severity="warning">This job record does not contain its FFmpeg conversion command.</Alert>
-            )}
-            {Object.keys(colorPolicy).length > 0 ? (
-              <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
-                <Stack spacing={1}>
-                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                    <Typography fontWeight={700}>Final color validation</Typography>
-                    <Chip
-                      size="small"
-                      label={stringFromRecord(colorPolicy, 'status') || 'unverified'}
-                      color={stringFromRecord(colorPolicy, 'status') === 'passed' ? 'success' : 'warning'}
-                    />
-                    <Chip size="small" label={`Requested: ${stringFromRecord(colorPolicy, 'requestedPolicy') || 'automatic'}`} />
-                    <Chip size="small" label={`Effective: ${stringFromRecord(colorPolicy, 'effectivePolicy') || 'unknown'}`} />
-                  </Stack>
-                  <Typography variant="body2" color="text.secondary">
-                    Source: {colorCharacteristicsLabel(sourceColor)}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Output: {colorCharacteristicsLabel(outputColor)}
-                  </Typography>
-                </Stack>
-              </Box>
-            ) : null}
-            {Object.keys(frameFidelityFields).length > 0 ? (
-              <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
-                <Stack spacing={1}>
-                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                    <Typography fontWeight={700}>Frame fidelity validation</Typography>
-                    <Chip size="small" label={stringFromRecord(frameFidelity, 'status') || 'unverified'} color={stringFromRecord(frameFidelity, 'status') === 'passed' ? 'success' : 'warning'} />
-                  </Stack>
-                  <Grid container spacing={1}>
-                    {Object.entries(frameFidelityFields).map(([key, raw]) => {
-                      const field = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
-                      const status = stringFromRecord(field, 'status') || 'unverified';
-                      return (
-                        <Grid key={key} size={{ xs: 12, sm: 6, md: 4 }}>
-                          <Typography variant="caption" color="text.secondary">{frameFidelityLabel(key)}</Typography>
-                          <Typography variant="body2">Source: {fidelityValueLabel(field.source)}</Typography>
-                          <Typography variant="body2">Expected: {fidelityValueLabel(field.expected)}</Typography>
-                          <Typography variant="body2">Actual: {fidelityValueLabel(field.actual ?? field.output)}</Typography>
-                          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                            <Chip
-                              size="small"
-                              label={status.replaceAll('_', ' ')}
-                              color={status === 'mismatch' ? 'error' : status === 'passed' ? 'success' : status === 'unverified' ? 'warning' : 'default'}
-                            />
-                            {stringFromRecord(field, 'authority') ? <Chip size="small" variant="outlined" label={stringFromRecord(field, 'authority')} /> : null}
-                          </Stack>
-                          {stringFromRecord(field, 'reason') ? <Typography variant="caption" color="text.secondary">{stringFromRecord(field, 'reason')}</Typography> : null}
-                        </Grid>
-                      );
-                    })}
-                  </Grid>
-                </Stack>
-              </Box>
-            ) : null}
+            ) : <Typography variant="caption" color="text.secondary">Conversion command unavailable.</Typography>}
           </>
         ) : null}
-        <Alert severity="info">
-          AS-IS and result JSON reports are saved in the configured reports folders. This view summarizes the final job metadata and current asset snapshot for quick human review.
-        </Alert>
-        {!job ? <Alert severity="warning">No matching job record was found for this converted asset yet.</Alert> : null}
-        {job?.notes && !compact ? (
+        {job.notes ? (
           <Box
             component="pre"
             sx={{
@@ -6535,6 +6512,61 @@ function FinalDetailsSummary({ asset, job, compact = false }: { asset: Asset; jo
       </Stack>
     </Box>
   );
+}
+
+function FinalValidationEvidence({ job }: { job: QueueJob }) {
+  const report = job.validationReport ?? {};
+  const colorPolicy = recordFromRecord(report, 'colorPolicy');
+  const sourceColor = recordFromRecord(colorPolicy, 'source');
+  const outputColor = recordFromRecord(colorPolicy, 'output');
+  const frameFidelity = recordFromRecord(report, 'frameFidelity');
+  const frameFidelityFields = recordFromRecord(frameFidelity, 'fields');
+
+  return <Stack spacing={1.5}>
+    {Object.keys(colorPolicy).length > 0 ? (
+      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+        <Stack spacing={1}>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography fontWeight={700}>Color validation</Typography>
+            <Chip size="small" label={stringFromRecord(colorPolicy, 'status') || 'unverified'} color={stringFromRecord(colorPolicy, 'status') === 'passed' ? 'success' : 'warning'} />
+            <Chip size="small" label={`Requested: ${stringFromRecord(colorPolicy, 'requestedPolicy') || 'automatic'}`} />
+            <Chip size="small" label={`Effective: ${stringFromRecord(colorPolicy, 'effectivePolicy') || 'unknown'}`} />
+          </Stack>
+          <Typography variant="body2" color="text.secondary">Source: {colorCharacteristicsLabel(sourceColor)}</Typography>
+          <Typography variant="body2" color="text.secondary">Output: {colorCharacteristicsLabel(outputColor)}</Typography>
+        </Stack>
+      </Box>
+    ) : null}
+    {Object.keys(frameFidelityFields).length > 0 ? (
+      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+        <Stack spacing={1}>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography fontWeight={700}>Frame fidelity</Typography>
+            <Chip size="small" label={stringFromRecord(frameFidelity, 'status') || 'unverified'} color={stringFromRecord(frameFidelity, 'status') === 'passed' ? 'success' : 'warning'} />
+          </Stack>
+          <Grid container spacing={1}>
+            {Object.entries(frameFidelityFields).map(([key, raw]) => {
+              const field = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+              const status = stringFromRecord(field, 'status') || 'unverified';
+              return (
+                <Grid key={key} size={{ xs: 12, sm: 6, md: 4 }}>
+                  <Typography variant="caption" color="text.secondary">{frameFidelityLabel(key)}</Typography>
+                  <Typography variant="body2">Source: {fidelityValueLabel(field.source)}</Typography>
+                  <Typography variant="body2">Expected: {fidelityValueLabel(field.expected)}</Typography>
+                  <Typography variant="body2">Actual: {fidelityValueLabel(field.actual ?? field.output)}</Typography>
+                  <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+                    <Chip size="small" label={status.replaceAll('_', ' ')} color={status === 'mismatch' ? 'error' : status === 'passed' ? 'success' : status === 'unverified' ? 'warning' : 'default'} />
+                    {stringFromRecord(field, 'authority') ? <Chip size="small" variant="outlined" label={stringFromRecord(field, 'authority')} /> : null}
+                  </Stack>
+                  {stringFromRecord(field, 'reason') ? <Typography variant="caption" color="text.secondary">{stringFromRecord(field, 'reason')}</Typography> : null}
+                </Grid>
+              );
+            })}
+          </Grid>
+        </Stack>
+      </Box>
+    ) : null}
+  </Stack>;
 }
 
 function AssetCategorySelect({
@@ -7055,26 +7087,12 @@ function associatedJobForAsset(asset: Asset, jobs: QueueJob[]) {
   return [...safeArray(jobs)]
     .sort((left, right) => right.id - left.id)
     .filter((job) => !job.publicationRetiredAt)
+    .filter(queueJobIsActive)
     .filter((job) => asset.status !== 'unprocessed' || job.status === 'queued' || job.status === 'running')
     .find((job) => {
       const candidates = [job.publishedPath, job.outputPath, job.mediaPath].map(normalizePath).filter(Boolean);
       return candidates.includes(normalizedAssetPath);
     });
-}
-
-function directPlayScoreLabel(job: QueueJob) {
-  const directPlay = recordFromRecord(job.validationReport ?? {}, 'directPlay');
-  const enabled = directPlay.enabled === true;
-  const score = Number(directPlay.lowestScore);
-  if (!enabled || !Number.isFinite(score)) return 'Not evaluated';
-  return `${score}/100`;
-}
-
-function profileAssignmentSource(job: QueueJob | undefined, mediaType: 'video' | 'audio' | 'tracks') {
-	if (!job?.profileResolution) return '';
-	const resolution = recordFromRecord(job.profileResolution, mediaType);
-	const source = String(resolution.source ?? '');
-	return source === 'asset' ? ' · Asset' : source === 'path' ? ' · Path' : '';
 }
 
 function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueue: boolean): { label: string; color: 'default' | 'primary' | 'success' | 'warning' | 'error' } {

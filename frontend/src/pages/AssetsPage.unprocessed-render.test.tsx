@@ -416,13 +416,13 @@ describe('Unprocessed Assets hierarchy', () => {
     if (_label === 'no stored snapshot') {
       expect(screen.getByText(/No snapshot available/)).toBeTruthy();
       expect(screen.getByRole('button', { name: 'Analyze asset' })).toBeTruthy();
-      expect(screen.getByRole('tab', { name: 'Asset Information' })).toBeTruthy();
+      expect(screen.getByRole('tab', { name: 'Overview' })).toBeTruthy();
       expect(screen.queryByRole('button', { name: 'Refresh analysis' })).toBeNull();
     } else if (_label === 'unavailable stored snapshot') {
       expect(screen.getByText(/Analysis evidence is unavailable: source_unavailable/)).toBeTruthy();
       expect(screen.queryByRole('button', { name: 'Refresh analysis' })).toBeNull();
     } else {
-      expect(screen.getByRole('tab', { name: 'Asset Information' })).toBeTruthy();
+      expect(screen.getByRole('tab', { name: 'Overview' })).toBeTruthy();
       expect(screen.queryByRole('button', { name: 'Analyze asset' })).toBeNull();
       if (_label === 'stale stored snapshot') {
         expect(screen.getByText(/Snapshot evidence is stale/)).toBeTruthy();
@@ -470,8 +470,8 @@ describe('Unprocessed Assets hierarchy', () => {
     const currentPath = '/media/library/anime/Akira/Akira.mkv';
     const lifecycle = {
       location: 'library', lifecycle: 'published', provenance: 'converted', validation: 'passed', publication: 'published', original: 'archived',
-      currentPublication: { state: 'published', authority: 'queue_job', id: 101, publishedPath: currentPath },
-      evidenceSummary: { queueJobIds: [100, 101], directPublicationIds: [55], hasAnalysis: false },
+      currentPublication: { state: 'published', authority: 'queue_job', id: 101, publishedPath: currentPath, publishedAt: '2026-08-27T00:00:00Z' },
+      evidenceSummary: { queueJobIds: [100, 101], directPublicationIds: [55], hasAnalysis: true, analysis: { status: 'ready' } },
       actions: { archive: { allowed: false, reason: 'active Queue operation' } },
     };
     const enrichedAsset = { ...asset, libraryId: 0, libraryName: 'Anime', lifecycle } as typeof asset;
@@ -486,6 +486,7 @@ describe('Unprocessed Assets hierarchy', () => {
       { ...activeQueueJob(100, asset.path), status: 'completed', stage: 'completed', publishedPath: `${currentPath}.old`, publicationRetiredAt: '2026-08-27T00:00:00Z' },
       {
         ...activeQueueJob(101, asset.path), status: 'completed', stage: 'completed', publishedPath: currentPath,
+        validationStatus: 'passed', validationScore: 97,
         sourceAssetRecordId: asset.id, activeExecutionPlanId: 202,
         profileSnapshot: { sourceAnalysisEvidence: {
           status: 'ready', sourceAssetRecordId: asset.id,
@@ -501,18 +502,40 @@ describe('Unprocessed Assets hierarchy', () => {
 
     expect(await screen.findByTestId('asset-info-overview')).toBeTruthy();
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Library')).toBeTruthy();
-    expect(within(dialog).getByText('Converted')).toBeTruthy();
+    const mainNavigation = within(dialog).getByRole('tablist', { name: 'Asset Info sections' });
+    expect(within(mainNavigation).getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Overview', 'Tracks', 'Job Information']);
+    expect(within(within(dialog).getByTestId('asset-info-overview')).getByText('Published', { selector: 'p' })).toBeTruthy();
+    expect(within(dialog).getByText('Anime')).toBeTruthy();
+    expect(within(dialog).getByText('Converted by MVForge')).toBeTruthy();
+    expect(within(dialog).queryByText(currentPath)).toBeNull();
+    expect(within(dialog).queryByText('Integration evidence')).toBeNull();
     expect(within(dialog).queryByText(/active Queue operation/)).toBeNull();
     expect(within(dialog).queryByText('Backend action capabilities')).toBeNull();
-    expect(within(dialog).getByText(/Analysis · Unavailable/)).toBeTruthy();
     expect(api.latestSnapshot).not.toHaveBeenCalled();
     expect(api.externalAssetSubtitles).not.toHaveBeenCalled();
     expect(api.subtitleEligibility).not.toHaveBeenCalled();
     expect(api.suggestProfile).not.toHaveBeenCalled();
     expect(api.jobArtifacts).not.toHaveBeenCalled();
 
-    await user.click(within(dialog).getByRole('tab', { name: 'Evidence' }));
+    await user.click(within(mainNavigation).getByRole('tab', { name: 'Job Information' }));
+    const jobNavigation = within(dialog).getByRole('tablist', { name: 'Job Information sections' });
+    expect(within(jobNavigation).getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'Execution / Result', 'Validation', 'Original', 'Evidence', 'History', 'Current publication', 'Integration evidence',
+    ]);
+    expect(within(dialog).queryByText('Validation: passed 97/100')).toBeNull();
+    await user.click(within(jobNavigation).getByRole('tab', { name: 'Validation' }));
+    expect(within(dialog).getByText('Passed')).toBeTruthy();
+    expect(within(dialog).getByText('Latest score · 97/100')).toBeTruthy();
+    await user.click(within(jobNavigation).getByRole('tab', { name: 'Current publication' }));
+    expect(within(dialog).getByText(currentPath)).toBeTruthy();
+    expect(within(dialog).getByText(/^Published /)).toBeTruthy();
+
+    await user.click(within(jobNavigation).getByRole('tab', { name: 'Integration evidence' }));
+    expect(within(dialog).getByText('Analysis · Ready')).toBeTruthy();
+    expect(within(dialog).getByText('2 Queue jobs')).toBeTruthy();
+    expect(within(dialog).getByText('1 direct publications')).toBeTruthy();
+
+    await user.click(within(jobNavigation).getByRole('tab', { name: 'Evidence' }));
     expect(within(dialog).getByText('Queue job #100 · completed · historical')).toBeTruthy();
     expect(within(dialog).getByText('Queue job #101 · completed')).toBeTruthy();
     expect(api.jobArtifacts).not.toHaveBeenCalled();
@@ -521,12 +544,11 @@ describe('Unprocessed Assets hierarchy', () => {
     await waitFor(() => expect(api.jobArtifacts).toHaveBeenCalledWith(101));
     await waitFor(() => expect(api.executionPlans).toHaveBeenCalledWith(101));
 
-    await user.click(within(dialog).getByRole('tab', { name: 'History' }));
+    await user.click(within(jobNavigation).getByRole('tab', { name: 'History' }));
     expect(within(dialog).getByText(new RegExp(`Queue result #101 .* current`))).toBeTruthy();
     expect(within(dialog).getByText(new RegExp(`Queue result #100 .* historical`))).toBeTruthy();
     expect(within(dialog).getByText(new RegExp(`Source evidence snapshot #77 · Ready .* frozen plan #202 → Queue result #101`))).toBeTruthy();
-    expect(within(dialog).getByText(/Source evidence link unresolved; no path-only match is used/)).toBeTruthy();
-    expect(within(dialog).getAllByText(/Validation record link pending \(#53\)/)).toHaveLength(2);
+    expect(within(dialog).getByText('Source evidence not linked.')).toBeTruthy();
     expect(within(dialog).getByText(/Direct publication #55/)).toBeTruthy();
   });
 
@@ -534,10 +556,79 @@ describe('Unprocessed Assets hierarchy', () => {
     const path = '/media/raw/movies/Akira/Akira.mkv';
     render(<MemoryRouter initialEntries={[`/assets?location=raw&asset=${encodeURIComponent(path)}`]}><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
     expect(await screen.findByTestId('asset-info-overview')).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Asset Information' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe('true');
     expect(api.latestSnapshot).not.toHaveBeenCalled();
     expect(api.startSnapshotOperation).not.toHaveBeenCalled();
     expect(api.evaluateAdvisor).not.toHaveBeenCalled();
+  });
+
+  it('shows a useful empty state when an asset has no linked MVForge processing history', async () => {
+    vi.mocked(api.queueJobs).mockResolvedValue([]);
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('tab', { name: 'Job Information' }));
+    expect(within(dialog).getByText('No MVForge processing history is linked to this asset.')).toBeTruthy();
+    expect(within(dialog).queryByText('No snapshot available')).toBeNull();
+    await user.click(within(dialog).getByRole('tab', { name: 'History' }));
+    expect(within(dialog).getByText('No MVForge processing history is linked to this asset.')).toBeTruthy();
+  });
+
+  it('does not bind a historical job to an asset by path alone', async () => {
+    const inventory = singleAssetInventory();
+    const asset = inventory.unprocessed[0];
+    const lifecycle = {
+      location: 'library', lifecycle: 'published', provenance: 'converted', validation: 'passed', publication: 'published', original: 'archived',
+      currentPublication: { state: 'published', authority: 'publisher', id: 55, publishedPath: asset.path },
+      evidenceSummary: { queueJobIds: [], directPublicationIds: [], hasAnalysis: false },
+    };
+    const enrichedAsset = { ...asset, lifecycle } as typeof asset;
+    inventory.sourceGroups[0].logicalGroups[0].assetPaths[0].assets[0] = enrichedAsset;
+    vi.mocked(api.assets).mockResolvedValue({ ...inventory, unprocessed: [enrichedAsset], library: [enrichedAsset] } as never);
+    vi.mocked(api.queueJobs).mockResolvedValue([
+      { ...activeQueueJob(301, asset.path), status: 'completed', stage: 'completed', publishedPath: asset.path, publicationRetiredAt: '2026-08-27T00:00:00Z' },
+    ]);
+
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('tab', { name: 'Job Information' }));
+    await user.click(within(dialog).getByRole('tab', { name: 'History' }));
+
+    expect(within(dialog).queryByText(/Queue result #301/)).toBeNull();
+    expect(within(dialog).getByText('No MVForge processing history is linked to this asset.')).toBeTruthy();
+  });
+
+  it('keeps publication IDs distinct from Queue job IDs in History', async () => {
+    const inventory = singleAssetInventory();
+    const asset = inventory.unprocessed[0];
+    const lifecycle = {
+      location: 'library', lifecycle: 'published', provenance: 'converted', validation: 'passed', publication: 'published', original: 'archived',
+      currentPublication: { state: 'published', authority: 'publisher', id: 301, publishedPath: asset.path },
+      evidenceSummary: { queueJobIds: [301], directPublicationIds: [301], hasAnalysis: false },
+    };
+    const enrichedAsset = { ...asset, lifecycle } as typeof asset;
+    inventory.sourceGroups[0].logicalGroups[0].assetPaths[0].assets[0] = enrichedAsset;
+    vi.mocked(api.assets).mockResolvedValue({ ...inventory, unprocessed: [enrichedAsset], library: [enrichedAsset] } as never);
+    vi.mocked(api.queueJobs).mockResolvedValue([
+      { ...activeQueueJob(301, asset.path), status: 'completed', stage: 'completed', publishedPath: asset.path },
+    ]);
+
+    const user = userEvent.setup();
+    render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('tab', { name: 'Job Information' }));
+    await user.click(within(dialog).getByRole('tab', { name: 'History' }));
+
+    expect(within(dialog).getByText(new RegExp(`Queue result #301 .* historical`))).toBeTruthy();
+    expect(within(dialog).getByText(/Direct publication #301/)).toBeTruthy();
   });
 
   it('keeps legacy Analysis decisions and notes visible without path-only association', async () => {
@@ -723,6 +814,7 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(await screen.findByRole('option', { name: 'commentary' }));
     expect(api.updateAssetConversion).not.toHaveBeenCalled();
 
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Overview' }));
     fireEvent.click(within(dialog).getByRole('tab', { name: 'Quick Asset Overrides' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(api.updateAssetEdit).toHaveBeenCalledTimes(1));
@@ -839,7 +931,7 @@ describe('Unprocessed Assets hierarchy', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Asset Info Akira.mkv' })).toHaveProperty('disabled', false));
     fireEvent.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
     const dialog = await screen.findByRole('dialog');
-    await within(dialog).findByRole('heading', { name: 'Asset information' });
+    await within(dialog).findByRole('heading', { name: 'Overview' });
 
     for (const control of within(dialog).getAllByLabelText('Video profile')) expect(control).toHaveProperty('disabled', true);
     expect(within(dialog).getByLabelText('Audio profile')).toHaveProperty('disabled', true);
@@ -906,7 +998,7 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(await screen.findByText('/media/library/series/Akira'));
     await user.click(await screen.findByRole('button', { name: 'Asset Info Converted Episode.mkv' }));
     const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('tab', { name: 'Asset Information' }));
+    await user.click(within(dialog).getByRole('tab', { name: 'Overview' }));
     expect(within(dialog).queryByRole('tab', { name: 'MVForge Suggestions' })).toBeNull();
     expect(within(dialog).queryByRole('tab', { name: 'Test Encode' })).toBeNull();
     const renameInput = within(dialog).getByLabelText('Rename file');
@@ -1059,7 +1151,7 @@ describe('Unprocessed Assets hierarchy', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: 'Refresh analysis' }) as HTMLButtonElement).disabled).toBe(false));
     vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: testSnapshot('/media/raw/movies/Akira/Akira.mkv', 'rename-newer-stored-codec'), status: 'current', requiresAnalysis: false, staleComponents: [] });
 
-    await user.click(screen.getByRole('tab', { name: 'Asset Information' }));
+    await user.click(screen.getByRole('tab', { name: 'Overview' }));
     const renameInput = screen.getByLabelText('Rename file');
     fireEvent.change(renameInput, { target: { value: 'Akira Renamed.mkv' } });
     await user.click(screen.getByRole('button', { name: 'Rename' }));
@@ -1084,14 +1176,14 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     await user.click(await screen.findByRole('button', { name: 'Refresh analysis' }));
     expect(await screen.findByText(/rename snapshot failure/)).toBeTruthy();
-    await user.click(screen.getByRole('tab', { name: 'Asset Information' }));
+    await user.click(screen.getByRole('tab', { name: 'Overview' }));
     const renameInput = screen.getByLabelText('Rename file');
     fireEvent.change(renameInput, { target: { value: 'Akira Renamed.mkv' } });
     await user.click(screen.getByRole('button', { name: 'Rename' }));
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Asset Snapshot' })).toBeNull());
 
     await user.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
-    expect(await screen.findByRole('tab', { name: 'Asset Information' })).toBeTruthy();
+    expect(await screen.findByRole('tab', { name: 'Overview' })).toBeTruthy();
     expect(screen.queryByText(/rename snapshot failure/)).toBeNull();
     expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1);
   }, 20000);

@@ -2,32 +2,7 @@
 
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import type { Asset } from '../api/types';
-import { AssetInfoOverview } from './AssetsPage';
-
-function libraryAsset(archivedOriginal: NonNullable<NonNullable<Asset['lifecycle']>['archivedOriginals']>[number]): Asset {
-  return {
-    id: 55,
-    libraryId: 7,
-    libraryName: 'Anime',
-    path: '/media/library/anime/show/episode.mkv',
-    relativePath: 'show/episode.mkv',
-    groupPath: 'show',
-    fileName: 'episode.mkv',
-    extension: '.mkv',
-    sizeBytes: 1200,
-    modifiedAt: '2026-09-25T00:00:00Z',
-    status: 'converted',
-    missing: false,
-    review: { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' },
-    metadata: { categories: [], tags: [], updatedAt: '' },
-    conversion: {},
-    lifecycle: {
-      location: 'library', lifecycle: 'published', provenance: 'converted', validation: 'passed',
-      publication: 'published', original: 'archived', archivedOriginals: [archivedOriginal],
-    },
-  };
-}
+import { ArchivedOriginalDetails } from './AssetsPage';
 
 describe('contextual archived-original inspection', () => {
   it('shows recorded metadata and retention on the related Library asset', () => {
@@ -46,7 +21,7 @@ describe('contextual archived-original inspection', () => {
       deleteArchivedOriginal: { allowed: true },
     };
 
-    render(<AssetInfoOverview asset={libraryAsset(archivedOriginal)} libraries={[]} />);
+    render(<ArchivedOriginalDetails original={archivedOriginal} />);
 
     expect(screen.getByText(archivedOriginal.path)).toBeTruthy();
     expect(screen.getByText(/Size ·/)).toBeTruthy();
@@ -71,7 +46,7 @@ describe('contextual archived-original inspection', () => {
       deleteArchivedOriginal: { allowed: false, reason: 'identity_unresolved' },
     };
 
-    render(<AssetInfoOverview asset={libraryAsset(archivedOriginal)} libraries={[]} />);
+    render(<ArchivedOriginalDetails original={archivedOriginal} />);
 
     expect(screen.getByText(archivedOriginal.path)).toBeTruthy();
     expect(screen.getByText('Archive time · Unknown')).toBeTruthy();
