@@ -29,7 +29,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
-import type { ValidationFinding, ValidationRunDetail, ValidationSummary } from '../api/types';
+import type { ValidationFinding, ValidationSummary } from '../api/types';
 
 type ValidationView = 'exceptions' | 'pending' | 'all';
 
