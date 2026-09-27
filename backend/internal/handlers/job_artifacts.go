@@ -1124,7 +1124,49 @@ func writeJobArtifact(db *gorm.DB, job models.QueueJob, kind string, artifact jo
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, jobReportFileName(job, kind)), append(content, '\n'), 0o644)
+	content = append(content, '\n')
+	path := filepath.Join(dir, jobReportFileName(job, kind))
+	if kind == "result" {
+		return writeImmutableResultArtifact(path, content)
+	}
+	return os.WriteFile(path, content, 0o644)
+}
+
+func writeImmutableResultArtifact(path string, content []byte) error {
+	extension := filepath.Ext(path)
+	base := strings.TrimSuffix(path, extension)
+	for suffix := 0; ; suffix++ {
+		candidate := path
+		if suffix > 0 {
+			candidate = fmt.Sprintf("%s-%d%s", base, suffix, extension)
+		}
+		file, err := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("create immutable Result artifact %q: %w", candidate, err)
+		}
+		keep := false
+		defer func() {
+			if !keep {
+				_ = os.Remove(candidate)
+			}
+		}()
+		if _, err := file.Write(content); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("write immutable Result artifact %q: %w", candidate, err)
+		}
+		if err := file.Sync(); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("sync immutable Result artifact %q: %w", candidate, err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close immutable Result artifact %q: %w", candidate, err)
+		}
+		keep = true
+		return nil
+	}
 }
 
 func ffprobeJSON(path string) map[string]any {

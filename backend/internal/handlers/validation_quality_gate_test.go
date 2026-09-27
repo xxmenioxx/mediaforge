@@ -329,8 +329,8 @@ func TestWorkerAutomatedPipelineValidatesOnlyAfterResultArtifactExists(t *testin
 	}
 }
 
-func TestExplicitLegacyRevalidationExtendsExistingResultArtifact(t *testing.T) {
-	db := testEncodeTestDB(t, "quality-gate-legacy-bind", &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
+func TestLegacyResultRemainsImmutableAndRequiresCanonicalExecution(t *testing.T) {
+	db := testEncodeTestDB(t, "quality-gate-legacy-immutable", &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
 	root := t.TempDir()
 	output := filepath.Join(root, "legacy-output.mkv")
 	if err := os.WriteFile(output, []byte("legacy output bytes"), 0o600); err != nil {
@@ -341,7 +341,12 @@ func TestExplicitLegacyRevalidationExtendsExistingResultArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	executionNumber := uint(21)
-	job := models.QueueJob{MediaPath: filepath.Join(root, "legacy-source.mkv"), OutputPath: output, Status: JobStatusCompleted, ExecutionNumber: &executionNumber}
+	legacyReport := models.JSONMap{"legacyStatus": "passed", "frameFidelity": models.JSONMap{"legacy": true}}
+	job := models.QueueJob{
+		MediaPath: filepath.Join(root, "legacy-source.mkv"), OutputPath: output, Status: JobStatusCompleted,
+		ExecutionNumber: &executionNumber, ValidationStatus: ValidationStatusPassed,
+		ValidationScore: 100, ValidationReport: legacyReport,
+	}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -362,32 +367,140 @@ func TestExplicitLegacyRevalidationExtendsExistingResultArtifact(t *testing.T) {
 	if err := writeJobArtifact(db, job, "result", legacy); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (ValidationHandler{db: db}).validateAndPersist(job, "local_operator"); err != nil {
-		t.Fatal(err)
-	}
-	artifact, _, err := readLatestJobArtifact(db, job, "result")
+	legacyArtifact, legacyPath, err := readLatestJobArtifact(db, job, "result")
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, identityOK := resultIdentityFromArtifact(artifact)
-	binding, bindingOK := resultBindingFromArtifact(artifact)
-	if !identityOK || !bindingOK || binding.ExecutionNumber != executionNumber || binding.ExecutionPlanID != plan.ID {
-		t.Fatalf("explicit legacy revalidation did not extend the existing Result artifact: identity=%#v binding=%#v", identity, binding)
+	legacyBytes, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	files, err := filepath.Glob(filepath.Join(resultsDir, "*.json"))
-	if err != nil || len(files) != 1 {
-		t.Fatalf("legacy bind created a parallel Result artifact: files=%v err=%v", files, err)
+	if _, ok := resultIdentityFromArtifact(legacyArtifact); ok {
+		t.Fatal("legacy Result unexpectedly has canonical identity before validation")
+	}
+	if _, ok := resultBindingFromArtifact(legacyArtifact); ok {
+		t.Fatal("legacy Result unexpectedly has an execution binding before validation")
+	}
+	if _, err := (ValidationHandler{db: db}).validateAndPersist(job, "local_operator"); err == nil || !strings.Contains(err.Error(), "historical or unbound") {
+		t.Fatalf("unbound historical Result validation err=%v, want fail-closed requeue error", err)
+	}
+	legacyBytesAfter, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(legacyBytesAfter) != string(legacyBytes) {
+		t.Fatal("validation changed the historical Result artifact bytes")
+	}
+	legacyAfter, _, err := readLatestJobArtifact(db, job, "result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resultIdentityFromArtifact(legacyAfter); ok {
+		t.Fatal("historical Result acquired Validation-minted identity")
+	}
+	if _, ok := resultBindingFromArtifact(legacyAfter); ok {
+		t.Fatal("historical Result acquired a Validation-minted execution binding")
 	}
 	var jobAfter models.QueueJob
 	if err := db.First(&jobAfter, job.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	var run models.ValidationRun
-	if err := db.Where("run_id = ?", jobAfter.ValidationRunID).First(&run).Error; err != nil {
+	if jobAfter.ValidationStatus != ValidationStatusPassed || jobAfter.ValidationScore != 100 || jobAfter.ValidationReport["legacyStatus"] != "passed" || jobAfter.ValidationRunID != "" {
+		t.Fatalf("legacy QueueJob validation history was not preserved as unbound: %#v", jobAfter)
+	}
+	if frame := unknownRecord(jobAfter.ValidationReport["frameFidelity"]); frame["legacy"] != true {
+		t.Fatalf("legacy QueueJob frameFidelity history was not preserved: %#v", frame)
+	}
+	previousGinMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(previousGinMode) })
+	reviewRouter := gin.New()
+	reviewRouter.GET("/validation/review", NewValidationHandler(db).ReviewList)
+	reviewResponse := httptest.NewRecorder()
+	reviewRouter.ServeHTTP(reviewResponse, httptest.NewRequest(http.MethodGet, "/validation/review", nil))
+	if reviewResponse.Code != http.StatusOK {
+		t.Fatalf("legacy review list status=%d body=%s", reviewResponse.Code, reviewResponse.Body.String())
+	}
+	var reviewPage struct {
+		Items []validationSummaryRow `json:"items"`
+	}
+	if err := json.Unmarshal(reviewResponse.Body.Bytes(), &reviewPage); err != nil {
 		t.Fatal(err)
 	}
-	if _, staleCopied := run.Report["frameFidelity"]; staleCopied {
+	legacyVisible := false
+	for _, item := range reviewPage.Items {
+		if item.ID == job.ID && item.ValidationStatus == ValidationStatusPassed && item.ValidationRunID == "" {
+			legacyVisible = true
+		}
+	}
+	if !legacyVisible {
+		t.Fatalf("legacy QueueJob status is not readable as unbound history: %#v", reviewPage.Items)
+	}
+	if allowed, reason := canonicalRunAllowsPublish(db, jobAfter, false); allowed || reason == "" {
+		t.Fatal("legacy QueueJob status authorized Publisher without a canonical run")
+	}
+	if _, err := (PublisherHandler{db: db}).publishQueueJobWithMode(jobAfter, false, false); err == nil {
+		t.Fatal("Publisher accepted the legacy QueueJob status without a canonical run")
+	}
+	if allowed, reason := canonicalRunAllowsPublish(db, jobAfter, true); allowed || reason == "" {
+		t.Fatal("legacy QueueJob status authorized automatic publication without a canonical run")
+	}
+
+	newExecutionNumber := executionNumber + 1
+	newPlan := models.ExecutionPlan{JobID: job.ID, Version: plan.Version + 1, Status: "frozen"}
+	if err := db.Create(&newPlan).Error; err != nil {
+		t.Fatal(err)
+	}
+	jobAfter.ExecutionNumber = &newExecutionNumber
+	jobAfter.ActiveExecutionPlanID = &newPlan.ID
+	if err := db.Save(&jobAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJobResultArtifact(db, jobAfter, map[string]any{"status": "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	canonicalArtifact, canonicalPath, err := readLatestJobArtifact(db, jobAfter, "result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, identityOK := resultIdentityFromArtifact(canonicalArtifact)
+	binding, bindingOK := resultBindingFromArtifact(canonicalArtifact)
+	if !identityOK || !bindingOK || binding.ExecutionNumber != newExecutionNumber || binding.ExecutionPlanID != newPlan.ID || canonicalPath == legacyPath {
+		t.Fatalf("new execution did not create a distinct canonical Result: identity=%#v binding=%#v path=%q", identity, binding, canonicalPath)
+	}
+	gate, err := (ValidationHandler{db: db}).validateAndPersist(jobAfter, "local_operator")
+	if err != nil || gate.Run.RunID == "" || gate.Run.ResultGenerationToken != identity.GenerationToken || gate.Run.ResultOutputRevision != identity.OutputRevision {
+		t.Fatalf("new canonical Result did not validate normally: run=%#v err=%v", gate.Run, err)
+	}
+	if _, staleCopied := gate.Run.Report["frameFidelity"]; staleCopied {
 		t.Fatal("legacy unbound frameFidelity evidence was relabeled as current evidence")
+	}
+	legacyBytesFinal, err := os.ReadFile(legacyPath)
+	if err != nil || string(legacyBytesFinal) != string(legacyBytes) {
+		t.Fatalf("historical Result changed after canonical re-execution: err=%v", err)
+	}
+	files, err := filepath.Glob(filepath.Join(resultsDir, "*.json"))
+	if err != nil || len(files) != 2 {
+		t.Fatalf("Result history files=%v err=%v; want legacy and canonical artifacts in the existing store", files, err)
+	}
+}
+
+func TestResultArtifactWriteNeverOverwritesExistingGeneration(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "result.json")
+	if err := writeImmutableResultArtifact(path, []byte("historical Result")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeImmutableResultArtifact(path, []byte("new canonical Result")); err != nil {
+		t.Fatal(err)
+	}
+	historical, err := os.ReadFile(path)
+	if err != nil || string(historical) != "historical Result" {
+		t.Fatalf("historical Result changed: content=%q err=%v", historical, err)
+	}
+	canonical, err := os.ReadFile(filepath.Join(root, "result-1.json"))
+	if err != nil || string(canonical) != "new canonical Result" {
+		t.Fatalf("new Result was not appended to the existing artifact store: content=%q err=%v", canonical, err)
 	}
 }
 

@@ -82,28 +82,14 @@ func (h ValidationHandler) validateAndPersist(job models.QueueJob, actorSourceIn
 	if job.Status != JobStatusCompleted {
 		return validationGateResult{}, fmt.Errorf("job must have a completed output before Validation")
 	}
-	artifact, artifactPath, err := readLatestJobArtifact(h.db, job, "result")
+	artifact, _, err := readLatestJobArtifact(h.db, job, "result")
 	if err != nil {
 		return validationGateResult{}, fmt.Errorf("canonical Result artifact is unavailable: %w", err)
 	}
 	identity, identityOK := resultIdentityFromArtifact(artifact)
-	binding, _ := resultBindingFromArtifact(artifact)
-	if !identityOK {
-		if !legacyResultArtifactMatchesFrozenExecution(artifact, job) {
-			return validationGateResult{}, fmt.Errorf("unbound legacy Result cannot be matched to this frozen execution; queue a new execution")
-		}
-		if err := bindLegacyResultArtifact(h.db, job, artifact, artifactPath); err != nil {
-			return validationGateResult{}, fmt.Errorf("legacy Result could not be explicitly bound: %w", err)
-		}
-		artifact, _, err = readLatestJobArtifact(h.db, job, "result")
-		if err != nil {
-			return validationGateResult{}, fmt.Errorf("bound legacy Result could not be reloaded: %w", err)
-		}
-		identity, identityOK = resultIdentityFromArtifact(artifact)
-		binding, _ = resultBindingFromArtifact(artifact)
-	}
-	if !identityOK {
-		return validationGateResult{}, fmt.Errorf("canonical Result identity is missing; queue a new execution")
+	binding, bindingOK := resultBindingFromArtifact(artifact)
+	if !identityOK || !bindingOK || artifactExecutionNumber(artifact) != binding.ExecutionNumber {
+		return validationGateResult{}, fmt.Errorf("Result artifact is historical or unbound; queue a new execution to create a canonical Result")
 	}
 	findings, report := evaluateValidationRules(h.db, job, artifact, identity, binding)
 	outcome, actionable := reduceValidationOutcome(findings)
@@ -165,77 +151,6 @@ func (h ValidationHandler) validateAndPersist(job models.QueueJob, actorSourceIn
 		return validationGateResult{}, err
 	}
 	return validationGateResult{Run: run, Findings: findings}, nil
-}
-
-func legacyResultArtifactMatchesFrozenExecution(artifact map[string]any, job models.QueueJob) bool {
-	if stringFromUnknown(artifact["kind"]) != "result" || stringFromUnknown(unknownRecord(artifact["result"])["status"]) != "completed" || artifactExecutionNumber(artifact) == 0 || job.ExecutionNumber == nil || artifactExecutionNumber(artifact) != *job.ExecutionNumber {
-		return false
-	}
-	artifactJob := unknownRecord(artifact["job"])
-	if filepath.Clean(stringFromUnknown(artifactJob["outputPath"])) != filepath.Clean(job.OutputPath) || uintFromUnknown(artifactJob["activeExecutionPlanId"]) != valueOrZero(job.ActiveExecutionPlanID) {
-		return false
-	}
-	currentFingerprint, err := canonicalEvidenceHash("frozen-queue-snapshot-body-v1", models.JSONMap{
-		"profileVersion":  job.ProfileVersion,
-		"profileSnapshot": job.ProfileSnapshot, "audioProfileKey": job.AudioProfileKey,
-		"audioProfileSnapshot": job.AudioProfileSnapshot, "trackProfileKey": job.TrackProfileKey,
-		"trackProfileSnapshot": job.TrackProfileSnapshot, "profileResolution": job.ProfileResolution,
-	})
-	if err != nil {
-		return false
-	}
-	artifactProfile := unknownRecord(artifactJob["profileSnapshot"])
-	artifactAudio := unknownRecord(artifactJob["audioProfileSnapshot"])
-	artifactTracks := unknownRecord(artifactJob["trackProfileSnapshot"])
-	artifactResolution := unknownRecord(artifactJob["profileResolution"])
-	artifactFingerprint, err := canonicalEvidenceHash("frozen-queue-snapshot-body-v1", models.JSONMap{
-		"profileVersion":  workerIntValue(artifactJob["profileVersion"], 0),
-		"profileSnapshot": artifactProfile, "audioProfileKey": stringFromUnknown(artifactJob["audioProfileKey"]),
-		"audioProfileSnapshot": artifactAudio, "trackProfileKey": stringFromUnknown(artifactJob["trackProfileKey"]),
-		"trackProfileSnapshot": artifactTracks, "profileResolution": artifactResolution,
-	})
-	return err == nil && currentFingerprint == artifactFingerprint
-}
-
-func bindLegacyResultArtifact(db *gorm.DB, job models.QueueJob, artifact map[string]any, artifactPath string) error {
-	identity, binding, err := resultIdentityForJob(db, job)
-	if err != nil {
-		return err
-	}
-	if identity == nil || binding == nil || binding.ExecutionPlanID == 0 {
-		return fmt.Errorf("current output or active frozen plan cannot be verified")
-	}
-	artifact["resultIdentity"] = identity
-	artifact["executionBinding"] = binding
-	content, err := json.MarshalIndent(artifact, "", "  ")
-	if err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(artifactPath), ".result-bind-*.tmp")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if _, err := temporary.Write(append(content, '\n')); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temporaryPath, artifactPath)
-}
-
-func valueOrZero(value *uint) uint {
-	if value == nil {
-		return 0
-	}
-	return *value
 }
 
 func resultManifestEvidence(job models.QueueJob, artifact map[string]any) (models.JSONList, models.JSONMap, models.JSONMap, bool) {
