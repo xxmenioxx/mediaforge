@@ -7,6 +7,9 @@
 - [ ] 1.2 Persist explicit publication state, bounded append-only attempt
   evidence, active attempt/lease phase, and transactionally maintained QueueJob
   summary projections; keep historical unbound publications readable as legacy.
+- [ ] 1.3 Persist server-assigned `local_operator`/`system` actor references and
+  append-only versioned evidence for audited Publisher actions without
+  rewriting historical attempt evidence or adding authentication infrastructure.
 
 ## 2. Handoff from #53
 
@@ -64,24 +67,32 @@
 
 - [ ] 8.1 Recover exact persisted publication attempts after stops during
   staging, partial final promotion, database commit, and original archival;
-  fail closed when file ownership or identity is ambiguous.
+  introduce atomic `READY -> PUBLISHING` claims, bounded lease renewal/expiry,
+  and conditional reacquisition with fencing; recover only persisted
+  nonterminal records/manifests through AutoPublisher/startup cadence, never
+  by walking Library/RAW roots. Fail closed when file ownership or identity is
+  ambiguous.
 - [ ] 8.2 Make duplicate handoff/retry idempotent for `PUBLISHING` and
   `PUBLISHED`, and require new Queue/Result identity for changed intent.
 
 ## 9. Focused regressions
 
 - [ ] 9.1 Cover canonical #53 binding, stale/replaced Result rejection,
-  destination changes/conflicts, frozen overwrite/replace policy, and manual
-  hold behavior.
+  destination changes/conflicts, frozen overwrite/replace policy, manual hold,
+  server actor assignment, and rejection/ignoring of client-supplied actor IDs.
 - [ ] 9.2 Cover temp materialization, atomic per-file rename, sidecar failure,
   free-space/read/write errors, controlled roots/symlinks, and rollback safety.
-- [ ] 9.3 Cover crash/restart at every persisted boundary, idempotent recovery,
-  #174 archive provenance, one event identity, subscriber failure, and
-  read-only Publisher/History rendering and polling.
+- [ ] 9.3 Cover crash/restart at every persisted boundary, concurrent claim
+  exclusion, lease expiry/conditional reacquisition/fencing, idempotent
+  recovery, #174 archive provenance, one event identity, subscriber failure,
+  and read-only Publisher/History rendering and polling.
 
 ## 10. Final verification
 
-- [ ] 10.1 Run focused regressions for the changed Publisher, Queue, archive,
-  event, and UI contracts.
-- [ ] 10.2 Run `./scripts/verify.sh --auto` and confirm `ALL CHECKS PASSED`;
-  record any environment limitation separately.
+- [ ] 10.1 Run focused backend and frontend regressions for the changed
+  Publisher, Queue, archive, event, and UI contracts.
+- [ ] 10.2 Run frontend lint and require exactly 0 errors and 0 warnings.
+- [ ] 10.3 Run
+  `openspec validate publisher-delivery-gate --type change --strict`.
+- [ ] 10.4 Run `./scripts/verify.sh --auto`; the required result is
+  `ALL CHECKS PASSED`. Record any environment limitation separately.

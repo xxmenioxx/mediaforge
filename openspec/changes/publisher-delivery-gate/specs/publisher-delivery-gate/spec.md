@@ -57,6 +57,74 @@ immutable attempt evidence.
 - **THEN** the system returns the existing attempt/state or `PUBLISHED` result
   and does not create another logical publication
 
+### Requirement: Publisher decisions use server-assigned V1 actor authority
+
+Every accepted interactive hold, release, retry, or other audited Publisher
+decision SHALL record append-only, versioned action evidence. The server SHALL
+assign the V1 interactive actor as `local_operator` and automatic/system or
+recovery actions as `system`. Client requests MAY supply a reason and allowed
+action parameters only; a client-supplied actor identity SHALL NOT be trusted
+or persisted as the decision actor. Actor references SHALL retain a
+source/kind and identifier shape that can later represent a
+server-authenticated principal. This requirement SHALL NOT add login,
+authentication, or authorization infrastructure. Operator action evidence
+SHALL NOT mutate or rewrite historical attempt evidence.
+
+#### Scenario: Operator requests a hold or retry
+
+- **WHEN** a client requests an audited Publisher action with a reason and
+  action parameters
+- **THEN** the server records the action as `local_operator`, ignores or
+  rejects any client actor identity, and appends versioned audit evidence
+
+#### Scenario: Publisher recovery acts on an expired claim
+
+- **WHEN** the system conditionally reacquires an expired attempt lease
+- **THEN** the recovery action is recorded as `system` without changing
+  completed historical attempt evidence
+
+### Requirement: Publisher owns durable claims and nonterminal recovery
+
+Publisher SHALL atomically claim work with a conditional `READY` to
+`PUBLISHING` transition that creates one active attempt identity, claim token
+or fencing generation, and bounded lease expiry. Only one active attempt
+SHALL exist per publication identity. Active owners SHALL renew their lease
+and validate the current fencing generation before each durable phase or
+filesystem mutation. An unexpired claim SHALL NOT be reacquired. After lease
+expiry, recovery SHALL conditionally reacquire only when persisted state,
+claim token/generation, and expiry still match; reacquisition SHALL retain the
+logical attempt identity and replace its ownership token/generation.
+
+Publisher SHALL integrate claim, renewal, expiry, and recovery into the
+existing AutoPublisher periodic processing and startup cadence. Recovery
+SHALL query persisted nonterminal publication records and inspect only exact
+paths in their persisted manifests; it SHALL NOT walk Library or RAW
+filesystems. `READY` records may be claimed; only expired `PUBLISHING` claims
+are reconciled; `HELD`, `BLOCKED`, and `FAILED` records SHALL NOT trigger
+filesystem recovery. This SHALL NOT add a generic scheduler or another Queue.
+
+#### Scenario: Concurrent workers claim one ready publication
+
+- **WHEN** multiple Publisher workers attempt to claim the same `READY`
+  publication
+- **THEN** exactly one atomic claim succeeds and at most one active attempt
+  exists for that publication identity
+
+#### Scenario: Expired lease is conditionally reacquired
+
+- **WHEN** a persisted `PUBLISHING` claim expires and recovery observes the
+  same stored claim token/generation and expiry
+- **THEN** one recovery worker reacquires that logical attempt with a new
+  fencing generation, while stale owners cannot continue filesystem
+  mutations
+
+#### Scenario: Recovery cadence checks pending publications
+
+- **WHEN** startup or AutoPublisher periodic processing reconciles recovery
+- **THEN** it queries persisted nonterminal publication records and their
+  manifest paths without scanning Library or RAW roots or creating another
+  scheduler/Queue
+
 ### Requirement: Frozen destination and explicit conflict policy are honored
 
 Publisher SHALL use the destination Library, resolved destination path, and

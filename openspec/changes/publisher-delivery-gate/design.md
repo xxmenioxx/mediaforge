@@ -24,6 +24,10 @@
   `HistoryPage.tsx` polls a paginated History API. The #54 contract replaces
   current-Settings overwrite decisions with frozen Queue intent and uses saved
   delivery summaries for both views.
+- The current `AutoPublisher` has periodic processing and published-job
+  reconciliation, but it does not provide durable publication-attempt claims,
+  leases, or recovery ownership. #54 introduces that Publisher-owned authority
+  and integrates it with the existing AutoPublisher/startup cadence.
 - #53 owns immutable ValidationRun and override decisions bound to the exact
   Queue execution, ExecutionPlan, and canonical Result generation/revision.
   QueueJob validation columns are projections. #174 keeps `AssetRecord` and
@@ -55,9 +59,10 @@ the Result generation and its existing bounded revision are authoritative.
 This record is Publisher delivery state, not an asset lifecycle/archive model
 or another Queue. QueueJob remains the Queue execution and supplies a
 read-optimized publication summary. A unique binding prevents two concurrent
-publication records for the same execution/Result. Publisher uses its existing
-claim/recovery cadence to resume persisted work; it does not schedule arbitrary
-new work through a second queue.
+publication records for the same execution/Result. Publisher's persisted
+publication records own attempt claims, leases, and nonterminal recovery. The
+existing AutoPublisher periodic processing and startup cadence invoke this
+Publisher-owned work; #54 adds no generic scheduler or second Queue.
 
 ### 2. State and attempt evidence
 
@@ -81,6 +86,18 @@ Queue plan/conflict and produce a new eligible publication identity where
 necessary. A retry of `PUBLISHED` returns the existing success without
 materialization, archive, or event duplication.
 
+Claiming is an atomic compare-and-set: only a `READY` record can transition to
+`PUBLISHING`, and the same database transaction creates the active attempt ID,
+claim token/fencing generation, and bounded lease expiry. A uniqueness
+constraint or equivalent transaction invariant permits at most one active
+attempt per publication identity. The active owner renews its lease while
+working and must present its current fencing generation before every durable
+phase checkpoint and filesystem mutation. An unexpired claim cannot be
+reacquired. After expiry, a recovery worker conditionally reacquires only if
+the persisted state, old token/generation, and expiry still match; it retains
+the same logical attempt ID and installs a new token/generation. A former
+owner with a stale generation cannot continue mutations.
+
 Attempt identity is stable across crash recovery. Append-only attempt evidence
 records start, bounded phase/checkpoint results, terminal outcome, timestamps,
 artifact references, affected controlled paths, byte counts, and allowlisted
@@ -88,6 +105,17 @@ error codes with bounded operator text. Large logs and media evidence stay in
 their existing stores and are linked by reference. An active phase is a
 recoverable projection; terminal evidence is immutable. History list responses
 are bounded and paginated.
+
+Audited Publisher actions follow #53's V1 actor boundary. The server assigns
+`local_operator` to interactive hold, release, retry, and other operator
+decisions, and `system` to automatic and recovery actions. Requests may supply
+the reason and allowed action parameters, but never a trusted actor identity;
+the server rejects or ignores a client actor field. Each accepted audited
+action appends versioned evidence with its action, actor reference, timestamp,
+and bounded reason/parameters. Actor references retain a source/kind and
+identifier shape for a future authenticated principal, without adding login
+or authentication infrastructure. An action event never edits historical
+attempt evidence.
 
 ### 3. Canonical handoff and frozen policy
 
@@ -183,14 +211,20 @@ the old Library content.
 
 ### 6. Crash recovery and idempotency
 
-At startup and through Publisher's existing recovery cadence, reconcile only
-persisted nonterminal publication records and their exact manifests; do not
-walk Library or RAW roots. Reacquire an expired `PUBLISHING` claim
-conditionally, verify the same Queue execution, Result revision, frozen
-destination, and attempt-owned receipts, then resume missing safe steps. A
-repeat request for an active attempt returns its existing state. A retry after
-a safely finalized failure creates a new immutable attempt ID, not a second
-publication identity.
+At startup and during the existing AutoPublisher periodic processing, query
+persisted nonterminal publication records only. #54 adds claim/lease
+acquisition, renewal, expiry, conditional reacquisition, and manifest-based
+recovery to that cadence; the current cadence itself is not a durable claim or
+recovery authority. Only an expired `PUBLISHING` claim is reacquired, by
+conditional state/token/generation/expiry comparison. Recovery retains that
+logical attempt ID, verifies the same Queue execution, Result revision, frozen
+destination, and attempt-owned receipts, then resumes safe missing steps.
+`READY` records may be claimed, while `HELD`, `BLOCKED`, and `FAILED` records
+do not trigger filesystem recovery. Reconciliation inspects only exact paths in
+the persisted attempt manifest and never walks Library or RAW roots. A repeat
+request for an active attempt returns its existing state. A retry after a
+safely finalized failure creates a new immutable attempt ID, not a second
+publication identity. No separate generic scheduler or Queue is introduced.
 
 | Process stops after… | Recovery action |
 | --- | --- |
