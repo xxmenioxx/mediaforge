@@ -61,7 +61,12 @@ func Migrate(db *gorm.DB) error {
 		&models.AppSetting{},
 		&models.CompatiblePreviewRequestRecord{},
 		&models.CompatiblePreviewArtifactRecord{},
+		&models.ValidationRun{},
+		&models.ValidationOverride{},
 	); err != nil {
+		return err
+	}
+	if err := migrateValidationAppendOnly(db); err != nil {
 		return err
 	}
 	if err := migrateRuntimePolicy(db); err != nil {
@@ -99,6 +104,20 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	return backfillPendingExecutionPlans(db)
+}
+
+func migrateValidationAppendOnly(db *gorm.DB) error {
+	for _, statement := range []string{
+		`CREATE TRIGGER IF NOT EXISTS validation_runs_no_update BEFORE UPDATE ON validation_runs BEGIN SELECT RAISE(ABORT, 'validation runs are immutable'); END`,
+		`CREATE TRIGGER IF NOT EXISTS validation_runs_no_delete BEFORE DELETE ON validation_runs BEGIN SELECT RAISE(ABORT, 'validation runs are append-only'); END`,
+		`CREATE TRIGGER IF NOT EXISTS validation_overrides_no_update BEFORE UPDATE ON validation_overrides BEGIN SELECT RAISE(ABORT, 'validation overrides are immutable'); END`,
+		`CREATE TRIGGER IF NOT EXISTS validation_overrides_no_delete BEFORE DELETE ON validation_overrides BEGIN SELECT RAISE(ABORT, 'validation overrides are append-only'); END`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func backfillSourceGroups(db *gorm.DB) error {

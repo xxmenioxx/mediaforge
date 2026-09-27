@@ -48,13 +48,33 @@ func TestValidateJobPersistsSiblingColorAndFrameFidelityReports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db := testEncodeTestDB(t, "validation-report-json-cycle", &models.QueueJob{})
+	db := testEncodeTestDB(t, "validation-report-json-cycle", &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
+	reportsDir := filepath.Join(tempDir, "reports")
+	asIsReportsDir := filepath.Join(tempDir, "as-is")
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"resultsReportsPath": reportsDir, "asIsReportsPath": asIsReportsDir}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	execution := uint(1)
 	job := models.QueueJob{
 		MediaPath: sourcePath, OutputPath: outputPath, Status: JobStatusCompleted,
-		ProfileSnapshot: snapshot, ValidationStatus: ValidationStatusPending,
+		ProfileSnapshot: snapshot, ValidationStatus: ValidationStatusPending, ExecutionNumber: &execution,
 	}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
+	}
+	plan := models.ExecutionPlan{JobID: job.ID, Version: 1, Status: "frozen"}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	job.ActiveExecutionPlanID = &plan.ID
+	if err := db.Save(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJobAsIsArtifact(db, job, profile, nil, "", job.ProcessingMode, ResolvedStreamPlan{}); err != nil {
+		t.Fatalf("write AS-IS evidence: %v", err)
+	}
+	if err := writeJobResultArtifact(db, job, map[string]any{"status": "completed"}); err != nil {
+		t.Fatalf("write canonical Result: %v", err)
 	}
 
 	previousGinMode := gin.Mode()
@@ -73,17 +93,17 @@ func TestValidateJobPersistsSiblingColorAndFrameFidelityReports(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &returned); err != nil {
 		t.Fatalf("decode validation response: %v", err)
 	}
-	if returned.Status != ValidationStatusFailed {
-		t.Fatalf("normal Smart Upscale rule failure was not retained: status=%q checks=%#v", returned.Status, returned.Checks)
+	if returned.Outcome != "FAIL" || returned.Status != ValidationStatusFailed {
+		t.Fatalf("frozen video property failure was not retained: outcome=%q status=%q findings=%#v", returned.Outcome, returned.Status, returned.Findings)
 	}
 	failedRule := false
-	for _, check := range returned.Checks {
-		if check.Key == "smart_upscale_output" && check.Status == "failed" {
+	for _, finding := range returned.Findings {
+		if finding.Key == "video.properties" && finding.State == "FAIL" {
 			failedRule = true
 		}
 	}
 	if !failedRule {
-		t.Fatalf("expected failed Smart Upscale check in normal Validation result: %#v", returned.Checks)
+		t.Fatalf("expected failed frozen video property finding in Validation result: %#v", returned.Findings)
 	}
 
 	if _, err := json.Marshal(returned.Report); err != nil {
@@ -124,6 +144,9 @@ func TestValidateJobPersistsSiblingColorAndFrameFidelityReports(t *testing.T) {
 	}
 	if persisted.ValidationStatus != ValidationStatusFailed {
 		t.Fatalf("normal failed check was not persisted as a Validation result: status=%q", persisted.ValidationStatus)
+	}
+	if persisted.ValidationOutcome != "FAIL" || persisted.ValidationRunID == "" {
+		t.Fatalf("immutable ValidationRun projection missing: outcome=%q run=%q", persisted.ValidationOutcome, persisted.ValidationRunID)
 	}
 	if _, err := json.Marshal(persisted.ValidationReport); err != nil {
 		t.Fatalf("persisted ValidationReport is not JSON-marshallable: %v", err)

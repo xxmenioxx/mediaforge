@@ -17,33 +17,25 @@ import {
   Typography,
 } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { api } from '../api/client';
-import type { QueueJob } from '../api/types';
+import type { ValidationHistorySummary } from '../api/types';
 import { PageHeader } from '../components/PageHeader';
 
 export function HistoryPage() {
-  const jobs = useQuery({ queryKey: ['queueJobs'], queryFn: api.queueJobs, refetchInterval: 5000 });
   const [search, setSearch] = useState('');
   const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc');
   const [pageSize, setPageSize] = useState(25);
   const [page, setPage] = useState(1);
-  const historicalJobs = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return (jobs.data ?? [])
-      .filter((job) => job.status === 'completed' || job.status === 'failed' || job.status === 'canceled' || Boolean(job.publishedAt))
-      .filter((job) => {
-        if (!query) {
-          return true;
-        }
-        return [String(job.id), job.mediaPath, job.status, job.publishedPath, job.validationStatus, job.notes]
-          .some((value) => value.toLowerCase().includes(query));
-      })
-      .sort((left, right) => (sortDirection === 'desc' ? right.id - left.id : left.id - right.id));
-  }, [jobs.data, search, sortDirection]);
-  const totalPages = Math.max(1, Math.ceil(historicalJobs.length / pageSize));
-  const pageJobs = historicalJobs.slice((page - 1) * pageSize, page * pageSize);
+  const jobs = useQuery({
+    queryKey: ['validationHistory', search, sortDirection, pageSize, page],
+    queryFn: () => api.validationHistory({ q: search.trim(), sort: sortDirection, limit: pageSize, offset: (page - 1) * pageSize }),
+    refetchInterval: 5000,
+  });
+  const historicalJobs = jobs.data?.items ?? [];
+  const totalPages = Math.max(1, Math.ceil((jobs.data?.total ?? 0) / pageSize));
+  const pageJobs = historicalJobs;
 
   return (
     <>
@@ -107,7 +99,12 @@ export function HistoryPage() {
                       <Typography color="text.secondary" variant="body2" noWrap>{job.mediaPath}</Typography>
                     </TableCell>
                     <TableCell><Chip label={job.publishedAt ? 'published' : job.status} color={statusColor(job)} size="small" /></TableCell>
-                    <TableCell>{job.validationStatus || 'pending'} · {job.validationScore}/100</TableCell>
+                    <TableCell>
+                      <Stack spacing={0.25}>
+                        <Typography>{job.validationOutcome || job.validationStatus || 'pending'}{job.validationRunId ? ` · ${job.validationScore}/100` : ''}</Typography>
+                        {job.validationRunId ? <Typography variant="caption" color="text.secondary">Run {job.validationRunId}{job.validationOverridePresent ? ' · override recorded' : ''}</Typography> : null}
+                      </Stack>
+                    </TableCell>
                     <TableCell>{formatDate(job.updatedAt)}</TableCell>
                     <TableCell align="right">
                       <Button component={RouterLink} to={`/queue?job=${job.id}`} variant="contained" size="small">Review</Button>
@@ -118,7 +115,7 @@ export function HistoryPage() {
             </Table>
           </CardContent>
         </Card>
-        {!jobs.isLoading && historicalJobs.length === 0 ? <Alert severity="info" sx={{ mt: 2 }}>No historical jobs yet.</Alert> : null}
+        {!jobs.isLoading && (jobs.data?.total ?? 0) === 0 ? <Alert severity="info" sx={{ mt: 2 }}>No historical jobs yet.</Alert> : null}
       </Box>
     </>
   );
@@ -128,7 +125,7 @@ function fileNameFromPath(value: string) {
   return value.split('/').filter(Boolean).at(-1) ?? value;
 }
 
-function statusColor(job: QueueJob) {
+function statusColor(job: ValidationHistorySummary) {
   if (job.publishedAt || job.status === 'completed') {
     return 'success';
   }

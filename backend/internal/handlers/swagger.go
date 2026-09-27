@@ -509,6 +509,52 @@ func openAPIPaths() gin.H {
 				},
 			},
 		},
+		"/api/validation/review": gin.H{
+			"get": gin.H{
+				"tags":        []string{"Validation"},
+				"summary":     "List bounded Validation review summaries",
+				"operationId": "listValidationReview",
+				"parameters": []gin.H{
+					{"name": "view", "in": "query", "schema": gin.H{"type": "string", "enum": []string{"exceptions", "pending", "all"}, "default": "exceptions"}},
+					{"name": "limit", "in": "query", "schema": gin.H{"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+					{"name": "offset", "in": "query", "schema": gin.H{"type": "integer", "minimum": 0, "default": 0}},
+				},
+				"responses": gin.H{"200": jsonResponse("Validation review summaries", ref("ValidationSummaryPage"))},
+			},
+		},
+		"/api/validation/history": gin.H{
+			"get": gin.H{
+				"tags":        []string{"Validation"},
+				"summary":     "List bounded Validation history summaries",
+				"operationId": "listValidationHistory",
+				"parameters": []gin.H{
+					{"name": "limit", "in": "query", "schema": gin.H{"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+					{"name": "offset", "in": "query", "schema": gin.H{"type": "integer", "minimum": 0, "default": 0}},
+					{"name": "q", "in": "query", "schema": gin.H{"type": "string"}},
+					{"name": "sort", "in": "query", "schema": gin.H{"type": "string", "enum": []string{"asc", "desc"}, "default": "desc"}},
+				},
+				"responses": gin.H{"200": jsonResponse("Validation history summaries", ref("ValidationSummaryPage"))},
+			},
+		},
+		"/api/validation/jobs/{id}/runs/{runId}": gin.H{
+			"get": gin.H{
+				"tags":        []string{"Validation"},
+				"summary":     "Load immutable Validation run details and override events",
+				"operationId": "getValidationRun",
+				"parameters":  []gin.H{pathIDParameter(), {"name": "runId", "in": "path", "required": true, "schema": gin.H{"type": "string"}}},
+				"responses":   gin.H{"200": jsonResponse("Validation run detail", gin.H{"type": "object", "properties": gin.H{"run": ref("ValidationRun"), "overrides": gin.H{"type": "array", "items": ref("ValidationOverrideEvent")}}}), "404": jsonResponse("Validation run not found", ref("Error"))},
+			},
+		},
+		"/api/validation/jobs/{id}/overrides": gin.H{
+			"post": gin.H{
+				"tags":        []string{"Validation"},
+				"summary":     "Append a reasoned Validation override event",
+				"operationId": "createValidationOverride",
+				"parameters":  []gin.H{pathIDParameter()},
+				"requestBody": requestBody(ref("ValidationOverrideInput")),
+				"responses":   gin.H{"201": jsonResponse("Appended override event", ref("ValidationOverrideEvent")), "400": jsonResponse("Invalid override request", ref("Error")), "409": jsonResponse("Run or finding is not overrideable", ref("Error"))},
+			},
+		},
 		"/api/publisher/jobs/{id}/publish": gin.H{
 			"post": gin.H{
 				"tags":        []string{"Publisher"},
@@ -1067,6 +1113,10 @@ func openAPIComponents() gin.H {
 				},
 				"validationScore":      gin.H{"type": "integer", "example": 100},
 				"validationReport":     gin.H{"type": "object", "additionalProperties": true},
+				"validationRunId":      gin.H{"type": "string", "description": "Read projection of the latest immutable ValidationRun."},
+				"validationOutcome":    gin.H{"type": "string", "enum": []string{"PASS", "PASS_WITH_WARNINGS", "REVIEW_REQUIRED", "FAIL"}},
+				"validationOverride":   gin.H{"type": "boolean", "description": "Read projection indicating that an append-only override event exists."},
+				"validationActionable": gin.H{"type": "boolean"},
 				"audioProfileSnapshot": gin.H{"type": "object", "additionalProperties": true},
 				"trackProfileSnapshot": gin.H{"type": "object", "additionalProperties": true},
 				"profileResolution":    gin.H{"type": "object", "additionalProperties": true},
@@ -1247,16 +1297,53 @@ func openAPIComponents() gin.H {
 			"ValidationResult": gin.H{
 				"type": "object",
 				"properties": gin.H{
-					"jobId":    gin.H{"type": "integer", "example": 12},
-					"status":   gin.H{"type": "string", "enum": []string{"passed", "warning", "failed"}},
-					"score":    gin.H{"type": "integer", "example": 100},
-					"warnings": gin.H{"type": "array", "items": gin.H{"type": "string"}},
+					"jobId":             gin.H{"type": "integer", "example": 12},
+					"status":            gin.H{"type": "string", "enum": []string{"passed", "warning", "failed"}},
+					"score":             gin.H{"type": "integer", "example": 100, "description": "Display-only score; the canonical outcome is determined by rule findings."},
+					"validationOutcome": gin.H{"type": "string", "enum": []string{"PASS", "PASS_WITH_WARNINGS", "REVIEW_REQUIRED", "FAIL"}},
+					"validationRunId":   gin.H{"type": "string"},
+					"findings":          gin.H{"type": "array", "items": ref("ValidationFinding")},
+					"warnings":          gin.H{"type": "array", "items": gin.H{"type": "string"}},
 					"checks": gin.H{
 						"type":  "array",
 						"items": ref("ValidationCheck"),
 					},
 					"report": gin.H{"type": "object", "additionalProperties": true},
 				},
+			},
+			"ValidationFinding": gin.H{
+				"type":     "object",
+				"required": []string{"key", "severity", "disposition", "state", "actionable", "overrideable", "evidenceReferences"},
+				"properties": gin.H{
+					"key": gin.H{"type": "string"}, "expected": gin.H{}, "actual": gin.H{},
+					"severity":    gin.H{"type": "string", "enum": []string{"info", "warning", "error", "critical"}},
+					"disposition": gin.H{"type": "string", "enum": []string{"blocking", "advisory"}},
+					"state":       gin.H{"type": "string", "enum": []string{"PASS", "WARNING", "FAIL", "REVIEW_REQUIRED", "UNVERIFIED", "NOT_APPLICABLE"}},
+					"actionable":  gin.H{"type": "boolean"}, "overrideable": gin.H{"type": "boolean"},
+					"evidenceReferences": gin.H{"type": "array", "items": gin.H{"type": "string"}},
+				},
+			},
+			"ValidationSummaryPage": gin.H{
+				"type": "object", "properties": gin.H{
+					"items": gin.H{"type": "array", "items": gin.H{"type": "object", "additionalProperties": true}},
+					"total": gin.H{"type": "integer", "format": "int64"}, "limit": gin.H{"type": "integer"}, "offset": gin.H{"type": "integer"},
+				},
+			},
+			"ValidationRun": gin.H{
+				"type": "object", "additionalProperties": true,
+				"required": []string{"runId", "jobId", "resultArtifactId", "resultGenerationToken", "resultOutputRevision", "rulesetId", "rulesetVersion", "outcome", "findings", "createdAt"},
+			},
+			"ValidationOverrideInput": gin.H{
+				"type": "object", "additionalProperties": false, "required": []string{"reason", "ruleKeys", "requestedHandoff"},
+				"properties": gin.H{
+					"reason":           gin.H{"type": "string", "minLength": 1, "maxLength": 2000},
+					"ruleKeys":         gin.H{"type": "array", "minItems": 1, "items": gin.H{"type": "string"}},
+					"requestedHandoff": gin.H{"type": "string", "enum": []string{"publisher", "automatic"}},
+				},
+			},
+			"ValidationOverrideEvent": gin.H{
+				"type": "object", "additionalProperties": true,
+				"required": []string{"eventId", "validationRunId", "actorSource", "actorId", "reason", "ruleKeys", "requestedHandoff", "overrideVersion", "createdAt"},
 			},
 			"ValidationCheck": gin.H{
 				"type": "object",

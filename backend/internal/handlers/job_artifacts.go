@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -8,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -21,27 +25,46 @@ import (
 )
 
 type jobArtifact struct {
-	GeneratedAt          time.Time             `json:"generatedAt"`
-	Kind                 string                `json:"kind"`
-	Job                  models.QueueJob       `json:"job"`
-	Command              string                `json:"command,omitempty"`
-	ExecutionEngine      string                `json:"executionEngine,omitempty"`
-	Profile              models.Profile        `json:"profile"`
-	AudioProfileKey      string                `json:"audioProfileKey,omitempty"`
-	ProcessingMode       string                `json:"processingMode,omitempty"`
-	AssetConversion      AssetConversionReport `json:"assetConversion,omitempty"`
-	SourceProbe          map[string]any        `json:"sourceProbe,omitempty"`
-	OutputProbe          map[string]any        `json:"outputProbe,omitempty"`
-	Result               map[string]any        `json:"result,omitempty"`
-	ValidationReport     models.JSONMap        `json:"validationReport,omitempty"`
-	Notes                string                `json:"notes,omitempty"`
-	ExecutionPlan        models.JSONMap        `json:"executionPlan,omitempty"`
-	EncoderDecision      models.JSONMap        `json:"encoderDecision,omitempty"`
-	StreamPlan           ResolvedStreamPlan    `json:"streamPlan"`
-	VideoToolboxStrategy models.JSONMap        `json:"videoToolboxStrategy,omitempty"`
-	SmartUpscale         models.JSONMap        `json:"smartUpscale,omitempty"`
-	Restoration          models.JSONMap        `json:"restoration,omitempty"`
-	Artifacts            models.JSONMap        `json:"artifacts,omitempty"`
+	GeneratedAt          time.Time               `json:"generatedAt"`
+	Kind                 string                  `json:"kind"`
+	ResultIdentity       *resultArtifactIdentity `json:"resultIdentity,omitempty"`
+	ExecutionBinding     *resultExecutionBinding `json:"executionBinding,omitempty"`
+	Job                  models.QueueJob         `json:"job"`
+	Command              string                  `json:"command,omitempty"`
+	ExecutionEngine      string                  `json:"executionEngine,omitempty"`
+	Profile              models.Profile          `json:"profile"`
+	AudioProfileKey      string                  `json:"audioProfileKey,omitempty"`
+	ProcessingMode       string                  `json:"processingMode,omitempty"`
+	AssetConversion      AssetConversionReport   `json:"assetConversion,omitempty"`
+	SourceProbe          map[string]any          `json:"sourceProbe,omitempty"`
+	OutputProbe          map[string]any          `json:"outputProbe,omitempty"`
+	Result               map[string]any          `json:"result,omitempty"`
+	ValidationReport     models.JSONMap          `json:"validationReport,omitempty"`
+	Notes                string                  `json:"notes,omitempty"`
+	ExecutionPlan        models.JSONMap          `json:"executionPlan,omitempty"`
+	EncoderDecision      models.JSONMap          `json:"encoderDecision,omitempty"`
+	StreamPlan           ResolvedStreamPlan      `json:"streamPlan"`
+	VideoToolboxStrategy models.JSONMap          `json:"videoToolboxStrategy,omitempty"`
+	SmartUpscale         models.JSONMap          `json:"smartUpscale,omitempty"`
+	Restoration          models.JSONMap          `json:"restoration,omitempty"`
+	Artifacts            models.JSONMap          `json:"artifacts,omitempty"`
+}
+
+// These identity values are fields of the existing kind=result artifact, not
+// a separate Result record or a Validation-owned identity.
+type resultArtifactIdentity struct {
+	ArtifactID        string `json:"artifactId"`
+	GenerationToken   string `json:"generationToken"`
+	GenerationVersion int    `json:"generationVersion"`
+	OutputRevision    string `json:"outputRevision"`
+}
+
+type resultExecutionBinding struct {
+	ExecutionNumber          uint   `json:"executionNumber"`
+	ExecutionPlanID          uint   `json:"executionPlanId"`
+	ExecutionPlanVersion     int    `json:"executionPlanVersion"`
+	ExecutionPlanFingerprint string `json:"executionPlanFingerprint"`
+	FrozenQueueFingerprint   string `json:"frozenQueueFingerprint"`
 }
 
 type AssetConversionReport struct {
@@ -653,23 +676,26 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 			job = current
 		}
 	}
+	// A Result artifact describes the worker-produced output. Publication paths
+	// are owned by #54 and must not replace the actual-state evidence here.
 	probePath := job.OutputPath
-	for _, candidate := range []string{job.PublishedPath, job.PlannedPublishedPath, job.OutputPath} {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			probePath = candidate
-			break
-		}
-	}
 	override := conversionOverrideForJob(job, assetConversionOverrides(db))
 	artifact := jobArtifact{
-		GeneratedAt:      time.Now(),
-		Kind:             "result",
-		Job:              job,
-		AssetConversion:  assetConversionReport(override),
-		OutputProbe:      ffprobeJSON(probePath),
-		Result:           result,
-		ValidationReport: job.ValidationReport,
-		Notes:            job.Notes,
+		GeneratedAt:     time.Now(),
+		Kind:            "result",
+		Job:             job,
+		AssetConversion: assetConversionReport(override),
+		OutputProbe:     ffprobeJSON(probePath),
+		Result:          result,
+		Notes:           job.Notes,
+	}
+	if stringFromUnknown(result["status"]) == "completed" {
+		identity, binding, identityErr := resultIdentityForJob(db, job)
+		if identityErr != nil {
+			return identityErr
+		}
+		artifact.ResultIdentity = identity
+		artifact.ExecutionBinding = binding
 	}
 	if asIs, _, err := readLatestJobArtifact(db, job, "as-is"); err == nil {
 		if raw, ok := asIs["streamPlan"]; ok {
@@ -715,9 +741,114 @@ func writeJobResultArtifact(db *gorm.DB, job models.QueueJob, result map[string]
 	}
 	artifact.AssetConversion.SubtitleArtifacts = job.SubtitleArtifacts
 	attachTrackDecisionReport(&artifact.AssetConversion, job)
-	artifact.Artifacts = jobArtifactOutputs(job)
+	artifact.Artifacts = jobResultArtifactOutputs(job)
 	persistCompletedEncoderResult(db, artifact)
 	return writeJobArtifact(db, job, "result", artifact)
+}
+
+func jobResultArtifactOutputs(job models.QueueJob) models.JSONMap {
+	primary := models.JSONMap{"type": "primary_media", "path": job.OutputPath}
+	if info, err := os.Stat(job.OutputPath); err == nil && !info.IsDir() {
+		primary["sizeBytes"] = info.Size()
+		primary["status"] = "ready"
+	} else {
+		primary["status"] = "missing"
+	}
+	return models.JSONMap{"primary": primary, "sidecars": job.SubtitleArtifacts}
+}
+
+func resultIdentityForJob(db *gorm.DB, job models.QueueJob) (*resultArtifactIdentity, *resultExecutionBinding, error) {
+	if job.ID == 0 {
+		return nil, nil, nil
+	}
+	outputRevision, revisionErr := resultOutputRevisionForPath(job.OutputPath)
+	if revisionErr != nil {
+		// Preserve the failed worker Result as addressable evidence. This sentinel
+		// revision cannot match a later file and therefore cannot authorize handoff.
+		outputRevision, revisionErr = canonicalEvidenceHash("result-output-revision-unavailable-v1", models.JSONMap{
+			"outputPath": filepath.Clean(job.OutputPath), "state": "missing_or_unreadable",
+		})
+	}
+	err := revisionErr
+	if err != nil {
+		return nil, nil, err
+	}
+	var generation [24]byte
+	if _, err := rand.Read(generation[:]); err != nil {
+		return nil, nil, err
+	}
+	executionNumber := uint(0)
+	if job.ExecutionNumber != nil {
+		executionNumber = *job.ExecutionNumber
+	}
+	identity := &resultArtifactIdentity{
+		ArtifactID:      fmt.Sprintf("job-result:%d:execution:%d", job.ID, executionNumber),
+		GenerationToken: hex.EncodeToString(generation[:]), GenerationVersion: 1,
+		OutputRevision: outputRevision,
+	}
+	planID, planVersion := uint(0), 0
+	planFingerprint := ""
+	if db != nil && job.ActiveExecutionPlanID != nil {
+		var plan models.ExecutionPlan
+		if db.First(&plan, *job.ActiveExecutionPlanID).Error == nil && plan.JobID == job.ID {
+			planID, planVersion = plan.ID, plan.Version
+			encoded, marshalErr := json.Marshal(plan)
+			if marshalErr != nil {
+				return nil, nil, marshalErr
+			}
+			sum := sha256.Sum256(encoded)
+			planFingerprint = hex.EncodeToString(sum[:])
+		}
+	}
+	frozenQueueFingerprint, err := canonicalEvidenceHash("frozen-queue-snapshot-v1", models.JSONMap{
+		"jobId": job.ID, "executionNumber": executionNumber, "profileVersion": job.ProfileVersion,
+		"profileSnapshot": job.ProfileSnapshot, "audioProfileKey": job.AudioProfileKey,
+		"audioProfileSnapshot": job.AudioProfileSnapshot, "trackProfileKey": job.TrackProfileKey,
+		"trackProfileSnapshot": job.TrackProfileSnapshot, "profileResolution": job.ProfileResolution,
+		"planId": planID, "planVersion": planVersion, "planFingerprint": planFingerprint,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return identity, &resultExecutionBinding{
+		ExecutionNumber: executionNumber, ExecutionPlanID: planID,
+		ExecutionPlanVersion: planVersion, ExecutionPlanFingerprint: planFingerprint,
+		FrozenQueueFingerprint: frozenQueueFingerprint,
+	}, nil
+}
+
+func resultOutputRevisionForPath(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() || info.Size() <= 0 {
+		return "", fmt.Errorf("output is not a non-empty regular file")
+	}
+	fingerprint, err := mediaFileFingerprint(path)
+	if err != nil {
+		return "", err
+	}
+	return canonicalEvidenceHash("result-output-revision-v1", models.JSONMap{
+		"sizeBytes": info.Size(), "modifiedAtUnixNano": info.ModTime().UnixNano(),
+		"mode": uint32(info.Mode()), "device": statIdentityField(info, "Dev"),
+		"inode": statIdentityField(info, "Ino"), "boundedFingerprint": fingerprint,
+	})
+}
+
+func statIdentityField(info os.FileInfo, name string) string {
+	value := reflect.ValueOf(info.Sys())
+	if value.IsValid() && value.Kind() == reflect.Pointer {
+		value = value.Elem()
+	}
+	if !value.IsValid() || value.Kind() != reflect.Struct {
+		return ""
+	}
+	field := value.FieldByName(name)
+	if !field.IsValid() || !field.CanInterface() {
+		return ""
+	}
+	return fmt.Sprint(field.Interface())
 }
 
 func smartUpscalePlanReport(profile models.Profile, sourceProbe map[string]any) models.JSONMap {
@@ -993,7 +1124,49 @@ func writeJobArtifact(db *gorm.DB, job models.QueueJob, kind string, artifact jo
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, jobReportFileName(job, kind)), append(content, '\n'), 0o644)
+	content = append(content, '\n')
+	path := filepath.Join(dir, jobReportFileName(job, kind))
+	if kind == "result" {
+		return writeImmutableResultArtifact(path, content)
+	}
+	return os.WriteFile(path, content, 0o644)
+}
+
+func writeImmutableResultArtifact(path string, content []byte) error {
+	extension := filepath.Ext(path)
+	base := strings.TrimSuffix(path, extension)
+	for suffix := 0; ; suffix++ {
+		candidate := path
+		if suffix > 0 {
+			candidate = fmt.Sprintf("%s-%d%s", base, suffix, extension)
+		}
+		file, err := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("create immutable Result artifact %q: %w", candidate, err)
+		}
+		keep := false
+		defer func() {
+			if !keep {
+				_ = os.Remove(candidate)
+			}
+		}()
+		if _, err := file.Write(content); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("write immutable Result artifact %q: %w", candidate, err)
+		}
+		if err := file.Sync(); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("sync immutable Result artifact %q: %w", candidate, err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close immutable Result artifact %q: %w", candidate, err)
+		}
+		keep = true
+		return nil
+	}
 }
 
 func ffprobeJSON(path string) map[string]any {

@@ -48,13 +48,14 @@ func (p *AutoPublisher) tick() {
 		return
 	}
 	var jobs []models.QueueJob
-	if err := p.db.Where("status = ? AND published_at IS NULL AND validation_status IN ?", JobStatusCompleted, []string{ValidationStatusPassed, ValidationStatusWarning}).Order("updated_at asc").Limit(10).Find(&jobs).Error; err != nil {
+	if err := p.db.Where("status = ? AND published_at IS NULL AND (validation_outcome IN ? OR validation_override = ?)", JobStatusCompleted, []string{"PASS", "PASS_WITH_WARNINGS"}, true).Order("updated_at asc").Limit(10).Find(&jobs).Error; err != nil {
 		return
 	}
 	for _, job := range jobs {
-		_, _ = (PublisherHandler{db: p.db}).publishQueueJob(
+		_, _ = (PublisherHandler{db: p.db}).publishQueueJobWithMode(
 			job,
 			automation.PublisherOverwriteEnabled,
+			true,
 		)
 	}
 }

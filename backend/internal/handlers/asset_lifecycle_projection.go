@@ -921,7 +921,7 @@ func lifecycleForActiveOperation(operation *AssetActiveOperation) string {
 		return AssetLifecycleQueued
 	case JobStageClaimed, JobStagePreparingWorkspace, JobStageCopyingWorkspace, JobStagePreparingSubtitles:
 		return AssetLifecyclePreparing
-	case JobStageValidating, JobStageDirectPlayAnalysis, JobStageAnalyzingFinal:
+	case JobStageValidating, JobStageValidationReview, JobStageDirectPlayAnalysis, JobStageAnalyzingFinal:
 		return AssetLifecycleValidating
 	case JobStageReadyToPublish, JobStagePublishing, JobStageArchivingOriginal:
 		return AssetLifecyclePublishing

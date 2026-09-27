@@ -4,11 +4,13 @@ import {
   Button,
   Card,
   CardContent,
+  Checkbox,
   Chip,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
-  LinearProgress,
+  FormControlLabel,
   Stack,
   Tab,
   Table,
@@ -18,6 +20,7 @@ import {
   TablePagination,
   TableRow,
   Tabs,
+  TextField,
   Typography,
 } from '@mui/material';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
@@ -26,274 +29,172 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
-import type { QueueJob } from '../api/types';
+import type { ValidationFinding, ValidationRunDetail, ValidationSummary } from '../api/types';
+
+type ValidationView = 'exceptions' | 'pending' | 'all';
 
 export function ValidationPage() {
   const queryClient = useQueryClient();
-  const jobs = useQuery({ queryKey: ['queueJobs'], queryFn: api.queueJobs });
-  const [detailsJob, setDetailsJob] = useState<QueueJob | null>(null);
-  const [validationView, setValidationView] = useState<'pending' | 'validated'>('pending');
+  const [detailsJob, setDetailsJob] = useState<ValidationSummary | null>(null);
+  const [validationView, setValidationView] = useState<ValidationView>('exceptions');
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
+  const jobs = useQuery({
+    queryKey: ['validationReview', validationView, page, rowsPerPage],
+    queryFn: () => api.validationReview({ view: validationView, limit: rowsPerPage, offset: page * rowsPerPage }),
+  });
   const validateJob = useMutation({
     mutationFn: api.validateJob,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
-    },
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['validationReview'] }); },
   });
-  const completedJobs = (jobs.data ?? [])
-    .filter((job) => job.status === 'completed' && !job.publishedAt)
-    .sort((left, right) => validationEntryTime(right).localeCompare(validationEntryTime(left)));
-  const pendingJobs = completedJobs.filter((job) => !job.validationStatus || job.validationStatus === 'pending');
-  const validatedJobs = completedJobs.filter((job) => Boolean(job.validationStatus && job.validationStatus !== 'pending'));
-  const visibleJobs = validationView === 'pending' ? pendingJobs : validatedJobs;
-  const pagedJobs = visibleJobs.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+  const pagedJobs = jobs.data?.items ?? [];
 
   return (
     <>
-      <PageHeader title="Validation" eyebrow="Safety checks">
+      <PageHeader title="Validation" eyebrow="Post conversion quality gate">
         <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 820 }}>
-          Validate completed job outputs before publishing them to destination libraries.
+          Review exceptions from immutable Validation runs. Clean passes advance by policy and remain available in History.
         </Typography>
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         {jobs.isError ? <Alert severity="warning">Unable to load completed jobs.</Alert> : null}
-        {validateJob.isError ? (
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            {validateJob.error instanceof Error ? validateJob.error.message : 'Validation could not be completed.'}
-          </Alert>
-        ) : null}
-
+        {validateJob.isError ? <Alert severity="warning" sx={{ mb: 2 }}>{errorMessage(validateJob.error)}</Alert> : null}
         <Card>
           <CardContent sx={{ p: 0, '&:last-child': { pb: 0 } }}>
-            <Tabs
-              value={validationView}
-              onChange={(_, value) => {
-                setValidationView(value);
-                setPage(0);
-              }}
-              sx={{ px: 2, borderBottom: 1, borderColor: 'divider' }}
-            >
-              <Tab label={`Pending validation (${pendingJobs.length})`} value="pending" />
-              <Tab label={`Validated (${validatedJobs.length})`} value="validated" />
+            <Tabs value={validationView} onChange={(_, value: ValidationView) => { setValidationView(value); setPage(0); }} sx={{ px: 2, borderBottom: 1, borderColor: 'divider' }}>
+              <Tab label="Exceptions" value="exceptions" />
+              <Tab label="Pending" value="pending" />
+              <Tab label="All completed" value="all" />
             </Tabs>
             <Box sx={{ overflowX: 'auto' }}>
-              <Table sx={{ minWidth: 1120, tableLayout: 'fixed' }}>
-                <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ width: 190 }}>Asset</TableCell>
-                    <TableCell sx={{ width: 250 }}>Output</TableCell>
-                    <TableCell sx={{ width: 155 }}>Entered validation</TableCell>
-                    <TableCell sx={{ width: 155 }}>Validated at</TableCell>
-                    <TableCell sx={{ width: 120 }}>Validation</TableCell>
-                    <TableCell sx={{ width: 120 }}>Score</TableCell>
-                    <TableCell align="right" sx={{ width: 230 }}>Actions</TableCell>
-                  </TableRow>
-                </TableHead>
+              <Table sx={{ minWidth: 1050, tableLayout: 'fixed' }}>
+                <TableHead><TableRow>
+                  <TableCell sx={{ width: 210 }}>Asset</TableCell>
+                  <TableCell sx={{ width: 270 }}>Output</TableCell>
+                  <TableCell sx={{ width: 160 }}>Validation</TableCell>
+                  <TableCell sx={{ width: 115 }}>Score</TableCell>
+                  <TableCell align="right" sx={{ width: 250 }}>Actions</TableCell>
+                </TableRow></TableHead>
                 <TableBody>
                   {pagedJobs.map((job) => (
                     <TableRow key={job.id} hover>
-                      <TableCell>
-                        <Stack spacing={0.5}>
-                          <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>{fileNameFromPath(job.mediaPath)}</Typography>
-                          <Typography color="text.secondary" variant="body2">
-                            Job #{job.executionNumber ?? job.id}
-                          </Typography>
-                        </Stack>
-                      </TableCell>
+                      <TableCell><Stack spacing={0.5}><Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>{fileNameFromPath(job.mediaPath)}</Typography><Typography color="text.secondary" variant="body2">Job #{job.executionNumber ?? job.id}</Typography></Stack></TableCell>
                       <TableCell sx={{ wordBreak: 'break-all' }}>{job.outputPath || 'No output path recorded'}</TableCell>
-                      <TableCell>{formatValidationDate(validationEntryTime(job))}</TableCell>
-                      <TableCell>{formatValidationDate(validationDate(job))}</TableCell>
-                      <TableCell>
-                        <ValidationChip job={job} />
-                      </TableCell>
-                      <TableCell>
-                        <Stack spacing={0.6}>
-                          <Typography>{job.validationScore || 0}/100</Typography>
-                          <LinearProgress variant="determinate" value={job.validationScore || 0} />
-                        </Stack>
-                      </TableCell>
-                      <TableCell align="right">
-                        <Stack direction="row" spacing={1} justifyContent="flex-end">
-                          <Button startIcon={<InfoOutlinedIcon />} variant="outlined" onClick={() => setDetailsJob(job)}>
-                            Score
-                          </Button>
-                          <Button
-                            startIcon={<FactCheckIcon />}
-                            variant="contained"
-                            onClick={() => validateJob.mutate(job.id)}
-                            disabled={validateJob.isPending || Boolean(job.publishedAt)}
-                          >
-                            {job.publishedAt ? 'Published' : job.validationStatus && job.validationStatus !== 'pending' ? 'Run Again' : 'Run Checks'}
-                          </Button>
-                        </Stack>
-                      </TableCell>
+                      <TableCell><ValidationChip job={job} /></TableCell>
+                      <TableCell>{job.validationRunId ? `${job.validationScore || 0}/100` : '—'}</TableCell>
+                      <TableCell align="right"><Stack direction="row" spacing={1} justifyContent="flex-end">
+                        <Button startIcon={<InfoOutlinedIcon />} variant="outlined" onClick={() => setDetailsJob(job)} disabled={!job.validationRunId}>Details</Button>
+                        <Button startIcon={<FactCheckIcon />} variant="contained" onClick={() => validateJob.mutate(job.id)} disabled={validateJob.isPending || Boolean(job.publishedAt)}>
+                          {job.validationRunId ? 'Retry validation' : 'Run validation'}
+                        </Button>
+                      </Stack></TableCell>
                     </TableRow>
                   ))}
-                  {pagedJobs.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={7}>
-                        <Alert severity="info">
-                          {validationView === 'pending' ? 'No assets are waiting for validation.' : 'No assets have been validated yet.'}
-                        </Alert>
-                      </TableCell>
-                    </TableRow>
-                  ) : null}
+                  {pagedJobs.length === 0 ? <TableRow><TableCell colSpan={5}><Alert severity="info">{emptyMessage(validationView)}</Alert></TableCell></TableRow> : null}
                 </TableBody>
               </Table>
             </Box>
-            <TablePagination
-              component="div"
-              count={visibleJobs.length}
-              page={Math.min(page, Math.max(0, Math.ceil(visibleJobs.length / rowsPerPage) - 1))}
-              rowsPerPage={rowsPerPage}
-              rowsPerPageOptions={[10, 25, 50, 100]}
-              onPageChange={(_, nextPage) => setPage(nextPage)}
-              onRowsPerPageChange={(event) => {
-                setRowsPerPage(Number(event.target.value));
-                setPage(0);
-              }}
-            />
+            <TablePagination component="div" count={jobs.data?.total ?? 0} page={page} rowsPerPage={rowsPerPage} rowsPerPageOptions={[10, 25, 50, 100]} onPageChange={(_, nextPage) => setPage(nextPage)} onRowsPerPageChange={(event) => { setRowsPerPage(Number(event.target.value)); setPage(0); }} />
           </CardContent>
         </Card>
-        {!jobs.isLoading && completedJobs.length === 0 ? (
-          <Alert severity="info" sx={{ mt: 2 }}>
-            Completed jobs will appear here before publishing.
-          </Alert>
-        ) : null}
+        {jobs.isError ? <Alert severity="warning" sx={{ mt: 2 }}>{errorMessage(jobs.error)}</Alert> : null}
       </Box>
-      <Dialog open={Boolean(detailsJob)} onClose={() => setDetailsJob(null)} maxWidth="md" fullWidth>
-        <DialogTitle>Validation Score</DialogTitle>
-        <DialogContent>
-          {detailsJob ? <ValidationScoreDetails job={detailsJob} /> : null}
-        </DialogContent>
+      <Dialog open={Boolean(detailsJob)} onClose={() => setDetailsJob(null)} maxWidth="lg" fullWidth>
+        <DialogTitle>Validation run details</DialogTitle>
+        <DialogContent>{detailsJob ? <ValidationRunDetails job={detailsJob} /> : null}</DialogContent>
       </Dialog>
     </>
   );
 }
 
-function ValidationChip({ job }: { job: QueueJob }) {
-  const status = job.validationStatus || 'pending';
-  const color = status === 'passed' ? 'success' : status === 'failed' ? 'error' : status === 'warning' ? 'warning' : 'default';
-  return <Chip label={status} color={color} size="small" />;
-}
-
-function fileNameFromPath(path: string) {
-  return path.split('/').filter(Boolean).pop() ?? path;
-}
-
-function validationEntryTime(job: QueueJob) {
-  return job.finishedAt || job.createdAt;
-}
-
-function validationDate(job: QueueJob) {
-  const value = job.validationReport?.validatedAt;
-  return typeof value === 'string' ? value : '';
-}
-
-function formatValidationDate(value: string) {
-  const date = new Date(value);
-  if (!value || Number.isNaN(date.getTime())) {
-    return 'Not yet';
-  }
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
-}
-
-function ValidationScoreDetails({ job }: { job: QueueJob }) {
-  const checks = reportChecks(job.validationReport);
-  const directPlay = reportObject(job.validationReport, 'directPlay');
-  const directPlayClients = reportArray(directPlay, 'clients');
+function ValidationRunDetails({ job }: { job: Pick<ValidationSummary, 'id' | 'validationRunId'> }) {
+  const queryClient = useQueryClient();
+  const detail = useQuery({
+    queryKey: ['validationRun', job.id, job.validationRunId],
+    queryFn: () => api.validationRun({ jobId: job.id, runId: job.validationRunId! }),
+    enabled: Boolean(job.validationRunId),
+  });
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [selectedRules, setSelectedRules] = useState<string[]>([]);
+  const override = useMutation({
+    mutationFn: () => api.createValidationOverride({ jobId: job.id, reason, ruleKeys: selectedRules, requestedHandoff: 'publisher' }),
+    onSuccess: async () => {
+      setOverrideOpen(false);
+      setReason('');
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['validationReview'] }),
+        queryClient.invalidateQueries({ queryKey: ['validationRun', job.id, job.validationRunId] }),
+      ]);
+    },
+  });
+  const run = detail.data?.run;
+  const overrideable = (run?.findings ?? []).filter((finding) => finding.overrideable && finding.state !== 'PASS' && finding.state !== 'NOT_APPLICABLE');
+  const openOverride = () => {
+    setSelectedRules(overrideable.map((finding) => finding.key));
+    setOverrideOpen(true);
+  };
   return (
-    <Stack spacing={2}>
-      <Alert severity="info">
-        Run Checks validates the completed job output before Publisher is allowed to release it. The score starts at 100
-        and loses points when required safety checks fail.
-      </Alert>
-      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-        <ValidationChip job={job} />
-        <Chip label={`${job.validationScore || 0}/100`} size="small" />
-      </Stack>
-      {directPlay ? <>
+    <Stack spacing={2} sx={{ pt: 1 }}>
+      {detail.isError ? <Alert severity="warning">{errorMessage(detail.error)}</Alert> : null}
+      {detail.isLoading ? <Typography color="text.secondary">Loading immutable findings…</Typography> : null}
+      {run ? <>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Typography variant="h4">Final DirectPlay report</Typography>
-          <Chip label={`Risk: ${reportString(directPlay, 'risk') || 'unknown'}`} color={reportString(directPlay, 'risk') === 'low' ? 'success' : reportString(directPlay, 'risk') === 'high' ? 'error' : 'warning'} size="small" />
-          <Chip label={`Lowest score: ${reportNumber(directPlay, 'lowestScore')}/100`} size="small" />
-          {directPlay.blocked === true ? <Chip label="Publishing blocked" color="error" size="small" /> : null}
+          <Chip label={run.outcome} color={outcomeColor(run.outcome)} />
+          <Chip label={`Display score ${run.score}/100`} variant="outlined" />
+          <Chip label={`Run ${run.runId}`} variant="outlined" />
+          <Chip label={`${run.actorId} · ${new Date(run.createdAt).toLocaleString()}`} variant="outlined" />
         </Stack>
-        <Table size="small"><TableHead><TableRow><TableCell>Client</TableCell><TableCell>Score</TableCell><TableCell>Risk</TableCell><TableCell>Findings</TableCell></TableRow></TableHead><TableBody>
-          {directPlayClients.map((client, index) => <TableRow key={`${reportString(client, 'client')}-${index}`}><TableCell>{reportString(client, 'client').replaceAll('_', ' ')}</TableCell><TableCell>{reportNumber(client, 'score')}/100</TableCell><TableCell>{reportString(client, 'risk')}</TableCell><TableCell>{reportStringArray(client, 'warnings').join(' · ') || 'No compatibility warnings'}</TableCell></TableRow>)}
-        </TableBody></Table>
+        {detail.data?.overrides.map((event) => <Alert key={event.eventId} severity="warning">Override by {event.actorId}: {event.reason} · {event.ruleKeys.join(', ')}</Alert>)}
+        <Table size="small"><TableHead><TableRow><TableCell>Rule</TableCell><TableCell>Outcome</TableCell><TableCell>Expected</TableCell><TableCell>Actual</TableCell><TableCell>Finding</TableCell></TableRow></TableHead>
+          <TableBody>{run.findings.map((finding) => <TableRow key={finding.key}>
+            <TableCell>{finding.key}</TableCell><TableCell><Chip size="small" label={finding.state} color={finding.state === 'FAIL' ? 'error' : finding.state === 'PASS' ? 'success' : 'warning'} /></TableCell>
+            <TableCell sx={{ maxWidth: 210, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{displayValue(finding.expected)}</TableCell>
+            <TableCell sx={{ maxWidth: 210, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{displayValue(finding.actual)}</TableCell>
+            <TableCell>{finding.explanation}<Typography variant="caption" display="block" color="text.secondary">{finding.evidenceReferences.join(' · ')}</Typography></TableCell>
+          </TableRow>)}</TableBody>
+        </Table>
+        <Stack direction="row" justifyContent="flex-end"><Button variant="outlined" disabled={overrideable.length === 0} onClick={openOverride}>Record override</Button></Stack>
+        <OverrideDialog open={overrideOpen} onClose={() => setOverrideOpen(false)} findings={overrideable} selected={selectedRules} setSelected={setSelectedRules} reason={reason} setReason={setReason} pending={override.isPending} error={override.isError ? errorMessage(override.error) : ''} onSave={() => override.mutate()} />
       </> : null}
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>Check</TableCell>
-            <TableCell>Status</TableCell>
-            <TableCell>What it means</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {checks.map((check) => (
-            <TableRow key={check.key}>
-              <TableCell>{check.label}</TableCell>
-              <TableCell>
-                <Chip label={check.status} color={check.status === 'passed' ? 'success' : 'error'} size="small" />
-              </TableCell>
-              <TableCell>{check.message}</TableCell>
-            </TableRow>
-          ))}
-          {checks.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={3}>
-                <Typography color="text.secondary">
-                  No validation report yet. Use Run Checks to generate the first score.
-                </Typography>
-              </TableCell>
-            </TableRow>
-          ) : null}
-        </TableBody>
-      </Table>
-      <Alert severity="warning">
-        Safety checks validate the output file. DirectPlay scores inspect its real container and streams with ffprobe; actual device behavior can still vary by player version and hardware.
-      </Alert>
     </Stack>
   );
 }
 
-function reportObject(value: Record<string, unknown> | null | undefined, key: string) {
-  const nested = value?.[key];
-  return nested && typeof nested === 'object' && !Array.isArray(nested) ? nested as Record<string, unknown> : undefined;
+function OverrideDialog({ open, onClose, findings, selected, setSelected, reason, setReason, pending, error, onSave }: {
+  open: boolean; onClose: () => void; findings: ValidationFinding[]; selected: string[]; setSelected: (value: string[]) => void;
+  reason: string; setReason: (value: string) => void; pending: boolean; error: string; onSave: () => void;
+}) {
+  return <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+    <DialogTitle>Record operator override</DialogTitle>
+    <DialogContent><Stack spacing={1} sx={{ pt: 1 }}>
+      <Alert severity="info">The run outcome remains unchanged. The server records the interactive actor as local_operator.</Alert>
+      {findings.map((finding) => <FormControlLabel key={finding.key} control={<Checkbox checked={selected.includes(finding.key)} onChange={(event) => setSelected(event.target.checked ? [...selected, finding.key] : selected.filter((key) => key !== finding.key))} />} label={`${finding.key}: ${finding.explanation}`} />)}
+      <TextField label="Reason" value={reason} onChange={(event) => setReason(event.target.value)} multiline minRows={3} inputProps={{ maxLength: 2000 }} required />
+      {error ? <Alert severity="warning">{error}</Alert> : null}
+    </Stack></DialogContent>
+    <DialogActions><Button onClick={onClose}>Cancel</Button><Button onClick={onSave} disabled={pending || !reason.trim() || selected.length === 0}>Record override</Button></DialogActions>
+  </Dialog>;
 }
 
-function reportArray(value: Record<string, unknown> | undefined, key: string) {
-  const list = value?.[key];
-  return Array.isArray(list) ? list.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item)) : [];
+function ValidationChip({ job }: { job: Pick<ValidationSummary, 'validationOutcome' | 'validationRunId' | 'validationStatus'> }) {
+  const outcome = job.validationOutcome || (job.validationRunId ? 'REVIEW_REQUIRED' : job.validationStatus || 'pending');
+  return <Chip label={outcome} color={outcomeColor(outcome)} size="small" />;
 }
 
-function reportString(value: Record<string, unknown>, key: string) { return typeof value[key] === 'string' ? value[key] as string : ''; }
-function reportNumber(value: Record<string, unknown>, key: string) { return typeof value[key] === 'number' ? value[key] as number : 0; }
-function reportStringArray(value: Record<string, unknown>, key: string) { return Array.isArray(value[key]) ? (value[key] as unknown[]).filter((item): item is string => typeof item === 'string') : []; }
-
-function reportChecks(report: Record<string, unknown> | null | undefined) {
-  const checks = report?.checks;
-  if (!Array.isArray(checks)) {
-    return [];
-  }
-
-  return checks
-    .map((check) => {
-      if (!check || typeof check !== 'object') {
-        return null;
-      }
-      const value = check as Record<string, unknown>;
-      return {
-        key: typeof value.key === 'string' ? value.key : '',
-        label: typeof value.label === 'string' ? value.label : 'Check',
-        status: value.status === 'passed' ? 'passed' : 'failed',
-        message: typeof value.message === 'string' ? value.message : '',
-      };
-    })
-    .filter((check): check is { key: string; label: string; status: 'passed' | 'failed'; message: string } =>
-      Boolean(check?.key),
-    );
+function outcomeColor(outcome: string): 'success' | 'warning' | 'error' | 'default' {
+  if (outcome === 'PASS' || outcome === 'passed') return 'success';
+  if (outcome === 'FAIL' || outcome === 'failed') return 'error';
+  if (outcome === 'PASS_WITH_WARNINGS' || outcome === 'REVIEW_REQUIRED' || outcome === 'warning') return 'warning';
+  return 'default';
 }
+
+function emptyMessage(view: ValidationView) {
+  if (view === 'exceptions') return 'No validation exceptions need review.';
+  if (view === 'pending') return 'No completed jobs are waiting for their first Validation run.';
+  return 'No unpublished completed jobs.';
+}
+
+function fileNameFromPath(path: string) { return path.split('/').filter(Boolean).pop() ?? path; }
+function displayValue(value: unknown) { return value === undefined ? '—' : typeof value === 'string' ? value : JSON.stringify(value, null, 2); }
+function errorMessage(error: unknown) { return error instanceof Error ? error.message : 'The request could not be completed.'; }
