@@ -41,6 +41,10 @@ type QueueJob struct {
 	ValidationStatus      string     `json:"validationStatus"`
 	ValidationScore       int        `json:"validationScore"`
 	ValidationReport      JSONMap    `json:"validationReport" gorm:"type:json"`
+	ValidationRunID       string     `json:"validationRunId,omitempty" gorm:"index"`
+	ValidationOutcome     string     `json:"validationOutcome,omitempty" gorm:"index"`
+	ValidationOverride    bool       `json:"validationOverridePresent" gorm:"not null;default:false"`
+	ValidationActionable  bool       `json:"validationHasActionableWarnings" gorm:"not null;default:false"`
 	PublishedPath         string     `json:"publishedPath"`
 	PublishedFingerprint  string     `json:"publishedFingerprint" gorm:"index"`
 	PublishedSizeBytes    int64      `json:"publishedSizeBytes"`

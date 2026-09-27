@@ -40,6 +40,11 @@ import type {
   QueueBatchResponse,
   QueueSelectedAssetsInput,
   QueueSelectedAssetsResponse,
+  ValidationOverride,
+  ValidationRunDetail,
+  ValidationResult,
+  ValidationSummaryPage,
+  ValidationHistoryPage,
   RuntimeState,
   RuntimeProfilesResponse,
   ScanResult,
@@ -59,7 +64,6 @@ import type {
   UpdateProfileInput,
   UpdateSettingInput,
   UpdateJobStatusInput,
-  ValidationResult,
   WorkerNode,
   SchedulerRecoveryReport,
   HousekeepingReport,
@@ -647,6 +651,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  validationRun: ({ jobId, runId }: { jobId: number; runId: string }) =>
+    request<ValidationRunDetail>(`/api/validation/jobs/${jobId}/runs/${encodeURIComponent(runId)}`),
+  createValidationOverride: ({ jobId, reason, ruleKeys, requestedHandoff }: { jobId: number; reason: string; ruleKeys: string[]; requestedHandoff: 'publisher' | 'automatic' }) =>
+    request<ValidationOverride>(`/api/validation/jobs/${jobId}/overrides`, {
+      method: 'POST',
+      body: JSON.stringify({ reason, ruleKeys, requestedHandoff }),
+    }),
+  validationReview: ({ view, limit, offset }: { view: 'exceptions' | 'pending' | 'all'; limit: number; offset: number }) =>
+    request<ValidationSummaryPage>(`/api/validation/review?view=${view}&limit=${limit}&offset=${offset}`),
+  validationHistory: ({ q, sort, limit, offset }: { q: string; sort: 'asc' | 'desc'; limit: number; offset: number }) =>
+    request<ValidationHistoryPage>(`/api/validation/history?q=${encodeURIComponent(q)}&sort=${sort}&limit=${limit}&offset=${offset}`),
   publishJob: ({ jobId, overwrite = false }: { jobId: number; overwrite?: boolean }) =>
     request<PublishResult>(`/api/publisher/jobs/${jobId}/publish`, {
       method: 'POST',

@@ -10,6 +10,46 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestValidationRunsAndOverridesAreAppendOnly(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:validation-append-only?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate validation quality gate: %v", err)
+	}
+	run := models.ValidationRun{
+		RunID: "validation-run:test", JobID: 1, ExecutionNumber: 1, ExecutionPlanID: 1, ExecutionPlanVersion: 1,
+		ExecutionPlanFingerprint: "plan", ResultArtifactID: "result", ResultGenerationToken: "generation",
+		ResultGenerationVersion: 1, ResultOutputRevision: "revision", SchemaVersion: "schema", ValidatorVersion: "validator",
+		RulesetID: "rules", RulesetVersion: "1", ActorSource: "system", ActorID: "system",
+		Outcome: "PASS", Findings: models.JSONList{}, Report: models.JSONMap{}, CreatedAt: time.Now().UTC(),
+	}
+	if err := db.Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.ValidationRun{}).Where("run_id = ?", run.RunID).Update("outcome", "FAIL").Error; err == nil {
+		t.Fatal("ValidationRun update was not rejected")
+	}
+	if err := db.Where("run_id = ?", run.RunID).Delete(&models.ValidationRun{}).Error; err == nil {
+		t.Fatal("ValidationRun delete was not rejected")
+	}
+	event := models.ValidationOverride{
+		EventID: "validation-override:test", ValidationRunID: run.RunID, ActorSource: "deployment", ActorID: "local_operator",
+		Reason: "required for append-only migration test", RuleKeys: models.JSONList{"video.properties"},
+		RequestedHandoff: "publisher", OverrideVersion: "validation-override-v1", CreatedAt: time.Now().UTC(),
+	}
+	if err := db.Create(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.ValidationOverride{}).Where("event_id = ?", event.EventID).Update("reason", "rewritten").Error; err == nil {
+		t.Fatal("ValidationOverride update was not rejected")
+	}
+	if err := db.Where("event_id = ?", event.EventID).Delete(&models.ValidationOverride{}).Error; err == nil {
+		t.Fatal("ValidationOverride delete was not rejected")
+	}
+}
+
 func TestMigrateInitializesRuntimeStateFromNewestLegacySnapshot(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "runtime-state.db")), &gorm.Config{})
 	if err != nil {

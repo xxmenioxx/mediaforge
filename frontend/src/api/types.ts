@@ -1223,6 +1223,10 @@ export type QueueJob = {
   validationStatus: 'pending' | 'passed' | 'warning' | 'failed' | '';
   validationScore: number;
   validationReport: Record<string, unknown>;
+  validationRunId?: string;
+  validationOutcome?: 'PASS' | 'PASS_WITH_WARNINGS' | 'REVIEW_REQUIRED' | 'FAIL' | '';
+  validationOverridePresent?: boolean;
+  validationHasActionableWarnings?: boolean;
   publishedPath: string;
   publishedAt?: string;
   publicationRetiredAt?: string;
@@ -1371,11 +1375,85 @@ export type ValidationCheck = {
 export type ValidationResult = {
   jobId: number;
   status: 'passed' | 'warning' | 'failed';
+  outcome: 'PASS' | 'PASS_WITH_WARNINGS' | 'REVIEW_REQUIRED' | 'FAIL';
+  runId: string;
   score: number;
   checks: ValidationCheck[];
   warnings: string[];
   report: Record<string, unknown>;
+  findings: ValidationFinding[];
 };
+
+export type ValidationFinding = {
+  key: string;
+  expected: unknown;
+  actual: unknown;
+  severity: 'critical' | 'error' | 'warning' | 'info';
+  disposition: 'blocking' | 'advisory';
+  state: 'PASS' | 'FAIL' | 'WARNING' | 'REVIEW_REQUIRED' | 'UNVERIFIED' | 'NOT_APPLICABLE';
+  actionable: boolean;
+  overrideable: boolean;
+  explanation: string;
+  evidenceReferences: string[];
+};
+
+export type ValidationRun = {
+  id: number;
+  runId: string;
+  jobId: number;
+  executionNumber: number;
+  executionPlanId: number;
+  executionPlanVersion: number;
+  resultArtifactId: string;
+  resultGenerationToken: string;
+  resultGenerationVersion: number;
+  resultOutputRevision: string;
+  schemaVersion: string;
+  validatorVersion: string;
+  rulesetId: string;
+  rulesetVersion: string;
+  actorSource: string;
+  actorId: string;
+  outcome: ValidationResult['outcome'];
+  score: number;
+  actionableWarnings: boolean;
+  findings: ValidationFinding[];
+  report: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type ValidationOverride = {
+  eventId: string;
+  validationRunId: string;
+  actorSource: string;
+  actorId: string;
+  reason: string;
+  ruleKeys: string[];
+  requestedHandoff: 'publisher' | 'automatic';
+  overrideVersion: string;
+  createdAt: string;
+};
+
+export type ValidationRunDetail = {
+  run: ValidationRun;
+  overrides: ValidationOverride[];
+};
+
+export type ValidationSummary = Pick<QueueJob,
+  | 'id' | 'executionNumber' | 'mediaPath' | 'outputPath' | 'status' | 'finishedAt' | 'createdAt' | 'updatedAt'
+  | 'validationStatus' | 'validationScore' | 'validationRunId' | 'validationOutcome' | 'validationOverridePresent'
+  | 'validationHasActionableWarnings' | 'publishedAt'
+>;
+
+export type ValidationSummaryPage = { items: ValidationSummary[]; total: number; limit: number; offset: number };
+
+export type ValidationHistorySummary = Pick<QueueJob,
+  | 'id' | 'executionNumber' | 'mediaPath' | 'status' | 'publishedPath' | 'publishedAt' | 'createdAt' | 'updatedAt'
+  | 'validationStatus' | 'validationScore' | 'validationRunId' | 'validationOutcome' | 'validationOverridePresent'
+  | 'validationHasActionableWarnings'
+>;
+
+export type ValidationHistoryPage = { items: ValidationHistorySummary[]; total: number; limit: number; offset: number };
 
 export type PublishResult = {
   jobId: number;

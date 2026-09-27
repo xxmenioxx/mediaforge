@@ -16,6 +16,7 @@ const (
 	JobStagePreparingSubtitles = "preparing_subtitles"
 	JobStageConverting         = "converting"
 	JobStageValidating         = "validating"
+	JobStageValidationReview   = "validation_review"
 	JobStageDirectPlayAnalysis = "directplay_analysis"
 	JobStageReadyToPublish     = "ready_to_publish"
 	JobStagePublishing         = "publishing"

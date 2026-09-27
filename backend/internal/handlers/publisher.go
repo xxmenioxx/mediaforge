@@ -164,6 +164,10 @@ func (h PublisherHandler) failPublishingBeforeArchive(
 }
 
 func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (PublishResult, error) {
+	return h.publishQueueJobWithMode(job, overwrite, false)
+}
+
+func (h PublisherHandler) publishQueueJobWithMode(job models.QueueJob, overwrite bool, automatic bool) (PublishResult, error) {
 	publicationMu.Lock()
 	defer publicationMu.Unlock()
 	if job.ID != 0 {
@@ -182,8 +186,8 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 	if job.Status != JobStatusCompleted {
 		return PublishResult{}, publishError{Status: http.StatusBadRequest, Message: "job must be completed before publishing"}
 	}
-	if job.ValidationStatus != ValidationStatusPassed && job.ValidationStatus != ValidationStatusWarning {
-		return PublishResult{}, publishError{Status: http.StatusBadRequest, Message: "job must be validated before publishing"}
+	if allowed, reason := canonicalRunAllowsPublish(h.db, job, automatic); !allowed {
+		return PublishResult{}, publishError{Status: http.StatusConflict, Message: reason}
 	}
 	if job.OutputPath == "" {
 		return PublishResult{}, publishError{Status: http.StatusBadRequest, Message: "job output path is required"}

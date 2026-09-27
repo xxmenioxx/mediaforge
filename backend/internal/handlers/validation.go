@@ -24,17 +24,22 @@ const (
 	ValidationStatusFailed  = "failed"
 )
 
+const maxSidecarValidationBytes int64 = 8 << 20
+
 type ValidationHandler struct {
 	db *gorm.DB
 }
 
 type ValidationResult struct {
-	JobID    uint           `json:"jobId"`
-	Status   string         `json:"status"`
-	Score    int            `json:"score"`
-	Checks   []CheckResult  `json:"checks"`
-	Warnings []string       `json:"warnings"`
-	Report   models.JSONMap `json:"report"`
+	JobID    uint                `json:"jobId"`
+	Status   string              `json:"status"`
+	Outcome  string              `json:"outcome"`
+	RunID    string              `json:"runId"`
+	Score    int                 `json:"score"`
+	Checks   []CheckResult       `json:"checks"`
+	Warnings []string            `json:"warnings"`
+	Report   models.JSONMap      `json:"report"`
+	Findings []validationFinding `json:"findings"`
 }
 
 type CheckResult struct {
@@ -59,32 +64,47 @@ func (h ValidationHandler) ValidateJob(c *gin.Context) {
 	}
 
 	if err := transitionJobStage(h.db, &job, JobStageValidating); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
-	result := validateQueueJob(h.db, job)
-	if err := transitionJobStage(h.db, &job, JobStageDirectPlayAnalysis); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	job.ValidationStatus = result.Status
-	job.ValidationScore = result.Score
-	job.ValidationReport = result.Report
-
-	if err := h.db.Save(&job).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	gate, err := h.validateAndPersist(job, "local_operator")
+	if err != nil {
+		_ = transitionJobStage(h.db, &job, JobStageValidationReview)
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
 	finalStage := JobStageReadyToPublish
-	if result.Status == ValidationStatusFailed {
-		finalStage = JobStageFailed
+	if gate.Run.Outcome != "PASS" {
+		finalStage = JobStageValidationReview
 	}
 	if err := transitionJobStage(h.db, &job, finalStage); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	checks, warnings := compatibilityValidationChecks(gate.Findings)
+	c.JSON(http.StatusOK, ValidationResult{
+		JobID: job.ID, Status: legacyValidationStatus(gate.Run.Outcome), Outcome: gate.Run.Outcome,
+		RunID: gate.Run.RunID, Score: gate.Run.Score, Checks: checks, Warnings: warnings,
+		Report: gate.Run.Report, Findings: gate.Findings,
+	})
+}
 
-	c.JSON(http.StatusOK, result)
+func compatibilityValidationChecks(findings []validationFinding) ([]CheckResult, []string) {
+	checks := make([]CheckResult, 0, len(findings))
+	warnings := []string{}
+	for _, finding := range findings {
+		status := "passed"
+		if finding.State == "FAIL" || finding.State == "REVIEW_REQUIRED" || finding.State == "UNVERIFIED" {
+			status = "failed"
+		} else if finding.State == "WARNING" {
+			status = "warning"
+		}
+		checks = append(checks, CheckResult{Key: finding.Key, Label: finding.Key, Status: status, Message: finding.Explanation})
+		if finding.Actionable && status != "passed" {
+			warnings = append(warnings, finding.Explanation)
+		}
+	}
+	return checks, warnings
 }
 
 func (h ValidationHandler) job(c *gin.Context) (models.QueueJob, bool) {
@@ -265,22 +285,27 @@ func validateQueueJob(db *gorm.DB, job models.QueueJob) ValidationResult {
 				perceptualEvidenceWarning = "perceptual evidence stale: current source revision does not match the frozen Queue SamplingPlan"
 			} else if sourceRevision, sourceErr := sourceRevisionForPath(job.MediaPath); sourceErr == nil {
 				sourceRevisionID, revisionHashErr := canonicalEvidenceHash("source-revision", sourceRevision)
-				candidateRevision, candidateErr := mediaFileFingerprint(job.OutputPath)
+				resultArtifact, _, resultArtifactErr := readLatestJobArtifact(db, job, "result")
+				resultIdentity, resultIdentityOK := resultIdentityFromArtifact(resultArtifact)
 				candidateDuration := validationProbeDuration(outputProbe)
-				if revisionHashErr == nil && candidateErr == nil {
+				if revisionHashErr == nil && resultArtifactErr == nil && resultIdentityOK {
 					authority := resolveFidelityAuthority(db, job)
-					perceptualEvidence, revisionHashErr = collectPerceptualEvidenceUnderHeavySlot(context.Background(), frozenPlan, authority.profile, perceptualArtifactInput{
+					perceptualInput := bindPerceptualInputToResult(perceptualArtifactInput{
 						SourcePath: job.MediaPath, CandidatePath: job.OutputPath, SourceRevision: sourceRevisionID,
-						CandidateRevision: candidateRevision, CandidateKind: "final_output", CandidateArtifactID: fmt.Sprintf("queue-job:%d", job.ID),
-						GenerationToken: fmt.Sprintf("queue-job:%d", job.ID), GenerationVersion: 1,
+						CandidateKind:         "final_output",
 						ConfigurationIdentity: fmt.Sprintf("queue-job:%d:profile:%d", job.ID, job.ProfileVersion),
 						SegmentStartSeconds:   0, SegmentDuration: candidateDuration, CandidateDuration: candidateDuration, FullOutput: true,
-					})
+					}, resultIdentity)
+					perceptualEvidence, revisionHashErr = collectPerceptualEvidenceUnderHeavySlot(context.Background(), frozenPlan, authority.profile, perceptualInput)
 					if revisionHashErr == nil {
 						perceptualEvidenceAvailable = true
 					} else {
 						perceptualEvidenceWarning = revisionHashErr.Error()
 					}
+				} else if resultArtifactErr != nil || !resultIdentityOK {
+					perceptualEvidenceWarning = "canonical Result identity is unavailable; perceptual evidence cannot be bound to this output"
+				} else if revisionHashErr != nil {
+					perceptualEvidenceWarning = revisionHashErr.Error()
 				}
 			} else {
 				perceptualEvidenceWarning = sourceErr.Error()
@@ -557,6 +582,8 @@ func validateRequiredSubtitleArtifacts(job models.QueueJob) ([]CheckResult, []st
 				status, message = "failed", "Requested subtitle sidecar is not readable from staging."
 			} else if info.Size() <= 0 {
 				status, message = "failed", "Requested subtitle sidecar is empty."
+			} else if info.Size() > maxSidecarValidationBytes {
+				status, message = "unverified", "Requested subtitle sidecar exceeds the bounded content check; review its existing artifact without regenerating it."
 			} else if content, err := os.ReadFile(artifact.StagedPath); err != nil || !validOriginalSubtitleSidecar(artifact.Format, content) {
 				status, message = "failed", "Requested subtitle sidecar does not match its expected artifact type."
 			}
@@ -676,6 +703,22 @@ func checksToJSON(checks []CheckResult) []models.JSONMap {
 }
 
 func validateJobColorPolicy(db *gorm.DB, job models.QueueJob, probes ...map[string]any) (models.JSONMap, string) {
+	var overrides map[string]AssetConversionOverrideState
+	if _, frozen := job.ProfileSnapshot[assetConversionOverrideSnapshotKey]; !frozen {
+		overrides = assetConversionOverrides(db)
+	}
+	return validateJobColorPolicyWithOverrides(job, overrides, probes...)
+}
+
+func validateJobColorPolicyFrozen(job models.QueueJob, probes ...map[string]any) (models.JSONMap, string) {
+	if _, frozen := job.ProfileSnapshot[assetConversionOverrideSnapshotKey]; !frozen {
+		job.ProfileSnapshot = cloneJSONMap(job.ProfileSnapshot)
+		job.ProfileSnapshot[assetConversionOverrideSnapshotKey] = models.JSONMap{}
+	}
+	return validateJobColorPolicyWithOverrides(job, nil, probes...)
+}
+
+func validateJobColorPolicyWithOverrides(job models.QueueJob, overrideEntries map[string]AssetConversionOverrideState, probes ...map[string]any) (models.JSONMap, string) {
 	policy := "preserve"
 	worker := unknownRecord(job.ProfileSnapshot["workerConfig"])
 	effectivePolicy := ""
@@ -687,13 +730,6 @@ func validateJobColorPolicy(db *gorm.DB, job models.QueueJob, probes ...map[stri
 		case "preserve", "normalize_bt709":
 			effectivePolicy = value
 		}
-	}
-	overrideEntries := map[string]AssetConversionOverrideState(nil)
-	if _, frozen := job.ProfileSnapshot[assetConversionOverrideSnapshotKey]; !frozen {
-		// Legacy jobs may predate the Queue snapshot. Prepared jobs always use
-		// the frozen override above; mutable Asset Overrides must not alter an
-		// already-frozen validation expectation.
-		overrideEntries = assetConversionOverrides(db)
 	}
 	override := conversionOverrideForJob(job, overrideEntries)
 	if value := strings.ToLower(strings.TrimSpace(override.FinalColorPolicy)); value != "" {
