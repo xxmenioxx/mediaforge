@@ -1217,6 +1217,7 @@ export type QueueJob = {
   progress: number;
   workerName: string;
   outputPath: string;
+  plannedLibraryRoot?: string;
   plannedPublishedPath: string;
   errorMessage: string;
   notes: string;
@@ -1232,6 +1233,10 @@ export type QueueJob = {
   publicationRetiredAt?: string;
   replacementTargetPath: string;
   originalArchivedPath: string;
+  originalArchiveStatus?: string;
+  publicationId?: string;
+  publicationState?: 'READY' | 'HELD' | 'PUBLISHING' | 'PUBLISHED' | 'BLOCKED' | 'FAILED' | '';
+  publicationSummary?: string;
   subtitleArtifacts?: Array<{
     artifactId?: string;
     type?: 'subtitle_sidecar' | 'font_attachment';
@@ -1450,17 +1455,49 @@ export type ValidationSummaryPage = { items: ValidationSummary[]; total: number;
 export type ValidationHistorySummary = Pick<QueueJob,
   | 'id' | 'executionNumber' | 'mediaPath' | 'status' | 'publishedPath' | 'publishedAt' | 'createdAt' | 'updatedAt'
   | 'validationStatus' | 'validationScore' | 'validationRunId' | 'validationOutcome' | 'validationOverridePresent'
-  | 'validationHasActionableWarnings'
+  | 'validationHasActionableWarnings' | 'publicationId' | 'publicationState' | 'publicationSummary'
+  | 'originalArchivedPath' | 'originalArchiveStatus'
 >;
 
 export type ValidationHistoryPage = { items: ValidationHistorySummary[]; total: number; limit: number; offset: number };
 
 export type PublishResult = {
   jobId: number;
-  status: 'published';
+  status: 'published' | 'already_published' | 'held' | 'blocked' | 'publishing';
   sourcePath: string;
   publishedPath: string;
   message: string;
+};
+
+export type PublisherPublication = {
+  publicationId: string;
+  queueJobId: number;
+  executionNumber: number;
+  executionPlanId: number;
+  libraryId: number;
+  destinationRoot: string;
+  destinationPath: string;
+  publishMode: 'standard' | 'replace_library_asset';
+  resultArtifactId: string;
+  validationRunId: string;
+  state: 'READY' | 'HELD' | 'PUBLISHING' | 'PUBLISHED' | 'BLOCKED' | 'FAILED';
+  holdReason?: string;
+  failureCode?: string;
+  failureSummary?: string;
+  attemptCount: number;
+  fencingGeneration: number;
+  publishedAt?: string;
+  originalArchiveStatus: string;
+  originalArchivedPath?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PublisherPublicationSummary = {
+  publication: PublisherPublication;
+  attempts: Array<{ attemptId: string; actorSource: string; actorId: string; createdAt: string }>;
+  evidence: Array<{ attemptId: string; phase: string; outcome: string; code?: string; summary?: string; createdAt: string }>;
+  audit: Array<{ action: string; actorSource: string; actorId: string; reason?: string; version: number; createdAt: string }>;
 };
 
 export type LogFile = {

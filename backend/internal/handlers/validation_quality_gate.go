@@ -61,6 +61,11 @@ type validationSummaryRow struct {
 	Status                      string     `json:"status"`
 	PublishedPath               string     `json:"publishedPath,omitempty"`
 	PublishedAt                 *time.Time `json:"publishedAt,omitempty"`
+	PublicationID               string     `json:"publicationId,omitempty"`
+	PublicationState            string     `json:"publicationState,omitempty"`
+	PublicationSummary          string     `json:"publicationSummary,omitempty"`
+	OriginalArchivedPath        string     `json:"originalArchivedPath,omitempty"`
+	OriginalArchiveStatus       string     `json:"originalArchiveStatus,omitempty"`
 	FinishedAt                  *time.Time `json:"finishedAt,omitempty"`
 	CreatedAt                   time.Time  `json:"createdAt"`
 	UpdatedAt                   time.Time  `json:"updatedAt"`
@@ -854,7 +859,7 @@ func (h ValidationHandler) HistoryList(c *gin.Context) {
 		direction = "asc"
 	}
 	var jobs []models.QueueJob
-	selectFields := "id, execution_number, media_path, status, published_path, published_at, created_at, updated_at, validation_status, validation_score, validation_run_id, validation_outcome, validation_override, validation_actionable"
+	selectFields := "id, execution_number, media_path, status, published_path, published_at, publication_id, publication_state, publication_summary, original_archived_path, original_archive_status, created_at, updated_at, validation_status, validation_score, validation_run_id, validation_outcome, validation_override, validation_actionable"
 	if err := query.Select(selectFields).Order("id " + direction).Limit(limit).Offset(offset).Find(&jobs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -868,7 +873,9 @@ func validationSummaryRows(jobs []models.QueueJob) []validationSummaryRow {
 		rows = append(rows, validationSummaryRow{
 			ID: job.ID, ExecutionNumber: job.ExecutionNumber, MediaPath: job.MediaPath,
 			OutputPath: job.OutputPath, Status: job.Status, PublishedPath: job.PublishedPath,
-			PublishedAt: job.PublishedAt, FinishedAt: job.FinishedAt, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
+			PublishedAt: job.PublishedAt, PublicationID: job.PublicationID, PublicationState: job.PublicationState,
+			PublicationSummary: job.PublicationSummary, OriginalArchivedPath: job.OriginalArchivedPath,
+			OriginalArchiveStatus: job.OriginalArchiveStatus, FinishedAt: job.FinishedAt, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
 			ValidationStatus: job.ValidationStatus, ValidationScore: job.ValidationScore,
 			ValidationRunID: job.ValidationRunID, ValidationOutcome: job.ValidationOutcome,
 			ValidationOverridePresent: job.ValidationOverride, ValidationHasActionableWarn: job.ValidationActionable,
@@ -1069,4 +1076,57 @@ func canonicalRunAllowsPublish(db *gorm.DB, job models.QueueJob, automatic bool)
 		}
 	}
 	return true, ""
+}
+
+// canonicalEligibleOverrideEventIDs projects the exact #53 append-only events
+// that cover findings for this handoff. Eligibility remains decided solely by
+// canonicalRunAllowsPublish; this helper records the identities it relied on.
+func canonicalEligibleOverrideEventIDs(db *gorm.DB, job models.QueueJob, automatic bool) ([]string, error) {
+	allowed, _ := canonicalRunAllowsPublish(db, job, automatic)
+	if !allowed {
+		return nil, nil
+	}
+	var run models.ValidationRun
+	if err := db.Where("run_id = ? AND job_id = ?", job.ValidationRunID, job.ID).First(&run).Error; err != nil {
+		return nil, err
+	}
+	needed := map[string]bool{}
+	for _, raw := range run.Findings {
+		encoded, _ := json.Marshal(raw)
+		var finding validationFinding
+		if json.Unmarshal(encoded, &finding) != nil {
+			continue
+		}
+		blockingOverride := finding.Disposition == "blocking" && (finding.State == "FAIL" || finding.State == "REVIEW_REQUIRED" || finding.State == "UNVERIFIED") && finding.Overrideable && !nonOverrideableValidationRule(finding.Key)
+		automaticActionableOverride := automatic && finding.Actionable && finding.State != "PASS"
+		if blockingOverride || automaticActionableOverride {
+			needed[finding.Key] = true
+		}
+	}
+	if len(needed) == 0 {
+		return []string{}, nil
+	}
+	var overrides []models.ValidationOverride
+	if err := db.Where("validation_run_id = ?", run.RunID).Order("created_at asc, id asc").Find(&overrides).Error; err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(needed))
+	for _, event := range overrides {
+		if automatic && event.RequestedHandoff != "automatic" || !automatic && event.RequestedHandoff != "publisher" && event.RequestedHandoff != "automatic" {
+			continue
+		}
+		for _, raw := range event.RuleKeys {
+			if !needed[fmt.Sprint(raw)] || seen[event.EventID] {
+				continue
+			}
+			seen[event.EventID] = true
+			ids = append(ids, event.EventID)
+			if len(ids) > 20 {
+				return nil, fmt.Errorf("canonical Validation authorization requires more than 20 override evidence references")
+			}
+			break
+		}
+	}
+	return ids, nil
 }

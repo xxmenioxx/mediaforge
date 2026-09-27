@@ -86,6 +86,8 @@ export function HistoryPage() {
                   <TableCell>Asset</TableCell>
                   <TableCell>Status</TableCell>
                   <TableCell>Validation</TableCell>
+                  <TableCell>Publication</TableCell>
+                  <TableCell>Original archive</TableCell>
                   <TableCell>Updated</TableCell>
                   <TableCell align="right">Action</TableCell>
                 </TableRow>
@@ -103,6 +105,18 @@ export function HistoryPage() {
                       <Stack spacing={0.25}>
                         <Typography>{job.validationOutcome || job.validationStatus || 'pending'}{job.validationRunId ? ` · ${job.validationScore}/100` : ''}</Typography>
                         {job.validationRunId ? <Typography variant="caption" color="text.secondary">Run {job.validationRunId}{job.validationOverridePresent ? ' · override recorded' : ''}</Typography> : null}
+                      </Stack>
+                    </TableCell>
+                    <TableCell>
+                      <Stack spacing={0.25}>
+                        <Typography>{job.publicationState || (job.publishedAt ? 'PUBLISHED' : '—')}</Typography>
+                        {job.publicationSummary ? <Typography variant="caption" color="text.secondary">{job.publicationSummary}</Typography> : null}
+                      </Stack>
+                    </TableCell>
+                    <TableCell>
+                      <Stack spacing={0.25}>
+                        <Typography>{job.originalArchiveStatus || (job.originalArchivedPath ? 'complete' : '—')}</Typography>
+                        {job.originalArchivedPath ? <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{job.originalArchivedPath}</Typography> : null}
                       </Stack>
                     </TableCell>
                     <TableCell>{formatDate(job.updatedAt)}</TableCell>

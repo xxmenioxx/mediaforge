@@ -915,7 +915,11 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 		job.Progress = 5
 	}
 	job.OutputPath = outputPath
+	job.PlannedLibraryRoot = library.DestinationPath
 	job.PlannedPublishedPath = plannedOutputPathForJob(h.db, job, library, effectiveProfile)
+	if job.PublishMode == PublishModeReplaceLibrary {
+		job.ReplacementTargetPath = outputFileRelativePath(job.MediaPath, effectiveProfile)
+	}
 	job.ErrorMessage = ""
 	job.Notes = appendNote(job.Notes, "Dry-run command: "+command)
 	if !assetConversionOverrideEmpty(override) {
@@ -1176,7 +1180,11 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	now := time.Now()
 	job.Progress = 5
 	job.OutputPath = outputPath
+	job.PlannedLibraryRoot = library.DestinationPath
 	job.PlannedPublishedPath = plannedOutputPathForJob(h.db, job, library, effectiveProfile)
+	if job.PublishMode == PublishModeReplaceLibrary {
+		job.ReplacementTargetPath = outputFileRelativePath(job.MediaPath, effectiveProfile)
+	}
 	job.ErrorMessage = ""
 	job.Notes = appendNote(job.Notes, "Conversion command: "+command)
 	encoderDecision := encoderDecisionForProfile(plan.Profile)
@@ -1221,7 +1229,7 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	if job.StartedAt == nil {
 		job.StartedAt = &now
 	}
-	if err := h.db.Save(&job).Error; err != nil {
+	if err := saveQueueJobWithDeliverySnapshot(h.db, &job); err != nil {
 		return job, http.StatusInternalServerError, err
 	}
 	if err := transitionJobStage(h.db, &job, JobStageConverting); err != nil {
@@ -1243,6 +1251,35 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 
 	return job, http.StatusAccepted, nil
+}
+
+func saveQueueJobWithDeliverySnapshot(db *gorm.DB, job *models.QueueJob) error {
+	if job == nil {
+		return fmt.Errorf("queue job is required")
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(job).Error; err != nil {
+			return err
+		}
+		if job.ActiveExecutionPlanID == nil {
+			return nil
+		}
+		destination := job.PlannedPublishedPath
+		if job.PublishMode == PublishModeReplaceLibrary {
+			destination = job.ReplacementTargetPath
+		}
+		result := tx.Model(&models.ExecutionPlan{}).Where("id = ? AND job_id = ?", *job.ActiveExecutionPlanID, job.ID).Updates(map[string]any{
+			"library_id": job.LibraryID, "destination_root": job.PlannedLibraryRoot,
+			"destination_path": destination, "publish_mode": job.PublishMode, "output_path": job.OutputPath,
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("active ExecutionPlan disappeared while freezing publication destination")
+		}
+		return nil
+	})
 }
 
 // freezeQueuePreparedProfileSnapshot persists the final effective profile after

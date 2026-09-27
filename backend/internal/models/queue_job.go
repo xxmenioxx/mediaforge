@@ -35,6 +35,7 @@ type QueueJob struct {
 	WorkerName            string     `json:"workerName"`
 	OutputPath            string     `json:"outputPath"`
 	SubtitleArtifacts     JSONList   `json:"subtitleArtifacts" gorm:"type:json"`
+	PlannedLibraryRoot    string     `json:"plannedLibraryRoot"`
 	PlannedPublishedPath  string     `json:"plannedPublishedPath"`
 	ErrorMessage          string     `json:"errorMessage"`
 	Notes                 string     `json:"notes"`
@@ -52,6 +53,10 @@ type QueueJob struct {
 	PublicationRetiredAt  *time.Time `json:"publicationRetiredAt" gorm:"index"`
 	ReplacementTargetPath string     `json:"replacementTargetPath"`
 	OriginalArchivedPath  string     `json:"originalArchivedPath"`
+	OriginalArchiveStatus string     `json:"originalArchiveStatus,omitempty" gorm:"index"`
+	PublicationID         string     `json:"publicationId,omitempty" gorm:"index"`
+	PublicationState      string     `json:"publicationState,omitempty" gorm:"index"`
+	PublicationSummary    string     `json:"publicationSummary,omitempty"`
 	StartedAt             *time.Time `json:"startedAt"`
 	FinishedAt            *time.Time `json:"finishedAt"`
 	DismissedAt           *time.Time `json:"dismissedAt" gorm:"index"`

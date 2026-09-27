@@ -38,7 +38,7 @@ type PublisherHandler struct {
 }
 
 type PublishJobInput struct {
-	Overwrite bool `json:"overwrite"`
+	Reason string `json:"reason"`
 }
 
 type PublishResult struct {
@@ -87,7 +87,7 @@ func (h PublisherHandler) PublishJob(c *gin.Context) {
 		return
 	}
 
-	result, err := h.publishQueueJob(job, input.Overwrite)
+	result, err := h.handoffAndPublishWithReason(job, false, input.Reason)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if publishErr, ok := err.(publishError); ok && publishErr.Status > 0 {
@@ -167,7 +167,7 @@ func (h PublisherHandler) publishQueueJob(job models.QueueJob, overwrite bool) (
 	return h.publishQueueJobWithMode(job, overwrite, false)
 }
 
-func (h PublisherHandler) publishQueueJobWithMode(job models.QueueJob, overwrite bool, automatic bool) (PublishResult, error) {
+func (h PublisherHandler) legacyPublishQueueJobWithMode(job models.QueueJob, overwrite bool, automatic bool) (PublishResult, error) {
 	publicationMu.Lock()
 	defer publicationMu.Unlock()
 	if job.ID != 0 {

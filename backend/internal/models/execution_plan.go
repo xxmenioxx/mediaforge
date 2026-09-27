@@ -25,6 +25,10 @@ type ExecutionPlan struct {
 	Reservation             JSONMap    `json:"reservation" gorm:"type:json"`
 	Evaluation              JSONMap    `json:"evaluation" gorm:"type:json"`
 	OutputPath              string     `json:"outputPath"`
+	LibraryID               uint       `json:"libraryId" gorm:"not null;default:0;index"`
+	DestinationRoot         string     `json:"destinationRoot"`
+	DestinationPath         string     `json:"destinationPath"`
+	PublishMode             string     `json:"publishMode"`
 	InputSizeBytes          int64      `json:"inputSizeBytes"`
 	EstimatedOutputMinBytes int64      `json:"estimatedOutputMinBytes"`
 	EstimatedOutputMaxBytes int64      `json:"estimatedOutputMaxBytes"`

@@ -32,6 +32,7 @@ import type {
   ProfileAssignmentInput,
   PathBrowseResponse,
   PublishResult,
+  PublisherPublicationSummary,
   QueueJob,
   QueueJobInput,
   QueueJobUpdateInput,
@@ -565,6 +566,12 @@ export const api = {
       body: JSON.stringify(input),
     }),
   queueJobs: () => request<QueueJob[]>('/api/queue/jobs'),
+  publisherPublications: () => request<{ items: PublisherPublicationSummary[]; limit: number }>('/api/publisher/publications'),
+  publisherAction: ({ publicationId, action, reason }: { publicationId: string; action: 'hold' | 'release' | 'retry'; reason: string }) =>
+    request<PublishResult | { publicationId: string; state: string }>(`/api/publisher/publications/${encodeURIComponent(publicationId)}/actions`, {
+      method: 'POST',
+      body: JSON.stringify({ action, reason }),
+    }),
   createQueueJob: (job: QueueJobInput) =>
     request<QueueJob>('/api/queue/jobs', {
       method: 'POST',
@@ -662,10 +669,10 @@ export const api = {
     request<ValidationSummaryPage>(`/api/validation/review?view=${view}&limit=${limit}&offset=${offset}`),
   validationHistory: ({ q, sort, limit, offset }: { q: string; sort: 'asc' | 'desc'; limit: number; offset: number }) =>
     request<ValidationHistoryPage>(`/api/validation/history?q=${encodeURIComponent(q)}&sort=${sort}&limit=${limit}&offset=${offset}`),
-  publishJob: ({ jobId, overwrite = false }: { jobId: number; overwrite?: boolean }) =>
+  publishJob: ({ jobId, reason }: { jobId: number; reason?: string }) =>
     request<PublishResult>(`/api/publisher/jobs/${jobId}/publish`, {
       method: 'POST',
-      body: JSON.stringify({ overwrite }),
+      body: JSON.stringify({ reason }),
     }),
   discardPublisherJob: (jobId: number) =>
     request<{

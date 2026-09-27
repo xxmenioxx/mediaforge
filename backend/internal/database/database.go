@@ -2,6 +2,7 @@ package database
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,10 +64,18 @@ func Migrate(db *gorm.DB) error {
 		&models.CompatiblePreviewArtifactRecord{},
 		&models.ValidationRun{},
 		&models.ValidationOverride{},
+		&models.PublisherPublication{},
+		&models.PublisherPublicationAttempt{},
+		&models.PublisherAttemptEvidence{},
+		&models.PublisherAuditEvent{},
+		&models.AssetPublishedOutbox{},
 	); err != nil {
 		return err
 	}
 	if err := migrateValidationAppendOnly(db); err != nil {
+		return err
+	}
+	if err := migratePublisherAppendOnly(db); err != nil {
 		return err
 	}
 	if err := migrateRuntimePolicy(db); err != nil {
@@ -104,6 +113,54 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	return backfillPendingExecutionPlans(db)
+}
+
+func migratePublisherAppendOnly(db *gorm.DB) error {
+	if err := db.Exec("DROP INDEX IF EXISTS idx_publisher_publications_queue_job_id").Error; err != nil {
+		return err
+	}
+	if err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_publisher_publications_queue_job_execution ON publisher_publications(queue_job_id, execution_number)").Error; err != nil {
+		return err
+	}
+	for _, table := range []string{"publisher_publication_attempts", "publisher_attempt_evidences", "publisher_audit_events"} {
+		for _, operation := range []string{"UPDATE", "DELETE"} {
+			statement := fmt.Sprintf(
+				"CREATE TRIGGER IF NOT EXISTS %s_no_%s BEFORE %s ON %s BEGIN SELECT RAISE(ABORT, '%s is append-only'); END",
+				table, strings.ToLower(operation), operation, table, table,
+			)
+			if err := db.Exec(statement).Error; err != nil {
+				return err
+			}
+		}
+	}
+	if err := db.Exec(`CREATE TRIGGER IF NOT EXISTS publisher_publications_identity_no_update
+		BEFORE UPDATE ON publisher_publications
+		WHEN OLD.publication_id IS NOT NEW.publication_id
+			OR OLD.queue_job_id IS NOT NEW.queue_job_id
+			OR OLD.execution_number IS NOT NEW.execution_number
+			OR OLD.execution_plan_id IS NOT NEW.execution_plan_id
+			OR OLD.execution_plan_version IS NOT NEW.execution_plan_version
+			OR OLD.execution_plan_fingerprint IS NOT NEW.execution_plan_fingerprint
+			OR OLD.library_id IS NOT NEW.library_id
+			OR OLD.destination_root IS NOT NEW.destination_root
+			OR OLD.destination_path IS NOT NEW.destination_path
+			OR OLD.publish_mode IS NOT NEW.publish_mode
+			OR OLD.result_artifact_id IS NOT NEW.result_artifact_id
+			OR OLD.result_generation_token IS NOT NEW.result_generation_token
+			OR OLD.result_generation_version IS NOT NEW.result_generation_version
+			OR OLD.result_output_revision IS NOT NEW.result_output_revision
+			OR OLD.validation_run_id IS NOT NEW.validation_run_id
+			OR OLD.validation_override_event_ids IS NOT NEW.validation_override_event_ids
+			OR OLD.source_asset_record_id IS NOT NEW.source_asset_record_id
+			OR OLD.source_asset_record_created_at IS NOT NEW.source_asset_record_created_at
+			OR OLD.source_asset_record_modified_at IS NOT NEW.source_asset_record_modified_at
+			OR OLD.source_asset_record_size_bytes IS NOT NEW.source_asset_record_size_bytes
+			OR OLD.source_path IS NOT NEW.source_path
+			OR OLD.created_at IS NOT NEW.created_at
+		BEGIN SELECT RAISE(ABORT, 'publisher publication identity is immutable'); END`).Error; err != nil {
+		return err
+	}
+	return nil
 }
 
 func migrateValidationAppendOnly(db *gorm.DB) error {

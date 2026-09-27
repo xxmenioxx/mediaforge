@@ -16,7 +16,10 @@ type AutoPublisher struct {
 
 func StartAutoPublisher(db *gorm.DB) *AutoPublisher {
 	publisher := &AutoPublisher{db: db, stop: make(chan struct{})}
-	go publisher.run()
+	go func() {
+		publisher.tick()
+		publisher.run()
+	}()
 	return publisher
 }
 
@@ -41,6 +44,10 @@ func (p *AutoPublisher) tick() {
 	}
 	defer p.mu.Unlock()
 	automation := pipelineAutomationSettings(p.db)
+	// Durable Publisher recovery is part of the existing AutoPublisher cadence;
+	// it queries persisted publication rows and never walks Library or RAW roots.
+	p.recoverPublisherPublications()
+	p.dispatchAssetPublishedOutbox()
 	if automation.PublishedJobReconciliationEnabled {
 		p.reconcilePublishedJobs()
 	}
@@ -48,15 +55,11 @@ func (p *AutoPublisher) tick() {
 		return
 	}
 	var jobs []models.QueueJob
-	if err := p.db.Where("status = ? AND published_at IS NULL AND (validation_outcome IN ? OR validation_override = ?)", JobStatusCompleted, []string{"PASS", "PASS_WITH_WARNINGS"}, true).Order("updated_at asc").Limit(10).Find(&jobs).Error; err != nil {
+	if err := p.db.Where("status = ? AND published_at IS NULL AND (publication_state = '' OR publication_state = ?)", JobStatusCompleted, PublicationReady).Order("updated_at asc").Limit(10).Find(&jobs).Error; err != nil {
 		return
 	}
 	for _, job := range jobs {
-		_, _ = (PublisherHandler{db: p.db}).publishQueueJobWithMode(
-			job,
-			automation.PublisherOverwriteEnabled,
-			true,
-		)
+		_, _ = (PublisherHandler{db: p.db}).publishQueueJobWithMode(job, false, true)
 	}
 }
 
