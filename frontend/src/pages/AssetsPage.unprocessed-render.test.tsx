@@ -41,7 +41,7 @@ function singleAssetInventory(): AssetInventory {
   const rootPath = testPath('root', '/media/raw/movies/Akira', 'Root', true, [asset]);
   return {
     sourceGroups: [{ id: 1, name: 'Movies', relativePath: 'movies', sourcePath: '/media/raw/movies', fileCount: 1, assetCount: 1, titleCount: 1, pathCount: 1, sizeBytes: 1024, totalSizeBytes: 1024, logicalGroups: [{ id: '/media/raw/movies/Akira', name: 'Akira', path: '/media/raw/movies/Akira', relativePath: 'Akira', fileCount: 1, assetCount: 1, pathCount: 1, sizeBytes: 1024, totalSizeBytes: 1024, assetPaths: [rootPath] }] }],
-    unprocessed: [asset], unprocessedGroups: [], library: [], converted: [], unverified: [], accepted: [], archive: [], missing: [], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [], archiveGroups: [], reports: {}, sync: { lastSyncedAt: '2026-08-28T00:00:00Z', totalRecords: 1, missingFiles: 0, missingActionable: 0, missingHistorical: 0 },
+    unprocessed: [asset], unprocessedGroups: [], library: [], converted: [], unverified: [], accepted: [], missing: [], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [], reports: {}, sync: { lastSyncedAt: '2026-08-28T00:00:00Z', totalRecords: 1, missingFiles: 0, missingActionable: 0, missingHistorical: 0 },
   } as unknown as AssetInventory;
 }
 
@@ -107,7 +107,7 @@ describe('Unprocessed Assets hierarchy', () => {
     const childPath = testPath('extras', '/media/raw/movies/Akira/extras', 'extras', false, [childAsset, missingAsset]);
     const inventory = {
       sourceGroups: [{ id: 1, name: 'Movies', relativePath: 'movies', sourcePath: '/media/raw/movies', fileCount: 3, assetCount: 3, titleCount: 1, pathCount: 2, sizeBytes: 3072, totalSizeBytes: 3072, logicalGroups: [{ id: '/media/raw/movies/Akira', name: 'Akira', path: '/media/raw/movies/Akira', relativePath: 'Akira', fileCount: 3, assetCount: 3, pathCount: 2, sizeBytes: 3072, totalSizeBytes: 3072, assetPaths: [rootPath, childPath] }] }],
-      unprocessed: [rootAsset, childAsset], unprocessedGroups: [], library: [], converted: [], unverified: [], accepted: [], archive: [], missing: [missingAsset], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [], archiveGroups: [], reports: {}, sync: { lastSyncedAt: '2026-08-28T00:00:00Z', totalRecords: 3, missingFiles: 1, missingActionable: 1, missingHistorical: 0 },
+      unprocessed: [rootAsset, childAsset], unprocessedGroups: [], library: [], converted: [], unverified: [], accepted: [], missing: [missingAsset], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [], reports: {}, sync: { lastSyncedAt: '2026-08-28T00:00:00Z', totalRecords: 3, missingFiles: 1, missingActionable: 1, missingHistorical: 0 },
     } as unknown as AssetInventory;
     vi.mocked(api.queueJobs).mockResolvedValue([]);
     vi.mocked(api.assets).mockResolvedValue(inventory);
@@ -1331,8 +1331,10 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(screen.getByRole('combobox', { name: 'Provenance' })).toBeTruthy();
     expect(screen.getByPlaceholderText('Search path, file, library, status')).toBeTruthy();
     expect(screen.queryByRole('combobox', { name: 'Original' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Advanced filters, 1 active' }));
-    expect(screen.getByRole('combobox', { name: 'Original' }).textContent).toContain('Archived');
+    await user.click(screen.getByRole('button', { name: /Advanced filters/ }));
+    await user.click(screen.getByRole('combobox', { name: 'Original' }));
+    expect(screen.queryByRole('option', { name: 'Archived' })).toBeNull();
+    await user.keyboard('{Escape}');
     await user.click(screen.getByText('/media/library/anime/Akira'));
     expect(screen.getAllByRole('button', { name: 'Move path' })).toHaveLength(1);
     expect(screen.getByRole('combobox', { name: 'Move path to library' })).toBeTruthy();
@@ -1342,7 +1344,7 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.type(screen.getByPlaceholderText('Search path, file, library, status'), 'Akira');
     const persisted = new URLSearchParams(screen.getByTestId('location-search').textContent ?? '');
     expect(persisted.get('provenance')).toBe('converted');
-    expect(persisted.get('original')).toBe('archived');
+    expect(persisted.has('original')).toBe(false);
     expect(persisted.get('mediaArea')).toBe('anime');
     expect(persisted.get('search')).toBe('Akira');
   });

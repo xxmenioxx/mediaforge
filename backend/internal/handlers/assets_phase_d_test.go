@@ -127,11 +127,13 @@ func TestPhaseDLegacyInventoryPreservesEvidenceWithoutFabricatingProvenance(t *t
 		t.Fatalf("path-only DirectPublication fabricated current RAW identity: %#v", asIsProjection.CurrentRawCorrelation)
 	}
 
-	if len(inventory.Archive) != 1 || inventory.Archive[0].ID != archive.ID {
-		t.Fatalf("archive compatibility inventory was lost: %#v", inventory.Archive)
+	for _, asset := range inventory.Library {
+		if asset.ID == archive.ID {
+			t.Fatal("archive AssetRecord leaked into the Library inventory")
+		}
 	}
-	if inventory.Archive[0].Lifecycle == nil || inventory.Archive[0].Lifecycle.Original != AssetOriginalArchived {
-		t.Fatalf("archive evidence was not projected: %#v", inventory.Archive[0].Lifecycle)
+	if inventory.Reports.ArchiveFiles != 1 {
+		t.Fatalf("archive report aggregate was lost: %#v", inventory.Reports)
 	}
 	if len(inventory.SourceGroups) != 1 || inventory.SourceGroups[0].ID != staleGroup.ID {
 		t.Fatalf("stale Source Group provenance was not retained for RAW: %#v", inventory.SourceGroups)

@@ -71,7 +71,7 @@ export type Asset = {
   extension: string;
   sizeBytes: number;
   modifiedAt: string;
-  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'accepted' | 'archive' | 'mixed';
+  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'accepted' | 'mixed';
   missing: boolean;
   expiresAt?: string;
   review: AssetReviewState;
@@ -96,7 +96,7 @@ export type AssetGroup = {
   libraryName: string;
   path: string;
   relativePath: string;
-  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'accepted' | 'archive' | 'mixed';
+  status: 'unprocessed' | 'library' | 'published_as_is' | 'converted' | 'unverified' | 'accepted' | 'mixed';
   fileCount: number;
   sizeBytes: number;
   modifiedAt: string;
@@ -127,7 +127,37 @@ export type AssetLifecycleProjection = {
     analysis?: AssetAnalysisEvidence;
     originalArchivedPath?: string;
   };
+  archivedOriginals?: AssetArchivedOriginalProjection[];
   actions?: Record<string, { allowed: boolean; reason?: string }>;
+};
+
+export type AssetArchivedOriginalProjection = {
+  assetRecordId?: number;
+  queueJobId: number;
+  path: string;
+  sizeBytes: number;
+  archivedAt?: string;
+  availability: 'available' | 'missing' | string;
+  relationship: 'current' | 'historical' | 'unresolved' | string;
+  provenance: {
+    authority?: string;
+    recordId?: number;
+    sourcePath?: string;
+    publishedPath?: string;
+    sourceAssetRecordId?: number;
+    current?: boolean;
+    publishedAt?: string;
+  };
+  retentionState: 'retained' | 'expired' | 'unknown' | string;
+  retentionDeadline?: string;
+  restore?: { allowed: boolean; reason?: string };
+  deleteArchivedOriginal?: { allowed: boolean; reason?: string };
+};
+
+export type ArchivedOriginalMutationInput = {
+  path: string;
+  archiveAssetRecordId: number;
+  libraryAssetRecordId: number;
 };
 
 export type AssetAnalysisEvidence = {
@@ -609,7 +639,6 @@ export type AssetInventory = {
   converted: Asset[];
   unverified: Asset[];
   accepted: Asset[];
-  archive: Asset[];
   missing: Asset[];
   unprocessedGroups: AssetGroup[];
   rawGroups?: AssetGroup[];
@@ -617,7 +646,6 @@ export type AssetInventory = {
   convertedGroups: AssetGroup[];
   unverifiedGroups: AssetGroup[];
   acceptedGroups: AssetGroup[];
-  archiveGroups: AssetGroup[];
   reports: AssetReports;
   sync: AssetSyncInfo;
   counts?: AssetInventoryCounts;

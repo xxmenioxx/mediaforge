@@ -68,7 +68,7 @@ export function LegacyAssetsRoute() {
     params.set('provenance', 'converted');
   } else if (view === 'archive') {
     params.set('location', 'library');
-    params.set('original', 'archived');
+    params.delete('original');
   } else if (view === 'reports') {
     params.set('location', 'library');
     params.set('evidence', 'reports');

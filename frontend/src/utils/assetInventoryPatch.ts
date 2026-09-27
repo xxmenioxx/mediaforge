@@ -26,13 +26,13 @@ export function patchAssetInventoryAsset(
     return result;
   };
 
-  const flatKeys = ['unprocessed', 'library', 'converted', 'unverified', 'accepted', 'archive', 'missing'] as const;
+  const flatKeys = ['unprocessed', 'library', 'converted', 'unverified', 'accepted', 'missing'] as const;
   const next = { ...inventory };
   for (const key of flatKeys) {
     const assets = patchFlat(inventory[key]);
     if (assets !== inventory[key]) next[key] = assets;
   }
-  const groupKeys = ['unprocessedGroups', 'libraryGroups', 'convertedGroups', 'unverifiedGroups', 'acceptedGroups', 'archiveGroups'] as const;
+  const groupKeys = ['unprocessedGroups', 'libraryGroups', 'convertedGroups', 'unverifiedGroups', 'acceptedGroups'] as const;
   for (const key of groupKeys) {
     const groups = patchGroups(inventory[key]);
     if (groups.some((group, index) => group !== inventory[key][index])) next[key] = groups;

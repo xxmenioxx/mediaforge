@@ -13,9 +13,8 @@ describe('testEncodeEligibleAsset', () => {
     expect(testEncodeEligibleAsset({ status: 'unverified', publicationMode: 'as_is' }, 'library')).toBe(false);
   });
 
-  it('does not expose Test Encode for Converted or Archive assets', () => {
+  it('does not expose Test Encode for Converted assets', () => {
     expect(testEncodeEligibleAsset({ status: 'converted' }, 'converted')).toBe(false);
-    expect(testEncodeEligibleAsset({ status: 'archive' }, 'archive')).toBe(false);
   });
 });
 

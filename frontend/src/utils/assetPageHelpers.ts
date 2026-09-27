@@ -24,24 +24,25 @@ export function subtitleOCRSidecarSelection(values: ExternalSubtitle[], sidecar:
 
 export function filterAssetGroups(groups: AssetGroup[], query: string, filters: { provenance?: string; validation?: string; original?: string; workflow?: string; attention?: string } = {}) {
   const cleanQuery = query.trim().toLowerCase();
-  if (!cleanQuery && !filters.provenance && !filters.validation && !filters.original && !filters.workflow && !filters.attention) return groups;
+  const originalFilter = filters.original === 'archived' ? '' : filters.original;
+  if (!cleanQuery && !filters.provenance && !filters.validation && !originalFilter && !filters.workflow && !filters.attention) return groups;
   return groups.flatMap((group) => {
     const matchingAssets = (Array.isArray(group.assets) ? group.assets : []).filter((asset) => {
       const lifecycle = asset.lifecycle;
       const provenance = lifecycle?.provenance ?? (asset.status === 'converted' ? 'converted' : asset.status === 'published_as_is' ? 'published_as_is' : asset.status === 'accepted' ? 'imported' : 'legacy_or_unknown');
       const validation = lifecycle?.validation ?? 'unavailable';
-      const original = lifecycle?.original ?? (asset.status === 'archive' ? 'archived' : 'unknown');
+      const original = lifecycle?.original ?? 'unknown';
       const workflow = lifecycle?.lifecycle ?? (asset.status === 'unprocessed' ? 'available' : 'unknown');
       if (filters.provenance && provenance !== filters.provenance) return false;
       if (filters.validation && validation !== filters.validation) return false;
-      if (filters.original && original !== filters.original) return false;
+      if (originalFilter && original !== originalFilter) return false;
       if (filters.workflow && workflow !== filters.workflow) return false;
       if (filters.attention && !(lifecycle?.attention ?? []).includes(filters.attention)) return false;
       if (!cleanQuery) return true;
       const values = [asset.fileName, asset.path, asset.relativePath, asset.status, lifecycle?.lifecycle, lifecycle?.provenance, lifecycle?.validation, lifecycle?.publication, lifecycle?.original, ...(lifecycle?.attention ?? [])];
       return values.some((value) => (value ?? '').toLowerCase().includes(cleanQuery));
     });
-    if (!matchingAssets.length && (filters.provenance || filters.validation || filters.original || filters.workflow || filters.attention)) return [];
+    if (!matchingAssets.length && (filters.provenance || filters.validation || originalFilter || filters.workflow || filters.attention)) return [];
     if (!matchingAssets.length) {
       const groupValues = [group.path, group.relativePath, group.libraryName, group.status];
       if (!cleanQuery || !groupValues.some((value) => (value ?? '').toLowerCase().includes(cleanQuery))) return [];

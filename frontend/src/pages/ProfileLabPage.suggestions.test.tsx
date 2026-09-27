@@ -223,8 +223,8 @@ describe('Profile Lab Process Asset suggestions', () => {
     vi.clearAllMocks();
     HTMLElement.prototype.scrollIntoView = vi.fn();
     const inventory = {
-      sourceGroups: [], unprocessed: [asset], library: [], converted: [], unverified: [], accepted: [], archive: [], missing: [],
-      unprocessedGroups: [], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [], archiveGroups: [],
+      sourceGroups: [], unprocessed: [asset], library: [], converted: [], unverified: [], accepted: [], missing: [],
+      unprocessedGroups: [], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [],
       reports: {}, sync: {},
     } as unknown as AssetInventory;
     vi.mocked(api.assets).mockResolvedValue(inventory);

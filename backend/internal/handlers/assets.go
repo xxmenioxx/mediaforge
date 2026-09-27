@@ -158,7 +158,6 @@ type AssetInventory struct {
 	Converted         []Asset              `json:"converted"`
 	Unverified        []Asset              `json:"unverified"`
 	Accepted          []Asset              `json:"accepted"`
-	Archive           []Asset              `json:"archive"`
 	Missing           []Asset              `json:"missing"`
 	UnprocessedGroups []AssetGroup         `json:"unprocessedGroups"`
 	RawGroups         []AssetGroup         `json:"rawGroups"`
@@ -166,7 +165,6 @@ type AssetInventory struct {
 	ConvertedGroups   []AssetGroup         `json:"convertedGroups"`
 	UnverifiedGroups  []AssetGroup         `json:"unverifiedGroups"`
 	AcceptedGroups    []AssetGroup         `json:"acceptedGroups"`
-	ArchiveGroups     []AssetGroup         `json:"archiveGroups"`
 	Reports           AssetReports         `json:"reports"`
 	Sync              AssetSyncInfo        `json:"sync"`
 	Counts            AssetInventoryCounts `json:"counts"`
@@ -750,28 +748,31 @@ func (h AssetHandler) Recover(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
 		return
 	}
-	var record models.AssetRecord
-	if err := h.db.First(&record, "path = ?", filepath.Clean(path)).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "archive asset not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	var input struct {
+		ArchiveAssetRecordID uint `json:"archiveAssetRecordId"`
+		LibraryAssetRecordID uint `json:"libraryAssetRecordId"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if record.Status != "archive" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "only archive assets can be recovered"})
+	record, libraryRecord, sourceRecord, status, err := h.validateArchivedOriginalIdentity(
+		input.ArchiveAssetRecordID, input.LibraryAssetRecordID, path,
+	)
+	if err != nil {
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
-	if record.Missing {
-		c.JSON(http.StatusNotFound, gin.H{"error": "archive file is no longer physically available"})
-		return
-	}
-	if active, err := h.assetHasActiveWork(record); err != nil {
+	if active, err := h.archivedOriginalHasActiveWork(record, libraryRecord, sourceRecord); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "check active asset work: " + err.Error()})
 		return
 	} else if active {
 		c.JSON(http.StatusConflict, gin.H{"error": "asset has active work"})
+		return
+	}
+	archiveRoot, err := originalsArchivePath(h.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	rawRoot, err := settingPath(h.db, "rawRoot", "/media/raw")
@@ -779,13 +780,48 @@ func (h AssetHandler) Recover(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	destination := filepath.Join(rawRoot, filepath.FromSlash(record.RelativePath))
+	destination, status, err := archiveRestoreDestination(record, libraryRecord, archiveRoot, rawRoot)
+	if err != nil {
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if _, err := os.Stat(destination); err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "raw asset already exists; converted files were not changed"})
+	// Capabilities are advisory. Re-resolve identity, active work, roots and
+	// filesystem targets immediately before moving the archive original.
+	record, libraryRecord, sourceRecord, status, err = h.validateArchivedOriginalIdentity(
+		input.ArchiveAssetRecordID, input.LibraryAssetRecordID, path,
+	)
+	if err != nil {
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	currentArchiveRoot, archiveErr := originalsArchivePath(h.db)
+	currentRawRoot, rawErr := settingPath(h.db, "rawRoot", "/media/raw")
+	if archiveErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": archiveErr.Error()})
+		return
+	}
+	if rawErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": rawErr.Error()})
+		return
+	}
+	if filepath.Clean(currentArchiveRoot) != filepath.Clean(archiveRoot) || filepath.Clean(currentRawRoot) != filepath.Clean(rawRoot) {
+		c.JSON(http.StatusConflict, gin.H{"error": "configured archive or RAW root changed; reload the Library asset"})
+		return
+	}
+	if active, activeErr := h.archivedOriginalHasActiveWork(record, libraryRecord, sourceRecord); activeErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "check active asset work: " + activeErr.Error()})
+		return
+	} else if active {
+		c.JSON(http.StatusConflict, gin.H{"error": "asset has active work"})
+		return
+	}
+	destination, status, err = archiveRestoreDestination(record, libraryRecord, currentArchiveRoot, currentRawRoot)
+	if err != nil {
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	if err := moveFile(record.Path, destination); err != nil {
@@ -847,7 +883,9 @@ func (h AssetHandler) DeleteArchive(c *gin.Context) {
 		return
 	}
 	var input struct {
-		Confirmed bool `json:"confirmed"`
+		Confirmed            bool `json:"confirmed"`
+		ArchiveAssetRecordID uint `json:"archiveAssetRecordId"`
+		LibraryAssetRecordID uint `json:"libraryAssetRecordId"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil && !errors.Is(err, io.EOF) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -858,7 +896,7 @@ func (h AssetHandler) DeleteArchive(c *gin.Context) {
 		return
 	}
 
-	if status, err := h.permanentlyDeleteArchiveAsset(path); err != nil {
+	if status, err := h.permanentlyDeleteArchiveAsset(path, input.ArchiveAssetRecordID, input.LibraryAssetRecordID); err != nil {
 		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
@@ -889,7 +927,12 @@ func (h AssetHandler) DeleteArchiveBatch(c *gin.Context) {
 	completed := 0
 	failures := make([]gin.H, 0)
 	for _, path := range paths {
-		if status, err := h.permanentlyDeleteArchiveAsset(path); err != nil {
+		archiveID, libraryID, resolveStatus, resolveErr := h.resolveCurrentArchiveOwner(path)
+		if resolveErr != nil {
+			failures = append(failures, gin.H{"path": path, "status": resolveStatus, "error": resolveErr.Error()})
+			continue
+		}
+		if status, err := h.permanentlyDeleteArchiveAsset(path, archiveID, libraryID); err != nil {
 			failures = append(failures, gin.H{"path": path, "status": status, "error": err.Error()})
 			continue
 		}
@@ -898,25 +941,296 @@ func (h AssetHandler) DeleteArchiveBatch(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "completed", "completed": completed, "failures": failures})
 }
 
-func (h AssetHandler) permanentlyDeleteArchiveAsset(path string) (int, error) {
+func (h AssetHandler) validateArchivedOriginalIdentity(archiveRecordID, libraryAssetRecordID uint, locator string) (models.AssetRecord, models.AssetRecord, models.AssetRecord, int, error) {
+	locator = filepath.Clean(strings.TrimSpace(locator))
+	if archiveRecordID == 0 || libraryAssetRecordID == 0 || locator == "." || locator == "" {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusBadRequest, fmt.Errorf("archive record and related Library asset identities are required")
+	}
+	var archiveRecord models.AssetRecord
+	if err := h.db.First(&archiveRecord, archiveRecordID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("archived-original record identity is stale")
+		}
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusInternalServerError, err
+	}
+	if archiveRecord.Status != "archive" || filepath.Clean(archiveRecord.Path) != locator {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("archive record no longer matches the requested locator")
+	}
+	if archiveRecord.Missing {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusNotFound, fmt.Errorf("archive file is no longer physically available")
+	}
+	var libraryRecord models.AssetRecord
+	if err := h.db.First(&libraryRecord, libraryAssetRecordID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("related Library asset identity is stale")
+		}
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusInternalServerError, err
+	}
+	if libraryRecord.Missing || libraryRecord.LibraryID == 0 {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("related Library asset is unavailable")
+	}
+	var records []models.AssetRecord
+	if err := h.db.Find(&records).Error; err != nil {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusInternalServerError, err
+	}
+	projections, err := h.assetLifecycleProjections(records)
+	if err != nil {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusInternalServerError, err
+	}
+	projection := projections[libraryRecord.ID]
+	if projection == nil || projection.Location != AssetLocationLibrary ||
+		projection.CurrentPublication.State != assetCurrentPublicationPublished ||
+		projection.CurrentPublication.Authority != assetPublicationAuthorityQueue ||
+		projection.CurrentPublication.ID == 0 || projection.CurrentPublication.LibraryAssetID != libraryRecord.ID {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("current Queue publication identity no longer resolves to this Library asset")
+	}
+	var job models.QueueJob
+	if err := h.db.First(&job, projection.CurrentPublication.ID).Error; err != nil {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("current Queue publication identity is stale")
+	}
+	if job.PublicationRetiredAt != nil || !queueJobIsCurrentPublication(job) || job.SourceAssetRecordID == nil ||
+		job.LibraryID != libraryRecord.LibraryID || filepath.Clean(job.PublishedPath) != filepath.Clean(libraryRecord.Path) ||
+		filepath.Clean(job.OriginalArchivedPath) != filepath.Clean(archiveRecord.Path) {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("archive, source, or current-publication relationship changed")
+	}
+	correlation := projection.CurrentRawCorrelation
+	if correlation.State != assetCorrelationResolved || correlation.RawAssetRecordID != *job.SourceAssetRecordID || correlation.LibraryAssetID != libraryRecord.ID {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("canonical source identity no longer resolves to this Library asset")
+	}
+	var sourceRecord models.AssetRecord
+	if err := h.db.First(&sourceRecord, *job.SourceAssetRecordID).Error; err != nil {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("canonical source AssetRecord identity is stale")
+	}
+	var libraries []models.Library
+	if err := h.db.Find(&libraries).Error; err != nil {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusInternalServerError, err
+	}
+	var currentLibrary models.Library
+	for _, candidate := range libraries {
+		if candidate.ID == libraryRecord.LibraryID {
+			currentLibrary = candidate
+			break
+		}
+	}
+	if currentLibrary.ID == 0 || !pathIsInside(libraryRecord.Path, currentLibrary.DestinationPath) {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("current Library root or asset location changed")
+	}
+	libraryRecord.RootPath = filepath.Clean(currentLibrary.DestinationPath)
+	foundArchiveProjection := false
+	for _, original := range projection.ArchivedOriginals {
+		if original.AssetRecordID == archiveRecord.ID && original.QueueJobID == job.ID && original.Relationship == "current" {
+			foundArchiveProjection = true
+			break
+		}
+	}
+	if !foundArchiveProjection {
+		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("archived original is no longer canonically linked to this Library asset")
+	}
+	return archiveRecord, libraryRecord, sourceRecord, http.StatusOK, nil
+}
+
+func (h AssetHandler) resolveCurrentArchiveOwner(path string) (uint, uint, int, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	var archiveRecord models.AssetRecord
+	if err := h.db.First(&archiveRecord, "path = ?", path).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, 0, http.StatusNotFound, fmt.Errorf("archive asset not found")
+		}
+		return 0, 0, http.StatusInternalServerError, err
+	}
+	var records []models.AssetRecord
+	if err := h.db.Find(&records).Error; err != nil {
+		return 0, 0, http.StatusInternalServerError, err
+	}
+	projections, err := h.assetLifecycleProjections(records)
+	if err != nil {
+		return 0, 0, http.StatusInternalServerError, err
+	}
+	var ownerID uint
+	for libraryID, projection := range projections {
+		for _, original := range projection.ArchivedOriginals {
+			if original.AssetRecordID != archiveRecord.ID || original.Relationship != "current" {
+				continue
+			}
+			if ownerID != 0 && ownerID != libraryID {
+				return 0, 0, http.StatusConflict, fmt.Errorf("archive original has conflicting current Library relationships")
+			}
+			ownerID = libraryID
+		}
+	}
+	if ownerID == 0 {
+		return 0, 0, http.StatusConflict, fmt.Errorf("archive original has no resolved current Library relationship")
+	}
+	return archiveRecord.ID, ownerID, http.StatusOK, nil
+}
+
+func (h AssetHandler) archivedOriginalHasActiveWork(records ...models.AssetRecord) (bool, error) {
+	for _, record := range records {
+		active, err := h.assetHasActiveWork(record)
+		if err != nil || active {
+			return active, err
+		}
+	}
+	return false, nil
+}
+
+func archiveRestoreDestination(archiveRecord, libraryRecord models.AssetRecord, archiveRoot, rawRoot string) (string, int, error) {
+	archiveRoot, rawRoot = filepath.Clean(strings.TrimSpace(archiveRoot)), filepath.Clean(strings.TrimSpace(rawRoot))
+	if archiveRoot == "." || rawRoot == "." || archiveRoot == "" || rawRoot == "" {
+		return "", http.StatusForbidden, fmt.Errorf("configured archive or RAW root is unavailable")
+	}
+	if err := validateRegularFileWithinRoot(archiveRecord.Path, archiveRoot); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", http.StatusNotFound, fmt.Errorf("archive file is no longer physically available")
+		}
+		return "", http.StatusForbidden, err
+	}
+	relative := filepath.Clean(filepath.FromSlash(archiveRecord.RelativePath))
+	if relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", http.StatusForbidden, fmt.Errorf("archive restore destination has an unsafe relative path")
+	}
+	destination := filepath.Clean(filepath.Join(rawRoot, relative))
+	if !pathIsInside(destination, rawRoot) {
+		return "", http.StatusForbidden, fmt.Errorf("restore destination is outside the configured RAW root")
+	}
+	if filepath.Clean(destination) == filepath.Clean(libraryRecord.Path) || pathIsInside(destination, libraryRecord.RootPath) {
+		return "", http.StatusConflict, fmt.Errorf("restore destination conflicts with the current Library publication")
+	}
+	if err := validateUnoccupiedPathWithinRoot(destination, rawRoot); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return "", http.StatusConflict, fmt.Errorf("raw asset already exists; converted files were not changed")
+		}
+		return "", http.StatusForbidden, err
+	}
+	if err := validateRegularFileWithinRoot(libraryRecord.Path, libraryRecord.RootPath); err != nil {
+		return "", http.StatusConflict, fmt.Errorf("current Library publication is unavailable or unsafe: %w", err)
+	}
+	return destination, http.StatusOK, nil
+}
+
+func validateRegularFileWithinRoot(candidate, root string) error {
+	candidate, root = filepath.Clean(strings.TrimSpace(candidate)), filepath.Clean(strings.TrimSpace(root))
+	if candidate == "." || root == "." || candidate == "" || root == "" || !pathIsInside(candidate, root) {
+		return fmt.Errorf("target is outside the configured root")
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("configured root is unavailable: %w", err)
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("configured root is not a directory")
+	}
+	rootReal, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve configured root: %w", err)
+	}
+	candidateAbs, err := filepath.Abs(candidate)
+	if err != nil {
+		return fmt.Errorf("resolve target path: %w", err)
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve root path: %w", err)
+	}
+	relative, err := filepath.Rel(rootAbs, candidateAbs)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("target is outside the configured root")
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	current := rootAbs
+	var info os.FileInfo
+	for index, part := range parts {
+		current = filepath.Join(current, part)
+		info, err = os.Lstat(current)
+		if err != nil {
+			return fmt.Errorf("target is unavailable: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink targets are not allowed")
+		}
+		if index < len(parts)-1 && !info.IsDir() {
+			return fmt.Errorf("target parent is not a directory")
+		}
+	}
+	if info == nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("only regular media files are allowed")
+	}
+	resolved, err := filepath.EvalSymlinks(candidateAbs)
+	if err != nil {
+		return fmt.Errorf("resolve target: %w", err)
+	}
+	if !pathIsInside(resolved, rootReal) {
+		return fmt.Errorf("resolved target is outside the configured root")
+	}
+	return nil
+}
+
+func validateUnoccupiedPathWithinRoot(candidate, root string) error {
+	candidate, root = filepath.Clean(strings.TrimSpace(candidate)), filepath.Clean(strings.TrimSpace(root))
+	if candidate == "." || root == "." || candidate == "" || root == "" || !pathIsInside(candidate, root) {
+		return fmt.Errorf("restore destination is outside the configured RAW root")
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("configured RAW root is unavailable: %w", err)
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("configured RAW root is not a directory")
+	}
+	rootReal, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve configured RAW root: %w", err)
+	}
+	candidateAbs, err := filepath.Abs(candidate)
+	if err != nil {
+		return fmt.Errorf("resolve restore destination: %w", err)
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve RAW root: %w", err)
+	}
+	relative, err := filepath.Rel(rootAbs, candidateAbs)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("restore destination is outside the configured RAW root")
+	}
+	current := rootAbs
+	parts := strings.Split(relative, string(filepath.Separator))
+	for index, part := range parts {
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				return nil
+			}
+			return fmt.Errorf("check restore destination: %w", statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("restore destination traverses a symlink")
+		}
+		if index == len(parts)-1 {
+			return os.ErrExist
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("restore destination parent is not a directory")
+		}
+		resolvedParent, resolveErr := filepath.EvalSymlinks(current)
+		if resolveErr != nil || !pathIsInside(resolvedParent, rootReal) && filepath.Clean(resolvedParent) != filepath.Clean(rootReal) {
+			return fmt.Errorf("restore destination parent resolves outside the configured RAW root")
+		}
+	}
+	return nil
+}
+
+func (h AssetHandler) permanentlyDeleteArchiveAsset(path string, archiveRecordID, libraryAssetRecordID uint) (int, error) {
 	path = filepath.Clean(strings.TrimSpace(path))
 	if path == "." || path == "" {
 		return http.StatusBadRequest, fmt.Errorf("path is required")
 	}
-	var record models.AssetRecord
-	if err := h.db.First(&record, "path = ?", path).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return http.StatusNotFound, fmt.Errorf("archive asset not found")
-		}
-		return http.StatusInternalServerError, err
+	record, libraryRecord, sourceRecord, status, err := h.validateArchivedOriginalIdentity(archiveRecordID, libraryAssetRecordID, path)
+	if err != nil {
+		return status, err
 	}
-	if record.Status != "archive" {
-		return http.StatusConflict, fmt.Errorf("only Archive assets can use permanent archive deletion")
-	}
-	if record.Missing {
-		return http.StatusNotFound, fmt.Errorf("archive file is no longer physically available")
-	}
-	if active, err := h.assetHasActiveWork(record); err != nil {
+	if active, err := h.archivedOriginalHasActiveWork(record, libraryRecord, sourceRecord); err != nil {
 		return http.StatusInternalServerError, fmt.Errorf("check active asset work: %w", err)
 	} else if active {
 		return http.StatusConflict, fmt.Errorf("asset has active work")
@@ -926,20 +1240,40 @@ func (h AssetHandler) permanentlyDeleteArchiveAsset(path string) (int, error) {
 		return http.StatusInternalServerError, err
 	}
 	archiveRoot = filepath.Clean(archiveRoot)
-	if path == archiveRoot || !pathIsInside(path, archiveRoot) {
-		return http.StatusForbidden, fmt.Errorf("archive asset is outside the configured Original Archive path")
+	if err := validateRegularFileWithinRoot(record.Path, archiveRoot); err != nil {
+		return http.StatusForbidden, err
 	}
-	info, err := os.Lstat(path)
+	if err := validateRegularFileWithinRoot(libraryRecord.Path, libraryRecord.RootPath); err != nil {
+		return http.StatusConflict, fmt.Errorf("current Library publication is unavailable or unsafe: %w", err)
+	}
+	if filepath.Clean(record.Path) == filepath.Clean(libraryRecord.Path) {
+		return http.StatusConflict, fmt.Errorf("archive target is the current Library publication")
+	}
+
+	// Revalidate the identity and both protected files immediately before unlink.
+	record, libraryRecord, sourceRecord, status, err = h.validateArchivedOriginalIdentity(archiveRecordID, libraryAssetRecordID, path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return http.StatusNotFound, fmt.Errorf("archive file is no longer physically available")
-		}
-		return http.StatusInternalServerError, fmt.Errorf("%s", mediaPathReadError(err))
+		return status, err
 	}
-	if !info.Mode().IsRegular() {
-		return http.StatusConflict, fmt.Errorf("only regular Archive media files can be permanently deleted")
+	currentArchiveRoot, err := originalsArchivePath(h.db)
+	if err != nil {
+		return http.StatusInternalServerError, err
 	}
-	if err := os.Remove(path); err != nil {
+	if filepath.Clean(currentArchiveRoot) != archiveRoot {
+		return http.StatusConflict, fmt.Errorf("configured archive root changed; reload the Library asset")
+	}
+	if active, activeErr := h.archivedOriginalHasActiveWork(record, libraryRecord, sourceRecord); activeErr != nil {
+		return http.StatusInternalServerError, fmt.Errorf("check active asset work: %w", activeErr)
+	} else if active {
+		return http.StatusConflict, fmt.Errorf("asset has active work")
+	}
+	if err := validateRegularFileWithinRoot(record.Path, currentArchiveRoot); err != nil {
+		return http.StatusForbidden, err
+	}
+	if err := validateRegularFileWithinRoot(libraryRecord.Path, libraryRecord.RootPath); err != nil {
+		return http.StatusConflict, fmt.Errorf("current Library publication is unavailable or unsafe: %w", err)
+	}
+	if err := os.Remove(record.Path); err != nil {
 		return http.StatusInternalServerError, fmt.Errorf("archive asset could not be deleted: %w", err)
 	}
 	now := time.Now()
@@ -5632,7 +5966,6 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 		Converted:         []Asset{},
 		Unverified:        []Asset{},
 		Accepted:          []Asset{},
-		Archive:           []Asset{},
 		Missing:           []Asset{},
 		UnprocessedGroups: []AssetGroup{},
 		RawGroups:         []AssetGroup{},
@@ -5640,8 +5973,8 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 		ConvertedGroups:   []AssetGroup{},
 		UnverifiedGroups:  []AssetGroup{},
 		AcceptedGroups:    []AssetGroup{},
-		ArchiveGroups:     []AssetGroup{},
 	}
+	archiveReportAssets := make([]Asset, 0)
 	mvForgeOutputs := mvForgeOutputPaths(h.db)
 	directOutputs := directPublicationPaths(h.db)
 	missing := classifyMissingRecords(records)
@@ -5670,7 +6003,7 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 				inventory.Library = append(inventory.Library, asset)
 			}
 		case "archive":
-			inventory.Archive = append(inventory.Archive, asset)
+			archiveReportAssets = append(archiveReportAssets, asset)
 		case "accepted":
 			inventory.Accepted = append(inventory.Accepted, asset)
 			inventory.Library = append(inventory.Library, asset)
@@ -5689,25 +6022,21 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	applyAssetReviews(inventory.Converted, reviews)
 	applyAssetReviews(inventory.Unverified, reviews)
 	applyAssetReviews(inventory.Accepted, reviews)
-	applyAssetReviews(inventory.Archive, reviews)
 	applyAssetMetadata(inventory.Unprocessed, metadata)
 	applyAssetMetadata(inventory.Library, metadata)
 	applyAssetMetadata(inventory.Converted, metadata)
 	applyAssetMetadata(inventory.Unverified, metadata)
 	applyAssetMetadata(inventory.Accepted, metadata)
-	applyAssetMetadata(inventory.Archive, metadata)
 	applyAssetConversionOverrides(inventory.Unprocessed, conversion)
 	applyAssetConversionOverrides(inventory.Library, conversion)
 	applyAssetConversionOverrides(inventory.Converted, conversion)
 	applyAssetConversionOverrides(inventory.Unverified, conversion)
 	applyAssetConversionOverrides(inventory.Accepted, conversion)
-	applyAssetConversionOverrides(inventory.Archive, conversion)
 	sortAssets(inventory.Unprocessed)
 	sortAssets(inventory.Library)
 	sortAssets(inventory.Converted)
 	sortAssets(inventory.Unverified)
 	sortAssets(inventory.Accepted)
-	sortAssets(inventory.Archive)
 	inventory.Raw = append(inventory.Raw, inventory.Unprocessed...)
 	inventory.UnprocessedGroups = groupAssets(inventory.Unprocessed, reviews, metadata)
 	inventory.RawGroups = inventory.UnprocessedGroups
@@ -5715,22 +6044,20 @@ func (h AssetHandler) assetInventoryFromDB() (AssetInventory, error) {
 	inventory.ConvertedGroups = groupAssets(inventory.Converted, reviews, metadata)
 	inventory.UnverifiedGroups = groupAssets(inventory.Unverified, reviews, metadata)
 	inventory.AcceptedGroups = groupAssets(inventory.Accepted, reviews, metadata)
-	inventory.ArchiveGroups = groupAssets(inventory.Archive, reviews, metadata)
 	sortAssetGroups(inventory.UnprocessedGroups)
 	sortAssetGroups(inventory.LibraryGroups)
 	sortAssetGroups(inventory.ConvertedGroups)
 	sortAssetGroups(inventory.UnverifiedGroups)
 	sortAssetGroups(inventory.AcceptedGroups)
-	sortAssetGroups(inventory.ArchiveGroups)
 	for _, record := range records {
-		if record.Missing && !missing.HistoricalPaths[filepath.Clean(record.Path)] {
+		if record.Status != "archive" && record.Missing && !missing.HistoricalPaths[filepath.Clean(record.Path)] {
 			asset := assetFromRecord(record)
 			asset.Lifecycle = lifecycleByID[record.ID]
 			inventory.Missing = append(inventory.Missing, asset)
 		}
 	}
 	sortAssets(inventory.Missing)
-	inventory.Reports = assetReports(h.db, inventory, missing)
+	inventory.Reports = assetReports(h.db, inventory, missing, archiveReportAssets)
 	inventory.SourceGroups = buildAssetSourceGroups(h.db, records, technicalByPath, mvForgeOutputs, directOutputs, missing)
 	hydrateSourceGroupAssets(inventory.SourceGroups, inventory.Unprocessed)
 	hydrateSourceGroupLifecycles(inventory.SourceGroups, lifecycleByID)
@@ -6754,20 +7081,20 @@ func missingMediaIdentity(fileName string) string {
 	return strings.Join(strings.Fields(normalized.String()), " ")
 }
 
-func assetReports(db *gorm.DB, inventory AssetInventory, missing MissingClassification) AssetReports {
+func assetReports(db *gorm.DB, inventory AssetInventory, missing MissingClassification, archiveAssets []Asset) AssetReports {
 	report := AssetReports{
 		UnprocessedFiles:  len(inventory.Unprocessed),
 		LibraryFiles:      len(inventory.Library),
 		ConvertedFiles:    len(inventory.Converted),
 		UnverifiedFiles:   len(inventory.Unverified),
 		AcceptedFiles:     len(inventory.Accepted),
-		ArchiveFiles:      len(inventory.Archive),
+		ArchiveFiles:      len(archiveAssets),
 		MissingFiles:      missing.Total,
 		MissingActionable: missing.Actionable,
 		MissingHistorical: missing.Historical,
 	}
 	now := time.Now()
-	for _, asset := range inventory.Archive {
+	for _, asset := range archiveAssets {
 		report.ArchiveBytes += asset.SizeBytes
 		if asset.ExpiresAt != nil && now.After(*asset.ExpiresAt) {
 			report.ExpiredArchive++
