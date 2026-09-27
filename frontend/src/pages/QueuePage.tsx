@@ -780,7 +780,7 @@ function availableQueueAssets(assets: Asset[], jobs: QueueJob[], currentPath = '
 
 function findQueueAsset(inventory: AssetInventory | undefined, mediaPath: string) {
   if (!inventory) return undefined;
-  return [inventory.unprocessed, inventory.library, inventory.unverified, inventory.converted, inventory.archive]
+  return [inventory.unprocessed, inventory.library, inventory.unverified, inventory.converted]
     .flat()
     .find((asset) => asset.path === mediaPath);
 }

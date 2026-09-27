@@ -13,6 +13,7 @@ import type {
   AssetMetadataUpdateInput,
   AssetConversionUpdateInput,
   AssetInventory,
+  ArchivedOriginalMutationInput,
   AssetEditInput,
   AssetEditResponse,
   AssetSyncResult,
@@ -229,15 +230,15 @@ export const api = {
     request<{ status: string; removed: number; preserved: number; message: string }>('/api/assets/missing/all', {
       method: 'DELETE',
     }),
-  recoverAsset: (path: string) =>
-    request<{ status: string; sourcePath: string; recoveredPath: string; message: string }>(`/api/assets/recover?path=${encodeURIComponent(path)}`, {
+  recoverAsset: (input: ArchivedOriginalMutationInput) =>
+    request<{ status: string; sourcePath: string; recoveredPath: string; message: string }>(`/api/assets/recover?path=${encodeURIComponent(input.path)}`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify({ archiveAssetRecordId: input.archiveAssetRecordId, libraryAssetRecordId: input.libraryAssetRecordId }),
     }),
-  deleteArchiveAsset: (path: string) =>
-    request<{ status: string; path: string; message: string }>(`/api/assets/archive?path=${encodeURIComponent(path)}`, {
+  deleteArchiveAsset: (input: ArchivedOriginalMutationInput) =>
+    request<{ status: string; path: string; message: string }>(`/api/assets/archive?path=${encodeURIComponent(input.path)}`, {
       method: 'DELETE',
-      body: JSON.stringify({ confirmed: true }),
+      body: JSON.stringify({ confirmed: true, archiveAssetRecordId: input.archiveAssetRecordId, libraryAssetRecordId: input.libraryAssetRecordId }),
     }),
   deleteArchiveAssets: (paths: string[]) =>
     request<{ status: string; completed: number; failures: Array<{ path: string; status: number; error: string }> }>('/api/assets/archive/batch', {

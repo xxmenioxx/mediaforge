@@ -25,8 +25,8 @@ const inventory = (target: Asset, unrelated: Asset): AssetInventory => {
   return {
     sourceGroups: [sourceGroup],
     unprocessed: [target, unrelated],
-    library: [], converted: [], unverified: [], accepted: [], archive: [], missing: [],
-    unprocessedGroups: [targetGroup], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [], archiveGroups: [],
+    library: [], converted: [], unverified: [], accepted: [], missing: [],
+    unprocessedGroups: [targetGroup], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [],
     reports: {} as AssetInventory['reports'],
     sync: {} as AssetInventory['sync'],
   };

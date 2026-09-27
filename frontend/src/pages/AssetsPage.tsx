@@ -44,7 +44,6 @@ import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import SearchIcon from '@mui/icons-material/Search';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
-import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
 import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutline';
 import EditIcon from '@mui/icons-material/Edit';
@@ -68,7 +67,7 @@ import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLifecycleProjection, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLifecycleProjection, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -98,10 +97,10 @@ export function AssetsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const initialLocation = searchParams.get('location') === 'library' || ['library', 'converted', 'archive', 'reports'].includes(searchParams.get('tab') ?? '') ? 'library' : 'unprocessed';
   const initialProvenance = searchParams.get('provenance') ?? (searchParams.get('tab') === 'converted' ? 'converted' : '');
-  const initialOriginal = searchParams.get('original') ?? (searchParams.get('tab') === 'archive' ? 'archived' : '');
+  const originalFilterValue = searchParams.get('original') ?? '';
+  const originalFilter = originalFilterValue === 'archived' ? '' : originalFilterValue;
   const [tab, setTab] = useState<'unprocessed' | 'library'>(initialLocation);
   const [libraryDecision, setLibraryDecision] = useState<string>(initialProvenance);
-  const [originalFilter, setOriginalFilter] = useState(initialOriginal);
   const [validationFilter, setValidationFilter] = useState(searchParams.get('validation') ?? '');
   const [workflowFilter, setWorkflowFilter] = useState(searchParams.get('workflow') ?? '');
   const [attentionFilter, setAttentionFilter] = useState(searchParams.get('attention') ?? '');
@@ -114,16 +113,20 @@ export function AssetsPage() {
   const legacyTab = searchParams.get('tab');
   const unsupportedLegacyTab = legacyTab && !['unprocessed', 'library', 'converted', 'archive', 'reports'].includes(legacyTab);
   useEffect(() => {
-    if (!legacyTab) return;
     if (unsupportedLegacyTab) return;
     const next = new URLSearchParams(searchParams);
-    next.delete('tab');
-    if (legacyTab === 'unprocessed') next.set('location', 'raw');
-    if (legacyTab === 'library') next.set('location', 'library');
-    if (legacyTab === 'converted') { next.set('location', 'library'); next.set('provenance', 'converted'); }
-    if (legacyTab === 'archive') { next.set('location', 'library'); next.set('original', 'archived'); }
-    if (legacyTab === 'reports') { next.set('location', 'library'); next.set('evidence', 'reports'); }
-    setSearchParams(next, { replace: true });
+    if (legacyTab) {
+      next.delete('tab');
+      if (legacyTab === 'unprocessed') next.set('location', 'raw');
+      if (legacyTab === 'library' || legacyTab === 'archive') next.set('location', 'library');
+      if (legacyTab === 'converted') { next.set('location', 'library'); next.set('provenance', 'converted'); }
+      if (legacyTab === 'archive') next.delete('original');
+      if (legacyTab === 'reports') { next.set('location', 'library'); next.set('evidence', 'reports'); }
+    }
+    if (next.get('original') === 'archived') next.delete('original');
+    if (legacyTab || searchParams.get('original') === 'archived') {
+      setSearchParams(next, { replace: true });
+    }
   }, [legacyTab, unsupportedLegacyTab, searchParams, setSearchParams]);
   const updateLibraryFilter = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -194,7 +197,7 @@ export function AssetsPage() {
 	const selectedSourceGroup = sourceGroups.find((group) => group.id === sourceGroupId) ?? sourceGroups[0];
   const allInventoryGroups = [
     ...safeArray(assets.data?.unprocessedGroups), ...safeArray(assets.data?.libraryGroups),
-    ...safeArray(assets.data?.convertedGroups), ...safeArray(assets.data?.archiveGroups),
+    ...safeArray(assets.data?.convertedGroups),
   ];
   const mediaAreas = [...new Set(allInventoryGroups.map((group) => mediaAreaForGroup(group, settings.data)).filter(Boolean))].sort();
   const areaGroups = mediaArea ? currentGroups.filter((group) => mediaAreaForGroup(group, settings.data) === mediaArea) : currentGroups;
@@ -232,7 +235,6 @@ export function AssetsPage() {
                   setTab(value);
                   setAssetQuery('');
                   setLibraryDecision('');
-                  setOriginalFilter('');
                   setValidationFilter('');
                   setWorkflowFilter('');
                   setAttentionFilter('');
@@ -312,8 +314,8 @@ export function AssetsPage() {
                       <TextField select value={validationFilter} onChange={(event) => { setValidationFilter(event.target.value); updateLibraryFilter('validation', event.target.value); }} label="Validation" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
                         <MenuItem value="">All validation</MenuItem><MenuItem value="passed">Passed</MenuItem><MenuItem value="passed_with_warnings">Warnings</MenuItem><MenuItem value="review_required">Review</MenuItem><MenuItem value="failed">Failed</MenuItem><MenuItem value="unavailable">Unavailable</MenuItem>
                       </TextField>
-                      <TextField select value={originalFilter} onChange={(event) => { setOriginalFilter(event.target.value); updateLibraryFilter('original', event.target.value); }} label="Original" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                        <MenuItem value="">All originals</MenuItem><MenuItem value="available">Available</MenuItem><MenuItem value="archived">Archived</MenuItem><MenuItem value="deleted">Deleted</MenuItem><MenuItem value="unknown">Unknown</MenuItem>
+                      <TextField select value={originalFilter} onChange={(event) => updateLibraryFilter('original', event.target.value)} label="Original" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
+                        <MenuItem value="">All originals</MenuItem><MenuItem value="available">Available</MenuItem><MenuItem value="deleted">Deleted</MenuItem><MenuItem value="unknown">Unknown</MenuItem>
                       </TextField>
                       <TextField select value={workflowFilter} onChange={(event) => { setWorkflowFilter(event.target.value); updateLibraryFilter('workflow', event.target.value); }} label="Workflow" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
                         <MenuItem value="">All workflow</MenuItem><MenuItem value="available">Ready</MenuItem><MenuItem value="queued">Queued</MenuItem><MenuItem value="processing">Processing</MenuItem><MenuItem value="publishing">Publishing</MenuItem><MenuItem value="needs_review">Needs attention</MenuItem><MenuItem value="failed">Failed</MenuItem>
@@ -350,7 +352,6 @@ export function AssetsPage() {
                 {syncAssets.data.reviewMatches > 0 ? ` ${syncAssets.data.reviewMatches} possible match(es) were sent to Review.` : ''}
               </Alert>
             ) : null}
-            {tab === 'library' && originalFilter === 'archived' ? <Alert severity="info" sx={{ mt: 1 }}>Archived originals are Library evidence. Recovery keeps the current Library publication and remains backend-authorized.</Alert> : null}
           </CardContent>
           {syncAssets.isError ? <Alert severity="warning" sx={{ m: 2 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
           {showEvidence ? (
@@ -385,7 +386,7 @@ export function AssetsPage() {
                 assetCategories={assetCategories}
                 queueJobs={jobs.data ?? []}
                 runningSnapshotPaths={runningSnapshotPaths}
-                mode={tab === 'library' && libraryDecision === 'converted' ? 'converted' : tab === 'library' && originalFilter === 'archived' ? 'archive' : tab}
+                mode={tab === 'library' && libraryDecision === 'converted' ? 'converted' : tab}
                 query={assetQuery}
                 emptyLabel={
                   'No Library asset groups match the persisted filters.'
@@ -588,50 +589,6 @@ const actionIconSx = {
   height: 38,
 };
 
-export function ArchiveDeleteConfirmationDialog({
-  paths,
-  pathLabel,
-  accepted,
-  pending,
-  onAcceptedChange,
-  onCancel,
-  onConfirm,
-}: {
-  paths: string[];
-  pathLabel: string;
-  accepted: boolean;
-  pending: boolean;
-  onAcceptedChange: (accepted: boolean) => void;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <Dialog open={paths.length > 0} onClose={pending ? undefined : onCancel} disableEscapeKeyDown={pending} maxWidth="sm" fullWidth>
-      <DialogTitle>Permanently delete from Archive?</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          <Alert severity="error">
-            These {paths.length} Archive asset(s) cannot be recovered after deletion. Converted Library assets, job history, reports, logs, and snapshots will remain, but the archived originals will be permanently lost.
-          </Alert>
-          <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-all' }}>
-            {paths.length === 1 ? paths[0] : `${pathLabel || 'Archive path'} · ${paths.length} assets`}
-          </Typography>
-          <FormControlLabel
-            control={<Checkbox checked={accepted} onChange={(event) => onAcceptedChange(event.target.checked)} disabled={pending} />}
-            label="I understand that these Archive assets cannot be recovered."
-          />
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onCancel} disabled={pending}>Cancel</Button>
-        <Button color="error" variant="contained" startIcon={<DeleteForeverIcon />} disabled={!accepted || pending} onClick={onConfirm}>
-          {pending ? 'Deleting…' : 'Continue'}
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
-
 class AssetsErrorBoundary extends Component<
   { boundaryKey: string; children: ReactNode },
   { error: Error | null; boundaryKey: string }
@@ -693,7 +650,7 @@ function AssetTable({
   assetCategories: string[];
   queueJobs: QueueJob[];
   runningSnapshotPaths: Set<string>;
-  mode: 'unprocessed' | 'library' | 'converted' | 'archive';
+  mode: 'unprocessed' | 'library' | 'converted';
   query: string;
   emptyLabel: string;
 }) {
@@ -702,16 +659,12 @@ function AssetTable({
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const filteredGroups = filterAssetGroups(visibleGroups, query);
 	const pagedGroups = filteredGroups.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
-  const showConfidence = mode !== 'archive' && mode !== 'converted';
+  const showConfidence = mode !== 'converted';
   const [previousPageBasis, setPreviousPageBasis] = useState({ query, mode, groupCount: visibleGroups.length });
   if (previousPageBasis.query !== query || previousPageBasis.mode !== mode || previousPageBasis.groupCount !== visibleGroups.length) {
     setPreviousPageBasis({ query, mode, groupCount: visibleGroups.length });
     setPage(0);
   }
-
-	if (mode === 'archive') {
-		return <ArchivedAssetTable groups={visibleGroups} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} query={query} emptyLabel={emptyLabel} />;
-	}
 
   if (visibleGroups.length === 0) {
     return (
@@ -901,7 +854,7 @@ function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetI
 		return <Box sx={{ overflowX: 'auto' }}><Table size="small" sx={{ minWidth: 720, tableLayout: 'fixed' }}><TableHead><TableRow><TableCell padding="checkbox" sx={{ width: 48 }} /><TableCell>Asset</TableCell><TableCell sx={{ width: 180 }}>Status</TableCell><TableCell sx={{ width: 100 }}>Size</TableCell><TableCell align="center" sx={{ width: 220 }}>Actions</TableCell></TableRow></TableHead><TableBody>{visibleAssets.map((asset) => {
 			const effective = asset.id ? effectiveConfigurations.data?.configurations[String(asset.id)] : undefined;
 			const track = trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey);
-			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} autoOpenAssetInfo={normalizePath(asset.path) === normalizePath(legacyAssetPath)} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupRelativePath={path.relativePath} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)} bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
+			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} autoOpenAssetInfo={normalizePath(asset.path) === normalizePath(legacyAssetPath)} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)} bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
 		})}</TableBody></Table></Box>;
 	};
 	return <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
@@ -1246,7 +1199,7 @@ export function AssetCollectionRows({
   assetCategories: string[];
   queueJobs: QueueJob[];
   runningSnapshotPaths: Set<string>;
-  mode: 'unprocessed' | 'library' | 'converted' | 'archive';
+  mode: 'unprocessed' | 'library' | 'converted';
   columnCount: number;
 }) {
   const queryClient = useQueryClient();
@@ -1650,118 +1603,6 @@ function AnalysisEvidenceChip({ status }: { status: 'missing' | 'ready' | 'stale
   return <Chip size="small" label={analysisEvidenceLabel(status)} color={color} />;
 }
 
-function ArchivedAssetTable({
-	groups,
-	libraries,
-	profiles,
-	audioProfiles,
-	trackProfiles,
-	settings,
-  assetCategories,
-  queueJobs,
-  runningSnapshotPaths,
-  query,
-  emptyLabel,
-}: {
-  groups: AssetGroup[];
-  libraries: Library[];
-	profiles: Profile[];
-	audioProfiles: AudioEnhancementProfile[];
-	trackProfiles: TrackProfile[];
-	settings: AppSetting[];
-  assetCategories: string[];
-  queueJobs: QueueJob[];
-  runningSnapshotPaths: Set<string>;
-  query: string;
-  emptyLabel: string;
-}) {
-  const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(25);
-  const assets = archiveAssetsFromGroups(groups, query);
-  const safePage = Math.min(page, Math.max(0, Math.ceil(assets.length / rowsPerPage) - 1));
-  const pagedAssets = assets.slice(safePage * rowsPerPage, safePage * rowsPerPage + rowsPerPage);
-
-  if (sumGroupFiles(groups) === 0) {
-    return (
-      <CardContent>
-        <Alert severity="info">{emptyLabel}</Alert>
-      </CardContent>
-    );
-  }
-
-  return (
-    <>
-      <Box sx={{ overflowX: 'auto', borderTop: 1, borderColor: 'divider' }}>
-        <Table size="small" sx={{ minWidth: 820, tableLayout: 'fixed', '& td, & th': { py: 0.85 } }}>
-          <TableHead>
-            <TableRow>
-              <TableCell sx={{ width: 330 }}>Asset</TableCell>
-              <TableCell sx={{ width: 190 }}>Status</TableCell>
-              <TableCell sx={{ width: 110 }}>Size</TableCell>
-              <TableCell sx={{ width: 150 }}>Modified</TableCell>
-              <TableCell align="center" sx={{ width: 260 }}>Actions</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {pagedAssets.length ? pagedAssets.map(({ asset, group }) => (
-              <AssetRow
-                key={`${asset.status}-${asset.libraryId}-${asset.path}`}
-                asset={asset}
-                libraries={libraries}
-				profiles={profiles}
-				audioProfiles={audioProfiles}
-				trackProfiles={trackProfiles}
-				srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)}
-                assetCategories={assetCategories}
-                groupRelativePath={group.relativePath}
-                groupCategory=""
-                confidenceEnabled
-                groupProfileId={0}
-                groupAudioProfileKey=""
-                groupLibraryId={group.libraryId}
-                hasOpenJob={assetHasOpenJob(asset, queueJobs)}
-                queueJobs={queueJobs}
-                snapshotRunning={runningSnapshotPaths.has(asset.path)}
-                mode="archive"
-                bulkSelected={false}
-                bulkSelectionEnabled={false}
-                bulkSelectionDisabled
-                onBulkSelectionChange={() => undefined}
-                archivePathAssets={safeArray(group.assets).filter((candidate) => !candidate.missing)}
-              />
-            )) : (
-              <TableRow>
-                <TableCell colSpan={5}>
-                  <Alert severity="info">No archived assets match this search.</Alert>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </Box>
-      <TablePagination
-        component="div"
-        count={assets.length}
-        page={safePage}
-        rowsPerPage={rowsPerPage}
-        rowsPerPageOptions={[10, 25, 50, 100]}
-        onPageChange={(_, nextPage) => setPage(nextPage)}
-        onRowsPerPageChange={(event) => {
-          setRowsPerPage(Number(event.target.value));
-          setPage(0);
-        }}
-        sx={{
-          '& .MuiTablePagination-toolbar': { px: { xs: 1, sm: 2 } },
-          '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } },
-        }}
-      />
-    </>
-  );
-}
-
-// Retained for compatibility with older local builds that imported this view.
-void ArchivedAssetTable;
-
 function AssetGroupRow({
   group,
   libraries,
@@ -1791,7 +1632,7 @@ function AssetGroupRow({
   assetCategories: string[];
   queueJobs: QueueJob[];
   runningSnapshotPaths: Set<string>;
-  mode: 'unprocessed' | 'library' | 'converted' | 'archive';
+  mode: 'unprocessed' | 'library' | 'converted';
   pathSelected?: boolean;
   onPathSelectionChange?: (selected: boolean) => void;
   onOpenPathSnapshots?: () => void;
@@ -1847,9 +1688,8 @@ function AssetGroupRow({
   const isPublishedAsIsGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'published_as_is' || asset.publicationMode === 'as_is');
   const isAcceptedGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'imported' || asset.status === 'accepted');
   const isLibraryGroup = mode === 'library' || group.status === 'unverified' || group.status === 'accepted' || group.status === 'library' || group.status === 'published_as_is';
-  const isArchiveGroup = mode === 'archive' || group.status === 'archive';
-  const isReadOnlyGroup = isMixedGroup || isConvertedGroup || isPublishedAsIsGroup || isAcceptedGroup || isArchiveGroup;
-  const showConfidenceColumn = mode !== 'archive' && mode !== 'converted';
+  const isReadOnlyGroup = isMixedGroup || isConvertedGroup || isPublishedAsIsGroup || isAcceptedGroup;
+  const showConfidenceColumn = mode !== 'converted';
   const bulkSelectableAssets = isReadOnlyGroup && !isAcceptedGroup ? groupAssets.filter((asset) => !asset.missing) : [];
   const hasMultipleSelectableAssets = bulkSelectableAssets.length > 1;
 	const hierarchicalSelectableAssets = selectedAssetIds ? groupAssets.filter((asset) => !asset.missing && asset.id) : bulkSelectableAssets;
@@ -2025,9 +1865,7 @@ function AssetGroupRow({
       let completed = 0;
       for (const assetPath of paths) {
         try {
-          if (isArchiveGroup) {
-            await api.recoverAsset(assetPath);
-          } else if (isPublishedAsIsGroup) {
+          if (isPublishedAsIsGroup) {
             await api.returnPublishedAsIsAsset(assetPath);
           } else {
             await api.deleteConvertedAsset(assetPath);
@@ -2093,16 +1931,9 @@ function AssetGroupRow({
 
   function runBulkAssetAction(paths = selectedAssetPaths) {
     if (!paths.length) return;
-    const action = isArchiveGroup
-      ? 'recover'
-      : isPublishedAsIsGroup
-        ? 'return to Raw'
-        : 'safely delete and restore';
     const confirmed = window.confirm(
-      `${action === 'recover' ? 'Recover' : isPublishedAsIsGroup ? 'Return' : 'Safely delete'} ${paths.length} asset(s) from this path? ${
-        isArchiveGroup
-          ? 'Converted files will not be deleted.'
-          : isPublishedAsIsGroup
+      `${isPublishedAsIsGroup ? 'Return' : 'Safely delete'} ${paths.length} asset(s) from this path? ${
+        isPublishedAsIsGroup
             ? 'Each Published as-is asset and its external subtitles will return to the original Raw path.'
             : 'Each converted file will be deleted only if its archived original can be restored to Raw.'
       }`,
@@ -2248,7 +2079,7 @@ function AssetGroupRow({
 		  <Collapse in={forceExpanded || expanded} timeout="auto" unmountOnExit>
             <Box sx={{ bgcolor: 'rgba(255,255,255,0.02)', px: { xs: 1.5, md: 2 }, py: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
               <Stack spacing={2}>
-                {collectionManaged ? null : isArchiveGroup ? null : isConvertedGroup ? null : isPublishedAsIsGroup ? (
+                {collectionManaged ? null : isConvertedGroup ? null : isPublishedAsIsGroup ? (
                   <Alert severity="info">
                     Published as-is assets must be returned to Raw before they can be queued for conversion.
                   </Alert>
@@ -2404,24 +2235,21 @@ function AssetGroupRow({
                     </Typography>
                     <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'stretch', md: 'center' }}>
                       <Button
-                        color={isArchiveGroup ? 'primary' : 'error'}
+                        color="error"
                         variant="outlined"
                         size="small"
-                        startIcon={isArchiveGroup ? <TaskAltIcon /> : <DeleteForeverIcon />}
+                        startIcon={<DeleteForeverIcon />}
                         disabled={!selectedAssetPaths.length || bulkAssetAction.isPending}
                         onClick={() => runBulkAssetAction()}
                         sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
                       >
                         {bulkAssetAction.isPending
                           ? 'Processing...'
-                          : isArchiveGroup
-                            ? 'Recover selected'
-                            : isPublishedAsIsGroup
+                          : isPublishedAsIsGroup
                               ? 'Return selected'
                               : 'Delete selected'}
                       </Button>
-                      {!isArchiveGroup && (
-                        <Button
+                      <Button
                           color="error"
                           variant="contained"
                           size="small"
@@ -2436,7 +2264,6 @@ function AssetGroupRow({
                               ? 'Return path to Raw'
                               : 'Delete path'}
                         </Button>
-                      )}
                     </Stack>
                   </Stack>
                 ) : null}
@@ -2499,7 +2326,6 @@ function AssetGroupRow({
 							srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)}
                           pathTrackProfile={trackProfiles.find((profile) => profile.key === selectedTrackProfileKey)}
                           assetCategories={assetCategories}
-                          groupRelativePath={group.relativePath}
                           groupCategory={groupCategory}
                           confidenceEnabled={isConfidenceEnabled}
                           groupProfileId={selectedProfileId < 0 ? -1 : effectiveProfileId}
@@ -2697,6 +2523,7 @@ export function AssetInfoOverview({ asset, libraries }: { asset: Asset; librarie
   const lifecycle: AssetLifecycleProjection | undefined = asset.lifecycle;
   const publication = lifecycle?.currentPublication;
   const evidence = lifecycle?.evidenceSummary;
+  const archivedOriginals = lifecycle?.archivedOriginals ?? [];
   const destination = libraries.find((library) => library.id === asset.libraryId);
   const publicationConflict = publication?.state === 'conflict' || publication?.state === 'unresolved' || publication?.state === 'unresolved_conflict';
 
@@ -2755,6 +2582,23 @@ export function AssetInfoOverview({ asset, libraries }: { asset: Asset; librarie
         <Typography>Analysis · {analysisEvidenceLabel(evidence?.analysis?.status)}</Typography>
         <Typography variant="caption" color="text.secondary">Validation and Publisher details remain unavailable/pending until their canonical evidence exists.</Typography>
       </Box>
+      {archivedOriginals.length ? <Box>
+        <Typography variant="h4" sx={{ mb: 1 }}>Archived originals</Typography>
+        <Stack spacing={1}>
+          {archivedOriginals.map((original) => <Box key={`${original.queueJobId}-${original.assetRecordId ?? original.path}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+            <Stack spacing={0.5}>
+              <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{original.path}</Typography>
+              <Typography variant="body2">Size · {formatBytes(original.sizeBytes)}</Typography>
+              <Typography variant="body2">Archive time · {original.archivedAt ? formatDate(original.archivedAt) : 'Unknown'}</Typography>
+              <Typography variant="body2">Provenance · Queue job #{original.queueJobId} · Source AssetRecord #{original.provenance.sourceAssetRecordId ?? 'unknown'}</Typography>
+              <Typography variant="body2">Relationship · {lifecyclePresentationValue(original.relationship)} · Availability · {lifecyclePresentationValue(original.availability)}</Typography>
+              <Typography variant="body2">Retention · {lifecyclePresentationValue(original.retentionState)}{original.retentionDeadline ? ` · until ${formatDate(original.retentionDeadline)}` : ' · no recorded deadline'}</Typography>
+              <Typography variant="caption" color="text.secondary">Restore · {original.restore?.allowed ? 'Available' : assetActionReasonMessage(original.restore ?? {}, 'Unavailable')}</Typography>
+              <Typography variant="caption" color="text.secondary">Delete · {original.deleteArchivedOriginal?.allowed ? 'Available' : assetActionReasonMessage(original.deleteArchivedOriginal ?? {}, 'Unavailable')}</Typography>
+            </Stack>
+          </Box>)}
+        </Stack>
+      </Box> : null}
     </Stack>
   );
 }
@@ -2782,7 +2626,6 @@ function AssetRow({
 	srtFallbackEnabled,
   pathTrackProfile,
   assetCategories,
-  groupRelativePath,
   groupCategory,
   confidenceEnabled,
   groupProfileId,
@@ -2796,7 +2639,6 @@ function AssetRow({
   bulkSelectionEnabled,
   bulkSelectionDisabled,
   onBulkSelectionChange,
-  archivePathAssets = [],
 }: {
   asset: Asset;
 	autoOpenAssetInfo?: boolean;
@@ -2808,7 +2650,6 @@ function AssetRow({
 	srtFallbackEnabled?: boolean;
   pathTrackProfile?: TrackProfile;
   assetCategories: string[];
-  groupRelativePath: string;
   groupCategory: string;
   confidenceEnabled: boolean;
   groupProfileId: number;
@@ -2817,12 +2658,11 @@ function AssetRow({
   hasOpenJob: boolean;
   queueJobs: QueueJob[];
   snapshotRunning: boolean;
-  mode: 'unprocessed' | 'library' | 'converted' | 'archive';
+  mode: 'unprocessed' | 'library' | 'converted';
   bulkSelected: boolean;
   bulkSelectionEnabled: boolean;
   bulkSelectionDisabled: boolean;
   onBulkSelectionChange: (path: string, selected: boolean) => void;
-  archivePathAssets?: Asset[];
 }) {
   const queryClient = useQueryClient();
   const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
@@ -2872,8 +2712,6 @@ function AssetRow({
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
   const [showTestEncodeDialog, setShowTestEncodeDialog] = useState(false);
-  const [archiveDeletePaths, setArchiveDeletePaths] = useState<string[]>([]);
-  const [archiveDeleteAccepted, setArchiveDeleteAccepted] = useState(false);
   const [assetEditQueueMessage, setAssetEditQueueMessage] = useState('');
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
   const assetReview = asset.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
@@ -2990,7 +2828,6 @@ function AssetRow({
       !hidePreConversionActions &&
       !asset.missing &&
       asset.status !== 'converted' &&
-      asset.status !== 'archive' &&
       asset.status !== 'accepted',
   });
   const storedSnapshotExists = snapshotData !== null;
@@ -2999,7 +2836,7 @@ function AssetRow({
   const externalSubtitles = useQuery({
     queryKey: ['externalSubtitles', asset.path],
     queryFn: () => api.externalAssetSubtitles(asset.path),
-    enabled: showSnapshotDialog && snapshotTab === 'tracks' && asset.status !== 'archive' && !asset.missing,
+    enabled: showSnapshotDialog && snapshotTab === 'tracks' && !asset.missing,
   });
   const metadataSidecars = useQuery({
     queryKey: ['assetMetadataSidecars', asset.path],
@@ -3024,7 +2861,7 @@ function AssetRow({
   const advisor = useQuery({
     queryKey: ['advisor', 'asset-row', asset.path, effectiveProfileId],
     queryFn: () => api.evaluateAdvisor({ mediaPath: asset.path, profileId: effectiveProfileId }),
-    enabled: showAdvisorDialog && mode !== 'archive' && mode !== 'converted' && asset.status !== 'archive' && asset.status !== 'converted' && asset.status !== 'published_as_is' && asset.status !== 'accepted' && confidenceEnabled && effectiveProfileId > 0,
+    enabled: showAdvisorDialog && mode !== 'converted' && asset.status !== 'converted' && asset.status !== 'published_as_is' && asset.status !== 'accepted' && confidenceEnabled && effectiveProfileId > 0,
   });
   const saveAssetEdit = useMutation({
     mutationFn: (revision: AssetInfoEditDocument) => api.updateAssetEdit({
@@ -3138,11 +2975,9 @@ function AssetRow({
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
-  const deleteArchiveAssets = useMutation({
-    mutationFn: api.deleteArchiveAssets,
+  const deleteArchiveAsset = useMutation({
+    mutationFn: api.deleteArchiveAsset,
     onSuccess: async () => {
-      setArchiveDeletePaths([]);
-      setArchiveDeleteAccepted(false);
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
@@ -3203,22 +3038,19 @@ function AssetRow({
   const isPublishedAsIs = assetProvenance === 'published_as_is' || (!assetProvenance && asset.status === 'published_as_is');
   const isAccepted = assetProvenance === 'imported' || (!assetProvenance && asset.status === 'accepted');
   const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is';
-  const isArchive = mode === 'archive' || asset.status === 'archive';
   const canGenerateTestEncode = testEncodeEligibleAsset(asset, mode);
   const labCapability = assetInfoCapability(asset, 'lab');
   const renameCapability = assetInfoCapability(asset, 'rename');
   const rowColumnCount = compactUnprocessed ? 5 : isConverted
     ? bulkSelectionEnabled ? 8 : 7
-    : isArchive
-      ? bulkSelectionEnabled ? 7 : 6
-      : isAccepted ? 5 : 10;
+    : isAccepted ? 5 : 10;
   const associatedJob = associatedJobForCurrentPublication(asset, queueJobs);
   const historyJobIds = new Set(asset.lifecycle?.evidenceSummary?.queueJobIds ?? []);
   const historyJobs = historyJobIds.size
     ? queueJobs.filter((job) => historyJobIds.has(job.id)).sort((left, right) => right.id - left.id)
     : associatedJob ? [associatedJob] : [];
-  const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isArchive || isPublishedAsIs || isAccepted;
-  const renameLocked = hasOpenJob || createJob.isPending || isArchive || isPublishedAsIs || isAccepted;
+  const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isPublishedAsIs || isAccepted;
+  const renameLocked = hasOpenJob || createJob.isPending || isPublishedAsIs || isAccepted;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
   const isOverrideOnly =
     selectedProfileId === VIDEO_PROFILE_OVERRIDE_ONLY;
@@ -4064,19 +3896,27 @@ async function generateExternalSubtitle(
     setCategory(nextCategory);
   }
 
-  function recoverArchivedAsset(event: MouseEvent<HTMLButtonElement>) {
+  function archivedOriginalMutationInput(original: AssetArchivedOriginalProjection) {
+    if (original.relationship !== 'current' || !original.assetRecordId || !asset.id) return undefined;
+    return { path: original.path, archiveAssetRecordId: original.assetRecordId, libraryAssetRecordId: asset.id };
+  }
+
+  function recoverArchivedAsset(event: MouseEvent<HTMLButtonElement>, original: AssetArchivedOriginalProjection) {
     event.stopPropagation();
+    const input = archivedOriginalMutationInput(original);
+    if (!input || !original.restore?.allowed) return;
     const confirmed = window.confirm('Recover this original from Archive? Converted files will not be deleted.');
     if (confirmed) {
-      recoverAsset.mutate(asset.path);
+      recoverAsset.mutate(input);
     }
   }
 
-  function requestArchiveDeletion(event: MouseEvent<HTMLButtonElement>, paths: string[]) {
+  function requestArchiveDeletion(event: MouseEvent<HTMLButtonElement>, original: AssetArchivedOriginalProjection) {
     event.stopPropagation();
-    setArchiveDeleteAccepted(false);
-    setArchiveDeletePaths(paths);
-    deleteArchiveAssets.reset();
+    const input = archivedOriginalMutationInput(original);
+    if (!input || !original.deleteArchivedOriginal?.allowed) return;
+    const confirmed = window.confirm(`Permanently delete this archived original? The current Library publication and Queue provenance will remain.\n\n${original.path}`);
+    if (confirmed) deleteArchiveAsset.mutate(input);
   }
 
   function safelyDeleteConvertedAsset(event: MouseEvent<HTMLButtonElement>) {
@@ -4140,7 +3980,7 @@ async function generateExternalSubtitle(
             ) : null}
           </Stack>
         </TableCell>
-        {!compactUnprocessed && !isArchive && !isConverted && !isPublishedAsIs && !isAccepted ? (
+        {!compactUnprocessed && !isConverted && !isPublishedAsIs && !isAccepted ? (
           <TableCell>
             <Tooltip title="Click para evaluar">
               <span>
@@ -4188,7 +4028,7 @@ async function generateExternalSubtitle(
             />
           </TableCell>
         ) : null}
-        {!compactUnprocessed && !isArchive && !isConverted && !isPublishedAsIs && !isAccepted ? (
+        {!compactUnprocessed && !isConverted && !isPublishedAsIs && !isAccepted ? (
           <>
             <TableCell sx={{ minWidth: 220 }}>
               <ProfileAutocomplete
@@ -4230,51 +4070,7 @@ async function generateExternalSubtitle(
                 </IconButton>
               </span>
             </Tooltip>
-            {isArchive ? (
-              <>
-                <Tooltip title={asset.missing ? 'Archive file is no longer physically available' : 'Recover original without deleting converted files'}>
-                  <span>
-                    <IconButton
-                      color="primary"
-                      onClick={recoverArchivedAsset}
-                      disabled={!assetInfoCapability(asset, 'restore').allowed || asset.missing || recoverAsset.isPending || deleteArchiveAssets.isPending}
-                      aria-label={`Recover ${asset.fileName}`}
-                      sx={actionIconSx}
-                    >
-                      <TaskAltIcon />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-                <Tooltip title="Permanently delete this Archive asset">
-                  <span>
-                    <IconButton
-                      color="error"
-                      onClick={(event) => requestArchiveDeletion(event, [asset.path])}
-                      disabled={!assetInfoCapability(asset, 'deleteArchivedOriginal').allowed || asset.missing || deleteArchiveAssets.isPending}
-                      aria-label={`Permanently delete ${asset.fileName}`}
-                      sx={actionIconSx}
-                    >
-                      <DeleteForeverIcon />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-                {archivePathAssets.length > 1 ? (
-                  <Tooltip title={`Permanently delete all ${archivePathAssets.length} Archive assets in this path`}>
-                    <span>
-                      <IconButton
-                        color="error"
-                        onClick={(event) => requestArchiveDeletion(event, archivePathAssets.map((candidate) => candidate.path))}
-                        disabled={!assetInfoCapability(asset, 'deleteArchivedOriginal').allowed || deleteArchiveAssets.isPending}
-                        aria-label={`Permanently delete Archive path ${groupRelativePath}`}
-                        sx={actionIconSx}
-                      >
-                        <DeleteSweepIcon />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                ) : null}
-              </>
-            ) : reconciliationJobId > 0 ? (
+            {reconciliationJobId > 0 ? (
               <Tooltip title="Confirm that this asset is the relocated output for its MVForge job">
                 <span onClick={(event) => event.stopPropagation()}>
                   <IconButton
@@ -4331,7 +4127,7 @@ async function generateExternalSubtitle(
                   </IconButton>
                 </span>
               </Tooltip>
-            ) : isArchive || isLibraryReplacement ? null : (
+            ) : isLibraryReplacement ? null : (
               <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Queue asset'}>
                 <IconButton
                   color="primary"
@@ -4393,21 +4189,17 @@ async function generateExternalSubtitle(
             </Alert>
           </Snackbar>
           <Snackbar
-            open={deleteArchiveAssets.isSuccess || deleteArchiveAssets.isError}
+            open={deleteArchiveAsset.isSuccess || deleteArchiveAsset.isError}
             autoHideDuration={7000}
             anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
             onClose={(_, reason) => {
-              if (reason !== 'clickaway') deleteArchiveAssets.reset();
+              if (reason !== 'clickaway') deleteArchiveAsset.reset();
             }}
           >
-            <Alert
-              severity={deleteArchiveAssets.isError || deleteArchiveAssets.data?.failures.length ? 'warning' : 'success'}
-              variant="filled"
-              onClose={() => deleteArchiveAssets.reset()}
-            >
-              {deleteArchiveAssets.isError
-                ? deleteArchiveAssets.error instanceof Error ? deleteArchiveAssets.error.message : 'Archive deletion failed.'
-                : `${deleteArchiveAssets.data?.completed ?? 0} Archive asset(s) permanently deleted.${deleteArchiveAssets.data?.failures.length ? ` ${deleteArchiveAssets.data.failures.length} failed.` : ''}`}
+            <Alert severity={deleteArchiveAsset.isError ? 'warning' : 'success'} variant="filled" onClose={() => deleteArchiveAsset.reset()}>
+              {deleteArchiveAsset.isError
+                ? deleteArchiveAsset.error instanceof Error ? deleteArchiveAsset.error.message : 'Archived original deletion failed.'
+                : 'Archived original permanently deleted. Library publication and job provenance were preserved.'}
             </Alert>
           </Snackbar>
           <Snackbar
@@ -4424,18 +4216,6 @@ async function generateExternalSubtitle(
           </Snackbar>
         </TableCell>
       </TableRow>
-      <ArchiveDeleteConfirmationDialog
-        paths={archiveDeletePaths}
-        pathLabel={groupRelativePath}
-        accepted={archiveDeleteAccepted}
-        pending={deleteArchiveAssets.isPending}
-        onAcceptedChange={setArchiveDeleteAccepted}
-        onCancel={() => {
-          setArchiveDeletePaths([]);
-          setArchiveDeleteAccepted(false);
-        }}
-        onConfirm={() => deleteArchiveAssets.mutate(archiveDeletePaths)}
-      />
       <TestEncodeDialog
         open={showTestEncodeDialog}
         onClose={() => setShowTestEncodeDialog(false)}
@@ -4679,11 +4459,11 @@ async function generateExternalSubtitle(
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
                     {snapshotTab === 'tracks' ? <Box>
                     {snapshotData ? <><TrackMaintenancePanel path={asset.path} active={showSnapshotDialog && snapshotTab === 'tracks'} hasOpenJob={hasOpenJob} canManageTracks={assetInfoCapability(asset, 'manageTracks').allowed} canManageAttachments={assetInfoCapability(asset, 'manageAttachments').allowed} />
-                    {!isConverted && !isArchive ? <><Typography variant="h3">Conversion track selection</Typography><MediaSnapshotDetails
+                    {!isConverted ? <><Typography variant="h3">Conversion track selection</Typography><MediaSnapshotDetails
                       scan={snapshotData}
                       section="tracks"
                       streamControls={
-                        isConverted || isArchive
+                        isConverted
                           ? undefined
                           : {
                               video: {
@@ -4704,7 +4484,7 @@ async function generateExternalSubtitle(
                             }
                       }
                       metadataControls={
-                        isConverted || isArchive
+                        isConverted
                           ? undefined
                           : {
                               video: {
@@ -4758,11 +4538,6 @@ async function generateExternalSubtitle(
                     {snapshotTab === 'tracks' ? <Box>
                     <Typography variant="h4">Subtitles</Typography>
                     {snapshotData ? <>
-                    {isArchive ? (
-                      <Alert severity="info">
-                        The archived original is used as the subtitle source. Generated files are saved beside its active converted asset.
-                      </Alert>
-                    ) : null}
                     <EmbeddedSubtitleActions
                       streams={snapshotData.subtitleStreams}
                       eligibility={subtitleEligibility.data?.embedded}
@@ -4776,7 +4551,6 @@ async function generateExternalSubtitle(
                       onTranslate={(streamIndex) => setTranslationSource({ type: 'embedded', embedded: { streamIndex } })}
                     />
                     <Typography variant="h4">Sidecars</Typography>
-                    {!isArchive ? (
                     <>
                     <Typography variant="h5">Subtitle sidecars</Typography>
                     <ExternalSubtitleList
@@ -4824,7 +4598,6 @@ async function generateExternalSubtitle(
                       onRetry={retrySubtitleComposition}
                     />
                     </>
-                    ) : null}
                     {externalSubtitles.isError ? (
                       <Alert severity="warning">{externalSubtitles.error instanceof Error ? externalSubtitles.error.message : 'Could not list external subtitles.'}</Alert>
                     ) : null}
@@ -4963,12 +4736,25 @@ async function generateExternalSubtitle(
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     <Typography variant="h3">Original retention</Typography>
                     <Typography>{lifecyclePresentationValue(asset.lifecycle?.original, 'unknown')}</Typography>
-                    {asset.lifecycle?.evidenceSummary?.originalArchivedPath ? <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>Archived path: {asset.lifecycle.evidenceSummary.originalArchivedPath}</Typography> : null}
-                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                      {isArchive ? <Button variant="outlined" onClick={recoverArchivedAsset} disabled={!assetInfoCapability(asset, 'restore').allowed || asset.missing || recoverAsset.isPending || deleteArchiveAssets.isPending}>Restore original</Button> : null}
-                      {isArchive ? <Button color="error" variant="outlined" onClick={(event) => requestArchiveDeletion(event, [asset.path])} disabled={!assetInfoCapability(asset, 'deleteArchivedOriginal').allowed || asset.missing || deleteArchiveAssets.isPending}>Delete archived original</Button> : null}
-                    </Stack>
-                    {!isArchive ? <Alert severity="info">Archive and restore policy remains owned by the canonical backend handlers. The Library publication is never targeted by original deletion.</Alert> : null}
+                    {asset.lifecycle?.archivedOriginals?.length ? asset.lifecycle.archivedOriginals.map((original) => (
+                      <Box key={`${original.queueJobId}-${original.assetRecordId ?? original.path}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+                        <Stack spacing={1}>
+                          <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{original.path}</Typography>
+                          <Typography variant="body2" color="text.secondary">Queue job #{original.queueJobId} · {lifecyclePresentationValue(original.relationship)} · {lifecyclePresentationValue(original.availability)}</Typography>
+                          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                            <Button variant="outlined" onClick={(event) => recoverArchivedAsset(event, original)} disabled={!original.restore?.allowed || !archivedOriginalMutationInput(original) || recoverAsset.isPending}>
+                              Restore original
+                            </Button>
+                            <Button color="error" variant="outlined" onClick={(event) => requestArchiveDeletion(event, original)} disabled={!original.deleteArchivedOriginal?.allowed || !archivedOriginalMutationInput(original) || deleteArchiveAsset.isPending}>
+                              Delete archived original
+                            </Button>
+                          </Stack>
+                          {!original.restore?.allowed ? <Typography variant="caption" color="text.secondary">Restore unavailable: {assetActionReasonMessage(original.restore ?? {}, 'This archived original is not currently restorable.')}</Typography> : null}
+                          {!original.deleteArchivedOriginal?.allowed ? <Typography variant="caption" color="text.secondary">Delete unavailable: {assetActionReasonMessage(original.deleteArchivedOriginal ?? {}, 'This archived original is not currently deletable.')}</Typography> : null}
+                        </Stack>
+                      </Box>
+                    )) : <Alert severity="info">No archived-original evidence is linked to this Library asset.</Alert>}
+                    <Alert severity="info">Restore leaves the current Library publication intact. Deletion preserves Queue and publication provenance.</Alert>
                   </Stack>
                 </Box> : null}
                 {snapshotTab === 'evidence' ? <Box>
@@ -5014,11 +4800,11 @@ async function generateExternalSubtitle(
                 </Box> : null}
                 {snapshotTab === 'advisor' && !hidePreConversionActions ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
-                    {!isConverted && !isArchive && profileSuggestion.isPending ? <Alert severity="info">Comparing the snapshot with available profiles…</Alert> : null}
-                    {!isConverted && !isArchive && profileSuggestion.isError ? (
+                    {!isConverted && profileSuggestion.isPending ? <Alert severity="info">Comparing the snapshot with available profiles…</Alert> : null}
+                    {!isConverted && profileSuggestion.isError ? (
                       <Alert severity="warning">The snapshot was created, but a profile could not be suggested: {profileSuggestion.error instanceof Error ? profileSuggestion.error.message : 'unknown backend error'}</Alert>
                     ) : null}
-                    {!isConverted && !isArchive && profileSuggestion.data ? (
+                    {!isConverted && profileSuggestion.data ? (
                       <ProfileSuggestionCard
                         suggestion={profileSuggestion.data}
                         onSelect={(profile) => setSelectedProfileId(profile.id)}
@@ -5029,12 +4815,11 @@ async function generateExternalSubtitle(
                       />
                     ) : null}
                     {isConverted ? <Alert severity="info">This is already a converted asset. Re-processing recommendations should be evaluated from its archived original.</Alert> : null}
-                    {isArchive ? <Alert severity="info">Recover the archived original before applying a suggested profile.</Alert> : null}
                   </Stack>
                 </Box> : null}
                 {snapshotTab === 'conversion' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
-                    {!isArchive ? (
+                    {
                       <AssetConversionOverridePanel
                         assetPath={asset.path}
                         draft={conversionDraft}
@@ -5047,7 +4832,7 @@ async function generateExternalSubtitle(
                         saving={saveAssetEdit.isPending || renameAsset.isPending}
                         readOnly={isConverted || hasOpenJob}
                       />
-                    ) : <Alert severity="info">Archived originals are immutable. Recover the asset before configuring conversion overrides.</Alert>}
+                    }
                   </Stack>
                 </Box> : null}
                 {snapshotTab === 'test-encode' && canGenerateTestEncode && !hidePreConversionActions ? <Box>
@@ -7021,24 +6806,24 @@ function pathAssignmentsFor(path: string, assignments: ProfileAssignment[]) {
   );
 }
 
-function effectivePathDestination(group: AssetGroup, destinations: Record<string, number>, mode: 'unprocessed' | 'library' | 'converted' | 'archive') {
+function effectivePathDestination(group: AssetGroup, destinations: Record<string, number>, mode: 'unprocessed' | 'library' | 'converted') {
   return destinations[normalizePath(group.path)] ?? (mode === 'library' ? group.libraryId : 0);
 }
 
-function pathConfigurationComplete(group: AssetGroup, assignments: ProfileAssignment[], destinations: Record<string, number>, mode: 'unprocessed' | 'library' | 'converted' | 'archive') {
+function pathConfigurationComplete(group: AssetGroup, assignments: ProfileAssignment[], destinations: Record<string, number>, mode: 'unprocessed' | 'library' | 'converted') {
   const pathAssignments = pathAssignmentsFor(group.path, assignments);
   const hasProfile = [...pathAssignments.values()].some((assignment) => assignment.selection === 'profile');
   return hasProfile && effectivePathDestination(group, destinations, mode) > 0;
 }
 
-function pathCanQueue(group: AssetGroup, mode: 'unprocessed' | 'library' | 'converted' | 'archive') {
+function pathCanQueue(group: AssetGroup, mode: 'unprocessed' | 'library' | 'converted') {
   if (mode === 'unprocessed') return group.status === 'unprocessed';
   if (mode !== 'library') return false;
   if (group.status === 'accepted' || group.status === 'published_as_is') return false;
   return group.status === 'library' || group.status === 'unverified';
 }
 
-function configurationForPathSelection(groups: AssetGroup[], assignments: ProfileAssignment[], destinations: Record<string, number>, mode: 'unprocessed' | 'library' | 'converted' | 'archive') {
+function configurationForPathSelection(groups: AssetGroup[], assignments: ProfileAssignment[], destinations: Record<string, number>, mode: 'unprocessed' | 'library' | 'converted') {
   const values = groups.map((group) => {
     const pathAssignments = pathAssignmentsFor(group.path, assignments);
     const video = pathAssignments.get('video');
@@ -7064,26 +6849,6 @@ function configurationForPathSelection(groups: AssetGroup[], assignments: Profil
 
 function slugify(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'assets';
-}
-
-function archiveAssetsFromGroups(groups: AssetGroup[], query: string) {
-  const cleanQuery = query.trim().toLowerCase();
-  return safeArray(groups)
-    .flatMap((group) => safeArray(group.assets).map((asset) => ({ asset, group })))
-    .filter(({ asset, group }) => {
-      if (!cleanQuery) return true;
-      return [
-        asset.path,
-        asset.relativePath,
-        asset.fileName,
-        asset.status,
-        asset.libraryName,
-        group.path,
-        group.relativePath,
-        group.libraryName,
-      ].some((value) => (value ?? '').toLowerCase().includes(cleanQuery));
-    })
-    .sort((left, right) => left.asset.path.localeCompare(right.asset.path));
 }
 
 function mediaAreaForGroup(group: AssetGroup, settings?: AppSetting[]) {
@@ -7151,8 +6916,6 @@ function statusLabel(status: Asset['status']) {
       return 'Unverified';
     case 'accepted':
       return 'Accepted';
-    case 'archive':
-      return 'Archive';
     default:
       return 'Unprocessed';
   }
@@ -7170,8 +6933,6 @@ function statusColor(status: Asset['status']): 'default' | 'success' | 'warning'
       return 'warning';
     case 'accepted':
       return 'success';
-    case 'archive':
-      return 'default';
     default:
       return 'warning';
   }
@@ -7331,9 +7092,6 @@ function assetPipelineState(asset: Asset, job: QueueJob | undefined, pendingQueu
     if (asset.lifecycle.provenance === 'published_as_is') return { label: 'Published as-is', color: 'success' };
     if (asset.lifecycle.provenance === 'imported') return { label: 'Imported', color: 'success' };
     return { label: 'Available', color: 'default' };
-  }
-  if (asset.status === 'archive') {
-    return { label: 'Archive', color: 'default' };
   }
   if (pendingQueue) {
     return { label: 'Queueing', color: 'primary' };

@@ -55,7 +55,7 @@ describe('Phase D Assets compatibility projections', () => {
     const group = mixedGroup();
     expect(filterAssetGroups([group], '', { provenance: 'converted' })[0].assets.map((item) => item.id)).toEqual([1]);
     expect(filterAssetGroups([group], '', { validation: 'failed' })[0].assets.map((item) => item.id)).toEqual([5]);
-    expect(filterAssetGroups([group], '', { original: 'archived' })[0].assets.map((item) => item.id)).toEqual([1]);
+    expect(filterAssetGroups([group], '', { original: 'archived' })[0].assets.map((item) => item.id)).toEqual([1, 2, 3, 4, 5]);
     expect(filterAssetGroups([group], '', { workflow: 'queued' })[0].assets.map((item) => item.id)).toEqual([3]);
     expect(filterAssetGroups([group], '', { attention: 'needs_review' })[0].assets.map((item) => item.id)).toEqual([4]);
     expect(filterAssetGroups([group], '')[0].assets).toHaveLength(5);
@@ -69,8 +69,8 @@ describe('Phase D Assets compatibility projections', () => {
       library: [asset(2, {}), asset(3, {})],
       converted: [asset(2, { provenance: 'converted' })],
       unverified: [asset(3, {})],
-      accepted: [], archive: [asset(4, { original: 'archived' })], missing: [],
-      unprocessedGroups: [], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [], archiveGroups: [],
+      accepted: [], missing: [],
+      unprocessedGroups: [], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [],
       reports: {}, sync: { lastSyncedAt: '', totalRecords: 4, missingFiles: 0, missingActionable: 0, missingHistorical: 0 },
       counts: { raw: 1, library: 2, processing: 1, needsReview: 1, validationReview: 1, publicationBlocked: 1, converted: 1, originalsArchived: 1, missing: 0, historicalPaths: 1 },
     } as unknown as AssetInventory;
@@ -83,12 +83,14 @@ describe('Phase D Assets compatibility projections', () => {
     expect(summary.originalsArchived).toBe(1);
   });
 
-  it('keeps legacy archive projections filterable when lifecycle enrichment is unavailable', () => {
-    const legacyArchive = { ...asset(6, {}), status: 'archive', lifecycle: undefined } as Asset;
-    const legacyConverted = { ...asset(7, {}), status: 'converted', lifecycle: undefined } as Asset;
-    const group = { ...mixedGroup(), assets: [legacyArchive, legacyConverted] };
+  it('ignores the retired Archived filter while retaining Library asset rows', () => {
+    const libraryAssets = [
+      asset(6, { provenance: 'converted', original: 'archived' }),
+      asset(7, { provenance: 'converted', original: 'available' }),
+    ];
+    const group = { ...mixedGroup(), assets: libraryAssets };
 
-    expect(filterAssetGroups([group], '', { original: 'archived' })[0].assets.map((item) => item.id)).toEqual([6]);
-    expect(filterAssetGroups([group], '', { provenance: 'converted' })[0].assets.map((item) => item.id)).toEqual([7]);
+    expect(filterAssetGroups([group], '', { original: 'archived' })[0].assets.map((item) => item.id)).toEqual([6, 7]);
+    expect(libraryAssets.every((item) => item.lifecycle?.location === 'library')).toBe(true);
   });
 });

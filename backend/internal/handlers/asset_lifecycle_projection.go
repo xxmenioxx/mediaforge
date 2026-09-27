@@ -92,7 +92,26 @@ type AssetLifecycleProjection struct {
 	SourceProvenance      []AssetSourceProvenance       `json:"sourceProvenance,omitempty"`
 	CurrentRawCorrelation AssetCurrentRawCorrelation    `json:"currentRawCorrelation"`
 	EvidenceSummary       AssetLifecycleEvidenceSummary `json:"evidenceSummary"`
+	ArchivedOriginals     []AssetArchivedOriginal       `json:"archivedOriginals,omitempty"`
 	Actions               AssetActionCapabilities       `json:"actions"`
+}
+
+// AssetArchivedOriginal is derived from a canonical publication record and an
+// existing archive AssetRecord. It is contextual lifecycle evidence, not an
+// inventory item or persisted archive model.
+type AssetArchivedOriginal struct {
+	AssetRecordID   uint                  `json:"assetRecordId,omitempty"`
+	QueueJobID      uint                  `json:"queueJobId"`
+	Path            string                `json:"path"`
+	SizeBytes       int64                 `json:"sizeBytes,omitempty"`
+	ArchivedAt      *time.Time            `json:"archivedAt,omitempty"`
+	Availability    string                `json:"availability"`
+	Relationship    string                `json:"relationship"`
+	Provenance      AssetSourceProvenance `json:"provenance"`
+	RetentionState  string                `json:"retentionState"`
+	RetentionExpiry *time.Time            `json:"retentionDeadline,omitempty"`
+	Restore         AssetActionCapability `json:"restore"`
+	DeleteOriginal  AssetActionCapability `json:"deleteArchivedOriginal"`
 }
 
 type AssetActiveOperation struct {
@@ -189,19 +208,22 @@ type AssetActionCapabilities struct {
 // AssetActionGuardContext is the canonical state already checked by operation
 // guards. Capabilities render this state; they do not authorize a mutation.
 type AssetActionGuardContext struct {
-	IdentityKnown         bool
-	Location              string
-	Missing               bool
-	HasActiveQueue        bool
-	HasActiveMaintenance  bool
-	RootSafe              bool
-	ProvenanceKnown       bool
-	PublicationConflict   bool
-	ReviewRequired        bool
-	QueueEligible         bool
-	HasCurrentPublication bool
-	OriginalAvailable     bool
-	OriginalArchived      bool
+	IdentityKnown                bool
+	Location                     string
+	Missing                      bool
+	HasActiveQueue               bool
+	HasActiveMaintenance         bool
+	RootSafe                     bool
+	ProvenanceKnown              bool
+	PublicationConflict          bool
+	ReviewRequired               bool
+	QueueEligible                bool
+	HasCurrentPublication        bool
+	OriginalAvailable            bool
+	OriginalArchived             bool
+	OriginalArchiveIdentityKnown bool
+	OriginalArchiveAvailable     bool
+	OriginalArchiveRootSafe      bool
 }
 
 // AssetLifecycleProjectionInput contains one asset plus the batch-loaded
@@ -337,9 +359,9 @@ func ResolveAssetLifecycleProjection(input AssetLifecycleProjectionInput) AssetL
 		projection.Lifecycle = AssetLifecycleAvailable
 	}
 
-	if latestJob != nil && strings.TrimSpace(latestJob.OriginalArchivedPath) != "" {
+	if currentQueue != nil && currentQueue.job != nil && strings.TrimSpace(currentQueue.job.OriginalArchivedPath) != "" {
 		projection.Original = AssetOriginalArchived
-		projection.EvidenceSummary.OriginalArchivedPath = filepath.Clean(latestJob.OriginalArchivedPath)
+		projection.EvidenceSummary.OriginalArchivedPath = filepath.Clean(currentQueue.job.OriginalArchivedPath)
 	} else if projection.CurrentRawCorrelation.State == assetCorrelationResolved {
 		if raw, ok := recordsByID[projection.CurrentRawCorrelation.RawAssetRecordID]; ok && !raw.Missing {
 			projection.Original = AssetOriginalAvailable
@@ -347,23 +369,58 @@ func ResolveAssetLifecycleProjection(input AssetLifecycleProjectionInput) AssetL
 	} else if strings.EqualFold(strings.TrimSpace(record.Status), "archive") {
 		projection.Original = AssetOriginalArchived
 	}
+	projection.ArchivedOriginals = assetLifecycleArchivedOriginals(
+		record, location, recordsByID, libraries, evidence, currentQueue, currentDirect,
+		projection.CurrentRawCorrelation,
+		input.ArchiveRoot, activeQueue || activeMaintenance,
+		projection.CurrentPublication.State == assetCurrentPublicationConflict,
+	)
+	for _, archived := range projection.ArchivedOriginals {
+		if archived.Relationship == "current" && archived.Availability == "available" {
+			projection.Original = AssetOriginalArchived
+			break
+		}
+	}
 
 	rootSafe := assetLifecycleRootSafe(record, location, libraries, input.ArchiveRoot)
+	originalIdentityKnown, originalAvailable, originalRootSafe := false, false, false
+	for _, archived := range projection.ArchivedOriginals {
+		if archived.Relationship == "current" {
+			originalIdentityKnown = archived.Provenance.SourceAssetID != nil && archived.QueueJobID > 0 && archived.AssetRecordID > 0
+			originalAvailable = archived.Availability == "available"
+			if archiveRecord, ok := recordsByID[archived.AssetRecordID]; ok {
+				originalRootSafe = assetLifecycleRootSafe(archiveRecord, "archive", libraries, input.ArchiveRoot)
+			}
+			break
+		}
+	}
 	projection.Actions = ResolveAssetActionCapabilities(AssetActionGuardContext{
-		IdentityKnown:         record.ID > 0 && cleanAssetLifecyclePath(record.Path) != "",
-		Location:              location,
-		Missing:               record.Missing,
-		HasActiveQueue:        activeQueue,
-		HasActiveMaintenance:  activeMaintenance,
-		RootSafe:              rootSafe,
-		ProvenanceKnown:       projection.Provenance != AssetProvenanceLegacyOrUnknown,
-		PublicationConflict:   projection.CurrentPublication.State == assetCurrentPublicationConflict,
-		ReviewRequired:        input.Review.RequiresReview,
-		QueueEligible:         location == AssetLocationRaw && strings.EqualFold(strings.TrimSpace(record.Status), "unprocessed") && !record.Missing && !input.Review.RequiresReview && activeOperation == nil,
-		HasCurrentPublication: projection.CurrentPublication.State == assetCurrentPublicationPublished,
-		OriginalAvailable:     projection.Original == AssetOriginalAvailable,
-		OriginalArchived:      projection.Original == AssetOriginalArchived,
+		IdentityKnown:                record.ID > 0 && cleanAssetLifecyclePath(record.Path) != "",
+		Location:                     location,
+		Missing:                      record.Missing,
+		HasActiveQueue:               activeQueue,
+		HasActiveMaintenance:         activeMaintenance,
+		RootSafe:                     rootSafe,
+		ProvenanceKnown:              projection.Provenance != AssetProvenanceLegacyOrUnknown,
+		PublicationConflict:          projection.CurrentPublication.State == assetCurrentPublicationConflict,
+		ReviewRequired:               input.Review.RequiresReview,
+		QueueEligible:                location == AssetLocationRaw && strings.EqualFold(strings.TrimSpace(record.Status), "unprocessed") && !record.Missing && !input.Review.RequiresReview && activeOperation == nil,
+		HasCurrentPublication:        projection.CurrentPublication.State == assetCurrentPublicationPublished,
+		OriginalAvailable:            projection.Original == AssetOriginalAvailable,
+		OriginalArchived:             projection.Original == AssetOriginalArchived,
+		OriginalArchiveIdentityKnown: originalIdentityKnown,
+		OriginalArchiveAvailable:     originalAvailable,
+		OriginalArchiveRootSafe:      originalRootSafe,
 	})
+	for index := range projection.ArchivedOriginals {
+		if projection.ArchivedOriginals[index].Relationship != "current" {
+			projection.ArchivedOriginals[index].Restore = AssetActionCapability{Reason: assetActionReasonIdentityUnresolved}
+			projection.ArchivedOriginals[index].DeleteOriginal = AssetActionCapability{Reason: assetActionReasonIdentityUnresolved}
+			continue
+		}
+		projection.ArchivedOriginals[index].Restore = projection.Actions.Restore
+		projection.ArchivedOriginals[index].DeleteOriginal = projection.Actions.DeleteOriginal
+	}
 	return projection
 }
 
@@ -526,15 +583,27 @@ func ResolveAssetActionCapabilities(state AssetActionGuardContext) AssetActionCa
 	if state.OriginalAvailable && state.HasCurrentPublication && state.ProvenanceKnown && !state.HasActiveQueue && !state.HasActiveMaintenance && !state.PublicationConflict {
 		capabilities.Archive = AssetActionCapability{Allowed: true}
 	}
-	if state.OriginalArchived && state.RootSafe && !state.HasActiveQueue && !state.HasActiveMaintenance && !state.PublicationConflict {
-		capabilities.Restore = AssetActionCapability{Allowed: true}
-		capabilities.DeleteOriginal = AssetActionCapability{Allowed: true}
-	} else if state.OriginalArchived && !state.RootSafe {
-		capabilities.Restore = AssetActionCapability{Reason: assetActionReasonUnsafeRoot}
-		capabilities.DeleteOriginal = AssetActionCapability{Reason: assetActionReasonUnsafeRoot}
-	} else if state.OriginalArchived {
-		capabilities.Restore = AssetActionCapability{Reason: assetActionReasonActiveWork}
-		capabilities.DeleteOriginal = AssetActionCapability{Reason: assetActionReasonActiveWork}
+	if state.OriginalArchived {
+		reason := ""
+		switch {
+		case state.PublicationConflict:
+			reason = assetActionReasonPublicationConflict
+		case !state.OriginalArchiveIdentityKnown:
+			reason = assetActionReasonIdentityUnresolved
+		case !state.OriginalArchiveAvailable:
+			reason = assetActionReasonMissing
+		case !state.RootSafe || !state.OriginalArchiveRootSafe:
+			reason = assetActionReasonUnsafeRoot
+		case state.HasActiveQueue || state.HasActiveMaintenance:
+			reason = assetActionReasonActiveWork
+		default:
+			capabilities.Restore = AssetActionCapability{Allowed: true}
+			capabilities.DeleteOriginal = AssetActionCapability{Allowed: true}
+		}
+		if reason != "" {
+			capabilities.Restore = AssetActionCapability{Reason: reason}
+			capabilities.DeleteOriginal = AssetActionCapability{Reason: reason}
+		}
 	} else {
 		capabilities.Restore = AssetActionCapability{Reason: assetActionReasonNoOriginal}
 		capabilities.DeleteOriginal = AssetActionCapability{Reason: assetActionReasonNoOriginal}
@@ -899,6 +968,123 @@ func assetLifecycleRootSafe(record models.AssetRecord, location string, librarie
 		return pathIsInside(path, archiveRoot)
 	}
 	return false
+}
+
+func assetLifecycleArchivedOriginals(
+	record models.AssetRecord,
+	location string,
+	records map[uint]models.AssetRecord,
+	libraries map[uint]models.Library,
+	evidence []assetPublicationEvidence,
+	currentQueue, currentDirect *assetPublicationEvidence,
+	currentRawCorrelation AssetCurrentRawCorrelation,
+	archiveRoot string,
+	activeWork, publicationConflict bool,
+) []AssetArchivedOriginal {
+	if location != AssetLocationLibrary {
+		return nil
+	}
+	result := make([]AssetArchivedOriginal, 0)
+	for _, item := range evidence {
+		// A QueueJob's path is only a locator for the archive AssetRecord. The
+		// library association also requires the QueueJob's publication key and
+		// stable source identity.
+		path := cleanAssetLifecyclePath(item.originalArchive)
+		if item.authority != assetPublicationAuthorityQueue || path == "" || item.job == nil ||
+			item.libraryID != record.LibraryID || cleanAssetLifecyclePath(item.publishedPath) != cleanAssetLifecyclePath(record.Path) {
+			continue
+		}
+		if currentQueue != nil && currentQueue.sourceAssetID != nil && item.sourceAssetID != nil &&
+			*currentQueue.sourceAssetID != *item.sourceAssetID {
+			// A reused Library path now belongs to a different source. Do not
+			// surface the old publication's archive under that replacement.
+			continue
+		}
+
+		archiveRecord, hasArchiveRecord := models.AssetRecord{}, false
+		for _, candidate := range records {
+			if strings.EqualFold(strings.TrimSpace(candidate.Status), "archive") && cleanAssetLifecyclePath(candidate.Path) == path {
+				archiveRecord, hasArchiveRecord = candidate, true
+				break
+			}
+		}
+		availability := "missing"
+		if hasArchiveRecord && !archiveRecord.Missing {
+			availability = "available"
+		}
+
+		sourceKnown := item.sourceAssetID != nil && *item.sourceAssetID > 0
+		if sourceKnown {
+			var source models.AssetRecord
+			source, sourceKnown = records[*item.sourceAssetID]
+			sourceKnown = sourceKnown && assetLifecycleLocation(source, libraries) == AssetLocationRaw
+		}
+		selectedCurrent := currentQueue != nil && currentQueue.id == item.id && currentQueue.job != nil &&
+			item.job.ID == currentQueue.job.ID && item.current && !publicationConflict && currentDirect == nil
+		selectedCurrent = selectedCurrent && currentRawCorrelation.State == assetCorrelationResolved &&
+			currentRawCorrelation.LibraryAssetID == record.ID && item.sourceAssetID != nil &&
+			currentRawCorrelation.RawAssetRecordID == *item.sourceAssetID
+		relationship := "unresolved"
+		if selectedCurrent && sourceKnown {
+			relationship = "current"
+		} else if !item.current && sourceKnown && !publicationConflict {
+			relationship = "historical"
+		}
+
+		provenance := AssetSourceProvenance{
+			Authority: item.authority, RecordID: item.id,
+			SourcePath: item.sourcePath, PublishedPath: item.publishedPath,
+			SourceAssetID: cloneUintPointer(item.sourceAssetID),
+			Current:       relationship == "current", PublishedAt: timePointerOrNil(item.publishedAt),
+		}
+		archived := AssetArchivedOriginal{
+			QueueJobID: item.id, Path: path, Availability: availability,
+			Relationship: relationship, Provenance: provenance,
+			RetentionState: "unknown",
+			Restore:        AssetActionCapability{Reason: assetActionReasonIdentityUnresolved},
+			DeleteOriginal: AssetActionCapability{Reason: assetActionReasonIdentityUnresolved},
+		}
+		canonicalArchiveLink := sourceKnown && hasArchiveRecord && relationship != "unresolved"
+		if hasArchiveRecord {
+			archived.AssetRecordID = archiveRecord.ID
+			archived.SizeBytes = archiveRecord.SizeBytes
+			if canonicalArchiveLink && !archiveRecord.CreatedAt.IsZero() {
+				createdAt := archiveRecord.CreatedAt
+				archived.ArchivedAt = &createdAt
+			}
+			if archiveRecord.ExpiresAt != nil {
+				expiresAt := *archiveRecord.ExpiresAt
+				archived.RetentionExpiry = &expiresAt
+				if time.Now().After(expiresAt) {
+					archived.RetentionState = "expired"
+				} else {
+					archived.RetentionState = "retained"
+				}
+			}
+		}
+		if relationship == "current" && availability == "available" && hasArchiveRecord &&
+			assetLifecycleRootSafe(archiveRecord, "archive", map[uint]models.Library{}, archiveRoot) && !activeWork {
+			archived.Restore = AssetActionCapability{Allowed: true}
+			archived.DeleteOriginal = AssetActionCapability{Allowed: true}
+		} else if relationship == "current" && availability != "available" {
+			archived.Restore = AssetActionCapability{Reason: assetActionReasonMissing}
+			archived.DeleteOriginal = AssetActionCapability{Reason: assetActionReasonMissing}
+		} else if relationship == "current" && !assetLifecycleRootSafe(archiveRecord, "archive", map[uint]models.Library{}, archiveRoot) {
+			archived.Restore = AssetActionCapability{Reason: assetActionReasonUnsafeRoot}
+			archived.DeleteOriginal = AssetActionCapability{Reason: assetActionReasonUnsafeRoot}
+		} else if relationship == "current" && activeWork {
+			archived.Restore = AssetActionCapability{Reason: assetActionReasonActiveWork}
+			archived.DeleteOriginal = AssetActionCapability{Reason: assetActionReasonActiveWork}
+		}
+		result = append(result, archived)
+	}
+	sort.SliceStable(result, func(left, right int) bool {
+		if result[left].Relationship != result[right].Relationship {
+			return result[left].Relationship == "current"
+		}
+		return result[left].QueueJobID > result[right].QueueJobID
+	})
+	return result
 }
 
 func uniqueSortedQueueIDs(evidence []assetPublicationEvidence) []uint {

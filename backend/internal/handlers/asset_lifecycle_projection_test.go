@@ -1,13 +1,19 @@
 package handlers
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -322,9 +328,108 @@ func TestResolveAssetLifecycleProjectionActionCapabilitiesAreAdvisory(t *testing
 	unsafe := ResolveAssetActionCapabilities(AssetActionGuardContext{
 		IdentityKnown: true, Location: AssetLocationLibrary, ProvenanceKnown: true,
 		HasCurrentPublication: true, OriginalArchived: true,
+		OriginalArchiveIdentityKnown: true, OriginalArchiveAvailable: true,
 	})
 	if unsafe.DeleteOriginal.Allowed || unsafe.DeleteOriginal.Reason != assetActionReasonUnsafeRoot {
 		t.Fatalf("unsafe root did not fail closed=%#v", unsafe)
+	}
+}
+
+func TestArchivedOriginalProjectionUsesCanonicalCreatedAtAndExistingRetention(t *testing.T) {
+	raw := lifecycleTestRawRecord(50, "/media/raw/anime/Show/S01/E01.mkv")
+	library := lifecycleTestLibraryRecord(51, "/media/library/anime/Show/S01/E01.mkv")
+	archiveTime := time.Date(2025, 3, 4, 5, 6, 7, 0, time.UTC)
+	expiry := time.Now().Add(48 * time.Hour)
+	archive := models.AssetRecord{
+		ID: 52, Path: "/media/originals_archive/anime/Show/S01/E01.mkv",
+		RootPath: "/media/originals_archive", RelativePath: "anime/Show/S01/E01.mkv",
+		FileName: "E01.mkv", SizeBytes: 987654, ModifiedAt: archiveTime.Add(3 * time.Hour),
+		SyncedAt: archiveTime.Add(5 * time.Hour), CreatedAt: archiveTime,
+		Status: "archive", ExpiresAt: &expiry,
+	}
+	publishedAt := archiveTime.Add(9 * time.Hour)
+	job := lifecycleQueueJob(53, library.Path, library.LibraryID, &publishedAt)
+	job.SourceAssetRecordID = &raw.ID
+	job.OriginalArchivedPath = archive.Path
+	project := func(currentJob models.QueueJob, archiveRecord models.AssetRecord) AssetLifecycleProjection {
+		return ResolveAssetLifecycleProjection(AssetLifecycleProjectionInput{
+			Record: library, Records: []models.AssetRecord{raw, library, archiveRecord},
+			Libraries: []models.Library{lifecycleTestLibrary()}, QueueJobs: []models.QueueJob{currentJob},
+			ArchiveRoot: "/media/originals_archive",
+		})
+	}
+
+	projection := project(job, archive)
+	if len(projection.ArchivedOriginals) != 1 {
+		t.Fatalf("archived original inspection=%#v", projection.ArchivedOriginals)
+	}
+	original := projection.ArchivedOriginals[0]
+	if original.Relationship != "current" || original.Availability != "available" || original.AssetRecordID != archive.ID || original.QueueJobID != job.ID {
+		t.Fatalf("canonical archived-original identity=%#v", original)
+	}
+	if original.ArchivedAt == nil || !original.ArchivedAt.Equal(archiveTime) {
+		t.Fatalf("archivedAt must use the archive AssetRecord CreatedAt: %#v", original.ArchivedAt)
+	}
+	if original.SizeBytes != archive.SizeBytes || original.RetentionExpiry == nil || !original.RetentionExpiry.Equal(expiry) || original.RetentionState != "retained" {
+		t.Fatalf("archive metadata/retention was recalculated or lost: %#v", original)
+	}
+	if !original.Restore.Allowed || !original.DeleteOriginal.Allowed {
+		t.Fatalf("current safe original actions=%#v", original)
+	}
+
+	archive.SyncedAt = archiveTime.Add(12 * time.Hour)
+	archive.ModifiedAt = archiveTime.Add(24 * time.Hour)
+	job.PublishedAt = lifecycleTestTime(72 * time.Hour)
+	updated := project(job, archive).ArchivedOriginals[0]
+	if updated.ArchivedAt == nil || !updated.ArchivedAt.Equal(archiveTime) {
+		t.Fatalf("sync/file/publication timestamps changed archivedAt: %#v", updated.ArchivedAt)
+	}
+}
+
+func TestArchivedOriginalProjectionLeavesLegacyAndHistoricalIdentityUnresolved(t *testing.T) {
+	raw := lifecycleTestRawRecord(60, "/media/raw/anime/Show/S01/E01.mkv")
+	library := lifecycleTestLibraryRecord(61, "/media/library/anime/Show/S01/E01.mkv")
+	archive := models.AssetRecord{
+		ID: 62, Path: "/media/originals_archive/anime/Show/S01/E01.mkv",
+		RootPath: "/media/originals_archive", RelativePath: "anime/Show/S01/E01.mkv",
+		FileName: "E01.mkv", Status: "archive", CreatedAt: time.Now(),
+	}
+	publishedAt := lifecycleTestTime(time.Hour)
+	job := lifecycleQueueJob(63, library.Path, library.LibraryID, publishedAt)
+	job.OriginalArchivedPath = archive.Path
+	pathOnly := ResolveAssetLifecycleProjection(AssetLifecycleProjectionInput{
+		Record: library, Records: []models.AssetRecord{library, archive},
+		Libraries: []models.Library{lifecycleTestLibrary()}, QueueJobs: []models.QueueJob{job},
+		ArchiveRoot: "/media/originals_archive",
+	})
+	if len(pathOnly.ArchivedOriginals) != 1 || pathOnly.ArchivedOriginals[0].Relationship != "unresolved" ||
+		pathOnly.ArchivedOriginals[0].ArchivedAt != nil || pathOnly.ArchivedOriginals[0].Restore.Allowed || pathOnly.ArchivedOriginals[0].DeleteOriginal.Allowed {
+		t.Fatalf("path-only legacy archive was trusted: %#v", pathOnly.ArchivedOriginals)
+	}
+
+	job.SourceAssetRecordID = &raw.ID
+	retiredAt := time.Now()
+	job.PublicationRetiredAt = &retiredAt
+	historical := ResolveAssetLifecycleProjection(AssetLifecycleProjectionInput{
+		Record: library, Records: []models.AssetRecord{raw, library, archive},
+		Libraries: []models.Library{lifecycleTestLibrary()}, QueueJobs: []models.QueueJob{job},
+		ArchiveRoot: "/media/originals_archive",
+	})
+	if len(historical.ArchivedOriginals) != 1 || historical.ArchivedOriginals[0].Relationship != "historical" ||
+		historical.ArchivedOriginals[0].Restore.Allowed || historical.ArchivedOriginals[0].DeleteOriginal.Allowed {
+		t.Fatalf("retired archive evidence was relabeled or made actionable: %#v", historical.ArchivedOriginals)
+	}
+
+	archive.Missing = true
+	job.PublicationRetiredAt = nil
+	missing := ResolveAssetLifecycleProjection(AssetLifecycleProjectionInput{
+		Record: library, Records: []models.AssetRecord{raw, library, archive},
+		Libraries: []models.Library{lifecycleTestLibrary()}, QueueJobs: []models.QueueJob{job},
+		ArchiveRoot: "/media/originals_archive",
+	})
+	if len(missing.ArchivedOriginals) != 1 || missing.ArchivedOriginals[0].Availability != "missing" ||
+		missing.ArchivedOriginals[0].Path != archive.Path || missing.ArchivedOriginals[0].Restore.Allowed || missing.ArchivedOriginals[0].DeleteOriginal.Allowed {
+		t.Fatalf("missing archive evidence was lost or actionable: %#v", missing.ArchivedOriginals)
 	}
 }
 
@@ -385,23 +490,94 @@ func TestQueueAndDirectPublicationCaptureSourceAssetIdentity(t *testing.T) {
 	}
 }
 
+func TestArchivedOriginalProjectionDoesNotRebindAfterLibraryPathReuse(t *testing.T) {
+	previousSource := lifecycleTestRawRecord(70, "/media/raw/anime/Show/S01/E01.mkv")
+	currentSource := lifecycleTestRawRecord(71, "/media/raw/anime/Replacement/S01/E01.mkv")
+	library := lifecycleTestLibraryRecord(72, "/media/library/anime/Show/S01/E01.mkv")
+	archive := models.AssetRecord{
+		ID: 73, Path: "/media/originals_archive/anime/Show/S01/E01.mkv",
+		RootPath: "/media/originals_archive", RelativePath: "anime/Show/S01/E01.mkv",
+		FileName: "E01.mkv", Status: "archive", CreatedAt: time.Now(),
+	}
+	publishedAt := lifecycleTestTime(time.Hour)
+	retiredAt := lifecycleTestTime(2 * time.Hour)
+	previousJob := lifecycleQueueJob(74, library.Path, library.LibraryID, publishedAt)
+	previousJob.SourceAssetRecordID = &previousSource.ID
+	previousJob.OriginalArchivedPath = archive.Path
+	previousJob.PublicationRetiredAt = retiredAt
+	currentJob := lifecycleQueueJob(75, library.Path, library.LibraryID, publishedAt)
+	currentJob.SourceAssetRecordID = &currentSource.ID
+	currentJob.MediaPath = currentSource.Path
+
+	projection := ResolveAssetLifecycleProjection(AssetLifecycleProjectionInput{
+		Record: library, Records: []models.AssetRecord{previousSource, currentSource, library, archive},
+		Libraries: []models.Library{lifecycleTestLibrary()}, QueueJobs: []models.QueueJob{previousJob, currentJob},
+		ArchiveRoot: "/media/originals_archive",
+	})
+	if projection.CurrentRawCorrelation.State != assetCorrelationUnresolved {
+		t.Fatalf("reused Library path arbitrarily selected one source identity: %#v", projection.CurrentRawCorrelation)
+	}
+	if len(projection.ArchivedOriginals) != 0 {
+		t.Fatalf("historical archive was rebound to a reused Library path: %#v", projection.ArchivedOriginals)
+	}
+
+	conflictingJob := lifecycleQueueJob(76, library.Path, library.LibraryID, publishedAt)
+	conflictingJob.SourceAssetRecordID = &currentSource.ID
+	conflictingJob.MediaPath = currentSource.Path
+	conflictingJob.OriginalArchivedPath = archive.Path
+	conflictedProjection := ResolveAssetLifecycleProjection(AssetLifecycleProjectionInput{
+		Record: library, Records: []models.AssetRecord{currentSource, library, archive},
+		Libraries: []models.Library{lifecycleTestLibrary()}, QueueJobs: []models.QueueJob{conflictingJob},
+		DirectPublications: []models.DirectPublication{lifecycleDirectPublication(77, library.Path, library.LibraryID, *publishedAt)},
+		ArchiveRoot:        "/media/originals_archive",
+	})
+	if len(conflictedProjection.ArchivedOriginals) != 1 || conflictedProjection.ArchivedOriginals[0].Relationship != "unresolved" ||
+		conflictedProjection.ArchivedOriginals[0].ArchivedAt != nil || conflictedProjection.ArchivedOriginals[0].Restore.Allowed ||
+		conflictedProjection.ArchivedOriginals[0].DeleteOriginal.Allowed {
+		t.Fatalf("conflicting publication authorities trusted or exposed the archived original: %#v", conflictedProjection.ArchivedOriginals)
+	}
+}
+
 func TestDeleteArchiveRevalidatesActiveWork(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:archive-toctou?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
+	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "archive-toctou")
+	if err := db.AutoMigrate(&models.AssetMaintenanceOperation{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.AssetRecord{}, &models.QueueJob{}, &models.AssetMaintenanceOperation{}); err != nil {
+	archivePath := filepath.Join(archiveRoot, "Show", "E01.mkv")
+	writeTestFile(t, archivePath, "archive bytes")
+	archive, libraryAsset, _, _ := seedContextualArchivedOriginal(t, db, rawRoot, libraryRoot, archiveRoot, "Show/E01.mkv", archivePath)
+	if err := db.Create(&models.AssetMaintenanceOperation{
+		ID: "active-archive-delete-check", OperationType: "track", AssetRecordID: libraryAsset.ID,
+		AssetPath: libraryAsset.Path, Status: maintenanceStatusRunning, Phase: maintenanceStatusRunning,
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
-	record := models.AssetRecord{ID: 60, Path: "/media/originals_archive/Show/E01.mkv", FileName: "E01.mkv", Status: "archive"}
-	if err := db.Create(&record).Error; err != nil {
-		t.Fatal(err)
+	if active, err := (AssetHandler{db: db}).assetHasActiveWork(libraryAsset); err != nil || !active {
+		t.Fatalf("focused active-work setup did not resolve: active=%t err=%v record=%#v", active, err, libraryAsset)
 	}
-	if err := db.Create(&models.QueueJob{MediaPath: "/media/raw/Show/E01.mkv", SourceAssetRecordID: &record.ID, Status: JobStatusQueued}).Error; err != nil {
-		t.Fatal(err)
+	validatedArchive, validatedLibrary, validatedSource, status, err := (AssetHandler{db: db}).validateArchivedOriginalIdentity(archive.ID, libraryAsset.ID, archivePath)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("canonical identity setup status=%d err=%v", status, err)
 	}
-	gotStatus, err := (AssetHandler{db: db}).permanentlyDeleteArchiveAsset(record.Path)
-	if err == nil || gotStatus != 409 {
+	if active, err := (AssetHandler{db: db}).archivedOriginalHasActiveWork(validatedArchive, validatedLibrary, validatedSource); err != nil || !active {
+		t.Fatalf("combined active-work setup did not resolve: active=%t err=%v", active, err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"confirmed": true, "archiveAssetRecordId": archive.ID,
+		"libraryAssetRecordId": libraryAsset.ID,
+	})
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.DELETE("/api/assets/archive", (AssetHandler{db: db}).DeleteArchive)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/assets/archive?path="+url.QueryEscape(archivePath), strings.NewReader(string(body))))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("archive TOCTOU guard status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("active-work rejection modified the archive target: %v", err)
+	}
+	if gotStatus, err := (AssetHandler{db: db}).permanentlyDeleteArchiveAsset(archivePath, archive.ID, libraryAsset.ID); err == nil || gotStatus != http.StatusConflict {
 		t.Fatalf("archive TOCTOU guard status=%d err=%v", gotStatus, err)
 	}
 }

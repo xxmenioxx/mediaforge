@@ -29,7 +29,7 @@ describe('legacy Assets compatibility routes', () => {
   it.each([
     ['/assets/unprocessed?query=show', '/assets?query=show&location=raw'],
     ['/assets/converted?validation=passed', '/assets?validation=passed&location=library&provenance=converted'],
-    ['/assets/archive?location=raw', '/assets?location=library&original=archived'],
+    ['/assets/archive?location=raw', '/assets?location=library'],
     ['/assets/reports?location=raw', '/assets?location=library&evidence=reports'],
   ])('maps %s without dropping safe query context', (path, expected) => {
     renderLegacy(path);
