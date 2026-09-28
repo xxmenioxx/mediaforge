@@ -13,6 +13,7 @@ import (
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func TestResultArtifactIdentityBindsFrozenExecutionAndDetectsReplacement(t *testing.T) {
@@ -762,7 +763,7 @@ func TestOverrideUsesServerActorRequiresReasonAndCannotOverrideIdentity(t *testi
 }
 
 func TestReviewAndHistoryListsReturnBoundedSummaries(t *testing.T) {
-	db := testEncodeTestDB(t, "quality-gate-review-history-summaries", &models.QueueJob{}, &models.ValidationRun{}, &models.ValidationOverride{})
+	db := testEncodeTestDB(t, "quality-gate-review-history-summaries", &models.QueueJob{}, &models.ValidationRun{}, &models.ValidationOverride{}, &models.PublisherPublication{}, &models.PublisherAttemptEvidence{})
 	jobs := []models.QueueJob{
 		{MediaPath: "/raw/fail.mkv", OutputPath: "/stage/fail.mkv", Status: JobStatusCompleted, ValidationStatus: ValidationStatusFailed, ValidationOutcome: "FAIL", ValidationRunID: "run-fail", ValidationReport: models.JSONMap{"large": strings.Repeat("x", 2048)}},
 		{MediaPath: "/raw/actionable.mkv", OutputPath: "/stage/actionable.mkv", Status: JobStatusCompleted, ValidationStatus: ValidationStatusWarning, ValidationOutcome: "PASS_WITH_WARNINGS", ValidationRunID: "run-warning", ValidationActionable: true},
@@ -814,6 +815,122 @@ func TestReviewAndHistoryListsReturnBoundedSummaries(t *testing.T) {
 		if _, exists := raw.(map[string]any)["validationReport"]; exists {
 			t.Fatal("History list returned full ValidationReport evidence")
 		}
+	}
+}
+
+func TestHistoryListProjectsPublisherAndArchiveFactsWithBoundedBatchQueries(t *testing.T) {
+	db := testEncodeTestDB(t, "quality-gate-history-publisher-batch", &models.QueueJob{}, &models.PublisherPublication{}, &models.PublisherAttemptEvidence{})
+	now := time.Now().UTC()
+	for index := uint(1); index <= 3; index++ {
+		execution := index
+		job := models.QueueJob{
+			ExecutionNumber: &execution, MediaPath: "/missing/raw/episode-" + strconv.FormatUint(uint64(index), 10) + ".mkv",
+			Status: JobStatusCompleted, PublishedPath: "/queue/projection.mkv", PublishedAt: &now,
+			PublicationID: "queue-projection-must-not-be-authoritative", PublicationState: PublicationFailed,
+			PublicationSummary: "stale Queue projection", OriginalArchiveStatus: "queue-archive-copy",
+			ValidationRunID: "validation-run:queue-current",
+		}
+		if err := db.Create(&job).Error; err != nil {
+			t.Fatal(err)
+		}
+		publicationID := "publication:history:" + strconv.FormatUint(uint64(index), 10)
+		publication := models.PublisherPublication{
+			PublicationID: publicationID, QueueJobID: job.ID, ExecutionNumber: execution,
+			State: PublicationPublished, DestinationPath: "/frozen/library/episode-" + strconv.FormatUint(uint64(index), 10) + ".mkv",
+			PublishMode: PublishModeReplaceLibrary, AttemptCount: 2,
+			ValidationRunID:            "validation-run:frozen:" + strconv.FormatUint(uint64(index), 10),
+			ValidationOverrideEventIDs: models.JSONList{"validation-override:" + strconv.FormatUint(uint64(index), 10)},
+			OriginalArchiveStatus:      "failed", OriginalArchivedPath: "/archive/original-" + strconv.FormatUint(uint64(index), 10) + ".mkv",
+		}
+		if err := db.Create(&publication).Error; err != nil {
+			t.Fatal(err)
+		}
+		for _, evidence := range []models.PublisherAttemptEvidence{
+			{EvidenceID: "evidence:old:" + strconv.FormatUint(uint64(index), 10), PublicationID: publicationID, AttemptID: "attempt:old", Phase: "delivery", Outcome: "failed", Summary: "older outcome", CreatedAt: now.Add(-time.Minute)},
+			{EvidenceID: "evidence:latest:" + strconv.FormatUint(uint64(index), 10), PublicationID: publicationID, AttemptID: "attempt:latest", Phase: "commit", Outcome: "published", Summary: "latest persisted outcome", CreatedAt: now},
+		} {
+			if err := db.Create(&evidence).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	legacyPublishedAt := now.Add(-time.Hour)
+	legacy := models.QueueJob{
+		MediaPath: "/missing/raw/legacy.mkv", Status: JobStatusCompleted,
+		PublishedPath: "/historical/library/legacy.mkv", PublishedAt: &legacyPublishedAt,
+		PublicationState: PublicationPublished,
+	}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	queryCount := 0
+	rowQueryCount := 0
+	queries := make([]string, 0, 8)
+	if err := db.Callback().Query().After("gorm:query").Register("history_publisher_query_count", func(tx *gorm.DB) {
+		queryCount++
+		queries = append(queries, tx.Statement.SQL.String())
+	}); err != nil {
+		t.Fatal("register History query counter:", err)
+	}
+	if err := db.Callback().Row().After("gorm:row").Register("history_publisher_row_query_count", func(tx *gorm.DB) {
+		rowQueryCount++
+		queries = append(queries, tx.Statement.SQL.String())
+	}); err != nil {
+		t.Fatal("register History row query counter:", err)
+	}
+	previousGinMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(previousGinMode) })
+	router := gin.New()
+	router.GET("/validation/history", NewValidationHandler(db).HistoryList)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/validation/history?limit=100", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("History list status=%d body=%s", response.Code, response.Body.String())
+	}
+	var history validationSummaryPage
+	if err := json.Unmarshal(response.Body.Bytes(), &history); err != nil {
+		t.Fatal(err)
+	}
+	if history.Total != 4 || len(history.Items) != 4 {
+		t.Fatalf("History row count=%d total=%d, want 4: %#v", len(history.Items), history.Total, history)
+	}
+	if queryCount+rowQueryCount != 4 {
+		t.Fatalf("History used %d persisted queries for 4 rows; want bounded count, page, publication batch, and latest-evidence batch: %v", queryCount+rowQueryCount, queries)
+	}
+	var canonical *validationSummaryRow
+	var legacyRow *validationSummaryRow
+	for index := range history.Items {
+		row := &history.Items[index]
+		if row.Publisher != nil && row.Publisher.PublicationID == "publication:history:3" {
+			canonical = row
+		}
+		if row.ID == legacy.ID {
+			legacyRow = row
+		}
+	}
+	if canonical == nil || canonical.Publisher == nil {
+		t.Fatalf("canonical Publisher projection is missing: %#v", history.Items)
+	}
+	projection := canonical.Publisher
+	if projection.PublicationID != "publication:history:3" || projection.State != PublicationPublished || projection.DestinationPath != "/frozen/library/episode-3.mkv" || projection.PublishMode != PublishModeReplaceLibrary {
+		t.Fatalf("History did not project canonical identity, state, destination, and frozen mode: %#v", projection)
+	}
+	if projection.AttemptCount != 2 || projection.LatestAttempt == nil || projection.LatestAttempt.Outcome != "published" || projection.LatestAttempt.Summary != "latest persisted outcome" {
+		t.Fatalf("History did not project the bounded latest attempt summary: %#v", projection)
+	}
+	if projection.ValidationRunID != "validation-run:frozen:3" || len(projection.ValidationOverrideEventIDs) != 1 || projection.ValidationOverrideEventIDs[0] != "validation-override:3" {
+		t.Fatalf("History lost the frozen ValidationRun/override references: %#v", projection)
+	}
+	if canonical.OriginalArchiveStatus != "failed" || canonical.OriginalArchivedPath != "/archive/original-3.mkv" || projection.State != PublicationPublished {
+		t.Fatalf("#174 archive outcome was conflated with canonical publication state: row=%#v", canonical)
+	}
+	if canonical.PublicationID != "" || canonical.PublicationState != "" || canonical.PublicationSummary != "" {
+		t.Fatalf("History exposed QueueJob publication projections as canonical authority: %#v", canonical)
+	}
+	if legacyRow == nil || legacyRow.Publisher != nil || legacyRow.PublicationID != "" || legacyRow.PublicationState != "" || legacyRow.PublishedPath != "/historical/library/legacy.mkv" || legacyRow.PublishedAt == nil {
+		t.Fatalf("legacy PublishedAt/PublishedPath did not remain explicitly unbound: %#v", legacyRow)
 	}
 }
 

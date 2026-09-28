@@ -518,6 +518,119 @@ func TestPublisherExpiredClaimRecoveryFencesStaleOwnerAfterFinalRename(t *testin
 	}
 }
 
+func TestPublisherProvenanceTransactionFailureKeepsPromotedFilesRecoverable(t *testing.T) {
+	fixture := newPublisherDeliveryFixture(t, true)
+	handler := PublisherHandler{db: fixture.db}
+	if err := fixture.db.Exec(`CREATE TRIGGER fail_publisher_publication_success BEFORE UPDATE OF state ON publisher_publications WHEN NEW.state = 'PUBLISHED' BEGIN SELECT RAISE(ABORT, 'forced publication provenance failure'); END`).Error; err != nil {
+		t.Fatal("install publication transaction failure trigger:", err)
+	}
+	if _, err := handler.publishQueueJobWithMode(fixture.job, true, false); err == nil || !strings.Contains(err.Error(), "forced publication provenance failure") {
+		t.Fatalf("Publisher did not surface the injected provenance transaction failure: %v", err)
+	}
+	var publication models.PublisherPublication
+	if err := fixture.db.Where("queue_job_id = ?", fixture.job.ID).First(&publication).Error; err != nil {
+		t.Fatal(err)
+	}
+	if publication.State != PublicationPublishing || publication.ActiveAttemptID == "" || publication.FencingGeneration != 1 || publication.AttemptCount != 1 {
+		t.Fatalf("uncertain provenance transaction did not remain recoverable as PUBLISHING: %#v", publication)
+	}
+	entries, err := manifestEntries(publication.Manifest)
+	if err != nil {
+		t.Fatal("persisted manifest is unavailable after transaction failure:", err)
+	}
+	requiredReceipts := 0
+	for _, entry := range entries {
+		if !entry.Required || !entry.Promote {
+			continue
+		}
+		requiredReceipts++
+		if entry.Outcome != "committed" || !tokenMatches(entry.Final, entry) {
+			t.Fatalf("required final is not present with its persisted receipt: %#v", entry)
+		}
+	}
+	if requiredReceipts != 2 {
+		t.Fatalf("persisted manifest has %d required receipts, want primary and sidecar", requiredReceipts)
+	}
+	if got, err := os.ReadFile(fixture.destination); err != nil || !bytes.Equal(got, []byte("canonical result media")) {
+		t.Fatalf("promoted final media=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(strings.TrimSuffix(fixture.destination, filepath.Ext(fixture.destination)) + ".eng.ass"); err != nil || !bytes.Contains(got, []byte("delivery sidecar")) {
+		t.Fatalf("promoted required sidecar=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(fixture.original); err != nil || !bytes.Equal(got, []byte("raw original media")) {
+		t.Fatalf("original was archived before provenance commit: content=%q err=%v", got, err)
+	}
+	if publication.OriginalArchiveStatus != "pending" {
+		t.Fatalf("archive status changed before PUBLISHED commit: %q", publication.OriginalArchiveStatus)
+	}
+	var jobBeforeRecovery models.QueueJob
+	if err := fixture.db.First(&jobBeforeRecovery, fixture.job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if jobBeforeRecovery.PublishedAt != nil || jobBeforeRecovery.PublishedPath != "" || jobBeforeRecovery.PublicationState == PublicationPublished {
+		t.Fatalf("Queue provenance was committed despite transaction failure: %#v", jobBeforeRecovery)
+	}
+	var eventCount int64
+	if err := fixture.db.Model(&models.AssetPublishedOutbox{}).Count(&eventCount).Error; err != nil || eventCount != 0 {
+		t.Fatalf("AssetPublished existed before provenance commit: count=%d err=%v", eventCount, err)
+	}
+
+	if err := fixture.db.Exec("DROP TRIGGER fail_publisher_publication_success").Error; err != nil {
+		t.Fatal("remove publication transaction failure trigger:", err)
+	}
+	if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("lease_expires_at", time.Now().UTC().Add(-time.Second)).Error; err != nil {
+		t.Fatal("expire persisted publication lease:", err)
+	}
+	(&AutoPublisher{db: fixture.db}).recoverPublisherPublications()
+	var recovered models.PublisherPublication
+	if err := fixture.db.Where("publication_id = ?", publication.PublicationID).First(&recovered).Error; err != nil {
+		t.Fatal(err)
+	}
+	if recovered.State != PublicationPublished || recovered.FencingGeneration != 2 || recovered.ActiveAttemptID != "" || recovered.AttemptCount != 1 {
+		t.Fatalf("recovery did not commit through the next fence on the same logical attempt: %#v", recovered)
+	}
+	var attempts []models.PublisherPublicationAttempt
+	if err := fixture.db.Where("publication_id = ?", publication.PublicationID).Find(&attempts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 || attempts[0].AttemptID != publication.ActiveAttemptID {
+		t.Fatalf("recovery created a second logical attempt: %#v", attempts)
+	}
+	var reacquisition models.PublisherAttemptEvidence
+	if err := fixture.db.Where("publication_id = ? AND phase = ? AND outcome = ?", publication.PublicationID, "claim", "reacquired").First(&reacquisition).Error; err != nil {
+		t.Fatal("recovery did not persist reacquisition evidence:", err)
+	}
+	if reacquisition.AttemptID != publication.ActiveAttemptID || reacquisition.FencingGeneration != 2 {
+		t.Fatalf("recovery changed logical attempt identity or failed to advance the fence: %#v", reacquisition)
+	}
+	if _, err := os.Stat(fixture.original); !os.IsNotExist(err) {
+		t.Fatalf("original archive did not proceed after PUBLISHED: %v", err)
+	}
+	if recovered.OriginalArchiveStatus != "complete" {
+		t.Fatalf("archive status after recovery=%q, want complete", recovered.OriginalArchiveStatus)
+	}
+	archivedOriginal, err := os.ReadFile(recovered.OriginalArchivedPath)
+	if err != nil || !bytes.Equal(archivedOriginal, []byte("raw original media")) {
+		t.Fatalf("archived original=%q err=%v", archivedOriginal, err)
+	}
+	var events []models.AssetPublishedOutbox
+	if err := fixture.db.Where("publication_id = ?", publication.PublicationID).Find(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].EventID == "" || events[0].PublicationID != publication.PublicationID {
+		t.Fatalf("recovery did not create one stable outbox identity: %#v", events)
+	}
+	(&AutoPublisher{db: fixture.db}).recoverPublisherPublications()
+	var finalEventCount int64
+	if err := fixture.db.Model(&models.AssetPublishedOutbox{}).Where("publication_id = ?", publication.PublicationID).Count(&finalEventCount).Error; err != nil || finalEventCount != 1 {
+		t.Fatalf("repeat recovery duplicated publication event: count=%d err=%v", finalEventCount, err)
+	}
+	var publicationCount int64
+	if err := fixture.db.Model(&models.PublisherPublication{}).Where("queue_job_id = ?", fixture.job.ID).Count(&publicationCount).Error; err != nil || publicationCount != 1 {
+		t.Fatalf("recovery created a duplicate publication: count=%d err=%v", publicationCount, err)
+	}
+}
+
 func TestPublisherChangedResultBytesPersistBlockedPublication(t *testing.T) {
 	fixture := newPublisherDeliveryFixture(t, false)
 	if err := os.WriteFile(fixture.output, []byte("changed after Validation"), 0o600); err != nil {

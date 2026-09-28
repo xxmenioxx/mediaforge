@@ -1452,12 +1452,30 @@ export type ValidationSummary = Pick<QueueJob,
 
 export type ValidationSummaryPage = { items: ValidationSummary[]; total: number; limit: number; offset: number };
 
+export type HistoryPublisherAttemptSummary = {
+  phase: string;
+  outcome: string;
+  code?: string;
+  summary?: string;
+  createdAt: string;
+};
+
+export type HistoryPublisherSummary = {
+  publicationId: string;
+  state: string;
+  destinationPath: string;
+  publishMode: string;
+  attemptCount: number;
+  latestAttempt?: HistoryPublisherAttemptSummary;
+  validationRunId: string;
+  validationOverrideEventIds?: string[];
+};
+
 export type ValidationHistorySummary = Pick<QueueJob,
   | 'id' | 'executionNumber' | 'mediaPath' | 'status' | 'publishedPath' | 'publishedAt' | 'createdAt' | 'updatedAt'
   | 'validationStatus' | 'validationScore' | 'validationRunId' | 'validationOutcome' | 'validationOverridePresent'
-  | 'validationHasActionableWarnings' | 'publicationId' | 'publicationState' | 'publicationSummary'
-  | 'originalArchivedPath' | 'originalArchiveStatus'
->;
+  | 'validationHasActionableWarnings' | 'originalArchivedPath' | 'originalArchiveStatus'
+> & { publisher?: HistoryPublisherSummary };
 
 export type ValidationHistoryPage = { items: ValidationHistorySummary[]; total: number; limit: number; offset: number };
 

@@ -984,7 +984,11 @@ func (h PublisherHandler) runPublicationAttempt(job models.QueueJob, publication
 		return h.rollbackOrBlock(job, publication, owner, entries, "promotion_failed", err.Error())
 	}
 	if err := h.commitPublishedPackage(job, publication, owner, entries); err != nil {
-		return h.rollbackOrBlock(job, publication, owner, entries, "provenance_commit_failed", err.Error())
+		// Final receipts are already promoted and persisted in the manifest. A
+		// provenance transaction error is uncertain at this boundary, so preserve
+		// the PUBLISHING claim for fenced recovery instead of rolling back owned
+		// final files as an ordinary pre-publication failure.
+		return PublishResult{}, fmt.Errorf("publication provenance commit failed; recovery may retry: %w", err)
 	}
 	_ = scheduler.ReleaseReservation(h.db, job.ID)
 	if publication.DestinationPath != job.OutputPath {

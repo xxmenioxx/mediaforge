@@ -100,7 +100,7 @@ export function HistoryPage() {
                       <Typography fontWeight={700} noWrap>{fileNameFromPath(job.mediaPath)}</Typography>
                       <Typography color="text.secondary" variant="body2" noWrap>{job.mediaPath}</Typography>
                     </TableCell>
-                    <TableCell><Chip label={job.publishedAt ? 'published' : job.status} color={statusColor(job)} size="small" /></TableCell>
+                    <TableCell><Chip label={job.status} color={statusColor(job)} size="small" /></TableCell>
                     <TableCell>
                       <Stack spacing={0.25}>
                         <Typography>{job.validationOutcome || job.validationStatus || 'pending'}{job.validationRunId ? ` · ${job.validationScore}/100` : ''}</Typography>
@@ -109,8 +109,24 @@ export function HistoryPage() {
                     </TableCell>
                     <TableCell>
                       <Stack spacing={0.25}>
-                        <Typography>{job.publicationState || (job.publishedAt ? 'PUBLISHED' : '—')}</Typography>
-                        {job.publicationSummary ? <Typography variant="caption" color="text.secondary">{job.publicationSummary}</Typography> : null}
+                        {job.publisher ? <>
+                          <Typography>{job.publisher.state}</Typography>
+                          <Typography variant="caption" color="text.secondary">Publication {job.publisher.publicationId}</Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{job.publisher.destinationPath}</Typography>
+                          <Typography variant="caption" color="text.secondary">Mode: {job.publisher.publishMode}</Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Attempts: {job.publisher.attemptCount} · latest {job.publisher.latestAttempt?.outcome ?? 'no persisted outcome'}
+                            {job.publisher.latestAttempt?.summary ? ` · ${job.publisher.latestAttempt.summary}` : ''}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Validation Run {job.publisher.validationRunId || '—'}
+                            {job.publisher.validationOverrideEventIds?.length ? ` · overrides ${job.publisher.validationOverrideEventIds.join(', ')}` : ''}
+                          </Typography>
+                        </> : hasLegacyPublication(job) ? <>
+                          <Typography>Legacy publication</Typography>
+                          {job.publishedPath ? <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{job.publishedPath}</Typography> : null}
+                          {job.publishedAt ? <Typography variant="caption" color="text.secondary">Published {formatDate(job.publishedAt)}</Typography> : null}
+                        </> : <Typography>—</Typography>}
                       </Stack>
                     </TableCell>
                     <TableCell>
@@ -140,7 +156,7 @@ function fileNameFromPath(value: string) {
 }
 
 function statusColor(job: ValidationHistorySummary) {
-  if (job.publishedAt || job.status === 'completed') {
+  if (job.status === 'completed') {
     return 'success';
   }
   if (job.status === 'failed') {
@@ -150,6 +166,10 @@ function statusColor(job: ValidationHistorySummary) {
     return 'warning';
   }
   return 'default';
+}
+
+function hasLegacyPublication(job: ValidationHistorySummary) {
+  return !job.publisher && Boolean(job.publishedAt || job.publishedPath);
 }
 
 function formatDate(value: string) {
