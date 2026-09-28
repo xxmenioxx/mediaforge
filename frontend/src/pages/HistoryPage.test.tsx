@@ -69,6 +69,7 @@ describe('HistoryPage Publisher projection', () => {
           createdAt: '2026-09-27T10:30:00Z',
         },
         validationRunId: 'validation-run:frozen-54',
+        validationOverridePresent: true,
         validationOverrideEventIds: ['validation-override:54'],
       },
     }));
@@ -80,7 +81,7 @@ describe('HistoryPage Publisher projection', () => {
     expect(screen.getByText('/library/frozen/episode.mkv')).toBeTruthy();
     expect(screen.getByText('Mode: replace_library')).toBeTruthy();
     expect(screen.getByText(/Attempts: 2 · latest published/)).toBeTruthy();
-    expect(screen.getByText(/Validation Run validation-run:frozen-54 · overrides validation-override:54/)).toBeTruthy();
+    expect(screen.getByText(/Validation Run validation-run:frozen-54 · override recorded \(validation-override:54\)/)).toBeTruthy();
     expect(screen.getByText('failed')).toBeTruthy();
     expect(screen.getByText('/archive/original.mkv')).toBeTruthy();
     expect(screen.queryByText('/queue/projection-only.mkv')).toBeNull();

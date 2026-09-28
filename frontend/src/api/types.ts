@@ -1468,6 +1468,7 @@ export type HistoryPublisherSummary = {
   attemptCount: number;
   latestAttempt?: HistoryPublisherAttemptSummary;
   validationRunId: string;
+  validationOverridePresent: boolean;
   validationOverrideEventIds?: string[];
 };
 

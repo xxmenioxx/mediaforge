@@ -120,7 +120,9 @@ export function HistoryPage() {
                           </Typography>
                           <Typography variant="caption" color="text.secondary">
                             Validation Run {job.publisher.validationRunId || '—'}
-                            {job.publisher.validationOverrideEventIds?.length ? ` · overrides ${job.publisher.validationOverrideEventIds.join(', ')}` : ''}
+                            {job.publisher.validationOverridePresent
+                              ? ` · override recorded${job.publisher.validationOverrideEventIds?.length ? ` (${job.publisher.validationOverrideEventIds.join(', ')})` : ''}`
+                              : ' · no override'}
                           </Typography>
                         </> : hasLegacyPublication(job) ? <>
                           <Typography>Legacy publication</Typography>

@@ -834,16 +834,26 @@ func TestHistoryListProjectsPublisherAndArchiveFactsWithBoundedBatchQueries(t *t
 			t.Fatal(err)
 		}
 		publicationID := "publication:history:" + strconv.FormatUint(uint64(index), 10)
+		overrideIDs := models.JSONList{}
+		if index == 3 {
+			overrideIDs = models.JSONList{"validation-override:" + strconv.FormatUint(uint64(index), 10)}
+		}
 		publication := models.PublisherPublication{
 			PublicationID: publicationID, QueueJobID: job.ID, ExecutionNumber: execution,
 			State: PublicationPublished, DestinationPath: "/frozen/library/episode-" + strconv.FormatUint(uint64(index), 10) + ".mkv",
 			PublishMode: PublishModeReplaceLibrary, AttemptCount: 2,
 			ValidationRunID:            "validation-run:frozen:" + strconv.FormatUint(uint64(index), 10),
-			ValidationOverrideEventIDs: models.JSONList{"validation-override:" + strconv.FormatUint(uint64(index), 10)},
+			ValidationOverrideEventIDs: overrideIDs,
 			OriginalArchiveStatus:      "failed", OriginalArchivedPath: "/archive/original-" + strconv.FormatUint(uint64(index), 10) + ".mkv",
 		}
 		if err := db.Create(&publication).Error; err != nil {
 			t.Fatal(err)
+		}
+		if index == 3 {
+			oldExecution := models.PublisherPublication{PublicationID: "publication:history:older-execution", QueueJobID: job.ID, ExecutionNumber: 2, State: PublicationFailed, DestinationPath: "/obsolete/library/episode-3.mkv", PublishMode: PublishModeStandard}
+			if err := db.Create(&oldExecution).Error; err != nil {
+				t.Fatal(err)
+			}
 		}
 		for _, evidence := range []models.PublisherAttemptEvidence{
 			{EvidenceID: "evidence:old:" + strconv.FormatUint(uint64(index), 10), PublicationID: publicationID, AttemptID: "attempt:old", Phase: "delivery", Outcome: "failed", Summary: "older outcome", CreatedAt: now.Add(-time.Minute)},
@@ -900,11 +910,15 @@ func TestHistoryListProjectsPublisherAndArchiveFactsWithBoundedBatchQueries(t *t
 		t.Fatalf("History used %d persisted queries for 4 rows; want bounded count, page, publication batch, and latest-evidence batch: %v", queryCount+rowQueryCount, queries)
 	}
 	var canonical *validationSummaryRow
+	var canonicalWithoutOverride *validationSummaryRow
 	var legacyRow *validationSummaryRow
 	for index := range history.Items {
 		row := &history.Items[index]
 		if row.Publisher != nil && row.Publisher.PublicationID == "publication:history:3" {
 			canonical = row
+		}
+		if row.Publisher != nil && row.Publisher.PublicationID == "publication:history:2" {
+			canonicalWithoutOverride = row
 		}
 		if row.ID == legacy.ID {
 			legacyRow = row
@@ -920,8 +934,14 @@ func TestHistoryListProjectsPublisherAndArchiveFactsWithBoundedBatchQueries(t *t
 	if projection.AttemptCount != 2 || projection.LatestAttempt == nil || projection.LatestAttempt.Outcome != "published" || projection.LatestAttempt.Summary != "latest persisted outcome" {
 		t.Fatalf("History did not project the bounded latest attempt summary: %#v", projection)
 	}
-	if projection.ValidationRunID != "validation-run:frozen:3" || len(projection.ValidationOverrideEventIDs) != 1 || projection.ValidationOverrideEventIDs[0] != "validation-override:3" {
+	if projection.ValidationRunID != "validation-run:frozen:3" || !projection.ValidationOverridePresent || len(projection.ValidationOverrideEventIDs) != 1 || projection.ValidationOverrideEventIDs[0] != "validation-override:3" {
 		t.Fatalf("History lost the frozen ValidationRun/override references: %#v", projection)
+	}
+	if canonicalWithoutOverride == nil || canonicalWithoutOverride.Publisher.ValidationOverridePresent || len(canonicalWithoutOverride.Publisher.ValidationOverrideEventIDs) != 0 {
+		t.Fatalf("History did not preserve explicit absence of a frozen override: %#v", canonicalWithoutOverride)
+	}
+	if !strings.Contains(queries[2], "execution_number = ?") {
+		t.Fatalf("Publisher batch query was not bound to the page's exact executions: %s", queries[2])
 	}
 	if canonical.OriginalArchiveStatus != "failed" || canonical.OriginalArchivedPath != "/archive/original-3.mkv" || projection.State != PublicationPublished {
 		t.Fatalf("#174 archive outcome was conflated with canonical publication state: row=%#v", canonical)

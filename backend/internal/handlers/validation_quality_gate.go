@@ -86,6 +86,7 @@ type historyPublisherSummary struct {
 	AttemptCount               int                             `json:"attemptCount"`
 	LatestAttempt              *historyPublisherAttemptSummary `json:"latestAttempt,omitempty"`
 	ValidationRunID            string                          `json:"validationRunId"`
+	ValidationOverridePresent  bool                            `json:"validationOverridePresent"`
 	ValidationOverrideEventIDs []string                        `json:"validationOverrideEventIds,omitempty"`
 }
 
@@ -914,16 +915,21 @@ func historySummaryRows(db *gorm.DB, jobs []models.QueueJob) ([]validationSummar
 	if len(jobs) == 0 {
 		return rows, nil
 	}
-	jobIDs := make([]uint, 0, len(jobs))
+	jobExecutions := make([]string, 0, len(jobs))
+	queryArgs := make([]any, 0, len(jobs)*2)
 	executionByJob := make(map[uint]uint, len(jobs))
 	for _, job := range jobs {
-		jobIDs = append(jobIDs, job.ID)
 		if job.ExecutionNumber != nil {
 			executionByJob[job.ID] = *job.ExecutionNumber
+			jobExecutions = append(jobExecutions, "(queue_job_id = ? AND execution_number = ?)")
+			queryArgs = append(queryArgs, job.ID, *job.ExecutionNumber)
 		}
 	}
+	if len(jobExecutions) == 0 {
+		return rows, nil
+	}
 	var publications []models.PublisherPublication
-	if err := db.Select("id, publication_id, queue_job_id, execution_number, destination_path, publish_mode, validation_run_id, validation_override_event_ids, state, attempt_count, original_archive_status, original_archived_path").Where("queue_job_id IN ?", jobIDs).Find(&publications).Error; err != nil {
+	if err := db.Select("id, publication_id, queue_job_id, execution_number, destination_path, publish_mode, validation_run_id, validation_override_event_ids, state, attempt_count, original_archive_status, original_archived_path").Where(strings.Join(jobExecutions, " OR "), queryArgs...).Find(&publications).Error; err != nil {
 		return nil, err
 	}
 	if len(publications) == 0 {
@@ -953,6 +959,7 @@ func historySummaryRows(db *gorm.DB, jobs []models.QueueJob) ([]validationSummar
 		if !ok {
 			continue
 		}
+		overrideIDs := historyStringIDs(publication.ValidationOverrideEventIDs)
 		projection := &historyPublisherSummary{
 			PublicationID:              publication.PublicationID,
 			State:                      publication.State,
@@ -960,7 +967,8 @@ func historySummaryRows(db *gorm.DB, jobs []models.QueueJob) ([]validationSummar
 			PublishMode:                publication.PublishMode,
 			AttemptCount:               publication.AttemptCount,
 			ValidationRunID:            publication.ValidationRunID,
-			ValidationOverrideEventIDs: historyStringIDs(publication.ValidationOverrideEventIDs),
+			ValidationOverridePresent:  len(overrideIDs) > 0,
+			ValidationOverrideEventIDs: overrideIDs,
 		}
 		if latest, found := latestByPublication[publication.PublicationID]; found {
 			projection.LatestAttempt = &historyPublisherAttemptSummary{Phase: latest.Phase, Outcome: latest.Outcome, Code: latest.Code, Summary: latest.Summary, CreatedAt: latest.CreatedAt}
