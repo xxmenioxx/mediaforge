@@ -4,19 +4,16 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
-	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
-	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
 type SettingsHandler struct {
-	db *gorm.DB
+	db      *gorm.DB
+	secrets ProtectedSecretSource
 }
 
 const (
@@ -53,29 +50,46 @@ func applyPersistedSubtitleSettings(profile map[string]any, enabled bool, source
 }
 
 type SettingInput struct {
+	Key   string         `json:"key"`
 	Value models.JSONMap `json:"value" binding:"required"`
 }
 
+type SettingsBatchInput struct {
+	Settings []SettingInput `json:"settings"`
+}
+
 func NewSettingsHandler(db *gorm.DB) SettingsHandler {
-	return SettingsHandler{db: db}
+	return SettingsHandler{db: db, secrets: gormProtectedSecretSource{}}
 }
 
 func (h SettingsHandler) List(c *gin.Context) {
 	var settings []models.AppSetting
-	if err := h.db.Order("key asc").Find(&settings).Error; err != nil {
+	err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		secrets := h.secretSource()
+		if err := migrateLegacyJellyfinCredential(tx, secrets); err != nil {
+			return err
+		}
+		if err := tx.Order("key asc").Find(&settings).Error; err != nil {
+			return err
+		}
+		ctx := settingsMutationContext{ctx: c.Request.Context(), db: tx, secrets: secrets}
+		for index := range settings {
+			definition := settingDefinitionFor(settings[index].Key)
+			if definition.Project == nil {
+				continue
+			}
+			projected, err := definition.Project(ctx, settings[index].Value)
+			if err != nil {
+				return err
+			}
+			settings[index].Value = projected
+		}
+		return nil
+	})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	for index := range settings {
-		if settings[index].Key == jellyfinSettingsKey {
-			parsed, err := jellyfinSettingsFromValue(settings[index].Value, false)
-			if err != nil {
-				parsed = defaultJellyfinSettings()
-			}
-			settings[index].Value = jellyfinSettingsProjection(parsed)
-		}
-	}
-
 	c.JSON(http.StatusOK, settings)
 }
 
@@ -85,159 +99,45 @@ func (h SettingsHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	key := c.Param("key")
-	if key == jellyfinSettingsKey {
-		normalized, err := jellyfinSettingsForUpdate(h.db, input.Value)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		input.Value = normalized
-	}
-	if key == "workers" {
-		if err := validateWorkerSettings(input.Value); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	if key == "runtimePolicy" {
-		if err := runtimeinfo.ValidateRuntimePolicyValue(input.Value); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	if key == analysisPolicySettingKey {
-		if err := validateAnalysisPolicy(input.Value); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		input.Value = normalizedAnalysisPolicyValue(input.Value)
-	}
-	if key == profileSampleEstimatePolicySettingKey {
-		normalized, err := profileSampleEstimatePolicyValue(input.Value)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		input.Value = normalized
-	}
-	if key == "mvforgePreferences" {
-		if err := validateMVForgePreferences(input.Value); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	if key == translationSettingsKey {
-		normalized, err := translationSettingsForUpdate(h.db, input.Value)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		input.Value = normalized
-	}
-	if key == subtitleSettingsKey {
-		normalized, err := normalizeSubtitleSettingsForUpdate(input.Value)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		input.Value = normalized
-	}
-	if key == "originalRetentionPolicy" {
-		if err := validateOriginalRetentionPolicy(input.Value); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	if key == "trackProfiles" {
-		if err := validateTrackProfileDomainPolicies(input.Value); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	if key == assetDefaultsSettingKey {
-		normalized, err := validateAssetDefaultsValue(h.db, input.Value)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		input.Value = normalized
-	}
-	if key == "audioEnhancementProfiles" || key == "trackProfiles" {
-		mediaType := "audio"
-		if key == "trackProfiles" {
-			mediaType = "tracks"
-		}
-		if err := validateSettingProfileAssignments(h.db, mediaType, input.Value); err != nil {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-			return
-		}
-		if key == "trackProfiles" {
-			input.Value = normalizeTrackProfilesForStorage(input.Value)
-		}
-	}
-	setting := models.AppSetting{Key: key, Value: input.Value, CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	settingsDB := h.db
-	if key == jellyfinSettingsKey {
-		settingsDB = h.db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
-	}
-	if err := settingsDB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "key"}},
-		DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
-	}).Create(&setting).Error; err != nil {
-		message := err.Error()
-		if key == jellyfinSettingsKey {
-			message = "unable to save Jellyfin settings"
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": message})
+	updated, err := h.updateSettings(c.Request.Context(), []SettingInput{{Key: c.Param("key"), Value: input.Value}})
+	if err != nil {
+		h.writeUpdateError(c, err)
 		return
 	}
-	if err := settingsDB.First(&setting, "key = ?", key).Error; err != nil {
-		message := err.Error()
-		if key == jellyfinSettingsKey {
-			message = "unable to load Jellyfin settings"
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": message})
+	c.JSON(http.StatusOK, updated[0])
+}
+
+func (h SettingsHandler) BatchUpdate(c *gin.Context) {
+	var input SettingsBatchInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if key == jellyfinSettingsKey {
-		parsed, err := jellyfinSettingsFromValue(setting.Value, false)
-		if err != nil {
-			parsed = defaultJellyfinSettings()
-		}
-		setting.Value = jellyfinSettingsProjection(parsed)
+	if len(input.Settings) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "settings batch must not be empty"})
+		return
 	}
-	if key == "pipelineAutomation" {
-		if err := h.db.Model(&models.ExecutionPlan{}).
-			Where("status = ? AND waiting_state = ? AND approval_status = ?", scheduler.ExecutionPlanWaiting, "WAITING_REVIEW", scheduler.ApprovalPending).
-			Updates(map[string]any{"status": scheduler.ExecutionPlanPendingEvaluation, "waiting_state": ""}).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
+	updated, err := h.updateSettings(c.Request.Context(), input.Settings)
+	if err != nil {
+		h.writeUpdateError(c, err)
+		return
 	}
-	if key == "directPlay" {
-		if err := h.db.Model(&models.ExecutionPlan{}).
-			Where("status = ? AND waiting_state = ?", scheduler.ExecutionPlanWaiting, scheduler.WaitingDirectPlayReview).
-			Updates(map[string]any{"status": scheduler.ExecutionPlanPendingEvaluation, "waiting_state": ""}).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if err := h.db.Model(&models.QueueJob{}).
-			Where("status = ? AND published_at IS NULL", JobStatusCompleted).
-			Updates(map[string]any{"validation_status": ValidationStatusPending, "validation_score": 0, "validation_report": models.JSONMap{}}).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	if key == "runtimePolicy" {
-		if _, _, err := runtimeinfo.DetectAndUpsert(h.db); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-	}
+	c.JSON(http.StatusOK, updated)
+}
 
-	c.JSON(http.StatusOK, setting)
+func (h SettingsHandler) writeUpdateError(c *gin.Context, err error) {
+	status := http.StatusInternalServerError
+	if _, ok := err.(settingPolicyError); ok {
+		status = settingValidationStatus(err)
+	}
+	c.JSON(status, gin.H{"error": err.Error()})
+}
+
+func (h SettingsHandler) secretSource() ProtectedSecretSource {
+	if h.secrets != nil {
+		return h.secrets
+	}
+	return gormProtectedSecretSource{}
 }
 
 func validateWorkerSettings(value models.JSONMap) error {

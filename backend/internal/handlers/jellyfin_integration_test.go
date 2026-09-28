@@ -26,7 +26,7 @@ func jellyfinIntegrationDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.AppSetting{}, &models.Library{}, &models.TestEncode{}, &models.PublisherPublication{}, &models.JellyfinIntegrationOutcome{}, &models.AssetPublishedOutbox{}); err != nil {
+	if err := db.AutoMigrate(&models.AppSetting{}, &models.ProtectedCredential{}, &models.Library{}, &models.TestEncode{}, &models.PublisherPublication{}, &models.JellyfinIntegrationOutcome{}, &models.AssetPublishedOutbox{}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -39,6 +39,14 @@ func jellyfinIntegrationDB(t *testing.T) *gorm.DB {
 
 func saveJellyfinSettings(t *testing.T, db *gorm.DB, settings jellyfinSettings) {
 	t.Helper()
+	secrets := gormProtectedSecretSource{}
+	if settings.APIToken != "" {
+		if err := secrets.Put(db, jellyfinAPITokenCredentialRef, settings.APIToken); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := secrets.Delete(db, jellyfinAPITokenCredentialRef); err != nil {
+		t.Fatal(err)
+	}
 	stored := models.AppSetting{Key: jellyfinSettingsKey, Value: jellyfinSettingsStoredValue(settings)}
 	if err := db.Save(&stored).Error; err != nil {
 		t.Fatal(err)
@@ -69,6 +77,13 @@ func TestJellyfinSettingsRedactCredentialAndPreserveOmittedSecret(t *testing.T) 
 	if strings.Contains(read.Body.String(), settings.APIToken) || !strings.Contains(read.Body.String(), `"credentialConfigured":true`) {
 		t.Fatalf("generic Settings projection leaked or lost credential state: %s", read.Body.String())
 	}
+	var stored models.AppSetting
+	if err := db.First(&stored, "key = ?", jellyfinSettingsKey).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, persisted := stored.Value["apiToken"]; persisted {
+		t.Fatalf("Jellyfin credential remained in AppSetting: %#v", stored.Value)
+	}
 
 	body := `{"value":{"enabled":true,"baseUrl":"http://127.0.0.1:8096","credentialConfigured":true,"refreshAfterPublish":true,"refreshTestEncode":true,"debounceSeconds":10,"mappings":[{"mvforgeLibraryId":7,"jellyfinLibraryId":"Exact-Jellyfin-ID"}]}}`
 	updated := httptest.NewRecorder()
@@ -90,6 +105,69 @@ func TestJellyfinSettingsRedactCredentialAndPreserveOmittedSecret(t *testing.T) 
 	loaded, _ = loadJellyfinSettings(db)
 	if clear.Code != http.StatusOK || loaded.APIToken != "" {
 		t.Fatalf("explicit credential clear status=%d token=%q", clear.Code, loaded.APIToken)
+	}
+}
+
+func TestJellyfinLegacyCredentialMigratesOutOfAppSetting(t *testing.T) {
+	db := jellyfinIntegrationDB(t)
+	legacyValue := models.JSONMap{
+		"enabled": true, "baseUrl": "http://127.0.0.1:8096", "apiToken": "legacy-secret-token",
+		"refreshAfterPublish": true, "refreshTestEncode": true, "debounceSeconds": 10, "mappings": models.JSONList{},
+	}
+	if err := db.Create(&models.AppSetting{Key: jellyfinSettingsKey, Value: legacyValue}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/api/settings", NewSettingsHandler(db).List)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "legacy-secret-token") || !strings.Contains(response.Body.String(), `"credentialConfigured":true`) {
+		t.Fatalf("legacy Settings response status=%d body=%s", response.Code, response.Body.String())
+	}
+	var stored models.AppSetting
+	if err := db.First(&stored, "key = ?", jellyfinSettingsKey).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, persisted := stored.Value["apiToken"]; persisted {
+		t.Fatalf("legacy API token was not removed from AppSetting: %#v", stored.Value)
+	}
+	secret, found, err := (gormProtectedSecretSource{}).Get(db, jellyfinAPITokenCredentialRef)
+	if err != nil || !found || secret != "legacy-secret-token" {
+		t.Fatalf("migrated credential found=%t secret=%q err=%v", found, secret, err)
+	}
+}
+
+func TestJellyfinCredentialWriteUsesProtectedSource(t *testing.T) {
+	db := jellyfinIntegrationDB(t)
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler := NewSettingsHandler(db)
+	router.POST("/api/settings/:key", handler.Update)
+	router.GET("/api/settings", handler.List)
+	request := httptest.NewRequest(http.MethodPost, "/api/settings/jellyfin", strings.NewReader(`{"value":{"enabled":true,"baseUrl":"http://127.0.0.1:8096","apiToken":"new-secret-token","mappings":[]}}`))
+	request.Header.Set("Content-Type", "application/json")
+	updated := httptest.NewRecorder()
+	router.ServeHTTP(updated, request)
+	if updated.Code != http.StatusOK || strings.Contains(updated.Body.String(), "new-secret-token") {
+		t.Fatalf("credential update status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	var stored models.AppSetting
+	if err := db.First(&stored, "key = ?", jellyfinSettingsKey).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, persisted := stored.Value["apiToken"]; persisted {
+		t.Fatalf("API token remained in AppSetting: %#v", stored.Value)
+	}
+	secret, found, err := (gormProtectedSecretSource{}).Get(db, jellyfinAPITokenCredentialRef)
+	if err != nil || !found || secret != "new-secret-token" {
+		t.Fatalf("protected credential found=%t secret=%q err=%v", found, secret, err)
+	}
+	read := httptest.NewRecorder()
+	router.ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	if read.Code != http.StatusOK || strings.Contains(read.Body.String(), "new-secret-token") {
+		t.Fatalf("Settings list status=%d body=%s", read.Code, read.Body.String())
 	}
 }
 

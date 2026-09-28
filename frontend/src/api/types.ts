@@ -1099,6 +1099,10 @@ export type UpdateSettingInput = {
   value: Record<string, unknown>;
 };
 
+export type UpdateSettingsBatchInput = {
+  settings: UpdateSettingInput[];
+};
+
 export type TrackProfilePreviewDecision = {
   index: number;
   type: 'video' | 'audio' | 'subtitle';

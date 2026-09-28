@@ -64,6 +64,7 @@ import type {
   UpdateLibraryInput,
   UpdateProfileInput,
   UpdateSettingInput,
+  UpdateSettingsBatchInput,
   UpdateJobStatusInput,
   WorkerNode,
   SchedulerRecoveryReport,
@@ -699,6 +700,11 @@ export const api = {
     request<AppSetting>(`/api/settings/${key}`, {
       method: 'POST',
       body: JSON.stringify({ value }),
+    }),
+  updateSettingsBatch: ({ settings }: UpdateSettingsBatchInput) =>
+    request<AppSetting[]>('/api/settings/batch', {
+      method: 'POST',
+      body: JSON.stringify({ settings }),
     }),
   importMWP: () =>
     request<MWPImportSummary>('/api/import/mwp', {

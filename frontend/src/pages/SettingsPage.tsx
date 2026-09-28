@@ -283,6 +283,13 @@ function remoteExecutorsValue(value: unknown): RemoteExecutorsValue {
   };
 }
 
+const settingsSections = ['overview', 'general', 'providers-integrations', 'pipeline', 'analysis', 'runtime', 'assets', 'asset-defaults', 'archive', 'operations'] as const;
+type SettingsSection = (typeof settingsSections)[number];
+
+function isSettingsSection(value: string | null): value is SettingsSection {
+  return value !== null && settingsSections.includes(value as SettingsSection);
+}
+
 export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -295,8 +302,8 @@ export function SettingsPage() {
   const schedulerRecovery = useQuery({ queryKey: ['scheduler-recovery'], queryFn: api.schedulerRecovery });
   const [tab, setTab] = useState<'general' | 'advanced'>('general');
   const requestedSection = searchParams.get('section');
-  const [section, setSection] = useState<'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'archive' | 'operations'>(() => requestedSection && ['pipeline', 'analysis', 'runtime', 'assets', 'asset-defaults', 'archive', 'operations'].includes(requestedSection) ? requestedSection as 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'archive' | 'operations' : 'overview');
-  const changeSection = (next: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'archive' | 'operations') => { setSection(next); setSearchParams(next === 'overview' ? {} : { section: next }); };
+  const [section, setSection] = useState<SettingsSection>(() => isSettingsSection(requestedSection) ? requestedSection : 'overview');
+  const changeSection = (next: SettingsSection) => { setSection(next); setSearchParams(next === 'overview' ? {} : { section: next }); };
   const [form, setForm] = useState<SettingsForm>(initialSettings);
   const [showTypeForm, setShowTypeForm] = useState(false);
   const [editingTypeKey, setEditingTypeKey] = useState<string | null>(null);
@@ -316,22 +323,31 @@ export function SettingsPage() {
     },
   });
 
+  const updateSettingsBatch = useMutation({
+    mutationFn: api.updateSettingsBatch,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+      await queryClient.invalidateQueries({ queryKey: ['libraries'] });
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
+
   const saveCoreSettings = useMutation({
     mutationFn: async (nextForm: SettingsForm) => {
       const storageRoles = storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value);
       storageRoles.originals_archive = { path: nextForm.paths.originalsArchivePath };
-      return Promise.all([
-        api.updateSetting({ key: 'paths', value: nextForm.paths }),
-        api.updateSetting({ key: 'storageRoles', value: storageRoles }),
-        api.updateSetting({ key: 'workers', value: workerSettingsPayload(nextForm.workers) }),
-        api.updateSetting({ key: 'pipelineAutomation', value: nextForm.pipelineAutomation }),
-        api.updateSetting({ key: 'assetInventory', value: nextForm.assetInventory }),
-        api.updateSetting({ key: 'validation', value: nextForm.validation }),
-        api.updateSetting({ key: 'cancellationPolicy', value: nextForm.cancellationPolicy }),
-        api.updateSetting({ key: 'originalRetentionPolicy', value: nextForm.originalRetentionPolicy }),
-        api.updateSetting({ key: 'assetTypes', value: { types: nextForm.assetTypes } }),
-        api.updateSetting({ key: 'assetCategories', value: { categories: nextForm.assetCategories } }),
-      ]);
+      return api.updateSettingsBatch({ settings: [
+        { key: 'paths', value: nextForm.paths },
+        { key: 'storageRoles', value: storageRoles },
+        { key: 'workers', value: workerSettingsPayload(nextForm.workers) },
+        { key: 'pipelineAutomation', value: nextForm.pipelineAutomation },
+        { key: 'assetInventory', value: nextForm.assetInventory },
+        { key: 'validation', value: nextForm.validation },
+        { key: 'cancellationPolicy', value: nextForm.cancellationPolicy },
+        { key: 'originalRetentionPolicy', value: nextForm.originalRetentionPolicy },
+        { key: 'assetTypes', value: { types: nextForm.assetTypes } },
+        { key: 'assetCategories', value: { categories: nextForm.assetCategories } },
+      ] });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
@@ -608,12 +624,12 @@ export function SettingsPage() {
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         {settings.isError ? <Alert severity="warning">Unable to load settings.</Alert> : null}
-        {updateSetting.isSuccess || saveCoreSettings.isSuccess ? (
+        {updateSetting.isSuccess || updateSettingsBatch.isSuccess || saveCoreSettings.isSuccess ? (
           <Alert severity="success" sx={{ mb: 2 }}>
             Settings saved.
           </Alert>
         ) : null}
-        {updateSetting.isError || saveCoreSettings.isError || updateLibrary.isError ? (
+        {updateSetting.isError || updateSettingsBatch.isError || saveCoreSettings.isError || updateLibrary.isError ? (
           <Alert severity="warning" sx={{ mb: 2 }}>
             Settings could not be fully saved.
           </Alert>
@@ -633,6 +649,24 @@ export function SettingsPage() {
         {tab === 'general' ? (
           <Stack spacing={2}>
             <SettingsDomainNavigation section={section} onChange={changeSection} />
+
+            {section === 'general' ? (
+              <GeneralSettingsDomain
+                value={getMVForgePreferences(settings.data)}
+                availableEncoders={[...new Set((workerNodes.data ?? []).flatMap((worker) => [...encoderNamesForWorker(worker)]))]}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'mvforgePreferences', value: value as unknown as Record<string, unknown> })}
+              />
+            ) : null}
+
+            {section === 'providers-integrations' ? (
+              <ProvidersIntegrationsSettingsDomain
+                value={settings.data?.find((item) => item.key === 'jellyfin')?.value}
+                libraries={libraries.data ?? []}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'jellyfin', value })}
+              />
+            ) : null}
 
             {section === 'assets' ? (
               <Stack spacing={2}>
@@ -664,18 +698,17 @@ export function SettingsPage() {
                   })}
                   roles={storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value)}
                   workspace={workspaceValue(settings.data?.find((item) => item.key === 'workspace')?.value)}
-                  saving={updateSetting.isPending}
-                  onSave={(roles, workspace) => {
-                    updateSetting.mutate({ key: 'storageRoles', value: roles });
-                    updateSetting.mutate({ key: 'workspace', value: workspace as unknown as Record<string, unknown> });
-                  }}
+                  saving={updateSetting.isPending || updateSettingsBatch.isPending}
+                  onSave={(roles, workspace) => updateSettingsBatch.mutate({ settings: [
+                    { key: 'storageRoles', value: roles },
+                    { key: 'workspace', value: workspace as unknown as Record<string, unknown> },
+                  ] })}
                 />
               </Stack>
             ) : null}
 
             {section === 'asset-defaults' ? (
-              <AssetDefaultsCard
-                key={JSON.stringify(settings.data?.find((item) => item.key === 'assetDefaults')?.value)}
+              <AssetDefaultsSettingsDomain
                 value={settings.data?.find((item) => item.key === 'assetDefaults')?.value}
                 settings={settings.data ?? []}
                 profiles={profilesQuery.data ?? []}
@@ -686,7 +719,7 @@ export function SettingsPage() {
             ) : null}
 
             {section === 'archive' ? (
-              <OriginalArchiveCard form={form} setForm={setForm} />
+              <ArchiveSettingsDomain form={form} setForm={setForm} />
             ) : null}
 
             <Dialog open={showTypeForm} onClose={() => setShowTypeForm(false)} maxWidth="md" fullWidth>
@@ -794,16 +827,6 @@ export function SettingsPage() {
             </Dialog>
 
             {section === 'pipeline' ? (
-              <MVForgePreferencesCard
-                key={JSON.stringify(getMVForgePreferences(settings.data))}
-                value={getMVForgePreferences(settings.data)}
-                availableEncoders={[...new Set((workerNodes.data ?? []).flatMap((worker) => [...encoderNamesForWorker(worker)]))]}
-                saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'mvforgePreferences', value: value as unknown as Record<string, unknown> })}
-              />
-            ) : null}
-
-            {section === 'pipeline' ? (
               <SubtitleCompatibilityCard
                 key={JSON.stringify(subtitleSRTFallbackValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value))}
                 value={subtitleSRTFallbackValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value)}
@@ -887,10 +910,13 @@ export function SettingsPage() {
             ) : null}
 
             {section === 'analysis' ? (
-              <Stack spacing={2}>
-                <AnalysisPolicyCard key={JSON.stringify(analysisPolicyValue(settings.data?.find((item) => item.key === 'analysisPolicy')?.value))} value={analysisPolicyValue(settings.data?.find((item) => item.key === 'analysisPolicy')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'analysisPolicy', value: value as unknown as Record<string, unknown> })} />
-                <ProfileSampleEstimatePolicyCard key={JSON.stringify(profileSampleEstimatePolicyValue(settings.data?.find((item) => item.key === 'profileSampleEstimatePolicy')?.value))} value={profileSampleEstimatePolicyValue(settings.data?.find((item) => item.key === 'profileSampleEstimatePolicy')?.value)} saving={updateSetting.isPending} onSave={(value) => updateSetting.mutate({ key: 'profileSampleEstimatePolicy', value: value as unknown as Record<string, unknown> })} />
-              </Stack>
+              <AnalysisSettingsDomain
+                analysisPolicy={analysisPolicyValue(settings.data?.find((item) => item.key === 'analysisPolicy')?.value)}
+                profileSamplePolicy={profileSampleEstimatePolicyValue(settings.data?.find((item) => item.key === 'profileSampleEstimatePolicy')?.value)}
+                saving={updateSetting.isPending}
+                onSaveAnalysisPolicy={(value) => updateSetting.mutate({ key: 'analysisPolicy', value: value as unknown as Record<string, unknown> })}
+                onSaveProfileSamplePolicy={(value) => updateSetting.mutate({ key: 'profileSampleEstimatePolicy', value: value as unknown as Record<string, unknown> })}
+              />
             ) : null}
 
             {section === 'pipeline' ? (
@@ -904,15 +930,6 @@ export function SettingsPage() {
 
             {section === 'operations' ? (
               <Grid container spacing={2}>
-                <Grid size={{ xs: 12 }}>
-                  <JellyfinSettingsCard
-                    key={JSON.stringify(settings.data?.find((item) => item.key === 'jellyfin')?.value)}
-                    value={settings.data?.find((item) => item.key === 'jellyfin')?.value}
-                    libraries={libraries.data ?? []}
-                    saving={updateSetting.isPending}
-                    onSave={(value) => updateSetting.mutate({ key: 'jellyfin', value })}
-                  />
-                </Grid>
                 <Grid size={{ xs: 12 }}>
                   <SchedulerRecoveryCard report={schedulerRecovery.data} loading={schedulerRecovery.isLoading} error={schedulerRecovery.isError} running={runRecovery.isPending} runError={runRecovery.error} onRun={() => runRecovery.mutate()} />
                 </Grid>
@@ -1076,6 +1093,7 @@ export function SettingsPage() {
               onClick={() => saveSettings()}
               disabled={
                 updateSetting.isPending ||
+                updateSettingsBatch.isPending ||
                 saveCoreSettings.isPending ||
                 Boolean(workerProgressPercentError(form.workers.startNextJobAtProgressPercent))
               }
@@ -1085,7 +1103,7 @@ export function SettingsPage() {
             </Button>
           </Stack>
         ) : (
-          <AdvancedSettings form={form} setForm={setForm} onSave={saveAdvancedSettings} isSaving={updateSetting.isPending || saveCoreSettings.isPending} />
+          <AdvancedSettings form={form} setForm={setForm} onSave={saveAdvancedSettings} isSaving={updateSetting.isPending || updateSettingsBatch.isPending || saveCoreSettings.isPending} />
         )}
       </Box>
 
@@ -1133,8 +1151,10 @@ export function SettingsPage() {
   );
 }
 
-function SettingsDomainNavigation({ section, onChange }: { section: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'archive' | 'operations'; onChange: (section: 'overview' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'archive' | 'operations') => void }) {
+function SettingsDomainNavigation({ section, onChange }: { section: SettingsSection; onChange: (section: SettingsSection) => void }) {
   const domains = [
+    { key: 'general' as const, title: 'General', description: 'Application-wide defaults and shared behavior.', color: 'primary.main' },
+    { key: 'providers-integrations' as const, title: 'Providers & Integrations', description: 'Connected services and protected provider credentials.', color: 'secondary.main' },
     { key: 'pipeline' as const, title: 'Pipeline', description: 'Scheduler workflow, workers, automation, working hours, DirectPlay and validation.', color: 'primary.main' },
     { key: 'analysis' as const, title: 'Analysis', description: 'Snapshot analysis strategy, confidence, cache reuse and workload limits.', color: 'info.dark' },
     { key: 'runtime' as const, title: 'Runtime', description: 'Effective runtime profiles, host detection, resources, disks, power and FFmpeg encoders.', color: 'info.main' },
@@ -1147,6 +1167,71 @@ function SettingsDomainNavigation({ section, onChange }: { section: 'overview' |
     {section !== 'overview' ? <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="h2">{domains.find((domain) => domain.key === section)?.title}</Typography><Typography color="text.secondary">{domains.find((domain) => domain.key === section)?.description}</Typography></Stack><Button onClick={() => onChange('overview')}>Back to settings dashboard</Button></Stack> : <Stack><Typography variant="h2">Configuration dashboard</Typography><Typography color="text.secondary">Choose an operational area. Related controls stay together on one page.</Typography></Stack>}
     {section === 'overview' ? <Grid container spacing={2}>{domains.map((domain) => <Grid size={{ xs: 12, sm: 6, lg: 4 }} key={domain.key}><Card sx={{ height: '100%', borderTop: 3, borderTopColor: domain.color }}><CardContent><Stack spacing={1.5} sx={{ height: '100%' }}><Typography variant="h3">{domain.title}</Typography><Typography color="text.secondary" sx={{ flex: 1 }}>{domain.description}</Typography><Button variant="contained" onClick={() => onChange(domain.key)}>Open {domain.title}</Button>{domain.key === 'operations' ? <Button component={RouterLink} to="/logs">Open logs directly</Button> : null}</Stack></CardContent></Card></Grid>)}</Grid> : null}
   </Stack>;
+}
+
+function GeneralSettingsDomain({ value, availableEncoders, saving, onSave }: {
+  value: MVForgePreferences;
+  availableEncoders: string[];
+  saving: boolean;
+  onSave: (value: MVForgePreferences) => void;
+}) {
+  return (
+    <Grid container spacing={2}>
+      <Grid size={{ xs: 12 }}>
+        <MVForgePreferencesCard
+          key={JSON.stringify(value)}
+          value={value}
+          availableEncoders={availableEncoders}
+          saving={saving}
+          onSave={onSave}
+        />
+      </Grid>
+    </Grid>
+  );
+}
+
+function ProvidersIntegrationsSettingsDomain({ value, libraries, saving, onSave }: {
+  value: Record<string, unknown> | undefined;
+  libraries: Parameters<typeof JellyfinSettingsCard>[0]['libraries'];
+  saving: boolean;
+  onSave: (value: Record<string, unknown>) => void;
+}) {
+  return (
+    <Grid container spacing={2}>
+      <Grid size={{ xs: 12 }}>
+        <JellyfinSettingsCard
+          key={JSON.stringify(value)}
+          value={value}
+          libraries={libraries}
+          saving={saving}
+          onSave={onSave}
+        />
+      </Grid>
+    </Grid>
+  );
+}
+
+function AssetDefaultsSettingsDomain(props: Parameters<typeof AssetDefaultsCard>[0]) {
+  return <AssetDefaultsCard {...props} key={JSON.stringify(props.value)} />;
+}
+
+function ArchiveSettingsDomain(props: Parameters<typeof OriginalArchiveCard>[0]) {
+  return <OriginalArchiveCard {...props} />;
+}
+
+function AnalysisSettingsDomain({ analysisPolicy, profileSamplePolicy, saving, onSaveAnalysisPolicy, onSaveProfileSamplePolicy }: {
+  analysisPolicy: Parameters<typeof AnalysisPolicyCard>[0]['value'];
+  profileSamplePolicy: Parameters<typeof ProfileSampleEstimatePolicyCard>[0]['value'];
+  saving: boolean;
+  onSaveAnalysisPolicy: Parameters<typeof AnalysisPolicyCard>[0]['onSave'];
+  onSaveProfileSamplePolicy: Parameters<typeof ProfileSampleEstimatePolicyCard>[0]['onSave'];
+}) {
+  return (
+    <Stack spacing={2}>
+      <AnalysisPolicyCard key={JSON.stringify(analysisPolicy)} value={analysisPolicy} saving={saving} onSave={onSaveAnalysisPolicy} />
+      <ProfileSampleEstimatePolicyCard key={JSON.stringify(profileSamplePolicy)} value={profileSamplePolicy} saving={saving} onSave={onSaveProfileSamplePolicy} />
+    </Stack>
+  );
 }
 
 function MVForgePreferencesCard({ value, availableEncoders, saving, onSave }: { value: MVForgePreferences; availableEncoders: string[]; saving: boolean; onSave: (value: MVForgePreferences) => void }) {

@@ -60,6 +60,7 @@ func Migrate(db *gorm.DB) error {
 		&models.TestEncode{},
 		&models.TaskReservation{},
 		&models.AppSetting{},
+		&models.ProtectedCredential{},
 		&models.CompatiblePreviewRequestRecord{},
 		&models.CompatiblePreviewArtifactRecord{},
 		&models.ValidationRun{},
@@ -71,6 +72,9 @@ func Migrate(db *gorm.DB) error {
 		&models.AssetPublishedOutbox{},
 		&models.JellyfinIntegrationOutcome{},
 	); err != nil {
+		return err
+	}
+	if err := migrateLegacyJellyfinCredential(db); err != nil {
 		return err
 	}
 	if err := migrateValidationAppendOnly(db); err != nil {
@@ -114,6 +118,42 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	return backfillPendingExecutionPlans(db)
+}
+
+func migrateLegacyJellyfinCredential(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		var setting models.AppSetting
+		err := tx.First(&setting, "key = ?", "jellyfin").Error
+		if err == gorm.ErrRecordNotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if setting.Value == nil {
+			setting.Value = models.JSONMap{}
+		}
+		legacyToken, hasLegacyToken := setting.Value["apiToken"]
+		credentialRef, hasCredentialRef := setting.Value["credentialRef"]
+		if !hasLegacyToken && hasCredentialRef && credentialRef == "jellyfin.apiToken" {
+			return nil
+		}
+		if token, ok := legacyToken.(string); ok && token != "" {
+			var credential models.ProtectedCredential
+			err := tx.First(&credential, "credential_ref = ?", "jellyfin.apiToken").Error
+			if err == gorm.ErrRecordNotFound {
+				credential = models.ProtectedCredential{CredentialRef: "jellyfin.apiToken", SecretValue: token}
+				if err := tx.Create(&credential).Error; err != nil {
+					return err
+				}
+			} else if err != nil {
+				return err
+			}
+		}
+		delete(setting.Value, "apiToken")
+		setting.Value["credentialRef"] = "jellyfin.apiToken"
+		return tx.Model(&models.AppSetting{}).Where("key = ?", "jellyfin").UpdateColumn("value", setting.Value).Error
+	})
 }
 
 func migratePublisherAppendOnly(db *gorm.DB) error {
