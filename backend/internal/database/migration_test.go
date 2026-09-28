@@ -50,6 +50,68 @@ func TestValidationRunsAndOverridesAreAppendOnly(t *testing.T) {
 	}
 }
 
+func TestPublisherAttemptEvidenceAndAuditAreAppendOnly(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:publisher-append-only?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate Publisher delivery: %v", err)
+	}
+	publication := models.PublisherPublication{
+		PublicationID: "publication:test", QueueJobID: 1, ExecutionNumber: 1,
+		ExecutionPlanID: 1, ExecutionPlanVersion: 1, ExecutionPlanFingerprint: "plan",
+		LibraryID: 1, DestinationRoot: "/library", DestinationPath: "/library/episode.mkv",
+		PublishMode: "standard", ResultArtifactID: "result", ResultGenerationToken: "generation",
+		ResultGenerationVersion: 1, ResultOutputRevision: "revision", ValidationRunID: "validation-run:test",
+		State: "READY", Manifest: models.JSONList{}, OriginalArchiveStatus: "pending",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := db.Create(&publication).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&publication).Update("state", "HELD").Error; err != nil {
+		t.Fatalf("mutable Publisher state update was rejected: %v", err)
+	}
+	if err := db.Model(&publication).Update("destination_path", "/library/changed.mkv").Error; err == nil {
+		t.Fatal("Publisher publication identity update was not rejected")
+	}
+	secondExecution := publication
+	secondExecution.ID = 0
+	secondExecution.PublicationID = "publication:test:execution-2"
+	secondExecution.ExecutionNumber = 2
+	secondExecution.State = "READY"
+	if err := db.Create(&secondExecution).Error; err != nil {
+		t.Fatalf("a later Queue execution could not receive a new publication identity: %v", err)
+	}
+	attempt := models.PublisherPublicationAttempt{AttemptID: "attempt:test", PublicationID: "publication:test", FencingGeneration: 1, ActorSource: "local_operator", ActorID: "local_operator", CreatedAt: time.Now().UTC()}
+	evidence := models.PublisherAttemptEvidence{EvidenceID: "attempt-evidence:test", PublicationID: attempt.PublicationID, AttemptID: attempt.AttemptID, Version: 1, Phase: "claim", Outcome: "acquired", CreatedAt: time.Now().UTC()}
+	audit := models.PublisherAuditEvent{EventID: "publisher-action:test", PublicationID: attempt.PublicationID, Version: 1, Action: "hold", ActorSource: "local_operator", ActorID: "local_operator", Reason: "review", CreatedAt: time.Now().UTC()}
+	for _, value := range []any{&attempt, &evidence, &audit} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Model(&models.PublisherPublicationAttempt{}).Where("attempt_id = ?", attempt.AttemptID).Update("actor_id", "rewritten").Error; err == nil {
+		t.Fatal("Publisher attempt claim evidence update was not rejected")
+	}
+	if err := db.Where("attempt_id = ?", attempt.AttemptID).Delete(&models.PublisherPublicationAttempt{}).Error; err == nil {
+		t.Fatal("Publisher attempt claim evidence delete was not rejected")
+	}
+	if err := db.Model(&models.PublisherAttemptEvidence{}).Where("evidence_id = ?", evidence.EvidenceID).Update("outcome", "rewritten").Error; err == nil {
+		t.Fatal("Publisher attempt phase evidence update was not rejected")
+	}
+	if err := db.Where("evidence_id = ?", evidence.EvidenceID).Delete(&models.PublisherAttemptEvidence{}).Error; err == nil {
+		t.Fatal("Publisher attempt phase evidence delete was not rejected")
+	}
+	if err := db.Model(&models.PublisherAuditEvent{}).Where("event_id = ?", audit.EventID).Update("reason", "rewritten").Error; err == nil {
+		t.Fatal("Publisher action audit update was not rejected")
+	}
+	if err := db.Where("event_id = ?", audit.EventID).Delete(&models.PublisherAuditEvent{}).Error; err == nil {
+		t.Fatal("Publisher action audit delete was not rejected")
+	}
+}
+
 func TestMigrateInitializesRuntimeStateFromNewestLegacySnapshot(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "runtime-state.db")), &gorm.Config{})
 	if err != nil {

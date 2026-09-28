@@ -54,22 +54,48 @@ type validationSummaryPage struct {
 }
 
 type validationSummaryRow struct {
-	ID                          uint       `json:"id"`
-	ExecutionNumber             *uint      `json:"executionNumber,omitempty"`
-	MediaPath                   string     `json:"mediaPath"`
-	OutputPath                  string     `json:"outputPath,omitempty"`
-	Status                      string     `json:"status"`
-	PublishedPath               string     `json:"publishedPath,omitempty"`
-	PublishedAt                 *time.Time `json:"publishedAt,omitempty"`
-	FinishedAt                  *time.Time `json:"finishedAt,omitempty"`
-	CreatedAt                   time.Time  `json:"createdAt"`
-	UpdatedAt                   time.Time  `json:"updatedAt"`
-	ValidationStatus            string     `json:"validationStatus"`
-	ValidationScore             int        `json:"validationScore"`
-	ValidationRunID             string     `json:"validationRunId,omitempty"`
-	ValidationOutcome           string     `json:"validationOutcome,omitempty"`
-	ValidationOverridePresent   bool       `json:"validationOverridePresent"`
-	ValidationHasActionableWarn bool       `json:"validationHasActionableWarnings"`
+	ID                          uint                     `json:"id"`
+	ExecutionNumber             *uint                    `json:"executionNumber,omitempty"`
+	MediaPath                   string                   `json:"mediaPath"`
+	OutputPath                  string                   `json:"outputPath,omitempty"`
+	Status                      string                   `json:"status"`
+	PublishedPath               string                   `json:"publishedPath,omitempty"`
+	PublishedAt                 *time.Time               `json:"publishedAt,omitempty"`
+	PublicationID               string                   `json:"publicationId,omitempty"`
+	PublicationState            string                   `json:"publicationState,omitempty"`
+	PublicationSummary          string                   `json:"publicationSummary,omitempty"`
+	OriginalArchivedPath        string                   `json:"originalArchivedPath,omitempty"`
+	OriginalArchiveStatus       string                   `json:"originalArchiveStatus,omitempty"`
+	FinishedAt                  *time.Time               `json:"finishedAt,omitempty"`
+	CreatedAt                   time.Time                `json:"createdAt"`
+	UpdatedAt                   time.Time                `json:"updatedAt"`
+	ValidationStatus            string                   `json:"validationStatus"`
+	ValidationScore             int                      `json:"validationScore"`
+	ValidationRunID             string                   `json:"validationRunId,omitempty"`
+	ValidationOutcome           string                   `json:"validationOutcome,omitempty"`
+	ValidationOverridePresent   bool                     `json:"validationOverridePresent"`
+	ValidationHasActionableWarn bool                     `json:"validationHasActionableWarnings"`
+	Publisher                   *historyPublisherSummary `json:"publisher,omitempty"`
+}
+
+type historyPublisherSummary struct {
+	PublicationID              string                          `json:"publicationId"`
+	State                      string                          `json:"state"`
+	DestinationPath            string                          `json:"destinationPath"`
+	PublishMode                string                          `json:"publishMode"`
+	AttemptCount               int                             `json:"attemptCount"`
+	LatestAttempt              *historyPublisherAttemptSummary `json:"latestAttempt,omitempty"`
+	ValidationRunID            string                          `json:"validationRunId"`
+	ValidationOverridePresent  bool                            `json:"validationOverridePresent"`
+	ValidationOverrideEventIDs []string                        `json:"validationOverrideEventIds,omitempty"`
+}
+
+type historyPublisherAttemptSummary struct {
+	Phase     string    `json:"phase"`
+	Outcome   string    `json:"outcome"`
+	Code      string    `json:"code,omitempty"`
+	Summary   string    `json:"summary,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 type validationOverrideRequest struct {
@@ -854,12 +880,17 @@ func (h ValidationHandler) HistoryList(c *gin.Context) {
 		direction = "asc"
 	}
 	var jobs []models.QueueJob
-	selectFields := "id, execution_number, media_path, status, published_path, published_at, created_at, updated_at, validation_status, validation_score, validation_run_id, validation_outcome, validation_override, validation_actionable"
+	selectFields := "id, execution_number, media_path, status, published_path, published_at, original_archived_path, original_archive_status, created_at, updated_at, validation_status, validation_score, validation_run_id, validation_outcome, validation_override, validation_actionable"
 	if err := query.Select(selectFields).Order("id " + direction).Limit(limit).Offset(offset).Find(&jobs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, validationSummaryPage{Items: validationSummaryRows(jobs), Total: total, Limit: limit, Offset: offset})
+	rows, err := historySummaryRows(h.db, jobs)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, validationSummaryPage{Items: rows, Total: total, Limit: limit, Offset: offset})
 }
 
 func validationSummaryRows(jobs []models.QueueJob) []validationSummaryRow {
@@ -868,13 +899,97 @@ func validationSummaryRows(jobs []models.QueueJob) []validationSummaryRow {
 		rows = append(rows, validationSummaryRow{
 			ID: job.ID, ExecutionNumber: job.ExecutionNumber, MediaPath: job.MediaPath,
 			OutputPath: job.OutputPath, Status: job.Status, PublishedPath: job.PublishedPath,
-			PublishedAt: job.PublishedAt, FinishedAt: job.FinishedAt, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
+			PublishedAt: job.PublishedAt, PublicationID: job.PublicationID, PublicationState: job.PublicationState,
+			PublicationSummary: job.PublicationSummary, OriginalArchivedPath: job.OriginalArchivedPath,
+			OriginalArchiveStatus: job.OriginalArchiveStatus, FinishedAt: job.FinishedAt, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
 			ValidationStatus: job.ValidationStatus, ValidationScore: job.ValidationScore,
 			ValidationRunID: job.ValidationRunID, ValidationOutcome: job.ValidationOutcome,
 			ValidationOverridePresent: job.ValidationOverride, ValidationHasActionableWarn: job.ValidationActionable,
 		})
 	}
 	return rows
+}
+
+func historySummaryRows(db *gorm.DB, jobs []models.QueueJob) ([]validationSummaryRow, error) {
+	rows := validationSummaryRows(jobs)
+	if len(jobs) == 0 {
+		return rows, nil
+	}
+	jobExecutions := make([]string, 0, len(jobs))
+	queryArgs := make([]any, 0, len(jobs)*2)
+	executionByJob := make(map[uint]uint, len(jobs))
+	for _, job := range jobs {
+		if job.ExecutionNumber != nil {
+			executionByJob[job.ID] = *job.ExecutionNumber
+			jobExecutions = append(jobExecutions, "(queue_job_id = ? AND execution_number = ?)")
+			queryArgs = append(queryArgs, job.ID, *job.ExecutionNumber)
+		}
+	}
+	if len(jobExecutions) == 0 {
+		return rows, nil
+	}
+	var publications []models.PublisherPublication
+	if err := db.Select("id, publication_id, queue_job_id, execution_number, destination_path, publish_mode, validation_run_id, validation_override_event_ids, state, attempt_count, original_archive_status, original_archived_path").Where(strings.Join(jobExecutions, " OR "), queryArgs...).Find(&publications).Error; err != nil {
+		return nil, err
+	}
+	if len(publications) == 0 {
+		return rows, nil
+	}
+	publicationByJob := make(map[uint]models.PublisherPublication, len(publications))
+	publicationIDs := make([]string, 0, len(publications))
+	for _, publication := range publications {
+		if execution, ok := executionByJob[publication.QueueJobID]; !ok || execution != publication.ExecutionNumber {
+			continue
+		}
+		publicationByJob[publication.QueueJobID] = publication
+		publicationIDs = append(publicationIDs, publication.PublicationID)
+	}
+	latestByPublication := make(map[string]models.PublisherAttemptEvidence, len(publicationIDs))
+	if len(publicationIDs) > 0 {
+		var evidence []models.PublisherAttemptEvidence
+		if err := db.Raw("SELECT id, publication_id, phase, outcome, code, summary, created_at FROM publisher_attempt_evidences WHERE id IN (SELECT MAX(id) FROM publisher_attempt_evidences WHERE publication_id IN ? GROUP BY publication_id)", publicationIDs).Scan(&evidence).Error; err != nil {
+			return nil, err
+		}
+		for _, item := range evidence {
+			latestByPublication[item.PublicationID] = item
+		}
+	}
+	for index, job := range jobs {
+		publication, ok := publicationByJob[job.ID]
+		if !ok {
+			continue
+		}
+		overrideIDs := historyStringIDs(publication.ValidationOverrideEventIDs)
+		projection := &historyPublisherSummary{
+			PublicationID:              publication.PublicationID,
+			State:                      publication.State,
+			DestinationPath:            publication.DestinationPath,
+			PublishMode:                publication.PublishMode,
+			AttemptCount:               publication.AttemptCount,
+			ValidationRunID:            publication.ValidationRunID,
+			ValidationOverridePresent:  len(overrideIDs) > 0,
+			ValidationOverrideEventIDs: overrideIDs,
+		}
+		if latest, found := latestByPublication[publication.PublicationID]; found {
+			projection.LatestAttempt = &historyPublisherAttemptSummary{Phase: latest.Phase, Outcome: latest.Outcome, Code: latest.Code, Summary: latest.Summary, CreatedAt: latest.CreatedAt}
+		}
+		rows[index].Publisher = projection
+		// Archive remains an independent #174 fact. For canonical publications,
+		// read it from Publisher's persisted archive projection, not QueueJob.
+		rows[index].OriginalArchiveStatus = publication.OriginalArchiveStatus
+		rows[index].OriginalArchivedPath = publication.OriginalArchivedPath
+	}
+	return rows, nil
+}
+
+func historyStringIDs(values models.JSONList) []string {
+	ids := make([]string, 0, len(values))
+	for _, value := range values {
+		if id, ok := value.(string); ok && strings.TrimSpace(id) != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 func boundedValidationQueryInt(value string, fallback, minimum, maximum int) int {
@@ -1069,4 +1184,57 @@ func canonicalRunAllowsPublish(db *gorm.DB, job models.QueueJob, automatic bool)
 		}
 	}
 	return true, ""
+}
+
+// canonicalEligibleOverrideEventIDs projects the exact #53 append-only events
+// that cover findings for this handoff. Eligibility remains decided solely by
+// canonicalRunAllowsPublish; this helper records the identities it relied on.
+func canonicalEligibleOverrideEventIDs(db *gorm.DB, job models.QueueJob, automatic bool) ([]string, error) {
+	allowed, _ := canonicalRunAllowsPublish(db, job, automatic)
+	if !allowed {
+		return nil, nil
+	}
+	var run models.ValidationRun
+	if err := db.Where("run_id = ? AND job_id = ?", job.ValidationRunID, job.ID).First(&run).Error; err != nil {
+		return nil, err
+	}
+	needed := map[string]bool{}
+	for _, raw := range run.Findings {
+		encoded, _ := json.Marshal(raw)
+		var finding validationFinding
+		if json.Unmarshal(encoded, &finding) != nil {
+			continue
+		}
+		blockingOverride := finding.Disposition == "blocking" && (finding.State == "FAIL" || finding.State == "REVIEW_REQUIRED" || finding.State == "UNVERIFIED") && finding.Overrideable && !nonOverrideableValidationRule(finding.Key)
+		automaticActionableOverride := automatic && finding.Actionable && finding.State != "PASS"
+		if blockingOverride || automaticActionableOverride {
+			needed[finding.Key] = true
+		}
+	}
+	if len(needed) == 0 {
+		return []string{}, nil
+	}
+	var overrides []models.ValidationOverride
+	if err := db.Where("validation_run_id = ?", run.RunID).Order("created_at asc, id asc").Find(&overrides).Error; err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(needed))
+	for _, event := range overrides {
+		if automatic && event.RequestedHandoff != "automatic" || !automatic && event.RequestedHandoff != "publisher" && event.RequestedHandoff != "automatic" {
+			continue
+		}
+		for _, raw := range event.RuleKeys {
+			if !needed[fmt.Sprint(raw)] || seen[event.EventID] {
+				continue
+			}
+			seen[event.EventID] = true
+			ids = append(ids, event.EventID)
+			if len(ids) > 20 {
+				return nil, fmt.Errorf("canonical Validation authorization requires more than 20 override evidence references")
+			}
+			break
+		}
+	}
+	return ids, nil
 }

@@ -238,7 +238,7 @@ func (h WorkerHandler) runAutomatedPipeline(job models.QueueJob) map[string]any 
 
 	publishResult, err := (PublisherHandler{db: h.db}).publishQueueJobWithMode(
 		job,
-		automation.PublisherOverwriteEnabled,
+		false,
 		true,
 	)
 	if err != nil {
@@ -296,7 +296,6 @@ type pipelineAutomation struct {
 	AutoAnalysisEnabled               bool
 	AutoValidationEnabled             bool
 	AutoPublisherEnabled              bool
-	PublisherOverwriteEnabled         bool
 	PublishedJobReconciliationEnabled bool
 }
 
@@ -311,7 +310,6 @@ func pipelineAutomationSettings(db *gorm.DB) pipelineAutomation {
 		AutoAnalysisEnabled:               boolSetting(values["autoAnalysisEnabled"], false),
 		AutoValidationEnabled:             boolSetting(values["autoValidationEnabled"], false),
 		AutoPublisherEnabled:              boolSetting(values["autoPublisherEnabled"], false),
-		PublisherOverwriteEnabled:         boolSetting(values["publisherOverwriteEnabled"], false),
 		PublishedJobReconciliationEnabled: boolSetting(values["publishedJobReconciliationEnabled"], false),
 	}
 }
