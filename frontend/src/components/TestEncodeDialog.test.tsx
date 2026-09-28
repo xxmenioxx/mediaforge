@@ -9,7 +9,7 @@ import type { Library, TestEncode } from '../api/types';
 import { TestEncodeDialog } from './TestEncodeDialog';
 
 vi.mock('../api/client', () => ({ api: {
-  testEncodes: vi.fn(), createTestEncode: vi.fn(), cancelTestEncode: vi.fn(), keepTestEncode: vi.fn(), deleteTestEncode: vi.fn(),
+  testEncodes: vi.fn(), jellyfinOutcomes: vi.fn(), retryJellyfinOutcome: vi.fn(), createTestEncode: vi.fn(), cancelTestEncode: vi.fn(), keepTestEncode: vi.fn(), deleteTestEncode: vi.fn(),
 } }));
 
 const readyTest = {
@@ -46,6 +46,11 @@ describe('TestEncodeDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.testEncodes).mockResolvedValue([]);
+    vi.mocked(api.jellyfinOutcomes).mockResolvedValue([]);
+    vi.mocked(api.retryJellyfinOutcome).mockResolvedValue({
+      id: 91, reason: 'test_encode_ready', status: 'pending', attemptCount: 0, durationMillis: 0,
+      updatedAt: '2026-09-27T12:00:00Z', testEncodeId: readyTest.id, retryEligible: false,
+    });
     vi.mocked(api.createTestEncode).mockResolvedValue(readyTest);
   });
 
@@ -90,6 +95,22 @@ describe('TestEncodeDialog', () => {
     await user.click(screen.getByRole('tab', { name: /configuration/i }));
     expect(screen.getByDisplayValue(/"requestedEncoder": "hevc_qsv"/i)).toBeTruthy();
     expect(screen.getByDisplayValue(/"gopRefDist": 1/i)).toBeTruthy();
+  });
+
+  it('shows Jellyfin status separately from READY and Keep', async () => {
+    vi.mocked(api.testEncodes).mockResolvedValue([readyTest]);
+    vi.mocked(api.jellyfinOutcomes).mockResolvedValue([{
+      id: 91, reason: 'test_encode_ready', status: 'retryable_failure', failureClass: 'timeout', attemptCount: 5,
+      durationMillis: 10000, updatedAt: '2026-09-27T12:00:00Z', testEncodeId: readyTest.id, retryEligible: true,
+    }]);
+    const user = userEvent.setup();
+    renderDialog();
+    expect(await screen.findByText(/Jellyfin: retryable failure/)).toBeTruthy();
+    expect(screen.getAllByText('ready').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Keep').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Retry Jellyfin refresh' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Retry Jellyfin refresh' }));
+    await waitFor(() => expect(api.retryJellyfinOutcome).toHaveBeenCalledWith(91, expect.anything()));
   });
 
   it('opens without an inherited destination and allows choosing one inside', async () => {

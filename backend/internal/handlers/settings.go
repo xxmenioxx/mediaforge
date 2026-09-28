@@ -66,6 +66,15 @@ func (h SettingsHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	for index := range settings {
+		if settings[index].Key == jellyfinSettingsKey {
+			parsed, err := jellyfinSettingsFromValue(settings[index].Value, false)
+			if err != nil {
+				parsed = defaultJellyfinSettings()
+			}
+			settings[index].Value = jellyfinSettingsProjection(parsed)
+		}
+	}
 
 	c.JSON(http.StatusOK, settings)
 }
@@ -78,6 +87,14 @@ func (h SettingsHandler) Update(c *gin.Context) {
 	}
 
 	key := c.Param("key")
+	if key == jellyfinSettingsKey {
+		normalized, err := jellyfinSettingsForUpdate(h.db, input.Value)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		input.Value = normalized
+	}
 	if key == "workers" {
 		if err := validateWorkerSettings(input.Value); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -161,16 +178,35 @@ func (h SettingsHandler) Update(c *gin.Context) {
 		}
 	}
 	setting := models.AppSetting{Key: key, Value: input.Value, CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	if err := h.db.Clauses(clause.OnConflict{
+	settingsDB := h.db
+	if key == jellyfinSettingsKey {
+		settingsDB = h.db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
+	}
+	if err := settingsDB.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "key"}},
 		DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
 	}).Create(&setting).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		message := err.Error()
+		if key == jellyfinSettingsKey {
+			message = "unable to save Jellyfin settings"
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": message})
 		return
 	}
-	if err := h.db.First(&setting, "key = ?", key).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if err := settingsDB.First(&setting, "key = ?", key).Error; err != nil {
+		message := err.Error()
+		if key == jellyfinSettingsKey {
+			message = "unable to load Jellyfin settings"
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": message})
 		return
+	}
+	if key == jellyfinSettingsKey {
+		parsed, err := jellyfinSettingsFromValue(setting.Value, false)
+		if err != nil {
+			parsed = defaultJellyfinSettings()
+		}
+		setting.Value = jellyfinSettingsProjection(parsed)
 	}
 	if key == "pipelineAutomation" {
 		if err := h.db.Model(&models.ExecutionPlan{}).

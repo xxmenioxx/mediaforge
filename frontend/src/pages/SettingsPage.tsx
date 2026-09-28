@@ -48,6 +48,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import { AssetDefaultsCard } from '../components/AssetDefaultsCard';
+import { JellyfinSettingsCard } from '../components/JellyfinSettingsCard';
 import type { HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
 import { defaultMVForgePreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { encoderNamesForWorker } from '../utils/workerEncoders';
@@ -903,6 +904,15 @@ export function SettingsPage() {
 
             {section === 'operations' ? (
               <Grid container spacing={2}>
+                <Grid size={{ xs: 12 }}>
+                  <JellyfinSettingsCard
+                    key={JSON.stringify(settings.data?.find((item) => item.key === 'jellyfin')?.value)}
+                    value={settings.data?.find((item) => item.key === 'jellyfin')?.value}
+                    libraries={libraries.data ?? []}
+                    saving={updateSetting.isPending}
+                    onSave={(value) => updateSetting.mutate({ key: 'jellyfin', value })}
+                  />
+                </Grid>
                 <Grid size={{ xs: 12 }}>
                   <SchedulerRecoveryCard report={schedulerRecovery.data} loading={schedulerRecovery.isLoading} error={schedulerRecovery.isError} running={runRecovery.isPending} runError={runRecovery.error} onRun={() => runRecovery.mutate()} />
                 </Grid>

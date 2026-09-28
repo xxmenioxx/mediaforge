@@ -16,7 +16,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { api } from '../api/client';
@@ -24,6 +24,7 @@ import type { ValidationHistorySummary } from '../api/types';
 import { PageHeader } from '../components/PageHeader';
 
 export function HistoryPage() {
+  const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc');
   const [pageSize, setPageSize] = useState(25);
@@ -32,6 +33,11 @@ export function HistoryPage() {
     queryKey: ['validationHistory', search, sortDirection, pageSize, page],
     queryFn: () => api.validationHistory({ q: search.trim(), sort: sortDirection, limit: pageSize, offset: (page - 1) * pageSize }),
     refetchInterval: 5000,
+  });
+  const jellyfinOutcomes = useQuery({ queryKey: ['jellyfinOutcomes'], queryFn: api.jellyfinOutcomes, refetchInterval: 5000 });
+  const retryJellyfin = useMutation({
+    mutationFn: api.retryJellyfinOutcome,
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['jellyfinOutcomes'] }),
   });
   const historicalJobs = jobs.data?.items ?? [];
   const totalPages = Math.max(1, Math.ceil((jobs.data?.total ?? 0) / pageSize));
@@ -93,7 +99,11 @@ export function HistoryPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {pageJobs.map((job) => (
+                {pageJobs.map((job) => {
+                  const jellyfinOutcome = job.publisher
+                    ? jellyfinOutcomes.data?.find((outcome) => outcome.publicationId === job.publisher?.publicationId)
+                    : undefined;
+                  return (
                   <TableRow key={job.id} hover>
                     <TableCell>#{job.executionNumber ?? job.id}</TableCell>
                     <TableCell>
@@ -124,6 +134,14 @@ export function HistoryPage() {
                               ? ` · override recorded${job.publisher.validationOverrideEventIds?.length ? ` (${job.publisher.validationOverrideEventIds.join(', ')})` : ''}`
                               : ' · no override'}
                           </Typography>
+                          {jellyfinOutcome ? (
+                            <Stack spacing={0.5}>
+                              <Typography variant="caption" color="text.secondary">
+                                Jellyfin refresh: {jellyfinOutcome.status === 'success' ? (jellyfinOutcome.effectiveScope === 'server_wide' ? 'server scan requested' : 'requested') : jellyfinOutcome.status.replace(/_/g, ' ')} · {formatDate(jellyfinOutcome.updatedAt)}
+                              </Typography>
+                              {jellyfinOutcome.retryEligible ? <Button size="small" disabled={retryJellyfin.isPending} onClick={() => retryJellyfin.mutate(jellyfinOutcome.id)}>Retry Jellyfin refresh</Button> : null}
+                            </Stack>
+                          ) : null}
                         </> : hasLegacyPublication(job) ? <>
                           <Typography>Legacy publication</Typography>
                           {job.publishedPath ? <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{job.publishedPath}</Typography> : null}
@@ -142,7 +160,8 @@ export function HistoryPage() {
                       <Button component={RouterLink} to={`/queue?job=${job.id}`} variant="contained" size="small">Review</Button>
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           </CardContent>

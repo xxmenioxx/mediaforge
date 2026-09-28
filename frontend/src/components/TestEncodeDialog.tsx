@@ -48,6 +48,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
     enabled: open && Boolean(sourcePath),
     refetchInterval: (query) => query.state.data?.some((item) => item.status === 'waiting' || item.status === 'generating') ? 1500 : false,
   });
+  const jellyfinOutcomes = useQuery({ queryKey: ['jellyfinOutcomes'], queryFn: api.jellyfinOutcomes, enabled: open, refetchInterval: 5000 });
   const invalidate = async () => {
     await queryClient.invalidateQueries({ queryKey: ['testEncodes', sourcePath] });
   };
@@ -66,6 +67,10 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
   const cancel = useMutation({ mutationFn: api.cancelTestEncode, onSuccess: invalidate });
   const keep = useMutation({ mutationFn: ({ id, value }: { id: number; value: boolean }) => api.keepTestEncode(id, value), onSuccess: invalidate });
   const remove = useMutation({ mutationFn: api.deleteTestEncode, onSuccess: invalidate });
+  const retryJellyfin = useMutation({
+    mutationFn: api.retryJellyfinOutcome,
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['jellyfinOutcomes'] }),
+  });
   const busy = create.isPending || cancel.isPending || keep.isPending || remove.isPending;
   const openDetails = (item: TestEncode) => {
     setDetailsTab(0);
@@ -109,7 +114,9 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
             {tests.isLoading ? <LinearProgress /> : null}
             {tests.isError ? <Alert severity="error">{tests.error.message}</Alert> : null}
             {tests.data?.length === 0 ? <Typography color="text.secondary">No tests have been generated for this asset.</Typography> : null}
-            {tests.data?.map((item) => (
+            {tests.data?.map((item) => {
+              const jellyfinOutcome = jellyfinOutcomes.data?.find((outcome) => outcome.testEncodeId === item.id);
+              return (
               <Stack key={item.id} spacing={1} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
                 <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
                   <Stack spacing={0.5}>
@@ -132,11 +139,20 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
                   </Stack>
                 </Stack>
                 {(item.status === 'waiting' || item.status === 'generating') ? <LinearProgress variant={item.progress > 0 ? 'determinate' : 'indeterminate'} value={item.progress} /> : null}
+                {jellyfinOutcome ? (
+                  <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ sm: 'center' }} spacing={0.5}>
+                    <Typography variant="caption" color="text.secondary">
+                      Jellyfin: {jellyfinOutcome.status === 'success' ? (jellyfinOutcome.effectiveScope === 'server_wide' ? 'server scan requested' : 'refresh requested') : jellyfinOutcome.status.replace(/_/g, ' ')} · {new Date(jellyfinOutcome.updatedAt).toLocaleString()}
+                    </Typography>
+                    {jellyfinOutcome.retryEligible ? <Button size="small" disabled={retryJellyfin.isPending} onClick={() => retryJellyfin.mutate(jellyfinOutcome.id)}>Retry Jellyfin refresh</Button> : null}
+                  </Stack>
+                ) : null}
                 {item.errorMessage ? <Alert severity="error">{item.errorMessage}</Alert> : null}
                 {item.staleReason ? <Alert severity="warning">{item.staleReason}</Alert> : null}
                 {testEncodeIsStale(item, request) && !item.staleReason ? <Alert severity="warning">Configuration changed since this test was generated.</Alert> : null}
               </Stack>
-            ))}
+              );
+            })}
           </Stack>
         </DialogContent>
         <DialogActions><Button onClick={onClose} disabled={busy}>Close</Button></DialogActions>

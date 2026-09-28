@@ -234,8 +234,15 @@ func (h AssetHandler) DeleteTestEncode(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "cancel the generating test before deleting it"})
 		return
 	}
-	if err := h.removeTestEncodeFiles(test); err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	mutated, cleanupErr := h.removeTestEncodeFilesWithEvidence(test)
+	if test.Status == testEncodeReady && mutated {
+		_ = recordJellyfinTrigger(h.db, jellyfinTrigger{
+			Reason: jellyfinReasonTestRemoved, SourceKey: testEncodeJellyfinSourceKey(jellyfinReasonTestRemoved, test.ID),
+			LibraryID: test.LibraryID, TestEncodeID: test.ID, Reconcile: true,
+		})
+	}
+	if cleanupErr != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": cleanupErr.Error()})
 		return
 	}
 	now := time.Now()
@@ -751,11 +758,15 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		}
 	}
 	completed := time.Now()
-	_ = h.db.Model(&models.TestEncode{}).Where("id = ?", id).Updates(map[string]any{
+	readyResult := h.db.Model(&models.TestEncode{}).Where("id = ? AND status = ?", id, testEncodeRunning).Updates(map[string]any{
 		"status": testEncodeReady, "phase": "ready", "progress": 100, "completed_at": &completed,
 		"output_size_bytes": outputInfo.Size(), "subtitle_artifacts": subtitleArtifactsJSON(subtitleArtifacts),
 		"validation_report": report, "temporary_path": "", "updated_at": completed,
-	}).Error
+	})
+	validationPassed, _ := report["passed"].(bool)
+	if readyResult.Error == nil && readyResult.RowsAffected == 1 && validationPassed {
+		_ = recordJellyfinTestEncodeReady(h.db, id, test.LibraryID, true, validationPassed)
+	}
 }
 
 // bindTestEncodeRuntimeSnapshot binds immutable runtime evidence exactly once
@@ -1054,23 +1065,33 @@ func configurationHash(value any) string {
 }
 
 func (h AssetHandler) removeTestEncodeFiles(test models.TestEncode) error {
+	_, err := h.removeTestEncodeFilesWithEvidence(test)
+	return err
+}
+
+func (h AssetHandler) removeTestEncodeFilesWithEvidence(test models.TestEncode) (bool, error) {
 	var library models.Library
 	if err := h.db.First(&library, test.LibraryID).Error; err != nil {
-		return err
+		return false, err
 	}
+	mutated := false
 	for _, candidate := range append([]string{test.OutputPath, test.TemporaryPath}, subtitleArtifactPaths(test.SubtitleArtifacts)...) {
 		candidate = filepath.Clean(strings.TrimSpace(candidate))
 		if candidate == "." || candidate == "" {
 			continue
 		}
 		if !pathIsInside(candidate, library.DestinationPath) {
-			return fmt.Errorf("refusing to delete Test Encode file outside its Library destination")
+			return mutated, fmt.Errorf("refusing to delete Test Encode file outside its Library destination")
 		}
-		if err := os.Remove(candidate); err != nil && !os.IsNotExist(err) {
-			return err
+		if err := os.Remove(candidate); err != nil {
+			if !os.IsNotExist(err) {
+				return mutated, err
+			}
+		} else {
+			mutated = true
 		}
 	}
-	return nil
+	return mutated, nil
 }
 
 func subtitleArtifactPaths(values models.JSONList) []string {

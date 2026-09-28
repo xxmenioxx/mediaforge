@@ -162,8 +162,15 @@ func RunHousekeeping(db *gorm.DB, dryRun bool) (HousekeepingReport, error) {
 				if dryRun {
 					continue
 				}
-				if err := (AssetHandler{db: db}).removeTestEncodeFiles(test); err != nil {
-					report.Errors = append(report.Errors, fmt.Sprintf("test encode %d: %v", test.ID, err))
+				mutated, cleanupErr := (AssetHandler{db: db}).removeTestEncodeFilesWithEvidence(test)
+				if test.Status == testEncodeReady && mutated {
+					_ = recordJellyfinTrigger(db, jellyfinTrigger{
+						Reason: jellyfinReasonTestRemoved, SourceKey: testEncodeJellyfinSourceKey(jellyfinReasonTestRemoved, test.ID),
+						LibraryID: test.LibraryID, TestEncodeID: test.ID, Reconcile: true,
+					})
+				}
+				if cleanupErr != nil {
+					report.Errors = append(report.Errors, fmt.Sprintf("test encode %d: %v", test.ID, cleanupErr))
 					continue
 				}
 				now := report.RanAt
