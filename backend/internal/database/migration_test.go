@@ -61,11 +61,28 @@ func TestMigrateAddsJellyfinOutcomeLedgerToExistingSettingsDatabase(t *testing.T
 	if err := db.Create(&models.AppSetting{Key: "existing", Value: models.JSONMap{"kept": true}}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Create(&models.AppSetting{Key: "jellyfin", Value: models.JSONMap{"baseUrl": "http://jellyfin:8096", "apiToken": "legacy-migration-secret"}}).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := Migrate(db); err != nil {
 		t.Fatalf("migrate existing database: %v", err)
 	}
 	if !db.Migrator().HasTable(&models.JellyfinIntegrationOutcome{}) {
 		t.Fatal("Jellyfin integration outcome table was not migrated")
+	}
+	if !db.Migrator().HasTable(&models.ProtectedCredential{}) {
+		t.Fatal("protected credential table was not migrated")
+	}
+	var jellyfinSetting models.AppSetting
+	if err := db.First(&jellyfinSetting, "key = ?", "jellyfin").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, stillStored := jellyfinSetting.Value["apiToken"]; stillStored || jellyfinSetting.Value["credentialRef"] != "jellyfin.apiToken" {
+		t.Fatalf("legacy Jellyfin token was not removed from AppSetting: %#v", jellyfinSetting.Value)
+	}
+	var protected models.ProtectedCredential
+	if err := db.First(&protected, "credential_ref = ?", "jellyfin.apiToken").Error; err != nil || protected.SecretValue != "legacy-migration-secret" {
+		t.Fatalf("legacy Jellyfin token was not migrated: %#v err=%v", protected, err)
 	}
 	var existing models.AppSetting
 	if err := db.First(&existing, "key = ?", "existing").Error; err != nil || existing.Value["kept"] != true {

@@ -54,6 +54,7 @@ type jellyfinSettings struct {
 	Enabled             bool                     `json:"enabled"`
 	BaseURL             string                   `json:"baseUrl"`
 	APIToken            string                   `json:"apiToken,omitempty"`
+	CredentialRef       CredentialRef            `json:"credentialRef,omitempty"`
 	RefreshAfterPublish bool                     `json:"refreshAfterPublish"`
 	RefreshTestEncode   bool                     `json:"refreshTestEncode"`
 	DebounceSeconds     int                      `json:"debounceSeconds"`
@@ -91,10 +92,14 @@ type jellyfinOutcomeView struct {
 }
 
 func defaultJellyfinSettings() jellyfinSettings {
-	return jellyfinSettings{RefreshAfterPublish: true, RefreshTestEncode: true, DebounceSeconds: 10, Mappings: []jellyfinLibraryMapping{}}
+	return jellyfinSettings{CredentialRef: jellyfinAPITokenCredentialRef, RefreshAfterPublish: true, RefreshTestEncode: true, DebounceSeconds: 10, Mappings: []jellyfinLibraryMapping{}}
 }
 
 func loadJellyfinSettingsChecked(db *gorm.DB) (jellyfinSettings, int64, error) {
+	return loadJellyfinSettingsCheckedWithSecrets(db, gormProtectedSecretSource{})
+}
+
+func loadJellyfinSettingsCheckedWithSecrets(db *gorm.DB, secrets ProtectedSecretSource) (jellyfinSettings, int64, error) {
 	settings := defaultJellyfinSettings()
 	if db == nil {
 		return settings, 0, nil
@@ -111,6 +116,15 @@ func loadJellyfinSettingsChecked(db *gorm.DB) (jellyfinSettings, int64, error) {
 	if err != nil {
 		return loaded, stored.UpdatedAt.UnixNano(), err
 	}
+	if loaded.APIToken == "" && secrets != nil {
+		secret, found, err := secrets.Get(db, loaded.CredentialRef)
+		if err != nil {
+			return loaded, stored.UpdatedAt.UnixNano(), err
+		}
+		if found {
+			loaded.APIToken = secret
+		}
+	}
 	return loaded, stored.UpdatedAt.UnixNano(), nil
 }
 
@@ -124,6 +138,12 @@ func loadJellyfinSettings(db *gorm.DB) (jellyfinSettings, int64) {
 
 func jellyfinSettingsFromValue(value models.JSONMap, strict bool) (jellyfinSettings, error) {
 	settings := defaultJellyfinSettings()
+	if raw, ok := value["credentialRef"]; ok {
+		ref, valid := raw.(string)
+		if !valid || (ref != "" && CredentialRef(ref) != jellyfinAPITokenCredentialRef) {
+			return jellyfinSettingsValueError(strict, "credentialRef is invalid", settings)
+		}
+	}
 	if raw, ok := value["enabled"]; ok {
 		parsed, valid := raw.(bool)
 		if !valid {
@@ -271,7 +291,7 @@ func jellyfinSettingsStoredValue(settings jellyfinSettings) models.JSONMap {
 		mappings = append(mappings, models.JSONMap{"mvforgeLibraryId": mapping.MVForgeLibraryID, "jellyfinLibraryId": mapping.JellyfinLibraryID, "jellyfinName": mapping.JellyfinName})
 	}
 	return models.JSONMap{
-		"enabled": settings.Enabled, "baseUrl": settings.BaseURL, "apiToken": settings.APIToken,
+		"enabled": settings.Enabled, "baseUrl": settings.BaseURL, "credentialRef": string(jellyfinAPITokenCredentialRef),
 		"refreshAfterPublish": settings.RefreshAfterPublish, "refreshTestEncode": settings.RefreshTestEncode,
 		"debounceSeconds": settings.DebounceSeconds, "mappings": mappings,
 	}
@@ -294,7 +314,11 @@ func jellyfinSettingsProjection(settings jellyfinSettings) models.JSONMap {
 }
 
 func jellyfinSettingsForUpdate(db *gorm.DB, input models.JSONMap) (models.JSONMap, error) {
-	previous, _, err := loadJellyfinSettingsChecked(db)
+	return jellyfinSettingsForUpdateWithSecrets(db, input, gormProtectedSecretSource{})
+}
+
+func jellyfinSettingsForUpdateWithSecrets(db *gorm.DB, input models.JSONMap, secrets ProtectedSecretSource) (models.JSONMap, error) {
+	previous, _, err := loadJellyfinSettingsCheckedWithSecrets(db, secrets)
 	if err != nil {
 		return nil, fmt.Errorf("unable to load existing Jellyfin settings")
 	}
@@ -322,6 +346,15 @@ func jellyfinSettingsForUpdate(db *gorm.DB, input models.JSONMap) (models.JSONMa
 		}
 		if clear {
 			settings.APIToken = ""
+			if err := secrets.Delete(db, jellyfinAPITokenCredentialRef); err != nil {
+				return nil, fmt.Errorf("unable to clear Jellyfin credential")
+			}
+		}
+	}
+	settings.CredentialRef = jellyfinAPITokenCredentialRef
+	if settings.APIToken != "" {
+		if err := secrets.Put(db, jellyfinAPITokenCredentialRef, settings.APIToken); err != nil {
+			return nil, fmt.Errorf("unable to save Jellyfin credential")
 		}
 	}
 	seenMVForge := map[uint]bool{}

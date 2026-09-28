@@ -623,6 +623,19 @@ func openAPIPaths() gin.H {
 				},
 			},
 		},
+		"/api/settings/batch": gin.H{
+			"post": gin.H{
+				"tags":        []string{"Settings"},
+				"summary":     "Update multiple app settings atomically",
+				"operationId": "updateSettingsBatch",
+				"requestBody": requestBody(ref("SettingsBatchInput")),
+				"responses": gin.H{
+					"200": jsonResponse("Updated settings", gin.H{"type": "array", "items": ref("AppSetting")}),
+					"400": jsonResponse("Invalid request", ref("Error")),
+					"500": jsonResponse("Batch update failed", ref("Error")),
+				},
+			},
+		},
 		"/api/settings/{key}": gin.H{
 			"post": gin.H{
 				"tags":        []string{"Settings"},
@@ -1250,6 +1263,21 @@ func openAPIComponents() gin.H {
 				"type":     "object",
 				"required": []string{"value"},
 				"properties": gin.H{
+					"value": gin.H{"type": "object", "additionalProperties": true},
+				},
+			},
+			"SettingsBatchInput": gin.H{
+				"type":     "object",
+				"required": []string{"settings"},
+				"properties": gin.H{
+					"settings": gin.H{"type": "array", "items": ref("SettingBatchInput")},
+				},
+			},
+			"SettingBatchInput": gin.H{
+				"type":     "object",
+				"required": []string{"key", "value"},
+				"properties": gin.H{
+					"key":   gin.H{"type": "string"},
 					"value": gin.H{"type": "object", "additionalProperties": true},
 				},
 			},

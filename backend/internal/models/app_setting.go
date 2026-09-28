@@ -8,3 +8,11 @@ type AppSetting struct {
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
+
+// ProtectedCredential stores secret material separately from ordinary settings.
+// Its fields are deliberately omitted from JSON serialization.
+type ProtectedCredential struct {
+	CredentialRef string    `json:"-" gorm:"primaryKey"`
+	SecretValue   string    `json:"-" gorm:"not null"`
+	UpdatedAt     time.Time `json:"-"`
+}
