@@ -152,21 +152,13 @@ func TestExplicitQueueIntentPreservesProfileWhenClaimAssignmentDiffers(t *testin
 	}
 }
 
-func TestExplicitBatchQueueIntentFreezesOnlyAtClaim(t *testing.T) {
+func TestHistoricalBatchQueueIntentStillFreezesAtClaim(t *testing.T) {
 	db, path, library, profile := queueCreationFreezeFixture(t, false)
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	router.POST("/api/queue/batches", NewQueueHandler(db).CreateBatch)
-	body := fmt.Sprintf(`{"batchId":"explicit-batch","batchName":"Season 1","jobs":[{"mediaPath":%q,"libraryId":%d,"profileId":%d,"trackProfileKey":"tracks"}]}`, path, library.ID, profile.ID)
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/queue/batches", strings.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("batch create status=%d body=%s", response.Code, response.Body.String())
+	job := models.QueueJob{
+		MediaPath: path, LibraryID: library.ID, ProfileID: profile.ID, TrackProfileKey: "tracks",
+		ProcessingMode: ProcessingModeFullEncode, Status: JobStatusQueued, Stage: JobStageQueued,
 	}
-	var job models.QueueJob
-	if err := db.First(&job).Error; err != nil {
+	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
 	if queueJobFreezeComplete(job) || job.ActiveExecutionPlanID != nil || job.ProfileID != profile.ID || job.TrackProfileKey != "tracks" {

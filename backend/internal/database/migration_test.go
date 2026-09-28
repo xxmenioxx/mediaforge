@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -233,6 +234,50 @@ func TestMigrateUpgradesLegacyQueueWithoutLosingJob(t *testing.T) {
 	}
 	if reservation.AssetKey != job.MediaPath {
 		t.Fatalf("reservation was not backfilled: %#v", reservation)
+	}
+}
+
+func TestMigrateAddsBatchPreflightAndDestinationSnapshotWithoutRewritingQueueSnapshot(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "batch-preflight-migration.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := models.Profile{
+		Name: "Queue history", Scope: "asset", Container: "mkv", VideoCodec: "x265", CodecFamily: "hevc",
+		EncoderPolicy: "locked", PreferredEncoder: "libx265", AllowedEncoders: models.StringList{"libx265"},
+		FallbackPolicy: "wait", BitDepth: 10, PixelFormat: "yuv420p10le", QualityStrategy: "high",
+		ProfileVersion: 1, AudioCodec: "copy", QualityMode: "crf", QualityValue: 18,
+	}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := scheduler.CaptureProfileSnapshot(profile, time.Now(), "migration_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot["legacyDecision"] = "retained"
+	job := models.QueueJob{
+		MediaPath: "/raw/history.mkv", ProfileID: profile.ID, ProfileVersion: 1, ProfileSnapshot: snapshot,
+		Status: "failed", Stage: "failed",
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if !db.Migrator().HasTable(&models.QueueBatchPreflight{}) || !db.Migrator().HasColumn(&models.QueueJob{}, "resolved_destination_snapshot") {
+		t.Fatal("Batch Preflight persistence or destination snapshot schema was not migrated")
+	}
+	var persisted models.QueueJob
+	if err := db.First(&persisted, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.ProfileSnapshot["legacyDecision"] != "retained" || persisted.ProfileSnapshot["schemaVersion"] != float64(scheduler.ProfileSnapshotSchemaVersion) {
+		t.Fatalf("migration rewrote a historical Queue snapshot: %#v", persisted.ProfileSnapshot)
 	}
 }
 

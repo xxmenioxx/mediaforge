@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -26,6 +28,9 @@ const (
 
 type compatiblePreviewRequest struct {
 	Path                             string          `json:"path"`
+	PreflightCandidateID             string          `json:"preflightCandidateId,omitempty"`
+	PreflightRevision                uint            `json:"preflightRevision,omitempty"`
+	PreflightAssetID                 string          `json:"preflightAssetId,omitempty"`
 	ProfileID                        uint            `json:"profileId,omitempty"`
 	Profile                          *models.Profile `json:"profile,omitempty"`
 	Start                            string          `json:"start,omitempty"`
@@ -372,6 +377,12 @@ func (h AssetHandler) CreateCompatiblePreviewRequest(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "compatible preview request must contain valid JSON: " + err.Error()})
 		return
 	}
+	if strings.TrimSpace(input.PreflightCandidateID) != "" {
+		if err := resolveCompatiblePreviewPreflight(h.db, &input); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "batch_preflight_context_stale"})
+			return
+		}
+	}
 	now := time.Now()
 	normalized, err := normalizeCompatiblePreviewRequest(input)
 	if err != nil {
@@ -451,6 +462,50 @@ func (h AssetHandler) CreateCompatiblePreviewRequest(c *gin.Context) {
 		"expiresInSeconds": int(compatiblePreviewRequestRetention.Seconds()),
 		"path":             normalized.Path,
 	})
+}
+
+func resolveCompatiblePreviewPreflight(db *gorm.DB, input *compatiblePreviewRequest) error {
+	if db == nil || input == nil {
+		return fmt.Errorf("Batch Preflight preview context is unavailable")
+	}
+	candidateID, assetID := strings.TrimSpace(input.PreflightCandidateID), strings.TrimSpace(input.PreflightAssetID)
+	if candidateID == "" || assetID == "" || input.PreflightRevision == 0 {
+		return fmt.Errorf("Batch Preflight preview requires candidate, revision, and asset identity")
+	}
+	var candidate models.QueueBatchPreflight
+	if err := db.First(&candidate, "id = ?", candidateID).Error; err != nil {
+		return fmt.Errorf("load Batch Preflight candidate: %w", err)
+	}
+	if candidate.Revision != input.PreflightRevision || !candidate.Resolved {
+		return fmt.Errorf("Batch Preflight candidate revision is stale or unresolved")
+	}
+	state, err := queuePreflightStateFromRecord(candidate)
+	if err != nil {
+		return fmt.Errorf("decode Batch Preflight candidate: %w", err)
+	}
+	for _, asset := range state.Assets {
+		if asset.ID != assetID {
+			continue
+		}
+		if asset.ResolvedJob == nil || (asset.Status != queuePreflightReady && asset.Status != queuePreflightQueued) {
+			return fmt.Errorf("candidate asset has no approved resolved plan")
+		}
+		if filepath.Clean(asset.MediaPath) != filepath.Clean(input.Path) || filepath.Clean(asset.ResolvedJob.MediaPath) != filepath.Clean(input.Path) {
+			return fmt.Errorf("candidate asset identity does not match preview source")
+		}
+		currentRevision, revisionErr := queuePreflightSourceRevision(input.Path)
+		if revisionErr != nil || currentRevision != asset.SourceRevision {
+			return fmt.Errorf("source identity changed after Batch Preflight")
+		}
+		profile, err := scheduler.RestoreProfileSnapshot(asset.ResolvedJob.ProfileSnapshot)
+		if err != nil {
+			return fmt.Errorf("restore candidate profile snapshot: %w", err)
+		}
+		profile = applySelectedEncoder(profile, asset.SelectedEncoder)
+		input.Profile, input.ProfileID = &profile, 0
+		return nil
+	}
+	return fmt.Errorf("candidate asset identity was not found")
 }
 
 func (h AssetHandler) compatiblePreviewRequest(c *gin.Context, operation string) {

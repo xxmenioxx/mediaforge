@@ -316,7 +316,7 @@ func TestQueueCapturesAssetTrackProfileIntent(t *testing.T) {
 	}
 }
 
-func TestBatchCapturesPathTrackProfileIntentPerAsset(t *testing.T) {
+func TestLegacyBatchTrackAssignmentsCannotBypassPreflight(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:path-track-profile-batch?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -369,22 +369,15 @@ func TestBatchCapturesPathTrackProfileIntentPerAsset(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/queue/batches", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "batch_preflight_required") {
+		t.Fatalf("direct batch status=%d body=%s", response.Code, response.Body.String())
 	}
-	var result struct {
-		Jobs []models.QueueJob `json:"jobs"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+	var jobCount int64
+	if err := db.Model(&models.QueueJob{}).Count(&jobCount).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Jobs) != len(assets) {
-		t.Fatalf("jobs=%d want=%d", len(result.Jobs), len(assets))
-	}
-	for _, job := range result.Jobs {
-		if job.TrackProfileKey != "season-tracks" || len(job.TrackProfileSnapshot) != 0 || job.ActiveExecutionPlanID != nil {
-			t.Fatalf("job %s queued intent was frozen before claim: %#v", job.MediaPath, job)
-		}
+	if jobCount != 0 {
+		t.Fatalf("legacy batch route created %d Queue jobs", jobCount)
 	}
 }
 

@@ -1,0 +1,415 @@
+package handlers
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/scheduler"
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
+
+type queuePreflightFixture struct {
+	db      *gorm.DB
+	profile models.Profile
+	library models.Library
+	paths   []string
+}
+
+func newQueuePreflightFixture(t *testing.T, sourceCount int) queuePreflightFixture {
+	t.Helper()
+	db := queueSelectedAssetsTestDB(t)
+	sourceRoot, destinationRoot := t.TempDir(), t.TempDir()
+	profile := authoritativeTestProfile()
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{Name: "Preflight library", SourcePath: sourceRoot, DestinationPath: destinationRoot}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, sourceCount)
+	for index := 0; index < sourceCount; index++ {
+		path := filepath.Join(sourceRoot, fmt.Sprintf("Episode%02d.mkv", index+1))
+		if err := os.WriteFile(path, []byte("stable fixture source"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		record := models.AssetRecord{Path: path, RootPath: sourceRoot, GroupPath: filepath.Base(sourceRoot), FileName: filepath.Base(path), Status: "unprocessed"}
+		if err := db.Create(&record).Error; err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	state := models.RuntimeState{
+		SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "desktop_safe",
+		StableFingerprint: "batch-preflight-test-runtime", FingerprintVersion: "v1",
+		Encoders: models.JSONMap{"libx265": map[string]any{"Listed": true, "Usable": true}},
+	}
+	if err := db.Create(&state).Error; err != nil {
+		t.Fatal(err)
+	}
+	return queuePreflightFixture{db: db, profile: profile, library: library, paths: paths}
+}
+
+func queuePreflightRouter(db *gorm.DB) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler := NewQueueHandler(db)
+	router.POST("/preflights", handler.CreateBatchPreflight)
+	router.POST("/preflights/selected-assets", handler.PreflightSelectedAssets)
+	router.PUT("/preflights/:id", handler.UpdateBatchPreflight)
+	router.POST("/preflights/:id/edit", handler.EditBatchPreflight)
+	router.POST("/preflights/:id/accept", handler.AcceptBatchPreflight)
+	router.POST("/batches", handler.CreateBatch)
+	router.POST("/selected-assets", handler.QueueSelectedAssets)
+	return router
+}
+
+func queuePreflightRequest(t *testing.T, router *gin.Engine, method, target string, input any) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(method, target, bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	return response
+}
+
+func queuePreflightInput(fixture queuePreflightFixture, batchName string) QueueBatchPreflightInput {
+	jobs := make([]QueueJobInput, 0, len(fixture.paths))
+	for _, path := range fixture.paths {
+		jobs = append(jobs, QueueJobInput{
+			MediaPath: path, LibraryID: fixture.library.ID, ProfileID: fixture.profile.ID,
+			ProcessingMode: ProcessingModeFullEncode, Priority: 5,
+		})
+	}
+	return QueueBatchPreflightInput{BatchID: "preflight-test-batch", BatchName: batchName, Jobs: jobs}
+}
+
+func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	router := queuePreflightRouter(fixture.db)
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", queuePreflightInput(fixture, "Season 1"))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightReady || candidate.Assets[0].Plan == nil {
+		t.Fatalf("candidate did not resolve a ready plan: %#v", candidate.Assets)
+	}
+	if candidate.Assets[0].Plan.ProfileVersion < 1 || candidate.Assets[0].Plan.ProfileCapturedAt == nil {
+		t.Fatalf("candidate did not expose frozen profile version and capture time: %#v", candidate.Assets[0].Plan)
+	}
+	var queuedCount, executionPlanCount int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&queuedCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.ExecutionPlan{}).Count(&executionPlanCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if queuedCount != 0 || executionPlanCount != 0 {
+		t.Fatalf("draft created Queue state before acceptance: jobs=%d plans=%d", queuedCount, executionPlanCount)
+	}
+
+	reviewedSnapshot := candidate.Assets[0].Plan.ProfileSnapshot
+	reviewedConstraints := candidate.Assets[0].Plan.Constraints
+	mutatedDestination := filepath.Join(t.TempDir(), "changed-destination")
+	if err := os.Mkdir(mutatedDestination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.Profile{}).Where("id = ?", fixture.profile.ID).Update("quality_value", 31).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.Library{}).Where("id = ?", fixture.library.ID).Update("destination_path", mutatedDestination).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	accepted := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{
+		"revision": candidate.Revision, "assetIds": []string{candidate.Assets[0].ID},
+	})
+	if accepted.Code != http.StatusCreated {
+		t.Fatalf("accept status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	var acceptedCandidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(accepted.Body.Bytes(), &acceptedCandidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(acceptedCandidate.Jobs) != 1 {
+		t.Fatalf("accepted jobs=%d want=1", len(acceptedCandidate.Jobs))
+	}
+	job := acceptedCandidate.Jobs[0]
+	if !reflect.DeepEqual(job.ProfileSnapshot, reviewedSnapshot) {
+		t.Fatalf("accepted Queue snapshot differs from reviewed snapshot\nreviewed=%#v\naccepted=%#v", reviewedSnapshot, job.ProfileSnapshot)
+	}
+	profile, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.QualityValue != fixture.profile.QualityValue {
+		t.Fatalf("accepted profile quality=%d want reviewed=%d", profile.QualityValue, fixture.profile.QualityValue)
+	}
+	if !reflect.DeepEqual(acceptedCandidate.Assets[0].Plan.Constraints, reviewedConstraints) {
+		t.Fatal("accepted plan constraints changed from reviewed constraints")
+	}
+	wantOutput := filepath.Join(fixture.library.DestinationPath, filepath.Base(fixture.paths[0]))
+	if got := workerStringValue(job.ResolvedDestinationSnapshot["outputPath"]); got != wantOutput {
+		t.Fatalf("accepted output path=%q want frozen destination %q", got, wantOutput)
+	}
+	changedDefaults := defaultAssetDefaultsValue()
+	videoDefaults := changedDefaults["video"].(models.JSONMap)
+	videoDefaults["custom"] = models.JSONMap{"videoCodec": "copy"}
+	changedDefaults["video"] = videoDefaults
+	if err := fixture.db.Create(&models.AppSetting{Key: assetDefaultsSettingKey, Value: changedDefaults}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.Profile{}).Where("id = ?", fixture.profile.ID).Update("quality_value", 42).Error; err != nil {
+		t.Fatal(err)
+	}
+	resolvedProfile, err := resolveQueueVideoProfile(fixture.db, job.MediaPath, job, profile, AssetConversionOverrideState{}, "mutated-encoder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolvedProfile.QualityValue != fixture.profile.QualityValue || workerStringValue(resolvedProfile.WorkerConfig["videoEncoder"]) != "libx265" {
+		t.Fatalf("worker changed reviewed profile after acceptance: %#v", resolvedProfile)
+	}
+}
+
+func TestBatchPreflightEditInvalidatesThenReresolvesSavedConfiguration(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	if err := fixture.db.Create(&models.ProfileAssignment{TargetType: "path", TargetPath: filepath.Dir(fixture.paths[0]), MediaType: "video", Selection: "profile", VideoProfileID: fixture.profile.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := queuePreflightRouter(fixture.db)
+	initialInput := queuePreflightInput(fixture, "Original batch")
+	initialInput.Jobs[0].ResolveProfileAssignments = true
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", initialInput)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	edit := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/edit", map[string]any{"revision": candidate.Revision})
+	if edit.Code != http.StatusOK {
+		t.Fatalf("edit status=%d body=%s", edit.Code, edit.Body.String())
+	}
+	var invalidated QueueBatchPreflightResponse
+	if err := json.Unmarshal(edit.Body.Bytes(), &invalidated); err != nil {
+		t.Fatal(err)
+	}
+	if invalidated.Resolved || invalidated.Revision != candidate.Revision+1 {
+		t.Fatalf("Edit did not invalidate prior resolution: resolved=%v revision=%d want=%d", invalidated.Resolved, invalidated.Revision, candidate.Revision+1)
+	}
+	if invalidated.Assets[0].Input.ProfileID != fixture.profile.ID || invalidated.Assets[0].Input.LibraryID != fixture.library.ID {
+		t.Fatalf("Edit lost candidate configuration: %#v", invalidated.Assets[0].Input)
+	}
+	if len(invalidated.Assets[0].Input.ProfileResolution) == 0 {
+		t.Fatal("candidate did not persist effective assignment provenance")
+	}
+	input := queuePreflightInput(fixture, "Edited batch")
+	input.Revision = invalidated.Revision
+	input.Jobs[0].Notes = "retained user selection"
+	updated := queuePreflightRequest(t, router, http.MethodPut, "/preflights/"+candidate.ID, input)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	var resolved QueueBatchPreflightResponse
+	if err := json.Unmarshal(updated.Body.Bytes(), &resolved); err != nil {
+		t.Fatal(err)
+	}
+	if !resolved.Resolved || resolved.Revision != invalidated.Revision+1 || resolved.BatchName != "Edited batch" || resolved.Assets[0].Input.Notes != "retained user selection" || resolved.Assets[0].Plan == nil {
+		t.Fatalf("Edit did not persist and re-resolve candidate inputs: %#v", resolved)
+	}
+	if !reflect.DeepEqual(resolved.Assets[0].Input.ProfileResolution, candidate.Assets[0].Input.ProfileResolution) {
+		t.Fatal("Edit discarded frozen profile assignment provenance")
+	}
+	if resolved.Assets[0].Plan == nil || resolved.Assets[0].Plan.Profile.ID != fixture.profile.ID {
+		t.Fatalf("Edit lost effective assigned profile: %#v", resolved.Assets[0].Plan)
+	}
+	staleAccept := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{"revision": candidate.Revision, "assetIds": []string{resolved.Assets[0].ID}})
+	if staleAccept.Code != http.StatusConflict {
+		t.Fatalf("stale candidate accepted: status=%d body=%s", staleAccept.Code, staleAccept.Body.String())
+	}
+}
+
+func TestBatchPreflightAllowsReadyOnlyAndRetainsBlockedAssets(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 2)
+	input := queuePreflightInput(fixture, "Partial batch")
+	input.Jobs[1].LibraryID = 99999
+	router := queuePreflightRouter(fixture.db)
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", input)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	var readyID, blockedID string
+	blockedCount := 0
+	for _, asset := range candidate.Assets {
+		if asset.Status == queuePreflightReady {
+			readyID = asset.ID
+		} else if asset.Status == queuePreflightBlocked {
+			blockedID = asset.ID
+			blockedCount++
+		}
+	}
+	if readyID == "" || blockedCount != 1 {
+		t.Fatalf("expected one ready and one blocked asset: %#v", candidate.Assets)
+	}
+	blockedAccept := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{"revision": candidate.Revision, "assetIds": []string{blockedID}})
+	if blockedAccept.Code != http.StatusConflict {
+		t.Fatalf("blocked asset was accepted: status=%d body=%s", blockedAccept.Code, blockedAccept.Body.String())
+	}
+	var queuedBeforeAcceptance int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&queuedBeforeAcceptance).Error; err != nil {
+		t.Fatal(err)
+	}
+	if queuedBeforeAcceptance != 0 {
+		t.Fatalf("blocked acceptance created %d Queue jobs", queuedBeforeAcceptance)
+	}
+	accepted := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{"revision": candidate.Revision, "assetIds": []string{readyID}})
+	if accepted.Code != http.StatusCreated {
+		t.Fatalf("partial accept status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	var partial QueueBatchPreflightResponse
+	if err := json.Unmarshal(accepted.Body.Bytes(), &partial); err != nil {
+		t.Fatal(err)
+	}
+	queued, blocked := 0, 0
+	for _, asset := range partial.Assets {
+		if asset.Status == queuePreflightQueued {
+			queued++
+		}
+		if asset.Status == queuePreflightBlocked {
+			blocked++
+		}
+	}
+	if queued != 1 || blocked != 1 {
+		t.Fatalf("partial acceptance did not retain unresolved batch context: %#v", partial.Assets)
+	}
+}
+
+func TestLegacyBatchCreationRequiresPreflight(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	router := queuePreflightRouter(fixture.db)
+	response := queuePreflightRequest(t, router, http.MethodPost, "/batches", queuePreflightInput(fixture, "Direct batch"))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "batch_preflight_required") {
+		t.Fatalf("direct batch status=%d body=%s", response.Code, response.Body.String())
+	}
+	var count int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("direct batch created %d Queue jobs", count)
+	}
+	var asset models.AssetRecord
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	selectedCommit := queuePreflightRequest(t, router, http.MethodPost, "/selected-assets", map[string]any{"assetIds": []uint{asset.ID}, "commit": true})
+	if selectedCommit.Code != http.StatusConflict || !strings.Contains(selectedCommit.Body.String(), "batch_preflight_required") {
+		t.Fatalf("direct selected-asset commit status=%d body=%s", selectedCommit.Code, selectedCommit.Body.String())
+	}
+	selectedCandidate := queuePreflightRequest(t, router, http.MethodPost, "/preflights/selected-assets", map[string]any{"assetIds": []uint{asset.ID}})
+	if selectedCandidate.Code != http.StatusCreated {
+		t.Fatalf("selected-asset Preflight status=%d body=%s", selectedCandidate.Code, selectedCandidate.Body.String())
+	}
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("selected-asset Preflight created %d Queue jobs before acceptance", count)
+	}
+}
+
+func TestBatchPreflightTestEncodeUsesReviewedCandidateSnapshot(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	router := queuePreflightRouter(fixture.db)
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", queuePreflightInput(fixture, "Test Encode context"))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.Profile{}).Where("id = ?", fixture.profile.ID).Update("quality_value", 32).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Create(&models.AppSetting{Key: "assetConversionOverrides", Value: models.JSONMap{
+		fixture.paths[0]: models.JSONMap{"frameStructureMaxBFrames": 4, "frameStructureBFrameMode": "custom"},
+	}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := (AssetHandler{db: fixture.db}).resolveTestEncodeRequest(testEncodeRequest{
+		SourcePath: fixture.paths[0], LibraryID: fixture.library.ID, ConfigurationSource: "batch_preflight",
+		PreflightCandidateID: candidate.ID, PreflightRevision: candidate.Revision, PreflightAssetID: candidate.Assets[0].ID,
+		StartMode: "beginning", DurationSeconds: 60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.profile.QualityValue != fixture.profile.QualityValue || resolved.job.ProfileID != fixture.profile.ID || workerStringValue(resolved.profile.WorkerConfig["videoEncoder"]) != "libx265" {
+		t.Fatalf("Test Encode re-resolved material candidate fields: profile=%#v job=%#v", resolved.profile, resolved.job)
+	}
+	if resolved.requested["batchPreflightCandidateId"] != candidate.ID || resolved.requested["batchPreflightAssetId"] != candidate.Assets[0].ID {
+		t.Fatalf("Test Encode did not retain exact candidate identity: %#v", resolved.requested)
+	}
+	stale, err := (AssetHandler{db: fixture.db}).resolveTestEncodeRequest(testEncodeRequest{
+		SourcePath: fixture.paths[0], LibraryID: fixture.library.ID, ConfigurationSource: "batch_preflight",
+		PreflightCandidateID: candidate.ID, PreflightRevision: candidate.Revision + 1, PreflightAssetID: candidate.Assets[0].ID,
+		StartMode: "beginning", DurationSeconds: 60,
+	})
+	if err == nil || stale.job.ID != 0 {
+		t.Fatalf("stale candidate context unexpectedly resolved: result=%#v err=%v", stale, err)
+	}
+}
+
+func TestCompatiblePreviewUsesExactBatchPreflightContext(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	router := queuePreflightRouter(fixture.db)
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", queuePreflightInput(fixture, "Preview context"))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	changed := fixture.profile
+	changed.QualityValue = 99
+	preview := compatiblePreviewRequest{
+		Path: fixture.paths[0], Profile: &changed,
+		PreflightCandidateID: candidate.ID, PreflightRevision: candidate.Revision, PreflightAssetID: candidate.Assets[0].ID,
+	}
+	if err := resolveCompatiblePreviewPreflight(fixture.db, &preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Profile == nil || preview.Profile.QualityValue != fixture.profile.QualityValue || preview.ProfileID != 0 || workerStringValue(preview.Profile.WorkerConfig["videoEncoder"]) != "libx265" {
+		t.Fatalf("Preview did not use the exact reviewed profile: %#v", preview)
+	}
+	preview.PreflightRevision++
+	if err := resolveCompatiblePreviewPreflight(fixture.db, &preview); err == nil {
+		t.Fatal("Preview accepted a stale Batch Preflight revision")
+	}
+}

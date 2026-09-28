@@ -915,7 +915,10 @@ func (h WorkerHandler) DryRun(c *gin.Context) {
 		job.Progress = 5
 	}
 	job.OutputPath = outputPath
-	job.PlannedLibraryRoot = library.DestinationPath
+	job.PlannedLibraryRoot = workerStringValue(job.ResolvedDestinationSnapshot["destinationRoot"])
+	if job.PlannedLibraryRoot == "" {
+		job.PlannedLibraryRoot = library.DestinationPath
+	}
 	job.PlannedPublishedPath = plannedOutputPathForJob(h.db, job, library, effectiveProfile)
 	if job.PublishMode == PublishModeReplaceLibrary {
 		job.ReplacementTargetPath = outputFileRelativePath(job.MediaPath, effectiveProfile)
@@ -1180,7 +1183,10 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	now := time.Now()
 	job.Progress = 5
 	job.OutputPath = outputPath
-	job.PlannedLibraryRoot = library.DestinationPath
+	job.PlannedLibraryRoot = workerStringValue(job.ResolvedDestinationSnapshot["destinationRoot"])
+	if job.PlannedLibraryRoot == "" {
+		job.PlannedLibraryRoot = library.DestinationPath
+	}
 	job.PlannedPublishedPath = plannedOutputPathForJob(h.db, job, library, effectiveProfile)
 	if job.PublishMode == PublishModeReplaceLibrary {
 		job.ReplacementTargetPath = outputFileRelativePath(job.MediaPath, effectiveProfile)
@@ -1287,8 +1293,8 @@ func saveQueueJobWithDeliverySnapshot(db *gorm.DB, job *models.QueueJob) error {
 // constraints. The command and later validation must consume this snapshot;
 // neither may resolve HEVC again from mutable profile state.
 func freezeQueuePreparedProfileSnapshot(db *gorm.DB, job *models.QueueJob, profile models.Profile) error {
-	if job == nil || job.ID == 0 {
-		return fmt.Errorf("queue job must be persisted before freezing the prepared profile")
+	if job == nil {
+		return fmt.Errorf("queue job is required to freeze the prepared profile")
 	}
 	capturedAt := time.Now()
 	snapshot, err := scheduler.CaptureProfileSnapshot(profile, capturedAt, "queue_preparing")
@@ -1363,6 +1369,10 @@ func freezeQueuePreparedProfileSnapshot(db *gorm.DB, job *models.QueueJob, profi
 	job.ProfileSnapshot = snapshot
 	job.ProfileVersion = max(profile.ProfileVersion, 1)
 	job.ProfileCapturedAt = &capturedAt
+	job.ProfileSnapshot[queuePreparationFrozenSnapshotKey] = true
+	if job.ID == 0 {
+		return nil
+	}
 	return db.Model(&models.QueueJob{}).Where("id = ?", job.ID).Updates(map[string]any{
 		"profile_version":     job.ProfileVersion,
 		"profile_snapshot":    job.ProfileSnapshot,
@@ -1392,9 +1402,22 @@ func applyFrozenCadenceResolution(job models.QueueJob, profile models.Profile) m
 }
 
 func resolveQueueVideoProfile(db *gorm.DB, mediaPath string, job models.QueueJob, profile models.Profile, override AssetConversionOverrideState, selectedEncoder string) (models.Profile, error) {
-	profile = applyAssetConversionOverrideToProfile(profile, override)
-	profile.WorkerConfig = restorationWorkerConfigForAsset(profile.WorkerConfig, mediaPath)
+	_, preparedSnapshot := job.ProfileSnapshot[queuePreparationFrozenSnapshotKey]
+	if preparedSnapshot {
+		if frozenEncoder, ok := job.ProfileSnapshot[models.QueuePreflightSelectedEncoderKey].(string); ok && strings.TrimSpace(frozenEncoder) != "" {
+			selectedEncoder = frozenEncoder
+		}
+	}
+	if !preparedSnapshot {
+		profile = applyAssetConversionOverrideToProfile(profile, override)
+		profile.WorkerConfig = restorationWorkerConfigForAsset(profile.WorkerConfig, mediaPath)
+	}
 	profile = applySelectedEncoder(profile, selectedEncoder)
+	if preparedSnapshot {
+		profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+		profile.WorkerConfig["qsvAssetAnalysisPath"] = mediaPath
+		return profile, nil
+	}
 	profile = applyFrozenCadenceResolution(job, profile)
 	profile, err := resolveAutomaticFrameStructure(db, mediaPath, profile)
 	if err != nil {
@@ -1719,6 +1742,7 @@ func (h WorkerHandler) profileForJob(job models.QueueJob) (models.Profile, error
 }
 
 const assetConversionOverrideSnapshotKey = "assetConversionOverride"
+const queuePreparationFrozenSnapshotKey = "queuePreparationFrozen"
 
 func currentConversionOverrideForJob(job models.QueueJob, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
 	override := conversionOverrideForPath(job.MediaPath, entries)
@@ -1822,6 +1846,9 @@ func plannedOutputPath(mediaPath string, library models.Library, profile models.
 }
 
 func plannedOutputPathForJob(db *gorm.DB, job models.QueueJob, library models.Library, profile models.Profile) string {
+	if outputPath := workerStringValue(job.ResolvedDestinationSnapshot["outputPath"]); outputPath != "" {
+		return outputPath
+	}
 	relative := libraryOutputRelativePathForJob(db, job, library, libraryOutputBaseRelativePath(libraryRelativeMediaPath(job.MediaPath, library), library))
 	return path.Join(library.DestinationPath, outputFileRelativePath(relative, profile))
 }

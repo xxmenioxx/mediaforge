@@ -67,7 +67,9 @@ import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
+import { openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_OPEN_EVENT, QUEUE_BATCH_PREFLIGHT_STORAGE_KEY } from '../utils/queueBatchPreflightEvents';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -94,9 +96,19 @@ const VIDEO_PROFILE_OVERRIDE_ONLY = -1;
 const VIDEO_PROFILE_AUDIO_ONLY = -2;
 
 export function AssetsPage() {
+  const [queuePreflightCandidate, setQueuePreflightCandidate] = useState<QueueBatchPreflightResponse | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const initialLocation = searchParams.get('location') === 'library' || ['library', 'converted', 'archive', 'reports'].includes(searchParams.get('tab') ?? '') ? 'library' : 'unprocessed';
   const initialProvenance = searchParams.get('provenance') ?? (searchParams.get('tab') === 'converted' ? 'converted' : '');
+  useEffect(() => {
+    const handleCandidate = (event: Event) => setQueuePreflightCandidate((event as CustomEvent<QueueBatchPreflightResponse>).detail);
+    window.addEventListener(QUEUE_BATCH_PREFLIGHT_OPEN_EVENT, handleCandidate);
+    try {
+      const candidateId = window.localStorage.getItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY);
+      if (candidateId) void api.getQueueBatchPreflight(candidateId).then(setQueuePreflightCandidate).catch(() => undefined);
+    } catch { /* The current page remains usable when browser storage is unavailable. */ }
+    return () => window.removeEventListener(QUEUE_BATCH_PREFLIGHT_OPEN_EVENT, handleCandidate);
+  }, []);
   const originalFilterValue = searchParams.get('original') ?? '';
   const originalFilter = originalFilterValue === 'archived' ? '' : originalFilterValue;
   const [tab, setTab] = useState<'unprocessed' | 'library'>(initialLocation);
@@ -396,6 +408,18 @@ export function AssetsPage() {
           )}
         </Card>
       </Box>
+      <BatchPreflightDialog
+        candidate={queuePreflightCandidate}
+        onClose={() => setQueuePreflightCandidate(null)}
+        onAccepted={(accepted) => {
+          setQueuePreflightCandidate(accepted);
+          if (accepted.assets.every((asset) => asset.status === 'queued')) {
+            try { window.localStorage.removeItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY); } catch { /* Ignore unavailable browser storage. */ }
+          }
+          void queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+          void queryClient.invalidateQueries({ queryKey: ['assets'] });
+        }}
+      />
     </>
   );
 }
@@ -1067,20 +1091,20 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 		onSuccess: (response) => { setQueueCommitResult(null); setQueuePlan(response); },
 	});
 
-	const createQueue = useMutation({
+		const createQueue = useMutation({
 		mutationFn: async () => {
 			if (!queuePlan?.summary.eligible) throw new Error('No selected assets are eligible for Queue.');
-			return queueMode === 'remaining'
-				? api.queueRemainingCommit(queueAssetIds)
-				: api.queueSelectedAssets({ assetIds: queueAssetIds, commit: true });
+			return api.preflightSelectedAssets(queueAssetIds);
 		},
-		onSuccess: async (response) => {
+		onSuccess: async (candidate) => {
 			await Promise.all([
 				queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
 				queryClient.invalidateQueries({ queryKey: ['assets'] }),
 			]);
-			setQueueCommitResult(response);
-			setQueuePlan(response);
+			setQueueCommitResult(null);
+			setQueuePlan(null);
+			setQueueAssetIds([]);
+			openQueueBatchPreflight(candidate);
 		},
 	});
 	const displayedQueueResult = queueCommitResult ?? queuePlan;
@@ -1305,43 +1329,17 @@ export function AssetCollectionRows({
       if (blockedLifecycle.length) throw new Error(`These paths cannot be queued from ${mode}: ${blockedLifecycle.map(pathLabelForCollection).join(', ')}`);
       const missingDestination = selectedGroups.filter((group) => !effectivePathDestination(group, destinations, mode));
       if (missingDestination.length) throw new Error(`Select Destination for: ${missingDestination.map(pathLabelForCollection).join(', ')}`);
-      const blockedAssets = selectedGroups.filter((group) => safeArray(group.assets).some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs)));
-      if (blockedAssets.length) throw new Error(`Review or active Queue jobs block: ${blockedAssets.map(pathLabelForCollection).join(', ')}`);
-
-		const batches: Array<{ batchId: string; batchName: string; jobs: QueueJobInput[] }> = [];
-      for (const group of selectedGroups) {
-        const assignments = pathAssignmentsFor(group.path, profileAssignments.data ?? []);
-        const video = assignments.get('video');
-        const audio = assignments.get('audio');
-        const tracks = assignments.get('tracks');
-        const hasVideo = video?.selection === 'profile' && Boolean(video.videoProfileId);
-        const hasAudio = audio?.selection === 'profile' && Boolean(audio.profileKey);
-        const hasTracks = tracks?.selection === 'profile' && Boolean(tracks.profileKey);
-        if (!hasVideo && !hasAudio && !hasTracks) throw new Error(`Select at least one profile for ${pathLabelForCollection(group)}.`);
-        const fallbackProfileId = pathVideoProfiles[0]?.id ?? profiles.find((profile) => !profile.disabled && !profile.deletedAt)?.id ?? 0;
-        const profileId = hasVideo ? video?.videoProfileId ?? 0 : fallbackProfileId;
-        if (!profileId) throw new Error(`No usable video profile is available to build ${pathLabelForCollection(group)}.`);
-        const destinationLibraryId = effectivePathDestination(group, destinations, mode);
-        const assets = safeArray(group.assets).filter((asset) => !asset.missing);
-        if (!assets.length) throw new Error(`${pathLabelForCollection(group)} has no available assets.`);
-		const jobs = assets.map((asset): QueueJobInput => ({
-            mediaPath: asset.path,
-            publishMode: mode === 'library' ? 'replace_library_asset' : 'standard',
-            libraryId: destinationLibraryId,
-            profileId,
-            audioProfileKey: hasAudio ? audio?.profileKey ?? '' : '',
-            trackProfileKey: hasTracks ? tracks?.profileKey ?? '' : '',
-            resolveProfileAssignments: true,
-            processingMode: hasVideo ? 'full_encode' : 'audio_only',
-            priority: 5,
-            notes: queueNotes(`Queued from selected path: ${groupDisplayPath(group)}`, hasAudio ? audio?.profileKey ?? '' : ''),
-		}));
-		batches.push({ batchId: `path-${slugify(pathLabelForCollection(group))}-${Date.now()}-${batches.length}`, batchName: `${collection.title} · ${pathLabelForCollection(group)}`, jobs });
-      }
-		return Promise.all(batches.map((batch) => api.createQueueBatch(batch)));
+		const selectedAssets = selectedGroups.flatMap((group) => safeArray(group.assets));
+		if (selectedAssets.some((asset) => typeof asset.id !== 'number' || asset.id <= 0)) {
+			throw new Error('Every asset in the selected paths needs a persisted identity before Batch Preflight. Refresh Assets and try again.');
+		}
+		const assetIds = Array.from(new Set(selectedAssets.map((asset) => asset.id as number)));
+		if (!assetIds.length) throw new Error('The selected paths have no available assets to review.');
+		return api.preflightSelectedAssets(assetIds);
     },
-		onSuccess: async () => {
-		await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+		onSuccess: async (candidate) => {
+		await Promise.all([queryClient.invalidateQueries({ queryKey: ['queueJobs'] }), queryClient.invalidateQueries({ queryKey: ['assets'] })]);
+		openQueueBatchPreflight(candidate);
 	},
   });
 
@@ -1800,23 +1798,11 @@ function AssetGroupRow({
 
       const batchId = createBatchId(group);
       const batchName = groupDisplayPath(group);
-	  const validations = await Promise.all(groupAssets.map(async (asset) => {
+      const batchJobs: QueueJobInput[] = groupAssets.map(
+      (asset) => {
         const assignment = profileAssignments.data?.find((candidate) => candidate.targetType === 'asset' && candidate.mediaType === 'tracks' && normalizePath(candidate.targetPath) === normalizePath(asset.path));
         const effectiveTrack = assignment?.selection === 'disabled' ? undefined : assignment?.selection === 'profile' ? trackProfiles.find((profile) => profile.key === assignment.profileKey) : trackProfile;
-        return { asset, profile: effectiveTrack, result: effectiveTrack ? validateTrackProfile(effectiveTrack, await api.scan({ path: asset.path, force: false })) : { applies: true, reasons: [] as string[] } };
-      }));
-	  const incompatible = validations.filter(({ result }) => !result.applies);
-	  if (incompatible.some(({ profile }) => profile?.validationMode === 'block')) {
-	    throw new Error(`Track profile blocked this path: ${incompatible.map(({ asset, result }) => `${asset.fileName}: ${result.reasons.join(', ')}`).join(' · ')}`);
-	  }
-	  await Promise.all(incompatible.filter(({ asset, profile }) => profile?.validationMode === 'review' && !assetReviewApproved(asset)).map(({ asset, result }) => api.updateAssetReview({ path: asset.path, requiresReview: true, source: 'track-profile', reason: result.reasons.join('; '), tags: ['track-profile-incompatible'] })));
-	  const queueable = validations.filter(({ asset, profile, result }) => result.applies || profile?.validationMode === 'warn' || (profile?.validationMode === 'review' && assetReviewApproved(asset)));
-	  if (queueable.length === 0) {
-      throw new Error('No assets in this path are eligible for queueing.');
-    }
-
-    const batchJobs: QueueJobInput[] = queueable.map(
-      ({ asset, profile: effectiveTrack, result }) => ({
+        return {
         mediaPath: asset.path,
         publishMode: isLibraryGroup
           ? 'replace_library_asset'
@@ -1836,27 +1822,25 @@ function AssetGroupRow({
         priority: 5,
 
         notes: queueNotes(
-          `Queued from folder: ${batchName}${
-            result.applies
-              ? ''
-              : `\nTrack profile ${effectiveTrack?.key} did not apply: ${result.reasons.join('; ')}`
-          }`,
+          `Queued from folder: ${batchName}`,
           selectedAudioProfileKey,
         ),
-      }),
+      };
+      },
     );
 
-    return api.createQueueBatch({
+    return api.createQueueBatchPreflight({
       batchId,
       batchName,
       jobs: batchJobs,
     });
     },
-    onSuccess: async () => {
+    onSuccess: async (candidate) => {
 	  await Promise.all([
 		queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
 		queryClient.invalidateQueries({ queryKey: ['assets'] }),
 	  ]);
+	  openQueueBatchPreflight(candidate);
     },
   });
   const bulkAssetAction = useMutation({
@@ -2171,7 +2155,7 @@ function AssetGroupRow({
                 {!representativeAsset && groupAssets.length > 0 ? <Alert severity="warning">This path has no physically available asset to evaluate. Run Sync Assets after restoring or removing stale records.</Alert> : null}
                 {queueGroup.isSuccess ? (
                   <Alert severity="success">
-                    {queueGroup.data.jobs.length} files queued atomically from this folder.
+                    Batch Preflight opened for {queueGroup.data.assets.length} files from this folder.
                   </Alert>
                 ) : null}
 
@@ -6958,10 +6942,6 @@ function configurationForPathSelection(groups: AssetGroup[], assignments: Profil
     trackProfileKey: values.every((value) => value.trackProfileKey === first.trackProfileKey) ? first.trackProfileKey : '',
     destinationLibraryId: values.every((value) => value.destinationLibraryId === first.destinationLibraryId) ? first.destinationLibraryId : 0,
   };
-}
-
-function slugify(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'assets';
 }
 
 function mediaAreaForGroup(group: AssetGroup, settings?: AppSetting[]) {

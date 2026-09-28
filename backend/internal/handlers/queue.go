@@ -26,23 +26,34 @@ type QueueHandler struct {
 const sourceAnalysisEvidenceSnapshotKey = models.QueueSourceAnalysisEvidenceKey
 
 type QueueJobInput struct {
-	MediaPath                 string `json:"mediaPath" binding:"required"`
-	SourceAssetRecordID       *uint  `json:"-"`
-	PublishMode               string `json:"publishMode"`
-	BatchID                   string `json:"batchId"`
-	BatchName                 string `json:"batchName"`
-	BatchPosition             int    `json:"batchPosition"`
-	LibraryID                 uint   `json:"libraryId" binding:"required"`
-	ProfileID                 uint   `json:"profileId"`
-	AudioProfileKey           string `json:"audioProfileKey"`
-	TrackProfileKey           string `json:"trackProfileKey"`
-	ProcessingMode            string `json:"processingMode"`
-	Priority                  int    `json:"priority"`
-	Notes                     string `json:"notes"`
-	ResolveProfileAssignments bool   `json:"resolveProfileAssignments"`
-	resolvedProfileResolution models.JSONMap
-	deferFreeze               bool
-	validationContext         *queueBatchValidationContext
+	MediaPath                    string         `json:"mediaPath" binding:"required"`
+	SourceAssetRecordID          *uint          `json:"-"`
+	PublishMode                  string         `json:"publishMode"`
+	BatchID                      string         `json:"batchId"`
+	BatchName                    string         `json:"batchName"`
+	BatchPosition                int            `json:"batchPosition"`
+	LibraryID                    uint           `json:"libraryId" binding:"required"`
+	ProfileID                    uint           `json:"profileId"`
+	AudioProfileKey              string         `json:"audioProfileKey"`
+	TrackProfileKey              string         `json:"trackProfileKey"`
+	ProcessingMode               string         `json:"processingMode"`
+	Priority                     int            `json:"priority"`
+	Notes                        string         `json:"notes"`
+	ResolveProfileAssignments    bool           `json:"resolveProfileAssignments"`
+	ProfileResolution            models.JSONMap `json:"profileResolution,omitempty"`
+	candidateInput               *QueueJobInput
+	resolvedProfileResolution    models.JSONMap
+	preservedProfileSnapshot     models.JSONMap
+	preservedProfileVersion      int
+	preservedProfileCapturedAt   *time.Time
+	preservedAudioSnapshot       models.JSONMap
+	preservedTrackSnapshot       models.JSONMap
+	preservedConversionOverride  *AssetConversionOverrideState
+	preservedDestinationSnapshot models.JSONMap
+	deferFreeze                  bool
+	validationContext            *queueBatchValidationContext
+	skipProfileAssignmentResolve bool
+	preflightBlockers            []string
 }
 
 type queuePathStat struct {
@@ -612,10 +623,13 @@ func (h QueueHandler) prepareBatchQueueJob(
 
 	profileResolution := input.resolvedProfileResolution
 	if profileResolution == nil {
+		profileResolution = input.ProfileResolution
+	}
+	if profileResolution == nil {
 		profileResolution = models.JSONMap{}
 	}
 
-	if input.ResolveProfileAssignments {
+	if input.ResolveProfileAssignments && !input.skipProfileAssignmentResolve {
 		var err error
 		profileResolution, err = h.resolveProfileAssignments(&input)
 		if err != nil {
@@ -715,37 +729,45 @@ func (h QueueHandler) prepareBatchQueueJob(
 	if input.deferFreeze {
 		return job, http.StatusOK, nil
 	}
+	if input.preservedProfileSnapshot != nil {
+		job.ProfileSnapshot = queuePreflightCloneMap(input.preservedProfileSnapshot)
+		job.ProfileVersion = max(input.preservedProfileVersion, 1)
+		job.ProfileCapturedAt = input.preservedProfileCapturedAt
+	}
+	preservedAudioKey, preservedTrackKey := job.AudioProfileKey, job.TrackProfileKey
+	if input.preservedAudioSnapshot != nil {
+		job.AudioProfileKey = ""
+	}
+	if input.preservedTrackSnapshot != nil {
+		job.TrackProfileKey = ""
+	}
 	if err := h.captureSupplementalProfiles(&job); err != nil {
 		return models.QueueJob{}, http.StatusBadRequest, err
 	}
+	job.AudioProfileKey, job.TrackProfileKey = preservedAudioKey, preservedTrackKey
+	if input.preservedAudioSnapshot != nil {
+		job.AudioProfileSnapshot = queuePreflightCloneMap(input.preservedAudioSnapshot)
+	}
+	if input.preservedTrackSnapshot != nil {
+		job.TrackProfileSnapshot = queuePreflightCloneMap(input.preservedTrackSnapshot)
+	}
 
-	if queueUsesOverrideOnlyVideo(job.ProfileResolution) {
-		if err := h.captureOverrideOnlyProfile(
-			&job,
-			"queue_batch_create_override_only",
-		); err != nil {
+	if input.preservedProfileSnapshot != nil {
+		job.SubtitleArtifacts = plannedSidecarArtifactsJSON(job)
+	} else if queueUsesOverrideOnlyVideo(job.ProfileResolution) {
+		if err := h.captureOverrideOnlyProfileWithOverride(&job, "queue_batch_create_override_only", input.preservedConversionOverride); err != nil {
 			return models.QueueJob{}, http.StatusBadRequest, err
 		}
-	} else {
-		if err := h.captureProfile(
-			&job,
-			input.ProfileID,
-			"queue_batch_create",
-		); err != nil {
-			switch {
-			case errors.Is(err, errQueueProfileDisabled):
-				return models.QueueJob{}, http.StatusConflict, err
+	} else if err := h.captureProfileWithOverride(&job, input.ProfileID, "queue_batch_create", input.preservedConversionOverride); err != nil {
+		switch {
+		case errors.Is(err, errQueueProfileDisabled):
+			return models.QueueJob{}, http.StatusConflict, err
 
-			case errors.Is(err, gorm.ErrRecordNotFound):
-				return models.QueueJob{},
-					http.StatusBadRequest,
-					fmt.Errorf("profile not found")
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			return models.QueueJob{}, http.StatusBadRequest, fmt.Errorf("profile not found")
 
-			default:
-				return models.QueueJob{},
-					http.StatusBadRequest,
-					err
-			}
+		default:
+			return models.QueueJob{}, http.StatusBadRequest, err
 		}
 	}
 
@@ -786,138 +808,9 @@ func (h QueueHandler) persistPreparedQueueBatch(batchID, batchName string, prepa
 }
 
 func (h QueueHandler) CreateBatch(c *gin.Context) {
-	assetMutationMu.Lock()
-	defer assetMutationMu.Unlock()
-	var input QueueBatchInput
-
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": err.Error(),
-		})
-		return
-	}
-
-	input.BatchID = strings.TrimSpace(input.BatchID)
-	input.BatchName = strings.TrimSpace(input.BatchName)
-
-	if input.BatchID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "batch id is required",
-		})
-		return
-	}
-
-	if len(input.Jobs) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "batch must contain at least one job",
-		})
-		return
-	}
-
-	//
-	// A batch represents exactly one physical containing path.
-	//
-	groupPath := ""
-
-	for index := range input.Jobs {
-		current := filepath.Dir(
-			filepath.Clean(input.Jobs[index].MediaPath),
-		)
-
-		if index == 0 {
-			groupPath = current
-			continue
-		}
-
-		if current != groupPath {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "all jobs in a batch must belong to the same path",
-			})
-			return
-		}
-	}
-
-	//
-	// Backend is authoritative for asset order.
-	//
-	jobsInput := append([]QueueJobInput(nil), input.Jobs...)
-	if err := populateSourceAssetRecordIDs(h.db, jobsInput); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "resolve source asset identities: " + err.Error()})
-		return
-	}
-
-	sort.SliceStable(jobsInput, func(i, j int) bool {
-		return assetSequenceLess(
-			jobsInput[i].MediaPath,
-			jobsInput[j].MediaPath,
-		)
-	})
-
-	//
-	// Detect exact duplicates before doing expensive profile preparation.
-	//
-	seenPaths := map[string]bool{}
-
-	for _, item := range jobsInput {
-		cleanPath := filepath.Clean(item.MediaPath)
-
-		if seenPaths[cleanPath] {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": fmt.Sprintf(
-					"duplicate asset in batch: %s",
-					cleanPath,
-				),
-			})
-			return
-		}
-
-		seenPaths[cleanPath] = true
-	}
-
-	//
-	// Prepare every job before opening the DB transaction.
-	//
-	// No queued job exists yet, so workers cannot see a partial batch.
-	//
-	prepared := make([]models.QueueJob, 0, len(jobsInput))
-
-	for _, item := range jobsInput {
-		item.deferFreeze = true
-		job, status, err := h.prepareBatchQueueJob(item)
-		if err != nil {
-			c.JSON(status, gin.H{
-				"error":     err.Error(),
-				"mediaPath": item.MediaPath,
-			})
-			return
-		}
-
-		prepared = append(prepared, job)
-	}
-
-	//
-	// Everything below is atomic.
-	//
-	err := h.persistPreparedQueueBatch(input.BatchID, input.BatchName, prepared)
-
-	if err != nil {
-		if errors.Is(err, scheduler.ErrAssetAlreadyReserved) {
-			c.JSON(http.StatusConflict, gin.H{
-				"error": "one or more assets already have an open queue job",
-			})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
-		})
-		return
-	}
-
-	c.JSON(http.StatusCreated, gin.H{
-		"batchId":   input.BatchID,
-		"batchName": input.BatchName,
-		"jobs":      prepared,
+	c.JSON(http.StatusConflict, gin.H{
+		"code":  "batch_preflight_required",
+		"error": "Queue batches must be reviewed through Batch Preflight before acceptance",
 	})
 }
 
@@ -956,6 +849,13 @@ func (h QueueHandler) queueSelectedAssets(c *gin.Context, forcedCommit *bool) {
 	}
 	if forcedCommit != nil {
 		input.Commit = *forcedCommit
+	}
+	if input.Commit {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "multi-asset queue creation requires Batch Preflight and explicit acceptance",
+			"code":  "batch_preflight_required",
+		})
+		return
 	}
 	if len(input.AssetIDs) == 0 || len(input.AssetIDs) > 1000 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "assetIds must contain between 1 and 1000 assets"})
@@ -2041,14 +1941,19 @@ func (h QueueHandler) Update(c *gin.Context) {
 	c.JSON(http.StatusOK, job)
 }
 
-func (h QueueHandler) captureOverrideOnlyProfile(
+func (h QueueHandler) captureOverrideOnlyProfile(job *models.QueueJob, source string) error {
+	return h.captureOverrideOnlyProfileWithOverride(job, source, nil)
+}
+
+func (h QueueHandler) captureOverrideOnlyProfileWithOverride(
 	job *models.QueueJob,
 	source string,
+	preservedOverride *AssetConversionOverrideState,
 ) error {
-	override := currentConversionOverrideForJob(
-		*job,
-		assetConversionOverrides(h.db),
-	)
+	override := currentConversionOverrideForJob(*job, assetConversionOverrides(h.db))
+	if preservedOverride != nil {
+		override = *preservedOverride
+	}
 	if err := h.freezeEffectiveTrackPlan(job, &override); err != nil {
 		return err
 	}
@@ -2162,6 +2067,10 @@ func (h QueueHandler) captureOverrideOnlyProfile(
 var errQueueProfileDisabled = errors.New("profile is disabled")
 
 func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, source string) error {
+	return h.captureProfileWithOverride(job, profileID, source, nil)
+}
+
+func (h QueueHandler) captureProfileWithOverride(job *models.QueueJob, profileID uint, source string, preservedOverride *AssetConversionOverrideState) error {
 	var profile models.Profile
 	customProfile, custom, err := h.customVideoProfileForJob(*job)
 	if err != nil {
@@ -2177,6 +2086,9 @@ func (h QueueHandler) captureProfile(job *models.QueueJob, profileID uint, sourc
 	}
 	applyAssetDefaultsAudioToVideoProfile(&profile, *job)
 	override := currentConversionOverrideForJob(*job, assetConversionOverrides(h.db))
+	if preservedOverride != nil {
+		override = *preservedOverride
+	}
 	if err := h.freezeEffectiveTrackPlan(job, &override); err != nil {
 		return err
 	}

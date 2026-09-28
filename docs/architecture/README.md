@@ -4,6 +4,7 @@ Documentos que describen flujos implementados y contratos internos de MVForge.
 
 ## Temas
 
+- [Preflight de lotes de Queue](queue-batch-preflight.md)
 - [Traducción de subtítulos](subtitle-translation.md)
 
 ## Fuente de verdad

@@ -366,7 +366,7 @@ export type TestEncode = {
 export type TestEncodeInput = {
   sourcePath: string;
   libraryId: number;
-  configurationSource: 'effective_asset' | 'lab_draft';
+  configurationSource: 'effective_asset' | 'lab_draft' | 'batch_preflight';
   profileId?: number;
   audioProfileKey?: string;
   trackProfileKey?: string;
@@ -380,6 +380,9 @@ export type TestEncodeInput = {
   startSeconds?: number;
   durationSeconds: number;
   configurationToken?: string;
+  preflightCandidateId?: string;
+  preflightRevision?: number;
+  preflightAssetId?: string;
 };
 
 export type ExternalSubtitle = {
@@ -1599,12 +1602,56 @@ export type QueueJobInput = {
   priority: number;
   notes?: string;
   resolveProfileAssignments?: boolean;
+  profileResolution?: Record<string, unknown>;
 };
 
 export type QueueBatchInput = {
   batchId: string;
   batchName?: string;
   jobs: QueueJobInput[];
+};
+
+export type QueueBatchPreflightInput = QueueBatchInput & { revision?: number };
+
+export type QueueBatchPreflightPlan = {
+  profile: Profile;
+  profileSnapshot: Record<string, unknown>;
+  profileVersion: number;
+  profileCapturedAt?: string;
+  profileResolution: Record<string, unknown>;
+  audioProfileSnapshot: Record<string, unknown>;
+  trackProfileSnapshot: Record<string, unknown>;
+  constraints: Record<string, unknown>;
+  selectedEncoder: string;
+  runtimeSnapshotId: number;
+  runtimeProfile: string;
+  destination: Record<string, unknown>;
+  publishMode: string;
+  processingMode: string;
+};
+
+export type QueueBatchPreflightAsset = {
+  id: string;
+  mediaPath: string;
+  assetRecordId?: number;
+  batchId: string;
+  batchName: string;
+  input: QueueJobInput;
+  status: 'ready' | 'review' | 'blocked' | 'queued';
+  blockers: string[];
+  warnings: string[];
+  queuedJobId?: number;
+  plan?: QueueBatchPreflightPlan;
+};
+
+export type QueueBatchPreflightResponse = {
+  id: string;
+  revision: number;
+  resolved: boolean;
+  batchId: string;
+  batchName: string;
+  assets: QueueBatchPreflightAsset[];
+  jobs?: QueueJob[];
 };
 
 export type QueueBatchResponse = {
@@ -2365,6 +2412,9 @@ export type PerceptualEvidenceSet = {
 
 export type CompatiblePreviewOptions = {
   path: string;
+  preflightCandidateId?: string;
+  preflightRevision?: number;
+  preflightAssetId?: string;
   profileId?: number;
   profile?: ProfileInput;
 
