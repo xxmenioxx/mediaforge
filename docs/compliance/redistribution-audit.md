@@ -4,7 +4,8 @@ Audit date: 2026-09-28
 Repository: `xxmenioxx/mediaforge`  
 Issue: [#57](https://github.com/xxmenioxx/mediaforge/issues/57), OPEN  
 Feature branch: `chore/57-compliance-baseline`
-Base: `67deb47ae9d6859474b739a4062ec23b8bd7ce17` (main after #41)
+Initial audit base: `67deb47ae9d6859474b739a4062ec23b8bd7ce17` (main after #41)
+Final branch base: `6827bed5f7aa20d63565efd51609d22ddd72771c` (current `origin/main`, including #41 and #195)
 
 This is a technical inventory of repository files, local builds, and read-only
 GitHub API data. It is not a legal determination or legal advice. The local

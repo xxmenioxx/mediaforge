@@ -19,4 +19,4 @@
 
 - [x] 4.1 Run `./scripts/verify-compliance.sh` and any focused manifest/license/source-bundle checks; record unresolved external evidence.
 - [x] 4.2 Run `./scripts/verify.sh --full` and confirm the verifier result and check count.
-- [ ] 4.3 Commit and push only the scoped #57 changes to `chore/57-compliance-baseline`; verify its relationship to `origin/main`.
+- [x] 4.3 Commit and push only the scoped #57 changes to `chore/57-compliance-baseline`; verify its relationship to `origin/main`.
