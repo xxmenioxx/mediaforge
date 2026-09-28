@@ -1,0 +1,522 @@
+Backend container technical compliance evidence
+image=sha256:3574de2dd7d97232532114ace8e367b4fcea20add6af0c9b91ae57c30d4f6fab platform=linux/amd64 created=2026-09-28T21:53:23.647868735Z
+
+--- ffmpeg -version ---
+ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers
+built with gcc 14 (Debian 14.2.0-19)
+configuration: --prefix=/opt/ffmpeg --disable-debug --disable-doc --disable-static --enable-shared --enable-gpl --enable-version3 --enable-libx264 --enable-libx265 --enable-libaom --enable-libdav1d --enable-libsvtav1 --enable-libvpx --enable-libass --enable-libfreetype --enable-libfontconfig --enable-libfribidi --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libsoxr --enable-libzimg --enable-libwebp --enable-libopenjpeg --enable-libbluray --enable-libvpl --disable-libmfx --enable-vaapi --enable-libdrm --enable-opencl
+libavutil      60. 26.102 / 60. 26.102
+libavcodec     62. 28.102 / 62. 28.102
+libavformat    62. 12.102 / 62. 12.102
+libavdevice    62.  3.102 / 62.  3.102
+libavfilter    11. 14.102 / 11. 14.102
+libswscale      9.  5.102 /  9.  5.102
+libswresample   6.  3.102 /  6.  3.102
+
+Exiting with exit code 0
+
+--- ffmpeg -buildconf ---
+
+
+  configuration:
+    --prefix=/opt/ffmpeg
+    --disable-debug
+    --disable-doc
+    --disable-static
+    --enable-shared
+    --enable-gpl
+    --enable-version3
+    --enable-libx264
+    --enable-libx265
+    --enable-libaom
+    --enable-libdav1d
+    --enable-libsvtav1
+    --enable-libvpx
+    --enable-libass
+    --enable-libfreetype
+    --enable-libfontconfig
+    --enable-libfribidi
+    --enable-libmp3lame
+    --enable-libopus
+    --enable-libvorbis
+    --enable-libsoxr
+    --enable-libzimg
+    --enable-libwebp
+    --enable-libopenjpeg
+    --enable-libbluray
+    --enable-libvpl
+    --disable-libmfx
+    --enable-vaapi
+    --enable-libdrm
+    --enable-opencl
+
+Exiting with exit code 0
+
+--- ldd /opt/ffmpeg/lib/libavcodec.so ---
+
+	libvpx.so.9 => /lib/x86_64-linux-gnu/libvpx.so.9 (0x00007fc87314e000)
+	libdav1d.so.7 => /lib/x86_64-linux-gnu/libdav1d.so.7 (0x00007fc872e68000)
+	libaom.so.3 => /lib/x86_64-linux-gnu/libaom.so.3 (0x00007fc8728b4000)
+	libSvtAv1Enc.so.4 => /opt/ffmpeg/lib/libSvtAv1Enc.so.4 (0x00007fc871d6d000)
+	libx264.so.164 => /lib/x86_64-linux-gnu/libx264.so.164 (0x00007fc87193e000)
+	libx265.so.215 => /lib/x86_64-linux-gnu/libx265.so.215 (0x00007fc870915000)
+	libva.so.2 => /opt/intel/lib/x86_64-linux-gnu/libva.so.2 (0x00007fc8708bc000)
+	libvpl.so.2 => /opt/intel/lib/x86_64-linux-gnu/libvpl.so.2 (0x00007fc870852000)
+	libva-drm.so.2 => /opt/intel/lib/x86_64-linux-gnu/libva-drm.so.2 (0x00007fc8705ed000)
+	libdrm.so.2 => /lib/x86_64-linux-gnu/libdrm.so.2 (0x00007fc8705d4000)
+	libOpenCL.so.1 => /lib/x86_64-linux-gnu/libOpenCL.so.1 (0x00007fc8705bd000)
+--- ffmpeg -hwaccels ---
+
+Hardware acceleration methods:
+vaapi
+qsv
+drm
+opencl
+
+--- runtime Debian package versions ---
+
+adduser	3.152
+apt	3.0.3
+base-files	13.8+deb13u6
+base-passwd	3.6.7
+bash	5.2.37-2+b9
+bsdutils	1:2.41-5
+ca-certificates	20250419
+coreutils	9.7-3
+curl	8.14.1-2+deb13u5
+dash	0.5.12-12
+debconf	1.5.91
+debian-archive-keyring	2025.1
+debianutils	5.23.2
+dictionaries-common	1.30.10
+diffutils	1:3.10-4
+dpkg	1.22.22
+emacsen-common	3.0.8
+findutils	4.10.0-3
+fontconfig	2.15.0-2.3
+fontconfig-config	2.15.0-2.3
+fonts-dejavu-core	2.37-8
+fonts-dejavu-mono	2.37-8
+gcc-14-base:amd64	14.2.0-19
+grep	3.11-4
+gzip	1.13-1
+hostname	3.25
+hunspell-en-us	1:2020.12.07-4
+hunspell-es	1:25.2.3-1
+init-system-helpers	1.69~deb13u1
+libacl1:amd64	2.3.2-2+b1
+libaom3:amd64	3.12.1-1+deb13u1
+libapt-pkg7.0:amd64	3.0.3
+libarchive13t64:amd64	3.7.4-4+deb13u1
+libass9:amd64	1:0.17.3-1+deb13u1
+libatomic1:amd64	14.2.0-19
+libattr1:amd64	1:2.5.2-3
+libaudit-common	1:4.0.2-2
+libaudit1:amd64	1:4.0.2-2+b2
+libblkid1:amd64	2.41-5
+libbluray2:amd64	1:1.3.4-1+b2
+libbrotli1:amd64	1.1.0-2+b7
+libbsd0:amd64	0.12.2-2
+libbz2-1.0:amd64	1.0.8-6
+libc-bin	2.41-12+deb13u3
+libc6:amd64	2.41-12+deb13u3
+libcairo2:amd64	1.18.4-1+b1
+libcap-ng0:amd64	0.8.5-4+b1
+libcap2:amd64	1:2.75-10+deb13u1+b1
+libcbor0.10:amd64	0.10.2-2
+libcom-err2:amd64	1.47.2-3+b12
+libcrypt1:amd64	1:4.4.38-1
+libcurl4t64:amd64	8.14.1-2+deb13u5
+libdatrie1:amd64	0.2.13-3+b1
+libdav1d7:amd64	1.5.1-1
+libdb5.3t64:amd64	5.3.28+dfsg2-9
+libdebconfclient0:amd64	0.280
+libdeflate0:amd64	1.23-2
+libdrm-common	2.4.124-2
+libdrm2:amd64	2.4.124-2
+libedit2:amd64	3.1-20250104-1
+libexpat1:amd64	2.8.3-1~deb13u1
+libffi8:amd64	3.4.8-2
+libfido2-1:amd64	1.15.0-1+b1
+libfontconfig1:amd64	2.15.0-2.3
+libfreetype6:amd64	2.13.3+dfsg-1+deb13u1
+libfribidi0:amd64	1.0.16-1
+libgcc-s1:amd64	14.2.0-19
+libgif7:amd64	5.2.2-1+deb13u1
+libglib2.0-0t64:amd64	2.84.4-3~deb13u5
+libgmp10:amd64	2:6.3.0+dfsg-3
+libgnutls30t64:amd64	3.8.9-3+deb13u4
+libgomp1:amd64	14.2.0-19
+libgraphite2-3:amd64	1.3.14-2+deb13u1
+libgssapi-krb5-2:amd64	1.21.3-5+deb13u1
+libharfbuzz0b:amd64	10.2.0-1+deb13u1
+libhogweed6t64:amd64	3.10.1-1
+libicu76:amd64	76.1-4
+libidn2-0:amd64	2.3.8-2
+libjbig0:amd64	2.1-6.1+b2
+libjpeg62-turbo:amd64	1:2.1.5-4
+libk5crypto3:amd64	1.21.3-5+deb13u1
+libkeyutils1:amd64	1.6.3-6
+libkrb5-3:amd64	1.21.3-5+deb13u1
+libkrb5support0:amd64	1.21.3-5+deb13u1
+liblastlog2-2:amd64	2.41-5
+libldap2:amd64	2.6.10+dfsg-1
+libleptonica6:amd64	1.84.1-4
+liblerc4:amd64	4.0.0+ds-5
+liblz4-1:amd64	1.10.0-4
+liblzma5:amd64	5.8.1-1+deb13u1
+libmd0:amd64	1.1.0-2+b1
+libmount1:amd64	2.41-5
+libmp3lame0:amd64	3.100-6+b3
+libnettle8t64:amd64	3.10.1-1
+libnghttp2-14:amd64	1.64.0-1.1+deb13u1
+libnghttp3-9:amd64	1.8.0-1
+libnuma1:amd64	2.0.19-1
+libogg0:amd64	1.3.5-3+b2
+libopenjp2-7:amd64	2.5.3-2.1~deb13u2
+libopus0:amd64	1.5.2-2
+libp11-kit0:amd64	0.25.5-3
+libpam-modules:amd64	1.7.0-5
+libpam-modules-bin	1.7.0-5
+libpam-runtime	1.7.0-5
+libpam0g:amd64	1.7.0-5
+libpango-1.0-0:amd64	1.56.3-1
+libpangocairo-1.0-0:amd64	1.56.3-1
+libpangoft2-1.0-0:amd64	1.56.3-1
+libpcre2-8-0:amd64	10.46-1~deb13u1
+libpixman-1-0:amd64	0.44.0-3
+libpng16-16t64:amd64	1.6.48-1+deb13u5
+libpsl5t64:amd64	0.21.2-1.1+b1
+libreadline8t64:amd64	8.2-6
+librtmp1:amd64	2.4+20151223.gitfa8646d.1-2+b5
+libsasl2-2:amd64	2.1.28+dfsg1-9
+libsasl2-modules-db:amd64	2.1.28+dfsg1-9
+libseccomp2:amd64	2.6.0-2
+libselinux1:amd64	3.8.1-1
+libsemanage-common	3.8.1-1
+libsemanage2:amd64	3.8.1-1
+libsepol2:amd64	3.8.1-1
+libsharpyuv0:amd64	1.5.0-0.1
+libsmartcols1:amd64	2.41-5
+libsoxr0:amd64	0.1.3-4+b2
+libsqlite3-0:amd64	3.46.1-7+deb13u2
+libssh2-1t64:amd64	1.11.1-1+deb13u2
+libssl3t64:amd64	3.5.7-1~deb13u2
+libstdc++6:amd64	14.2.0-19
+libsystemd0:amd64	257.13-1~deb13u1
+libtasn1-6:amd64	4.20.0-2+deb13u1
+libtesseract5:amd64	5.5.0-1+b1
+libtext-iconv-perl:amd64	1.7-8+b4
+libthai-data	0.1.29-2
+libthai0:amd64	0.1.29-2+b1
+libtiff6:amd64	4.7.0-3+deb13u3
+libtinfo6:amd64	6.5+20250216-2
+libudev1:amd64	257.13-1~deb13u1
+libudfread0:amd64	1.1.2-1+b2
+libunibreak6:amd64	6.1-3
+libunistring5:amd64	1.3-2
+libuuid1:amd64	2.41-5
+libvorbis0a:amd64	1.3.7-3
+libvorbisenc2:amd64	1.3.7-3
+libvpx9:amd64	1.15.0-2.1+deb13u1
+libwayland-client0:amd64	1.23.1-3
+libwebp7:amd64	1.5.0-0.1
+libwebpmux3:amd64	1.5.0-0.1
+libx11-6:amd64	2:1.8.12-1
+libx11-data	2:1.8.12-1
+libx264-164:amd64	2:0.164.3108+git31e19f9-2+b1
+libx265-215:amd64	4.1-2
+libxau6:amd64	1:1.0.11-1
+libxcb-render0:amd64	1.17.0-2+b1
+libxcb-shm0:amd64	1.17.0-2+b1
+libxcb1:amd64	1.17.0-2+b1
+libxdmcp6:amd64	1:1.1.5-1
+libxext6:amd64	2:1.3.4-1+b3
+libxfixes3:amd64	1:6.0.0-2+b4
+libxml2:amd64	2.12.7+dfsg+really2.9.14-2.1+deb13u3
+libxrender1:amd64	1:0.9.12-1
+libxxhash0:amd64	0.8.3-2
+libzimg2:amd64	3.0.5+ds1-1+b2
+libzstd1:amd64	1.5.7+dfsg-1
+login	1:4.16.0-2+really2.41-5
+login.defs	1:4.17.4-2
+mawk	1.3.4.20250131-1
+mount	2.41-5
+ncurses-base	6.5+20250216-2
+ncurses-bin	6.5+20250216-2
+ocl-icd-libopencl1:amd64	2.3.3-1
+openssh-client	1:10.0p1-7+deb13u4
+openssl	3.5.7-1~deb13u2
+openssl-provider-legacy	3.5.7-1~deb13u2
+passwd	1:4.17.4-2
+perl-base	5.40.1-6
+readline-common	8.2-6
+sed	4.9-2+deb13u1
+sqlite3	3.46.1-7+deb13u2
+sqv	1.3.0-3+b2
+sysvinit-utils	3.14-4
+tar	1.35+dfsg-3.1
+tesseract-ocr	5.5.0-1+b1
+tesseract-ocr-eng	1:4.1.0-2
+tesseract-ocr-jpn	1:4.1.0-2
+tesseract-ocr-jpn-vert	1:4.1.0-2
+tesseract-ocr-osd	1:4.1.0-2
+tesseract-ocr-spa	1:4.1.0-2
+tzdata	2026c-0+deb13u1
+util-linux	2.41-5
+zlib1g:amd64	1:1.3.dfsg+really1.3.1-1+b1
+
+--- Debian copyright License: metadata for directly linked libraries ---
+
+/usr/share/licenses/mvforge/debian/libx264-164.copyright:License: GPL-2+
+/usr/share/licenses/mvforge/debian/libx264-164.copyright:License: ISC
+/usr/share/licenses/mvforge/debian/libx264-164.copyright:License: GPL-2+
+/usr/share/licenses/mvforge/debian/libx264-164.copyright:License: GPL-2+ with other exception
+/usr/share/licenses/mvforge/debian/libx265-215.copyright:License: GPL-2+
+/usr/share/licenses/mvforge/debian/libx265-215.copyright:License: GPL-2+
+/usr/share/licenses/mvforge/debian/libx265-215.copyright:License: GPL-2+
+/usr/share/licenses/mvforge/debian/libx265-215.copyright:License: Expat
+/usr/share/licenses/mvforge/debian/libaom3.copyright:License: BSD-2-clause
+/usr/share/licenses/mvforge/debian/libaom3.copyright:License: public-domain-md5
+/usr/share/licenses/mvforge/debian/libaom3.copyright:License: BSD-2-clause
+/usr/share/licenses/mvforge/debian/libaom3.copyright:License: BSD-3-clause
+/usr/share/licenses/mvforge/debian/libdav1d7.copyright:License: BSD-2-clause
+/usr/share/licenses/mvforge/debian/libdav1d7.copyright:License: BSD-2-clause
+/usr/share/licenses/mvforge/debian/libdav1d7.copyright:License: public-domain
+/usr/share/licenses/mvforge/debian/libdav1d7.copyright:License: ISC
+/usr/share/licenses/mvforge/debian/libvpx9.copyright:License: BSD-3-Clause
+/usr/share/licenses/mvforge/debian/libvpx9.copyright:License: public-domain
+/usr/share/licenses/mvforge/debian/libvpx9.copyright:License: BSD-3-Clause
+/usr/share/licenses/mvforge/debian/libvpx9.copyright:License: BSD-3-Clause
+/usr/share/licenses/mvforge/debian/libbluray2.copyright:License: LGPL-2.1+
+/usr/share/licenses/mvforge/debian/libbluray2.copyright:License: LGPL-2.1+
+/usr/share/licenses/mvforge/debian/libbluray2.copyright:License: custom
+/usr/share/licenses/mvforge/debian/libbluray2.copyright:License: GPL-2+
+/usr/share/licenses/mvforge/debian/libfribidi0.copyright:License: LGPL-2.1+
+/usr/share/licenses/mvforge/debian/libfribidi0.copyright:License: LGPL-2.1+
+/usr/share/licenses/mvforge/debian/libfribidi0.copyright:License: LGPL-2.1+
+/usr/share/licenses/mvforge/debian/libmp3lame0.copyright:License: LGPL-2+
+/usr/share/licenses/mvforge/debian/libmp3lame0.copyright:License: LGPL-2.1+
+/usr/share/licenses/mvforge/debian/libmp3lame0.copyright:License: zlib/libpng
+/usr/share/licenses/mvforge/debian/libmp3lame0.copyright:License: BSD-3-clause
+/usr/share/licenses/mvforge/debian/libopus0.copyright:License: BSD-3-clause
+/usr/share/licenses/mvforge/debian/libopus0.copyright:License: BSD-3-clause
+/usr/share/licenses/mvforge/debian/libopus0.copyright:License: BSD-2-clause
+/usr/share/licenses/mvforge/debian/libopus0.copyright:License: BSD-2-clause
+/usr/share/licenses/mvforge/debian/libsoxr0.copyright:License: LGPL-2.1+
+/usr/share/licenses/mvforge/debian/libsoxr0.copyright:License: Spherepack
+/usr/share/licenses/mvforge/debian/libsoxr0.copyright:License: permissive1
+/usr/share/licenses/mvforge/debian/libsoxr0.copyright:License: permissive2
+/usr/share/licenses/mvforge/debian/libzimg2.copyright:License: WTFPL-2
+/usr/share/licenses/mvforge/debian/libzimg2.copyright:License: GPL-3+ with AutoConf exception
+/usr/share/licenses/mvforge/debian/libzimg2.copyright:License: WTFPL-2
+/usr/share/licenses/mvforge/debian/libzimg2.copyright:License: WTFPL-2
+/usr/share/licenses/mvforge/debian/libopenjp2-7.copyright:License: BSD-2
+/usr/share/licenses/mvforge/debian/libopenjp2-7.copyright:License: BSD-2
+/usr/share/licenses/mvforge/debian/libopenjp2-7.copyright:License: BSD-2
+/usr/share/licenses/mvforge/debian/libopenjp2-7.copyright:License: BSD-2
+
+--- copied runtime notice paths ---
+
+/usr/share/licenses/mvforge/svt-av1/LICENSE.md
+/usr/share/licenses/mvforge/svt-av1/LICENSE-BSD2.md
+/usr/share/licenses/mvforge/ffmpeg/COPYING.GPLv3
+/usr/share/licenses/mvforge/skiasharp/LICENSE.txt
+/usr/share/licenses/mvforge/skiasharp/THIRD-PARTY-NOTICES.txt
+/usr/share/licenses/mvforge/seconv/LICENSE
+/usr/share/licenses/mvforge/harfbuzzsharp/LICENSE.txt
+/usr/share/licenses/mvforge/harfbuzzsharp/THIRD-PARTY-NOTICES.txt
+/usr/share/licenses/mvforge/oneVPL-intel-gpu/LICENSE
+/usr/share/licenses/mvforge/debian/libsqlite3-0.copyright
+/usr/share/licenses/mvforge/debian/openssl-provider-legacy.copyright
+/usr/share/licenses/mvforge/debian/libattr1.copyright
+/usr/share/licenses/mvforge/debian/libopenjp2-7.copyright
+/usr/share/licenses/mvforge/debian/openssl.copyright
+/usr/share/licenses/mvforge/debian/libpam0g.copyright
+/usr/share/licenses/mvforge/debian/libkrb5-3.copyright
+/usr/share/licenses/mvforge/debian/libvpx9.copyright
+/usr/share/licenses/mvforge/debian/libwayland-client0.copyright
+/usr/share/licenses/mvforge/debian/libzstd1.copyright
+/usr/share/licenses/mvforge/debian/libgssapi-krb5-2.copyright
+/usr/share/licenses/mvforge/debian/libssl3t64.copyright
+/usr/share/licenses/mvforge/debian/libass9.copyright
+/usr/share/licenses/mvforge/debian/libxcb1.copyright
+/usr/share/licenses/mvforge/debian/libsepol2.copyright
+/usr/share/licenses/mvforge/debian/ncurses-base.copyright
+/usr/share/licenses/mvforge/debian/tesseract-ocr.copyright
+/usr/share/licenses/mvforge/debian/sqv.copyright
+/usr/share/licenses/mvforge/debian/libuuid1.copyright
+/usr/share/licenses/mvforge/debian/libpsl5t64.copyright
+/usr/share/licenses/mvforge/debian/libtiff6.copyright
+/usr/share/licenses/mvforge/debian/libjpeg62-turbo.copyright
+/usr/share/licenses/mvforge/debian/libdebconfclient0.copyright
+/usr/share/licenses/mvforge/debian/libopus0.copyright
+/usr/share/licenses/mvforge/debian/libldap2.copyright
+/usr/share/licenses/mvforge/debian/tesseract-ocr-spa.copyright
+/usr/share/licenses/mvforge/debian/libleptonica6.copyright
+/usr/share/licenses/mvforge/debian/libblkid1.copyright
+/usr/share/licenses/mvforge/debian/libbrotli1.copyright
+/usr/share/licenses/mvforge/debian/grep.copyright
+/usr/share/licenses/mvforge/debian/dash.copyright
+/usr/share/licenses/mvforge/debian/hostname.copyright
+/usr/share/licenses/mvforge/debian/libx11-data.copyright
+/usr/share/licenses/mvforge/debian/libsemanage-common.copyright
+/usr/share/licenses/mvforge/debian/libaudit1.copyright
+/usr/share/licenses/mvforge/debian/libfreetype6.copyright
+/usr/share/licenses/mvforge/debian/libacl1.copyright
+/usr/share/licenses/mvforge/debian/login.defs.copyright
+/usr/share/licenses/mvforge/debian/libssh2-1t64.copyright
+/usr/share/licenses/mvforge/debian/libidn2-0.copyright
+/usr/share/licenses/mvforge/debian/ca-certificates.copyright
+/usr/share/licenses/mvforge/debian/libpixman-1-0.copyright
+/usr/share/licenses/mvforge/debian/libicu76.copyright
+/usr/share/licenses/mvforge/debian/mount.copyright
+/usr/share/licenses/mvforge/debian/libfribidi0.copyright
+/usr/share/licenses/mvforge/debian/libunibreak6.copyright
+/usr/share/licenses/mvforge/debian/libwebpmux3.copyright
+/usr/share/licenses/mvforge/debian/bsdutils.copyright
+/usr/share/licenses/mvforge/debian/libdeflate0.copyright
+/usr/share/licenses/mvforge/debian/readline-common.copyright
+/usr/share/licenses/mvforge/debian/libtinfo6.copyright
+/usr/share/licenses/mvforge/debian/libxml2.copyright
+/usr/share/licenses/mvforge/debian/libcom-err2.copyright
+/usr/share/licenses/mvforge/debian/libogg0.copyright
+/usr/share/licenses/mvforge/debian/libxfixes3.copyright
+/usr/share/licenses/mvforge/debian/hunspell-es.copyright
+/usr/share/licenses/mvforge/debian/curl.copyright
+/usr/share/licenses/mvforge/debian/perl-base.copyright
+/usr/share/licenses/mvforge/debian/libhogweed6t64.copyright
+/usr/share/licenses/mvforge/debian/libthai0.copyright
+/usr/share/licenses/mvforge/debian/libmount1.copyright
+/usr/share/licenses/mvforge/debian/libffi8.copyright
+/usr/share/licenses/mvforge/debian/libzimg2.copyright
+/usr/share/licenses/mvforge/debian/libtasn1-6.copyright
+/usr/share/licenses/mvforge/debian/passwd.copyright
+/usr/share/licenses/mvforge/debian/libdrm2.copyright
+/usr/share/licenses/mvforge/debian/dictionaries-common.copyright
+/usr/share/licenses/mvforge/debian/emacsen-common.copyright
+/usr/share/licenses/mvforge/debian/debianutils.copyright
+/usr/share/licenses/mvforge/debian/libdatrie1.copyright
+/usr/share/licenses/mvforge/debian/fonts-dejavu-core.copyright
+/usr/share/licenses/mvforge/debian/libcairo2.copyright
+/usr/share/licenses/mvforge/debian/fontconfig.copyright
+/usr/share/licenses/mvforge/debian/libx264-164.copyright
+/usr/share/licenses/mvforge/debian/librtmp1.copyright
+/usr/share/licenses/mvforge/debian/openssh-client.copyright
+/usr/share/licenses/mvforge/debian/libxxhash0.copyright
+/usr/share/licenses/mvforge/debian/liblz4-1.copyright
+/usr/share/licenses/mvforge/debian/libsmartcols1.copyright
+/usr/share/licenses/mvforge/debian/libjbig0.copyright
+/usr/share/licenses/mvforge/debian/libselinux1.copyright
+/usr/share/licenses/mvforge/debian/adduser.copyright
+/usr/share/licenses/mvforge/debian/sqlite3.copyright
+/usr/share/licenses/mvforge/debian/libxext6.copyright
+/usr/share/licenses/mvforge/debian/libc6.copyright
+/usr/share/licenses/mvforge/debian/findutils.copyright
+/usr/share/licenses/mvforge/debian/liblastlog2-2.copyright
+/usr/share/licenses/mvforge/debian/libx11-6.copyright
+/usr/share/licenses/mvforge/debian/libbz2-1.0.copyright
+/usr/share/licenses/mvforge/debian/libxrender1.copyright
+/usr/share/licenses/mvforge/debian/libedit2.copyright
+/usr/share/licenses/mvforge/debian/libaom3.copyright
+/usr/share/licenses/mvforge/debian/libpango-1.0-0.copyright
+/usr/share/licenses/mvforge/debian/libpam-runtime.copyright
+/usr/share/licenses/mvforge/debian/base-passwd.copyright
+/usr/share/licenses/mvforge/debian/libxcb-render0.copyright
+/usr/share/licenses/mvforge/debian/libsasl2-2.copyright
+/usr/share/licenses/mvforge/debian/libc-bin.copyright
+/usr/share/licenses/mvforge/debian/libkeyutils1.copyright
+/usr/share/licenses/mvforge/debian/libvorbis0a.copyright
+/usr/share/licenses/mvforge/debian/libnghttp2-14.copyright
+/usr/share/licenses/mvforge/debian/debian-archive-keyring.copyright
+/usr/share/licenses/mvforge/debian/libxdmcp6.copyright
+/usr/share/licenses/mvforge/debian/sed.copyright
+/usr/share/licenses/mvforge/debian/fontconfig-config.copyright
+/usr/share/licenses/mvforge/debian/libpangoft2-1.0-0.copyright
+/usr/share/licenses/mvforge/debian/libx265-215.copyright
+/usr/share/licenses/mvforge/debian/liblerc4.copyright
+/usr/share/licenses/mvforge/debian/libxau6.copyright
+/usr/share/licenses/mvforge/debian/mawk.copyright
+/usr/share/licenses/mvforge/debian/libunistring5.copyright
+/usr/share/licenses/mvforge/debian/diffutils.copyright
+/usr/share/licenses/mvforge/debian/libmp3lame0.copyright
+/usr/share/licenses/mvforge/debian/libcurl4t64.copyright
+/usr/share/licenses/mvforge/debian/tesseract-ocr-osd.copyright
+/usr/share/licenses/mvforge/debian/tesseract-ocr-jpn.copyright
+/usr/share/licenses/mvforge/debian/libcap2.copyright
+/usr/share/licenses/mvforge/debian/coreutils.copyright
+/usr/share/licenses/mvforge/debian/sysvinit-utils.copyright
+/usr/share/licenses/mvforge/debian/libcrypt1.copyright
+/usr/share/licenses/mvforge/debian/bash.copyright
+/usr/share/licenses/mvforge/debian/libxcb-shm0.copyright
+/usr/share/licenses/mvforge/debian/libmd0.copyright
+/usr/share/licenses/mvforge/debian/libpam-modules-bin.copyright
+/usr/share/licenses/mvforge/debian/libpcre2-8-0.copyright
+/usr/share/licenses/mvforge/debian/gcc-14-base.copyright
+/usr/share/licenses/mvforge/debian/libaudit-common.copyright
+/usr/share/licenses/mvforge/debian/libgmp10.copyright
+/usr/share/licenses/mvforge/debian/libthai-data.copyright
+/usr/share/licenses/mvforge/debian/libsystemd0.copyright
+/usr/share/licenses/mvforge/debian/debconf.copyright
+/usr/share/licenses/mvforge/debian/init-system-helpers.copyright
+/usr/share/licenses/mvforge/debian/libp11-kit0.copyright
+/usr/share/licenses/mvforge/debian/libreadline8t64.copyright
+/usr/share/licenses/mvforge/debian/libbluray2.copyright
+/usr/share/licenses/mvforge/debian/libdav1d7.copyright
+/usr/share/licenses/mvforge/debian/libudev1.copyright
+/usr/share/licenses/mvforge/debian/libk5crypto3.copyright
+/usr/share/licenses/mvforge/debian/libglib2.0-0t64.copyright
+/usr/share/licenses/mvforge/debian/libgif7.copyright
+/usr/share/licenses/mvforge/debian/libharfbuzz0b.copyright
+/usr/share/licenses/mvforge/debian/libapt-pkg7.0.copyright
+/usr/share/licenses/mvforge/debian/liblzma5.copyright
+/usr/share/licenses/mvforge/debian/libsoxr0.copyright
+/usr/share/licenses/mvforge/debian/libdrm-common.copyright
+/usr/share/licenses/mvforge/debian/libudfread0.copyright
+/usr/share/licenses/mvforge/debian/libcap-ng0.copyright
+/usr/share/licenses/mvforge/debian/dpkg.copyright
+/usr/share/licenses/mvforge/debian/util-linux.copyright
+/usr/share/licenses/mvforge/debian/zlib1g.copyright
+/usr/share/licenses/mvforge/debian/base-files.copyright
+/usr/share/licenses/mvforge/debian/libbsd0.copyright
+/usr/share/licenses/mvforge/debian/login.copyright
+/usr/share/licenses/mvforge/debian/libtesseract5.copyright
+/usr/share/licenses/mvforge/debian/libsharpyuv0.copyright
+/usr/share/licenses/mvforge/debian/libnghttp3-9.copyright
+/usr/share/licenses/mvforge/debian/libwebp7.copyright
+/usr/share/licenses/mvforge/debian/hunspell-en-us.copyright
+/usr/share/licenses/mvforge/debian/fonts-dejavu-mono.copyright
+/usr/share/licenses/mvforge/debian/libpam-modules.copyright
+/usr/share/licenses/mvforge/debian/gzip.copyright
+/usr/share/licenses/mvforge/debian/libnettle8t64.copyright
+/usr/share/licenses/mvforge/debian/libsemanage2.copyright
+/usr/share/licenses/mvforge/debian/tesseract-ocr-eng.copyright
+/usr/share/licenses/mvforge/debian/libexpat1.copyright
+/usr/share/licenses/mvforge/debian/libfido2-1.copyright
+/usr/share/licenses/mvforge/debian/libnuma1.copyright
+/usr/share/licenses/mvforge/debian/libarchive13t64.copyright
+/usr/share/licenses/mvforge/debian/libfontconfig1.copyright
+/usr/share/licenses/mvforge/debian/tar.copyright
+/usr/share/licenses/mvforge/debian/ocl-icd-libopencl1.copyright
+/usr/share/licenses/mvforge/debian/libgraphite2-3.copyright
+/usr/share/licenses/mvforge/debian/libpangocairo-1.0-0.copyright
+/usr/share/licenses/mvforge/debian/libcbor0.10.copyright
+/usr/share/licenses/mvforge/debian/apt.copyright
+/usr/share/licenses/mvforge/debian/libgnutls30t64.copyright
+/usr/share/licenses/mvforge/debian/tesseract-ocr-jpn-vert.copyright
+/usr/share/licenses/mvforge/debian/libsasl2-modules-db.copyright
+/usr/share/licenses/mvforge/debian/libkrb5support0.copyright
+/usr/share/licenses/mvforge/debian/libseccomp2.copyright
+/usr/share/licenses/mvforge/debian/ncurses-bin.copyright
+/usr/share/licenses/mvforge/debian/libdb5.3t64.copyright
+/usr/share/licenses/mvforge/debian/libvorbisenc2.copyright
+/usr/share/licenses/mvforge/debian/tzdata.copyright
+/usr/share/licenses/mvforge/debian/libpng16-16t64.copyright
+/usr/share/licenses/mvforge/debian/libtext-iconv-perl.copyright
+
+--- Intel QSV/VAAPI runtime files ---
+/opt/intel/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+/opt/intel/lib/x86_64-linux-gnu/libmfx-gen.so.1.2.15
+/opt/intel/lib/x86_64-linux-gnu/libvpl.so.2.15
+
+GPU hardware was not attached to the local container; QSV/VAAPI execution was not tested.

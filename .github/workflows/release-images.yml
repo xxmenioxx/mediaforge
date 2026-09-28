@@ -31,7 +31,20 @@ jobs:
         working-directory: frontend
         run: |
           npm ci
+          npm run compliance:licenses -- --require-complete
           npm run build
+      - uses: docker/setup-buildx-action@v4.4.1
+      - name: Build matching backend corresponding-source archive
+        run: ./scripts/build-corresponding-source.sh "$RUNNER_TEMP/mvforge-corresponding-source.tar.gz"
+      - name: Prepare release evidence assets
+        run: |
+          mkdir "$RUNNER_TEMP/mvforge-release-evidence"
+          cp "$RUNNER_TEMP/mvforge-corresponding-source.tar.gz" "$RUNNER_TEMP/mvforge-release-evidence/"
+          cp "$RUNNER_TEMP/mvforge-corresponding-source.tar.gz.sha256" "$RUNNER_TEMP/mvforge-release-evidence/"
+          cp LICENSE NOTICE LEGAL.md THIRD_PARTY_LICENSES.md "$RUNNER_TEMP/mvforge-release-evidence/"
+          cp backend/licenses/GO_MODULES.txt backend/licenses/GO_LICENSES.csv backend/licenses/GO_LICENSES.md "$RUNNER_TEMP/mvforge-release-evidence/"
+          cp frontend/licenses/npm/inventory.json "$RUNNER_TEMP/mvforge-release-evidence/frontend-NPM-inventory.json"
+          cp frontend/licenses/npm/THIRD_PARTY_NOTICES.txt "$RUNNER_TEMP/mvforge-release-evidence/frontend-THIRD_PARTY_NOTICES.txt"
       - name: Validate NAS Compose
         env:
           CONFIG_PATH: /tmp/mvforge/config
@@ -42,20 +55,41 @@ jobs:
           REPORTS_PATH: /tmp/mvforge/reports
         run: docker compose -f deploy/nas/compose.yml config --quiet
       - name: Verify licensing and release guardrails
+        env:
+          MVFORGE_REQUIRE_RELEASE_EVIDENCE: "true"
+          MVFORGE_RELEASE_EVIDENCE_DIR: ${{ runner.temp }}/mvforge-release-evidence
         run: ./scripts/verify-compliance.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mvforge-release-compliance-evidence
+          path: ${{ runner.temp }}/mvforge-release-evidence
+          if-no-files-found: error
 
   release-gate:
     needs: verify
     runs-on: ubuntu-24.04
     env:
       MVFORGE_PUBLIC_RELEASES_ENABLED: ${{ vars.MVFORGE_PUBLIC_RELEASES_ENABLED }}
+      MVFORGE_EXISTING_DISTRIBUTIONS_REVIEWED: ${{ vars.MVFORGE_EXISTING_DISTRIBUTIONS_REVIEWED }}
     steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: mvforge-release-compliance-evidence
+          path: ${{ runner.temp }}/mvforge-release-evidence
+      - name: Verify required release-side evidence
+        run: ./scripts/verify-release-evidence.sh "$RUNNER_TEMP/mvforge-release-evidence"
       - name: Enforce temporary public-release hold
         shell: bash
         run: |
           if [ "${MVFORGE_PUBLIC_RELEASES_ENABLED:-false}" != "true" ]; then
             echo "Public MVForge releases are paused by compliance policy."
             echo "Set MVFORGE_PUBLIC_RELEASES_ENABLED=true only after issue #57 is cleared."
+            exit 1
+          fi
+          if [ "${MVFORGE_EXISTING_DISTRIBUTIONS_REVIEWED:-false}" != "true" ]; then
+            echo "Retained GHCR images and historical distribution evidence have not been approved."
+            echo "Set MVFORGE_EXISTING_DISTRIBUTIONS_REVIEWED=true only after external review."
             exit 1
           fi
 
@@ -95,7 +129,8 @@ jobs:
             org.opencontainers.image.title=MVForge ${{ matrix.name }}
             org.opencontainers.image.description=MVForge self-hosted media processing platform
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-      - uses: docker/build-push-action@v7.4.0
+      - id: image
+        uses: docker/build-push-action@v7.4.0
         with:
           context: ${{ matrix.context }}
           target: ${{ matrix.target }}
@@ -107,12 +142,44 @@ jobs:
           provenance: mode=max
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: Verify image digest and BuildKit attestations
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: ./scripts/verify-image-attestations.sh "$IMAGE_NAME" "$IMAGE_DIGEST"
+      - name: Record exact published image digest
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: printf '%s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST" > "$RUNNER_TEMP/${{ matrix.name }}-image-digest.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mvforge-image-digest-${{ matrix.name }}
+          path: ${{ runner.temp }}/${{ matrix.name }}-image-digest.txt
+          if-no-files-found: error
 
   release:
-    needs: publish
+    needs: [publish, verify]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: mvforge-release-compliance-evidence
+          path: ${{ runner.temp }}/mvforge-release-evidence
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mvforge-image-digest-*
+          path: ${{ runner.temp }}/mvforge-image-digests
+          merge-multiple: true
+      - name: Verify evidence and collect image digests
+        run: |
+          ./scripts/verify-release-evidence.sh "$RUNNER_TEMP/mvforge-release-evidence"
+          test -s "$RUNNER_TEMP/mvforge-image-digests/backend-image-digest.txt"
+          test -s "$RUNNER_TEMP/mvforge-image-digests/web-image-digest.txt"
+          cat "$RUNNER_TEMP/mvforge-image-digests/backend-image-digest.txt" \
+              "$RUNNER_TEMP/mvforge-image-digests/web-image-digest.txt" \
+              > "$RUNNER_TEMP/mvforge-release-evidence/image-digests.txt"
       - name: Package NAS installer
         run: |
           cp deploy/nas/compose.yml mvforge-compose.yml
@@ -123,14 +190,19 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME"
-          mvforge-compose.yml
-          mvforge.env.example
-          mvforge-backup.sh
-          LICENSE
-          NOTICE
-          LEGAL.md
-          THIRD_PARTY_LICENSES.md
-          --generate-notes
-          --title "MVForge $GITHUB_REF_NAME"
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            mvforge-compose.yml \
+            mvforge.env.example \
+            mvforge-backup.sh \
+            LICENSE NOTICE LEGAL.md THIRD_PARTY_LICENSES.md \
+            "$RUNNER_TEMP/mvforge-release-evidence/mvforge-corresponding-source.tar.gz" \
+            "$RUNNER_TEMP/mvforge-release-evidence/mvforge-corresponding-source.tar.gz.sha256" \
+            "$RUNNER_TEMP/mvforge-release-evidence/GO_MODULES.txt" \
+            "$RUNNER_TEMP/mvforge-release-evidence/GO_LICENSES.csv" \
+            "$RUNNER_TEMP/mvforge-release-evidence/GO_LICENSES.md" \
+            "$RUNNER_TEMP/mvforge-release-evidence/frontend-NPM-inventory.json" \
+            "$RUNNER_TEMP/mvforge-release-evidence/frontend-THIRD_PARTY_NOTICES.txt" \
+            "$RUNNER_TEMP/mvforge-release-evidence/image-digests.txt" \
+            --generate-notes \
+            --title "MVForge $GITHUB_REF_NAME"

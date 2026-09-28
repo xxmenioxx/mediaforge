@@ -3,181 +3,189 @@
 Audit date: 2026-09-28  
 Repository: `xxmenioxx/mediaforge`  
 Issue: [#57](https://github.com/xxmenioxx/mediaforge/issues/57), OPEN  
-Branch/base reviewed: `chore/57-compliance-baseline` at `fac11c9c4866d82efc4a0715063460f0d92e4c4b`
+Feature branch: `chore/57-compliance-baseline`
+Base: `67deb47ae9d6859474b739a4062ec23b8bd7ce17` (main after #41)
 
-This is a technical inventory of repository files, a local build, and
-read-only GitHub metadata. It does not determine legal compliance or provide
-legal advice. The local image below was built for this audit and was not
-published; it is not proof of the contents or redistributability of an
-existing GHCR image.
+This is a technical inventory of repository files, local builds, and read-only
+GitHub API data. It is not a legal determination or legal advice. The local
+images and corresponding-source bundle were not published and do not prove the
+contents or redistribution status of any older GHCR image.
 
 ## Issue-to-repository gap analysis
 
-| Issue requirement | Status | Evidence and gap |
+| Requirement | Status | Evidence and remaining gap |
 | --- | --- | --- |
-| Temporarily make the repository private | **complete** | GitHub API reports `PRIVATE`. |
-| Pause new public releases | **complete** | Release workflow fails unless `MVFORGE_PUBLIC_RELEASES_ENABLED` is exactly `true`; the repository has no Actions variables, so the workflow default is `false`. |
-| Pause container publication | **complete** | `publish` depends on the closed release gate. Existing GHCR package tags could not be inspected; see external items below. |
-| Review existing releases | **complete** | All 145 releases were enumerated. Every release has only `mvforge-backup.sh`, `mvforge-compose.yml`, and `mvforge.env.example`; none includes license notices, SBOM, or a source bundle. Latest is `v1.1.45`. |
-| Review existing packages/images | **external/manual evidence required** | The available GitHub token lacks `read:packages`; anonymous manifest requests for the two workflow image names returned HTTP 401. This does not establish whether a package is absent, private, or which tags/digests exist. |
-| Document intended/legal use boundaries | **complete** | `LEGAL.md` covers user responsibility, no supplied content/keys/acquisition service, third-party licenses, and no legal advice. README now links those boundaries. |
-| Explicitly exclude DRM circumvention | **complete** | `LEGAL.md` lists AACS/BD+, CSS, Widevine, key retrieval/distribution, DRM stripping, and TPM bypass as non-goals. README now states the non-goal. |
-| Capture and review the actual FFmpeg configuration | **complete for this checkout build; partial for published images** | The backend Dockerfile was built and its resulting local image was inspected. Published GHCR image digests remain unverified. |
-| Determine image redistribution status | **partial** | The local build uses GPL and version-3 FFmpeg flags and dynamically links GPL-2+ x264/x265. Corresponding-source and notice delivery are not present as a verified release package. No legal conclusion is made. |
-| Inventory Go, npm, FFmpeg, and third-party dependencies | **partial** | `go list -m all` resolves 63 Go modules. `frontend/package-lock.json` has 364 resolved package entries and license metadata on all 364. The summary notice is not a complete per-component license-text bundle, and a Go license report is absent. |
-| Generate release/container SBOM and provenance | **partial** | Release workflow requests BuildKit `sbom: true` and `provenance: mode=max` for images. The registry artifacts could not be inspected. SBOM/provenance are not among the 145 existing GitHub release asset sets. |
-| Reopen only after the gate passes | **complete as current hold** | The repository remains private and the code-level publication gate defaults closed. No visibility, release, or package settings were changed. |
+| Temporarily keep the repository private | **complete** | Read-only GitHub API snapshot reports `private: true`; no visibility setting was changed. |
+| Pause new public releases and image publication | **complete as a hold** | The release workflow defaults `MVFORGE_PUBLIC_RELEASES_ENABLED` to false and separately requires `MVFORGE_EXISTING_DISTRIBUTIONS_REVIEWED=true`. The repository Actions Variables endpoint reports zero variables, so neither gate is enabled. |
+| Document intended use, user responsibility, and content boundaries | **complete** | `LEGAL.md` and README describe a self-hosted processing tool, user responsibility, no supplied media/keys/acquisition service, and third-party licensing. README positions it alongside Jellyfin/Plex and Radarr/Sonarr. |
+| Explicitly exclude DRM circumvention | **complete** | `LEGAL.md` and README exclude AACS/BD+, CSS, Widevine or similar bypass, key retrieval/distribution, DRM stripping, and TPM bypass. |
+| Capture and review the actual FFmpeg build | **complete for the local rebuilt image; partial for retained GHCR images** | Raw `-version`, `-buildconf`, linkage, enabled external libraries, VAAPI/QSV runtime dependencies, all dpkg package versions, license metadata, and notice paths are in [`backend-image-2026-09-28.txt`](evidence/backend-image-2026-09-28.txt). The available GHCR API does not expose old image manifests/configs for equivalent inspection. |
+| Determine redistribution status of the Docker images | **external/manual evidence required** | The locally rebuilt image has technical configuration, source, package, and notice evidence. The 907 retained GHCR version records have not been tied to their own manifests, source offers, notices, SBOMs, or provenance, so their redistribution status is not established. |
+| Provide corresponding source/source-location and required notices | **complete for the local build/release process; partial for older images** | The final Dockerfile and scripts build a deterministic, checksummed source bundle containing FFmpeg/SVT-AV1, exact Debian x264/x265, libbluray, FriBidi, LAME, SoXR, and zimg sources, the build recipe/scripts, and runtime notices. Release-side evidence verification passed. No older GHCR digest is linked to such an archive. |
+| Inventory backend Go and shipped frontend npm dependencies | **complete for the checked-in dependency graph** | Go: 63 resolved modules, 25 imported-package/license report rows including the local module, and 25 corresponding license files. npm: 364 lock entries with declared metadata; 90 production/shared packages with zero unresolved license texts. The release checker regenerates/compares both. |
+| Include third-party notices in conveyed runtime artifacts | **complete for local backend and web images; partial for retained GHCR images** | Actual local image inspection confirms Debian package copyright files, FFmpeg/SVT-AV1, SeConv, SkiaSharp, HarfBuzzSharp, Intel/oneVPL notices, plus frontend npm inventory/notices. Older GHCR image contents remain uninspected. Web evidence is in [`frontend-image-2026-09-28.txt`](evidence/frontend-image-2026-09-28.txt). |
+| Generate/verify SBOM and provenance for releases | **partial** | The release workflow requests BuildKit SBOM and max-mode provenance and verifies SPDX/SLSA predicates before release creation. The available package API exposes no such fields; the attestation lookup for the latest tagged digests returned 404, which does not prove the attestations are absent. |
+| Review existing Releases, tags, packages, and image distribution history | **external/manual evidence required** | Current metadata and all GHCR version records are inventoried below, but the API data does not identify historic public access or prove each image's contents/evidence. |
+| Reopen publication only after every gate criterion is satisfied | **complete as a current hold; external review remains required** | Repository visibility is private, current Releases/tag refs are empty, and both release gates are closed. The retained-distribution review gate blocks future publication until external review is recorded. |
 
-**Issue #57 is not ready to clear. Keep the release gate closed.** Existing
-public release history and package visibility still need review, and this local
-build surfaced source/notice work that is not represented by a passing
-manifest-presence check.
+**Verdict: PR-ready but issue must remain open.** Repository-local source,
+notice, dependency-inventory, and gate work is implemented and locally
+validated. The contents and distribution history of retained GHCR images
+cannot be established from available API evidence, so #57 is not ready to close
+and the release gate must stay closed.
 
-## FFmpeg build evidence
+## Current GitHub state
 
-Reproduction on 2026-09-28 from backend context at base commit
-`fac11c9c4866d82efc4a0715063460f0d92e4c4b`:
+Read-only API snapshot captured `2026-09-28T21:50:14Z` is committed at
+[`github-packages-2026-09-28.json`](evidence/github-packages-2026-09-28.json).
+The snapshot script is `scripts/capture-github-compliance-state.sh`.
+
+| Resource | Current state |
+| --- | --- |
+| Repository visibility | Private |
+| GitHub Releases | 0 |
+| Git tag refs | 0 |
+| Actions variables | 0; public release enable and retained-distribution review settings are unset |
+
+An earlier audit snapshot recorded 145 GitHub Releases, from `v0.2.1` through
+`v1.1.45`, with only the three installer assets. Their current GitHub Release
+metadata is now empty. This reports deletion of current release metadata only;
+it does not establish that historical downloads, clones, forks, or grants were
+retracted. Current tag refs are also empty.
+
+### Private GHCR inventory
+
+| Package | Exists / visibility | Version records | Tagged versions | Untagged versions | Unique tags |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `mvforge-backend` | container / private | 452 | 149 | 303 | 299 |
+| `mvforge-web` | container / private | 455 | 150 | 305 | 301 |
+
+Every version ID, digest (API `name` field), tags, creation time, and update
+time is in the dated JSON snapshot. The latest tagged version records are:
+
+- Backend: ID `1226427294`, digest
+  `sha256:6c0385bc58c1827a893597d1bc55acfab012489eb777c43cc2cac8b213f7c53b`,
+  tags `sha-7845128`, `1.1.45`, `1.1`, and `latest`.
+- Web: ID `1226421239`, digest
+  `sha256:52e92abececb07ff6a83965083a59bde246719a14d8cac3797f1c8534ae08605`,
+  tags `sha-7845128`, `1.1.45`, `1.1`, and `latest`.
+
+Deleting Releases and Git refs did not delete these GHCR versions or tags.
+Both package APIs expose version IDs, timestamps, digest names, and container
+tags, but not platform/runtime manifests or embedded SBOM/provenance fields.
+The repository attestation endpoint returned HTTP 404 for each latest tagged
+digest; that response does not distinguish absent attestations from an
+unavailable or not-found result for this endpoint/token. No package versions,
+tags, visibility, or metadata were changed during this audit.
+
+## FFmpeg and backend image evidence
+
+The final local backend image is Linux/amd64, identified by manifest-list
+digest `sha256:3574de2dd7d97232532114ace8e367b4fcea20add6af0c9b91ae57c30d4f6fab`,
+and is identified in the linked evidence file. Build command (local only):
 
 ```sh
-cd backend
-docker build --progress=plain --tag mvforge-compliance-audit:local .
-docker run --rm --entrypoint /opt/ffmpeg/bin/ffmpeg mvforge-compliance-audit:local -hide_banner -version
-docker run --rm --entrypoint /opt/ffmpeg/bin/ffmpeg mvforge-compliance-audit:local -hide_banner -buildconf
+tail -n +2 backend/Dockerfile > /tmp/mvforge-57-Dockerfile-compliance
+docker buildx build --platform linux/amd64 --file /tmp/mvforge-57-Dockerfile-compliance \
+  --tag mvforge-compliance-audit:local --load backend
 ```
 
-Build result: Linux/amd64, image/index ID
-`sha256:f730cf3b8a87f343b61f3591a44dfcd574efbcfa8058f1ae8d5734d0ebe55b6b`.
-Docker's build output resolved `golang:1.25-trixie` to
-`sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73`
-and `debian:trixie-slim` to
-`sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54d1b20a`.
-The final Dockerfile smoke test completed for x265, SVT-AV1, and audio.
+The local Docker Hub lookup for `docker/dockerfile:1.7` timed out. The
+validation therefore used BuildKit's bundled Dockerfile frontend; the
+Dockerfile body and build context were the checked-in versions. The release
+workflow continues to use the checked-in syntax directive and has not been
+run for a release.
 
-Observed `ffmpeg -version`:
+Observed `ffmpeg -version` is FFmpeg 8.1.2. The actual `-buildconf` includes
+`--enable-gpl`, `--enable-version3`, `--enable-libx264`, `--enable-libx265`,
+`--enable-libaom`, `--enable-libdav1d`, `--enable-libsvtav1`, `--enable-libvpx`,
+`--enable-libass`, `--enable-libfreetype`, `--enable-libfontconfig`,
+`--enable-libfribidi`, `--enable-libmp3lame`, `--enable-libopus`,
+`--enable-libvorbis`, `--enable-libsoxr`, `--enable-libzimg`,
+`--enable-libwebp`, `--enable-libopenjpeg`, `--enable-libbluray`,
+`--enable-libvpl`, `--disable-libmfx`, `--enable-vaapi`, `--enable-libdrm`,
+and `--enable-opencl`. `--enable-nonfree` is absent from the binary's
+configuration output.
 
-```text
-ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers
-built with gcc 14 (Debian 14.2.0-19)
-libavutil      60. 26.102
-libavcodec     62. 28.102
-libavformat    62. 12.102
-libavdevice    62.  3.102
-libavfilter    11. 14.102
-libswscale      9.  5.102
-libswresample   6.  5.102
-```
+`ldd` of the built `libavcodec.so` confirms dynamic linkage to
+`libx264.so.164` and `libx265.so.215`, as well as libaom, dav1d, SVT-AV1,
+libvpx, libva, libvpl, libva-drm, libdrm, and OpenCL. FFmpeg reports `vaapi`,
+`qsv`, `drm`, and `opencl` methods. The Intel `iHD_drv_video.so` file is in the
+image and the relevant `libva`/`libvpl`/DRM libraries resolve; no GPU device
+was attached, so hardware execution was not tested.
 
-Observed `ffmpeg -buildconf` includes:
+The inspected package copyright files identify x264/x265 as GPL-2+;
+libbluray, FriBidi, and SoXR as LGPL-2.1+; and LAME as LGPL-2+ (with
+additional file-specific notices). The zimg package copyright metadata
+contains GPL-3+ with an AutoConf exception and WTFPL-2 entries. Other directly
+linked Debian components include BSD-2-Clause libaom/dav1d, BSD-3-Clause
+libvpx/Opus, and mixed package notices for OpenJPEG. All available Debian
+`/usr/share/doc/*/copyright` files are copied into
+`/usr/share/licenses/mvforge/debian/`; the image build and evidence capture fail
+if identified GPL/LGPL package notices are absent. Exact package versions and
+license metadata are in the linked runtime evidence file.
 
-```text
---enable-gpl --enable-version3 --enable-libx264 --enable-libx265
---enable-libaom --enable-libdav1d --enable-libsvtav1 --enable-libvpx
---enable-libass --enable-libfreetype --enable-libfontconfig --enable-libfribidi
---enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libsoxr
---enable-libzimg --enable-libwebp --enable-libopenjpeg --enable-libbluray
---enable-libvpl --disable-libmfx --enable-vaapi --enable-libdrm --enable-opencl
-```
+The FFmpeg build flags select the GPL version-3 build path and the binary is
+dynamically linked to GPL-2+ x264/x265. This identifies source and notice
+obligations to review; it is not a conclusion about the legal status of the
+complete MVForge image. FFmpeg documents the effect of GPL-enabled options and
+external libraries in its [license guidance](https://ffmpeg.org/legal.html).
+GPLv3 defines corresponding source to include what is needed to generate,
+install, run, and modify the object code, including build scripts; see
+[GNU GPLv3](https://www.gnu.org/licenses/gpl-3.0.en.html).
 
-`--enable-nonfree` is absent from the actual `-buildconf` output. `ldd` on
-`libavcodec.so` confirmed dynamic links to `libx264.so.164`, `libx265.so.215`,
-`libaom.so.3`, `libdav1d.so.7`, `libSvtAv1Enc.so.4`, `libvpx.so.9`,
-`libva.so.2`, `libva-drm.so.2`, `libvpl.so.2`, `libdrm.so.2`, and
-`libOpenCL.so.1`. FFmpeg reports `vaapi`, `qsv`, `drm`, and `opencl` hardware
-acceleration methods. The image build verifies the Intel `iHD` driver file,
-but no GPU device was passed to this local container, so hardware encode/decode
-was not exercised.
+### Source, notices, and dependency inventory
 
-The captured Debian runtime package versions include:
+- The corresponding-source build was run locally and packaged as a
+  deterministic gzip/tar archive. The final local archive SHA256 is
+  `43fd5dc514045bb01f2137ae4b7eccc737d505f98e356cfda771ba73c018c9ee`; its
+  release-evidence checker passed. It includes FFmpeg 8.1.2 and SVT-AV1 4.1.0
+  archives pinned by SHA256; exact x264/x265 Debian sources; and exact Debian
+  libbluray, FriBidi, LAME, SoXR, and zimg sources matching pinned
+  runtime/development package versions. It also contains the exact release
+  Dockerfile, source/archive scripts, Intel source commit references, component
+  license texts/notices, backend Go inventory and license texts, and a per-file
+  `SHA256SUMS` plus outer archive checksum. This was a local validation
+  artifact; no source archive was published.
+- The backend runtime contains SeConv's checksum-verified archive `LICENSE`,
+  SkiaSharp/HarfBuzzSharp NuGet license and third-party notice files, oneVPL
+  Intel GPU runtime `LICENSE`, Intel component licenses, FFmpeg/SVT-AV1
+  notices, and Debian copyright files.
+- `backend/licenses/GO_MODULES.txt`, `GO_LICENSES.csv`, and `go-modules/`
+  provide the resolved Go graph, package/license scan, and license texts. The
+  scanner warns that it cannot inspect C/assembly files and that the local
+  module's empty version makes its generated license URL potentially
+  imprecise; the local module itself is Apache-2.0 and the CSV has no Unknown
+  licenses.
+- `frontend/licenses/npm/inventory.json` and
+  `frontend/licenses/npm/THIRD_PARTY_NOTICES.txt` cover 90 production/shared
+  packages with zero unresolved entries. The built nginx image was inspected
+  and contains both files under `/licenses/npm/`; the notice file is 107,697
+  bytes. Image evidence is in [`frontend-image-2026-09-28.txt`](evidence/frontend-image-2026-09-28.txt).
+- The release workflow requests BuildKit SBOM and max-mode provenance for
+  exact image digests. `scripts/verify-image-attestations.sh` fails without
+  SPDX SBOM and SLSA provenance predicates; the published image is not
+  available in this local audit, and no release was created.
 
-| Package | Version | Package copyright metadata |
-| --- | --- | --- |
-| `libx264-164` | `2:0.164.3108+git31e19f9-2+b1` | GPL-2+ (with file-specific notices) |
-| `libx265-215` | `4.1-2` | GPL-2+ |
-| `libaom3` | `3.12.1-1+deb13u1` | BSD-2-Clause |
-| `libdav1d7` | `1.5.1-1` | BSD-2-Clause |
-| `libvpx9` | `1.15.0-2.1+deb13u1` | BSD-3-Clause |
-| `libbluray2` | `1:1.3.4-1+b2` | LGPL-2.1+ |
-| `libmp3lame0` | `3.100-6+b3` | LGPL-2+ (with file-specific notices) |
-| `libopus0` | `1.5.2-2` | BSD-3-Clause (with file-specific notices) |
-| `libsoxr0` | `0.1.3-4+b2` | LGPL-2.1+ (with file-specific notices) |
-| `libopenjp2-7` | `2.5.3-2.1~deb13u2` | Mixed package notices |
+Base images are pinned by digest in backend and frontend Dockerfiles. Exact
+x264/x265 and identified LGPL package versions are pinned in the backend
+builder/runtime, and corresponding Debian sources are packaged. Other Debian
+APT dependencies still resolve from the live configured repositories; the
+per-image BuildKit SBOM and copied package copyright metadata are required for
+each future digest. This is a remaining reproducibility limit, not a claim
+that every APT package is byte-for-byte pinned.
 
-These license identifiers were read from the Debian copyright files inside
-the built image. Full notices remain in the package copyright files where
-Debian supplies them. The build also copies FFmpeg's GPLv3/license files,
-SVT-AV1's BSD and patent files, and the listed Intel libva, gmmlib, media-driver
-and oneVPL component license files into `/usr/share/licenses/mvforge`.
+## Manual/external evidence still required
 
-### Redistribution blockers shown by the build
-
-- FFmpeg is configured with `--enable-gpl` and `--enable-version3`; x264 and
-  x265 are dynamically linked GPL-2+ Debian libraries. The built image does
-  not include an accompanying FFmpeg/x264/x265 corresponding-source bundle,
-  source location, or written offer. The Dockerfile pins the FFmpeg and SVT-AV1
-  source archives by SHA256 and pins Intel Git commits, but that build context
-  alone does not capture source for the dynamically installed Debian packages.
-- Debian base tags and APT packages are not pinned to immutable snapshots.
-  The package versions above identify this local build only; rebuilding later
-  can resolve different Debian package contents.
-- The Dockerfile copies the SeConv executable and SkiaSharp/HarfBuzzSharp
-  native libraries but does not copy separate license/notice materials for
-  them into `/usr/share/licenses/mvforge`. It also did not contain a distinct
-  notice there for the oneVPL Intel GPU runtime. Recover and verify the exact
-  upstream texts before treating those notices as satisfied.
-- The local build did not run the release workflow's registry SBOM step and
-  cannot establish the SBOM or source availability for any already-published
-  image digest.
-
-FFmpeg's own licensing page distinguishes its GPL-enabled build from an
-LGPL-only build and notes that the applicable license/source conditions must
-be reviewed for the distributed binary:
-[FFmpeg License and Legal Considerations](https://ffmpeg.org/legal.html).
-GPLv3 defines corresponding source to include source needed to generate,
-install, run, and modify the object code, including build/install scripts:
-[GNU GPLv3, section 6 and definitions](https://www.gnu.org/licenses/gpl-3.0.en.html).
-These references inform the technical follow-up; they are not a legal opinion.
-
-## Manifests, notices, releases, and gate
-
-- Backend Go: `backend/go.mod` and `backend/go.sum`; `go list -m all` returned
-  63 modules including the main module. The repository inventory lists direct
-  packages but has no resolved module-to-license report or bundled notice set.
-- Frontend npm: `frontend/package-lock.json` is lockfile version 3 with 364
-  `node_modules/` records; all 364 currently declare a `license` field. These
-  are package metadata values, not verified license texts. The verifier now
-  fails if any resolved lock entry loses that field.
-- Containers: `.github/workflows/release-images.yml` requests BuildKit SBOM and
-  provenance for backend and web images, and the current release job includes
-  `LICENSE`, `NOTICE`, `LEGAL.md`, and `THIRD_PARTY_LICENSES.md`. Neither
-  condition retroactively changes existing releases.
-- GitHub metadata: the repository is private; the Actions variables endpoint
-  returned zero variables, so `MVFORGE_PUBLIC_RELEASES_ENABLED` is unset and
-  the workflow's `false` default holds. The repository has 145 releases from
-  `v0.2.1` through `v1.1.45`; all 145 have the same three install assets and
-  none has the above legal files or an SBOM/source asset.
-- GitHub Packages: the workflow names `ghcr.io/xxmenioxx/mvforge-backend` and
-  `ghcr.io/xxmenioxx/mvforge-web`. The packages API returned 403 because the
-  current credential lacks `read:packages`; anonymous manifest access returned
-  401. The NAS SSH runtime query timed out. Existing image tags, digests,
-  visibilities, and attestations therefore remain unverified.
-
-## Remaining work before clearing #57
-
-1. Have a repository/package administrator inventory both GHCR packages, all
-   tags/digests, package visibility, and the SBOM/provenance attached to each
-   released image. Compare that evidence to the release list above.
-2. Choose and implement an exact corresponding-source and source-offer process
-   for the GPL-enabled FFmpeg/x264/x265 build and the rest of the conveyed
-   binaries. Include the exact build scripts and source for each artifact.
-3. Pin base image digests and Debian APT snapshots, then retain the complete
-   package/source inventory and SBOM for each image digest.
-4. Add and verify notices for SeConv, SkiaSharp, HarfBuzzSharp, and the oneVPL
-   Intel GPU runtime, plus a resolved Go license report and npm license texts
-   appropriate to the packages actually included in the web image.
-5. Decide how to handle the 145 existing releases and any existing container
-   tags. Repository privacy does not retract earlier downloads, clones, forks,
-   or grants.
-
-Recommended follow-up: a focused release-source and notice pipeline change.
-Keep the current repository private and publication gate closed until those
-items are evidenced and reviewed.
+1. Review the 907 current private GHCR version records and their retention
+   policy. A tagged/untagged record is not proof that an artifact was or was
+   not publicly downloadable in the past.
+2. Establish whether each retained or historically distributed image has its
+   own corresponding source, notices, SBOM, and provenance. The current API
+   fields and 404 attestation lookup do not answer that question.
+3. Keep the `MVFORGE_EXISTING_DISTRIBUTIONS_REVIEWED` variable unset until the
+   retained and historical artifact review is recorded. Keep
+   `MVFORGE_PUBLIC_RELEASES_ENABLED` unset as well.
+4. No public Release, tag, image, or repository visibility change was made.
+   Past download/clone/access history is not determined by the current empty
+   Releases and tag refs.

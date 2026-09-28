@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "compliance:licenses": "node scripts/generate-license-inventory.mjs",
     "lint": "eslint .",
     "test": "vitest run",
     "preview": "vite preview --host 0.0.0.0"

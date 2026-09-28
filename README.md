@@ -2,7 +2,7 @@
 
 MVForge (Media & Video Forge) es una plataforma self-hosted para analizar, preparar, convertir, validar y publicar archivos multimedia antes de incorporarlos a Jellyfin, Plex, Emby u otra biblioteca.
 
-No es un servidor multimedia ni reemplaza a Jellyfin. MVForge es la capa de procesamiento entre los archivos originales y la biblioteca final.
+No es un servidor multimedia ni reemplaza a Jellyfin o Plex. Complementa a Jellyfin, Plex y bibliotecas gestionadas con Radarr/Sonarr como capa de procesamiento entre los archivos originales y la biblioteca final.
 
 MVForge no distribuye contenido ni ofrece servicios para adquirir o descargar medios. No implementa ni incluye herramientas para evadir DRM; procesa archivos ya accesibles que el usuario está autorizado a utilizar. Consulta [LEGAL.md](LEGAL.md) para conocer las responsabilidades y los límites de uso.
 

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM golang:1.25-trixie AS build
+FROM golang:1.25-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73 AS build
 
 WORKDIR /src
 
@@ -18,7 +18,7 @@ RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     CGO_ENABLED=1 go build -o /out/mvforge-api ./cmd/api \
     && CGO_ENABLED=0 go build -o /out/mvforge-hw-probe ./cmd/hwprobe
 
-FROM debian:trixie-slim AS intel-media
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS intel-media
 
 ARG LIBVA_COMMIT=217da1c28336d6a7e9c0c4cb8f1c303968a675f1
 ARG LIBVA_UTILS_COMMIT=1a13ae13382b7b548f3a7e8035e1d7df66662c0a
@@ -118,33 +118,57 @@ RUN install -d \
       "${INTEL_PREFIX}/share/licenses/media-driver" \
       "${INTEL_PREFIX}/share/licenses/libvpl" \
       "${INTEL_PREFIX}/share/licenses/libvpl-tools" \
+      "${INTEL_PREFIX}/share/licenses/oneVPL-intel-gpu" \
     && cp /src/libva/COPYING "${INTEL_PREFIX}/share/licenses/libva/" \
     && cp /src/libva-utils/COPYING "${INTEL_PREFIX}/share/licenses/libva-utils/" \
     && cp /src/gmmlib/LICENSE.md "${INTEL_PREFIX}/share/licenses/gmmlib/" \
     && cp /src/media-driver/LICENSE.md "${INTEL_PREFIX}/share/licenses/media-driver/" \
     && cp /src/libvpl/LICENSE "${INTEL_PREFIX}/share/licenses/libvpl/" \
-    && cp /src/libvpl-tools/LICENSE "${INTEL_PREFIX}/share/licenses/libvpl-tools/"
+    && cp /src/libvpl-tools/LICENSE "${INTEL_PREFIX}/share/licenses/libvpl-tools/" \
+    && cp /src/vpl-gpu/LICENSE "${INTEL_PREFIX}/share/licenses/oneVPL-intel-gpu/"
 
-FROM debian:trixie-slim AS ffmpeg
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS ffmpeg
 
 ARG FFMPEG_VERSION=8.1.2
 ARG FFMPEG_SHA256=464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
 ARG SVT_AV1_VERSION=4.1.0
 ARG SVT_AV1_SHA256=6c4c0c44ff0ba3d136d6f57f3a707f9de8e9c866f50f809c1d22a43f0d8c9583
+ARG LIBX264_PACKAGE_VERSION=2:0.164.3108+git31e19f9-2+b1
+ARG LIBX265_PACKAGE_VERSION=4.1-2
+ARG LIBBLURAY_PACKAGE_VERSION=1:1.3.4-1+b2
+ARG FRIBIDI_PACKAGE_VERSION=1.0.16-1
+ARG LAME_PACKAGE_VERSION=3.100-6+b3
+ARG SOXR_PACKAGE_VERSION=0.1.3-4+b2
+ARG ZIMG_PACKAGE_VERSION=3.0.5+ds1-1+b2
+ARG X264_SOURCE_VERSION=2:0.164.3108+git31e19f9-2
+ARG X265_SOURCE_VERSION=4.1-2
 
 COPY --from=intel-media /opt/intel/ /opt/intel/
 
-RUN apt-get update \
+RUN printf '%s\n' \
+       'deb-src http://deb.debian.org/debian trixie main' \
+       'deb-src http://deb.debian.org/debian trixie-updates main' \
+       'deb-src http://deb.debian.org/debian-security trixie-security main' \
+       > /etc/apt/sources.list.d/mvforge-debian-src.list \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
-       build-essential ca-certificates cmake curl nasm ninja-build pkg-config xz-utils yasm \
-       libaom-dev libass-dev libbluray-dev libdav1d-dev libdrm-dev \
-       libfontconfig1-dev libfreetype6-dev libfribidi-dev libmp3lame-dev \
-       libopenjp2-7-dev libopus-dev libsoxr-dev \
-       libvorbis-dev libvpx-dev libwebp-dev libx264-dev \
-       libx265-dev libzimg-dev ocl-icd-opencl-dev \
+       build-essential ca-certificates cmake curl dpkg-dev nasm ninja-build pkg-config xz-utils yasm \
+       libaom-dev libass-dev "libbluray-dev=${LIBBLURAY_PACKAGE_VERSION}" libdav1d-dev libdrm-dev \
+       libfontconfig1-dev libfreetype6-dev "libfribidi-dev=${FRIBIDI_PACKAGE_VERSION}" \
+       "libmp3lame-dev=${LAME_PACKAGE_VERSION}" \
+       libopenjp2-7-dev libopus-dev "libsoxr-dev=${SOXR_PACKAGE_VERSION}" \
+       libvorbis-dev libvpx-dev libwebp-dev \
+       "libx264-dev=${LIBX264_PACKAGE_VERSION}" \
+       "libx265-dev=${LIBX265_PACKAGE_VERSION}" \
+       "libzimg-dev=${ZIMG_PACKAGE_VERSION}" ocl-icd-opencl-dev \
     && curl -fsSL --retry 5 --retry-all-errors -o /tmp/svt-av1.tar.gz \
        "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v${SVT_AV1_VERSION}/SVT-AV1-v${SVT_AV1_VERSION}.tar.gz" \
     && echo "${SVT_AV1_SHA256}  /tmp/svt-av1.tar.gz" | sha256sum -c - \
+    && install -d /out/compliance-sources/sources/ffmpeg \
+       /out/compliance-sources/sources/svt-av1 \
+       /out/compliance-sources/sources/debian \
+    && install -m 0644 /tmp/svt-av1.tar.gz \
+       /out/compliance-sources/sources/svt-av1/SVT-AV1-${SVT_AV1_VERSION}.tar.gz \
     && mkdir -p /src/svt-av1 \
     && tar -xzf /tmp/svt-av1.tar.gz -C /src/svt-av1 --strip-components=1 \
     && cmake -S /src/svt-av1 -B /src/svt-av1/build -G Ninja \
@@ -158,6 +182,10 @@ RUN apt-get update \
     && curl -fsSL --retry 5 --retry-all-errors -o /tmp/ffmpeg.tar.xz \
        "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
     && echo "${FFMPEG_SHA256}  /tmp/ffmpeg.tar.xz" | sha256sum -c - \
+    && install -m 0644 /tmp/ffmpeg.tar.xz \
+       /out/compliance-sources/sources/ffmpeg/ffmpeg-${FFMPEG_VERSION}.tar.xz \
+    && cd /out/compliance-sources/sources/debian \
+    && apt-get source "x264=${X264_SOURCE_VERSION}" "x265=${X265_SOURCE_VERSION}" \
     && mkdir -p /src \
     && tar -xJf /tmp/ffmpeg.tar.xz -C /src --strip-components=1 \
     && cd /src \
@@ -206,7 +234,25 @@ RUN apt-get update \
     && strip /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe \
     && rm -rf /var/lib/apt/lists/* /tmp/ffmpeg.tar.xz /tmp/svt-av1.tar.gz /src
 
-FROM debian:trixie-slim AS seconv
+# Retain exact Debian source packages for GPL/LGPL runtime libraries linked
+# into this FFmpeg build, alongside the GPL x264/x265 source above.
+ARG LIBBLURAY_SOURCE_VERSION=1:1.3.4-1
+ARG FRIBIDI_SOURCE_VERSION=1.0.16-1
+ARG LAME_SOURCE_VERSION=3.100-6
+ARG SOXR_SOURCE_VERSION=0.1.3-4
+ARG ZIMG_SOURCE_VERSION=3.0.5+ds1-1
+
+RUN apt-get update \
+    && cd /out/compliance-sources/sources/debian \
+    && apt-get source \
+       "libbluray=${LIBBLURAY_SOURCE_VERSION}" \
+       "fribidi=${FRIBIDI_SOURCE_VERSION}" \
+       "lame=${LAME_SOURCE_VERSION}" \
+       "libsoxr=${SOXR_SOURCE_VERSION}" \
+       "zimg=${ZIMG_SOURCE_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS seconv
 
 ARG TARGETARCH
 ARG SECONV_VERSION=5.1.0-rc15
@@ -237,19 +283,58 @@ RUN apt-get update \
     && unzip -p /tmp/harfbuzzsharp.nupkg "runtimes/${runtime}/native/libHarfBuzzSharp.so" > /out/native/libHarfBuzzSharp.so \
     && chmod 0755 /out/native/*.so
 
-FROM debian:trixie-slim
+RUN mkdir -p /out/licenses/seconv \
+       /out/licenses/skiasharp \
+       /out/licenses/harfbuzzsharp \
+    && tar -xOzf /tmp/seconv.tar.gz ./LICENSE > /out/licenses/seconv/LICENSE \
+    && unzip -q /tmp/skiasharp.nupkg -d /tmp/skiasharp-package \
+    && unzip -q /tmp/harfbuzzsharp.nupkg -d /tmp/harfbuzzsharp-package \
+    && for component in skiasharp harfbuzzsharp; do \
+         case "$component" in \
+           skiasharp) package=/tmp/skiasharp-package ;; \
+           harfbuzzsharp) package=/tmp/harfbuzzsharp-package ;; \
+         esac; \
+         find "$package" -type f -print \
+           | grep -Ei '(^|/)(UN)?LICEN[CS]E([._ -].*)?$|(^|/)COPYING([._ -].*)?$|(^|/)NOTICE([._ -].*)?$|(^|/)THIRD[-_. ]PARTY[-_. ]NOTICES?([._ -].*)?$' \
+           > "/tmp/${component}-notices.txt"; \
+         test -s "/tmp/${component}-notices.txt"; \
+         while IFS= read -r source_file; do \
+           relative="${source_file#${package}/}"; \
+           install -D -m 0644 "$source_file" "/out/licenses/${component}/${relative}"; \
+         done < "/tmp/${component}-notices.txt"; \
+       done
+
+FROM scratch AS corresponding-source
+COPY --from=ffmpeg /out/compliance-sources/sources/ /sources/
+COPY --from=seconv /out/licenses/ /notices/runtime/
+COPY --from=intel-media /opt/intel/share/licenses/ /notices/intel/
+COPY Dockerfile /build/backend.Dockerfile
+COPY licenses/ /notices/backend/
+
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
+
+ARG LIBX264_PACKAGE_VERSION=2:0.164.3108+git31e19f9-2+b1
+ARG LIBX265_PACKAGE_VERSION=4.1-2
+ARG LIBBLURAY_PACKAGE_VERSION=1:1.3.4-1+b2
+ARG FRIBIDI_PACKAGE_VERSION=1.0.16-1
+ARG LAME_PACKAGE_VERSION=3.100-6+b3
+ARG SOXR_PACKAGE_VERSION=0.1.3-4+b2
+ARG ZIMG_PACKAGE_VERSION=3.0.5+ds1-1+b2
 
 WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates curl openssh-client \
-       libaom3 libass9 libbluray2 libdav1d7 libdrm2 \
-       libfontconfig1 libfreetype6 libfribidi0 libmp3lame0 libopenjp2-7 \
-       libopus0 libsoxr0 libsqlite3-0 \
-       libvorbis0a libvorbisenc2 libvpx9 libwebp7 libx264-164 libx265-215 \
+       libaom3 libass9 "libbluray2=${LIBBLURAY_PACKAGE_VERSION}" libdav1d7 libdrm2 \
+       libfontconfig1 libfreetype6 "libfribidi0=${FRIBIDI_PACKAGE_VERSION}" \
+       "libmp3lame0=${LAME_PACKAGE_VERSION}" libopenjp2-7 \
+       libopus0 "libsoxr0=${SOXR_PACKAGE_VERSION}" libsqlite3-0 \
+       libvorbis0a libvorbisenc2 libvpx9 libwebp7 \
+       "libx264-164=${LIBX264_PACKAGE_VERSION}" \
+       "libx265-215=${LIBX265_PACKAGE_VERSION}" \
        libx11-6 libxext6 libxfixes3 libwayland-client0 \
-       libzimg2 ocl-icd-libopencl1 sqlite3 hunspell-en-us hunspell-es tesseract-ocr \
+       "libzimg2=${ZIMG_PACKAGE_VERSION}" ocl-icd-libopencl1 sqlite3 hunspell-en-us hunspell-es tesseract-ocr \
        tesseract-ocr-eng tesseract-ocr-jpn tesseract-ocr-jpn-vert tesseract-ocr-spa tzdata \
     && rm -rf /var/lib/apt/lists/*
 
@@ -265,11 +350,21 @@ COPY --from=seconv /usr/local/bin/seconv /usr/local/bin/seconv
 COPY --from=seconv /out/native/ /usr/local/lib/
 COPY --from=ffmpeg /opt/ffmpeg/share/licenses/ /usr/share/licenses/mvforge/
 COPY --from=intel-media /opt/intel/share/licenses/ /usr/share/licenses/mvforge/
+COPY --from=seconv /out/licenses/ /usr/share/licenses/mvforge/
 COPY licenses/ /usr/share/licenses/mvforge/
 
 RUN printf '%s\n' /opt/intel/lib/x86_64-linux-gnu /opt/intel/lib /opt/ffmpeg/lib /usr/local/lib \
       > /etc/ld.so.conf.d/mvforge-media.conf \
-    && ldconfig
+    && ldconfig \
+    && install -d /usr/share/licenses/mvforge/debian \
+    && find /usr/share/doc -type f -name copyright -print | while IFS= read -r copyright; do \
+         package="${copyright#/usr/share/doc/}"; \
+         package="${package%/copyright}"; \
+         install -D -m 0644 "$copyright" "/usr/share/licenses/mvforge/debian/${package}.copyright"; \
+       done \
+    && for package in libx264-164 libx265-215 libaom3 libdav1d7 libvpx9 libbluray2 libfribidi0 libmp3lame0 libopus0 libsoxr0 libzimg2 libopenjp2-7; do \
+         test -s "/usr/share/licenses/mvforge/debian/${package}.copyright"; \
+       done
 
 ENV LIBVA_DRIVER_NAME=iHD
 ENV LIBVA_DRIVERS_PATH=/opt/intel/lib/x86_64-linux-gnu/dri
