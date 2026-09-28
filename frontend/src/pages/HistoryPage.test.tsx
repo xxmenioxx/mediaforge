@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
-  return { ...actual, api: { ...actual.api, validationHistory: vi.fn() } };
+  return { ...actual, api: { ...actual.api, validationHistory: vi.fn(), jellyfinOutcomes: vi.fn() } };
 });
 
 import { api } from '../api/client';
@@ -33,6 +33,7 @@ const baseJob = {
   id: 54,
   executionNumber: 3,
   mediaPath: '/raw/series/episode.mkv',
+  publishedPath: '',
   status: 'completed' as const,
   createdAt: '2026-09-27T10:00:00Z',
   updatedAt: '2026-09-27T11:00:00Z',
@@ -49,6 +50,7 @@ const baseJob = {
 describe('HistoryPage Publisher projection', () => {
   beforeEach(() => {
     vi.mocked(api.validationHistory).mockReset();
+    vi.mocked(api.jellyfinOutcomes).mockReset().mockResolvedValue([]);
   });
 
   it('shows canonical Publisher facts and keeps archive status separate', async () => {
@@ -100,5 +102,25 @@ describe('HistoryPage Publisher projection', () => {
     expect(screen.getByText('/library/legacy/episode.mkv')).toBeTruthy();
     expect(screen.queryByText('PUBLISHED')).toBeNull();
     expect(screen.queryByText(/Publication publication:/)).toBeNull();
+  });
+
+  it('shows bounded Jellyfin status and retries only eligible failures', async () => {
+    vi.mocked(api.validationHistory).mockResolvedValue(page({
+      ...baseJob,
+      publisher: {
+        publicationId: 'publication:jellyfin', state: 'PUBLISHED', destinationPath: '/library/episode.mkv',
+        publishMode: 'replace_library', attemptCount: 1, validationRunId: 'validation-run:1', validationOverridePresent: false,
+      },
+    }));
+    vi.mocked(api.jellyfinOutcomes).mockResolvedValue([{
+      id: 81, reason: 'asset_published', status: 'retryable_failure', failureClass: 'timeout', attemptCount: 5,
+      durationMillis: 10000, updatedAt: '2026-09-27T11:01:00Z', publicationId: 'publication:jellyfin', retryEligible: true,
+    }]);
+
+    renderHistory();
+
+    expect(await screen.findByText(/Jellyfin refresh: retryable failure/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Retry Jellyfin refresh' })).toBeTruthy();
+    expect(screen.getByText('PUBLISHED')).toBeTruthy();
   });
 });

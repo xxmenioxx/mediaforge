@@ -69,6 +69,7 @@ func Migrate(db *gorm.DB) error {
 		&models.PublisherAttemptEvidence{},
 		&models.PublisherAuditEvent{},
 		&models.AssetPublishedOutbox{},
+		&models.JellyfinIntegrationOutcome{},
 	); err != nil {
 		return err
 	}

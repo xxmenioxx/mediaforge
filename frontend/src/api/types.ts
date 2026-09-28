@@ -1044,6 +1044,36 @@ export type AppSetting = {
   updatedAt: string;
 };
 
+export type JellyfinLibrary = {
+  id: string;
+  name: string;
+  collectionType?: string;
+};
+
+export type JellyfinConnectionResult = {
+  reachable: boolean;
+  authenticated: boolean;
+  serverVersion?: string;
+  versionAvailable: boolean;
+  libraries: JellyfinLibrary[];
+  failureClass?: string;
+};
+
+export type JellyfinIntegrationOutcome = {
+  id: number;
+  reason: 'asset_published' | 'test_encode_ready' | 'test_encode_removed' | 'manual_refresh';
+  status: 'pending' | 'success' | 'skipped_disabled' | 'skipped_unmapped' | 'retryable_failure' | 'permanent_configuration_error';
+  effectiveScope?: 'server_wide';
+  failureClass?: string;
+  attemptCount: number;
+  durationMillis: number;
+  updatedAt: string;
+  publicationId?: string;
+  testEncodeId?: number;
+  libraryId?: number;
+  retryEligible: boolean;
+};
+
 export type AssetDefaultsSource = 'custom' | 'profile';
 export type AssetDefaultsDomain = {
   source: AssetDefaultsSource;

@@ -683,6 +683,10 @@ export const api = {
       method: 'DELETE',
     }),
   settings: () => request<AppSetting[]>('/api/settings'),
+  testJellyfinConnection: () => request<import('./types').JellyfinConnectionResult>('/api/settings/jellyfin/test-connection', { method: 'POST', body: JSON.stringify({}) }),
+  jellyfinOutcomes: () => request<import('./types').JellyfinIntegrationOutcome[]>('/api/jellyfin/outcomes'),
+  manualJellyfinRefresh: (libraryId: number) => request<import('./types').JellyfinIntegrationOutcome>('/api/jellyfin/manual-refresh', { method: 'POST', body: JSON.stringify({ libraryId }) }),
+  retryJellyfinOutcome: (id: number) => request<import('./types').JellyfinIntegrationOutcome>(`/api/jellyfin/outcomes/${id}/retry`, { method: 'POST', body: JSON.stringify({}) }),
   softwareVersions: () => request<SoftwareVersions>('/api/system/versions'),
   runtimeState: () => request<RuntimeState>('/api/system/runtime'),
   /** @deprecated Use runtimeState for the live current-state endpoint. */

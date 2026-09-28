@@ -50,6 +50,39 @@ func TestValidationRunsAndOverridesAreAppendOnly(t *testing.T) {
 	}
 }
 
+func TestMigrateAddsJellyfinOutcomeLedgerToExistingSettingsDatabase(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:jellyfin-ledger-migration?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "existing", Value: models.JSONMap{"kept": true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate existing database: %v", err)
+	}
+	if !db.Migrator().HasTable(&models.JellyfinIntegrationOutcome{}) {
+		t.Fatal("Jellyfin integration outcome table was not migrated")
+	}
+	var existing models.AppSetting
+	if err := db.First(&existing, "key = ?", "existing").Error; err != nil || existing.Value["kept"] != true {
+		t.Fatalf("existing settings row was not preserved: %#v err=%v", existing, err)
+	}
+	now := time.Now().UTC()
+	row := models.JellyfinIntegrationOutcome{SourceKey: "asset-published:event", Reason: "asset_published", EffectiveTarget: "server-wide", Status: "pending", FirstTriggeredAt: now, DueAt: now}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	duplicate := row
+	duplicate.ID = 0
+	if err := db.Create(&duplicate).Error; err == nil {
+		t.Fatal("duplicate Jellyfin source identity was not constrained")
+	}
+}
+
 func TestPublisherAttemptEvidenceAndAuditAreAppendOnly(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:publisher-append-only?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

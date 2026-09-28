@@ -45,6 +45,7 @@ func main() {
 	runtimeinfo.StartDetector(db)
 	scheduler.StartReviewPlanner(db)
 	handlers.StartAutoWorker(db)
+	handlers.StartJellyfinCoordinator(db)
 	handlers.StartAutoPublisher(db)
 	handlers.StartAutoHousekeeper(db)
 	handlers.StartAssetInventorySyncer(db)
