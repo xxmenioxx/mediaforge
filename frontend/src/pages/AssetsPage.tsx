@@ -78,7 +78,7 @@ import { assetOverridePreferenceDraft, getMVForgePreferences } from '../mvforgeP
 import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
-import { assetInfoDiscardDraft, assetInfoDocumentsEqual, assetInfoEditDocument, assetInfoRefreshReconciliation, assetInfoSaveFailureReconciliation, assetInfoSaveReconciliation, type AssetInfoEditDocument } from '../utils/assetInfoEditing';
+import { assetInfoDiscardDraft, assetInfoDocumentsEqual, assetInfoEditDocument, assetInfoHydrationReconciliation, assetInfoRefreshReconciliation, assetInfoSaveFailureReconciliation, assetInfoSaveReconciliation, type AssetInfoEditDocument } from '../utils/assetInfoEditing';
 import { patchAssetInventoryAsset } from '../utils/assetInventoryPatch';
 import { hidePreConversionActionsForAsset, testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
 import { customUpscaleHeightError, smartUpscaleControlsDisabled } from '../upscale';
@@ -2743,6 +2743,8 @@ function AssetRow({
   const [assetEditDraft, setAssetEditDraft] = useState<AssetInfoEditDocument>(initialAssetEdit);
   const assetEditDraftRef = useRef(assetEditDraft);
   const assetEditPathRef = useRef(asset.path);
+  const assetEditAuthoritativeRef = useRef(initialAssetEdit);
+  const pendingAssetEditRefreshRef = useRef(false);
   const assetEditDirty = !assetInfoDocumentsEqual(persistedAssetEdit, assetEditDraft);
 
   useEffect(() => {
@@ -2754,10 +2756,6 @@ function AssetRow({
   const conversionDraft = assetEditDraft.conversion;
   const category = firstCategory(assetEditDraft.metadata.categories) || groupCategory;
   const authoritativeAssetEdit = assetInfoEditDocument(assetMetadata, normalizeAssetConversionOverride(asset.conversion));
-  const authoritativeAssetEditSignature = JSON.stringify(authoritativeAssetEdit);
-  const persistedAssetEditSignature = JSON.stringify(persistedAssetEdit);
-  const assetEditDraftSignature = JSON.stringify(assetEditDraft);
-  const assetEditReconciliationRef = useRef('');
 
   useEffect(() => {
     assetEditDraftRef.current = assetEditDraft;
@@ -2771,6 +2769,18 @@ function AssetRow({
         conversion: normalizeAssetConversionOverride(conversion),
       };
     });
+  }
+
+  function hydrateAssetEditDefaults(patch: Partial<AssetConversionOverrideState>) {
+    const currentDraft = assetEditDraftRef.current;
+    const hydratedDraft = assetInfoEditDocument(
+      currentDraft.metadata,
+      normalizeAssetConversionOverride({ ...currentDraft.conversion, ...patch }),
+    );
+    const reconciled = assetInfoHydrationReconciliation(persistedAssetEdit, currentDraft, hydratedDraft);
+    setPersistedAssetEdit(reconciled.baseline);
+    setAssetEditDraft(reconciled.draft);
+    assetEditDraftRef.current = reconciled.draft;
   }
 
   function setCategory(nextCategory: string) {
@@ -2882,6 +2892,12 @@ function AssetRow({
     queryFn: () => api.evaluateAdvisor({ mediaPath: asset.path, profileId: effectiveProfileId }),
     enabled: showAdvisorDialog && mode !== 'converted' && asset.status !== 'converted' && asset.status !== 'published_as_is' && asset.status !== 'accepted' && confidenceEnabled && effectiveProfileId > 0,
   });
+  async function refreshSubtitleEvidence() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] }),
+      queryClient.invalidateQueries({ queryKey: ['subtitleEligibility', asset.path] }),
+    ]);
+  }
   const saveAssetEdit = useMutation({
     mutationFn: (revision: AssetInfoEditDocument) => api.updateAssetEdit({
       path: asset.path,
@@ -2889,7 +2905,11 @@ function AssetRow({
       conversion: cleanConversionOverride(revision.conversion),
     }),
     onSuccess: (response, revision) => {
-      const reconciled = assetInfoSaveReconciliation(assetEditDraftRef.current, revision, response);
+      const normalizedResponse = {
+        ...response,
+        conversion: normalizeAssetConversionOverride(response.conversion),
+      };
+      const reconciled = assetInfoSaveReconciliation(assetEditDraftRef.current, revision, normalizedResponse);
       setPersistedAssetEdit(reconciled.baseline);
       setAssetEditDraft(reconciled.draft);
       queryClient.setQueryData<AssetInventory | undefined>(['assets'], (current) => current
@@ -3034,7 +3054,7 @@ function AssetRow({
     onSuccess: async () => {
       setEditingSubtitle(null);
       setSubtitleContent('');
-      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+      await refreshSubtitleEvidence();
     },
   });
   const renameExternalSubtitle = useMutation({
@@ -3042,13 +3062,13 @@ function AssetRow({
     onSuccess: async () => {
       setRenamingSubtitle(null);
       setSubtitleFileName('');
-      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+      await refreshSubtitleEvidence();
     },
   });
   const deleteExternalSubtitle = useMutation({
     mutationFn: api.deleteExternalAssetSubtitle,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+      await refreshSubtitleEvidence();
     },
   });
   const isBlockedByReview = assetReview.requiresReview;
@@ -3185,22 +3205,31 @@ function AssetRow({
     updateAssetDestination.mutate({ selection: 'value', libraryId });
   }
   useEffect(() => {
-    const signature = JSON.stringify([asset.path, authoritativeAssetEditSignature, persistedAssetEditSignature, assetEditDraftSignature]);
-    if (assetEditReconciliationRef.current === signature) return;
-    assetEditReconciliationRef.current = signature;
     if (assetEditPathRef.current !== asset.path) {
       assetEditPathRef.current = asset.path;
+      assetEditAuthoritativeRef.current = authoritativeAssetEdit;
+      pendingAssetEditRefreshRef.current = false;
       setPersistedAssetEdit(authoritativeAssetEdit);
       setAssetEditDraft(authoritativeAssetEdit);
+      assetEditDraftRef.current = authoritativeAssetEdit;
       resetAssetEdit();
       return;
     }
+
+    if (!assetInfoDocumentsEqual(assetEditAuthoritativeRef.current, authoritativeAssetEdit)) {
+      assetEditAuthoritativeRef.current = authoritativeAssetEdit;
+      pendingAssetEditRefreshRef.current = true;
+    }
+    if (!pendingAssetEditRefreshRef.current || assetEditDirty) return;
+
     const refreshed = assetInfoRefreshReconciliation(persistedAssetEdit, assetEditDraft, authoritativeAssetEdit);
     if (!refreshed.dirty) {
       setPersistedAssetEdit(refreshed.baseline);
       setAssetEditDraft(refreshed.draft);
+      assetEditDraftRef.current = refreshed.draft;
     }
-  }, [asset.path, authoritativeAssetEdit, authoritativeAssetEditSignature, persistedAssetEdit, persistedAssetEditSignature, assetEditDraft, assetEditDraftSignature, assetEditDirty, resetAssetEdit]);
+    pendingAssetEditRefreshRef.current = false;
+  }, [asset.path, authoritativeAssetEdit, persistedAssetEdit, assetEditDraft, assetEditDirty, resetAssetEdit]);
 
   function openSnapshotDialog(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
@@ -3493,8 +3522,7 @@ async function composeSubtitles(input: SubtitleCompositionInput) {
       (operation) => setSubtitleCompositionOperation(operation),
       api.subtitleOperation,
     );
-    await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
-    await queryClient.invalidateQueries({ queryKey: ['subtitleEligibility', asset.path] });
+    await refreshSubtitleEvidence();
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Subtitle composition failed.';
     setSubtitleCompositionError(message);
@@ -3529,6 +3557,7 @@ async function retrySubtitleComposition() {
       (operationUpdate) => setSubtitleCompositionOperation(operationUpdate),
       api.subtitleOperation,
     );
+    await refreshSubtitleEvidence();
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Subtitle composition retry failed.';
     setSubtitleCompositionError(message);
@@ -3615,9 +3644,7 @@ async function generateExternalSubtitle(
         },
       }));
 
-      await queryClient.invalidateQueries({
-        queryKey: ['externalSubtitles', asset.path],
-      });
+      await refreshSubtitleEvidence();
     } catch (error) {
       setSubtitleGenerations((current) => ({
         ...current,
@@ -3755,7 +3782,7 @@ async function generateExternalSubtitle(
       const final = await api.subtitleOperation(started.operationId);
       if (final.status === 'completed') {
         setSubtitleRestyleMessages((current) => ({ ...current, [messageKey]: 'Styled sibling published.' }));
-        await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+        await refreshSubtitleEvidence();
       }
     } catch (error) {
       setSubtitleRestyleOperations((current) => ({ ...current, [messageKey]: { operationId: current[messageKey]?.operationId, status: 'failed', progress: current[messageKey]?.progress ?? 0, phase: 'error', error: error instanceof Error ? error.message : 'Subtitle restyle failed.', retryable: true } }));
@@ -3782,7 +3809,7 @@ async function generateExternalSubtitle(
       await waitForSubtitleOperation(started.operation.id, `restyle:${sidecar.path}:retry`, -1, 'ass', (operation) => {
         setSubtitleRestyleOperations((state) => ({ ...state, [sidecar.path]: { operationId: started.operation.id, status: operation.status === 'completed' ? 'completed' : operation.status === 'cancelled' ? 'cancelled' : operation.status === 'error' ? 'failed' : 'running', progress: operation.progress, phase: operation.phase, message: operation.message, error: operation.error, retryable: operation.retryable ?? (operation.status === 'error' || operation.status === 'cancelled') } }));
       }, api.subtitleOperation);
-      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+      await refreshSubtitleEvidence();
     } catch (error) {
       setSubtitleRestyleOperations((state) => ({ ...state, [sidecar.path]: { ...state[sidecar.path], status: 'failed', error: error instanceof Error ? error.message : 'Subtitle retry failed.', retryable: true } }));
     }
@@ -3807,7 +3834,7 @@ async function generateExternalSubtitle(
         ...current,
         [key]: { ...current[key], status: 'success', progress: 100, phase: 'completed', message: result?.created?.length ? 'Regenerated styled ASS sidecar.' : 'ASS sidecar already exists.' },
       }));
-      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+      await refreshSubtitleEvidence();
     } catch (error) {
       setSubtitleGenerations((current) => ({
         ...current,
@@ -3853,7 +3880,7 @@ async function generateExternalSubtitle(
         return next;
       });
       setSubtitleQualityMessages((current) => ({ ...current, [key]: 'Correction published. Re-analyze to review the new baseline.' }));
-      await queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] });
+      await refreshSubtitleEvidence();
     } catch (error) {
       setSubtitleQualityMessages((current) => ({ ...current, [key]: error instanceof Error ? error.message : 'OCR correction failed.' }));
     }
@@ -4922,6 +4949,7 @@ async function generateExternalSubtitle(
                         scan={snapshotData ?? undefined}
                         onChange={updateConversionDraft}
                         onChangeMany={(patch) => setConversionDraft((current) => ({ ...current, ...patch }))}
+                        onHydrateMany={hydrateAssetEditDefaults}
                         onSave={saveConversionOverrides}
                         onReset={resetConversionOverrides}
                         saving={saveAssetEdit.isPending || renameAsset.isPending}
@@ -5608,6 +5636,7 @@ function AssetConversionOverridePanel({
   scan,
   onChange,
   onChangeMany,
+  onHydrateMany,
   onSave,
   onReset,
   saving,
@@ -5619,6 +5648,7 @@ function AssetConversionOverridePanel({
   scan?: ScanResult;
   onChange: <K extends keyof AssetConversionOverrideState>(key: K, value: AssetConversionOverrideState[K]) => void;
   onChangeMany: (patch: Partial<AssetConversionOverrideState>) => void;
+  onHydrateMany: (patch: Partial<AssetConversionOverrideState>) => void;
   onSave: () => void;
   onReset: () => void;
   saving: boolean;
@@ -5691,7 +5721,7 @@ function AssetConversionOverridePanel({
         ) as Partial<AssetConversionOverrideState>;
 
       if (Object.keys(missingPreferences).length > 0) {
-        onChangeMany(missingPreferences);
+        onHydrateMany(missingPreferences);
       }
 
       preferencesInitializedForPath.current = assetPath;
@@ -5703,6 +5733,7 @@ function AssetConversionOverridePanel({
       settings.data,
       workerNodes.isLoading,
       assetWorkerEncoders,
+      onHydrateMany,
       onChangeMany,
     ]);
   const availableAssetEncoderOptions = assetEncoderOptions.filter((option) => option.value === 'auto' || assetWorkerEncoders.has(option.value));

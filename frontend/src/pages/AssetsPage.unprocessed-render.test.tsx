@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Asset, AssetGroup, AssetInventory, AssetPath, ProfileSuggestion, QueueJob, ScanResult, SnapshotOperation } from '../api/types';
+import type { Asset, AssetGroup, AssetInventory, AssetPath, ExternalSubtitle, ProfileSuggestion, QueueJob, ScanResult, SnapshotOperation } from '../api/types';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -13,7 +13,7 @@ vi.mock('../api/client', async (importOriginal) => {
     api: {
       ...actual.api,
     queueJobs: vi.fn(), assets: vi.fn(), profiles: vi.fn(), libraries: vi.fn(), settings: vi.fn(), snapshotOperations: vi.fn(),
-    latestSnapshot: vi.fn(), startSnapshotOperation: vi.fn(), snapshotOperation: vi.fn(), externalAssetSubtitles: vi.fn(), assetMetadataSidecars: vi.fn(), trackMaintenanceInventory: vi.fn(), subtitleEligibility: vi.fn(), subtitleExtractionOperations: vi.fn(),
+    latestSnapshot: vi.fn(), startSnapshotOperation: vi.fn(), snapshotOperation: vi.fn(), externalAssetSubtitles: vi.fn(), extractAssetSubtitles: vi.fn(), assetMetadataSidecars: vi.fn(), trackMaintenanceInventory: vi.fn(), subtitleEligibility: vi.fn(), subtitleExtractionOperations: vi.fn(),
     suggestProfile: vi.fn(), runtimeState: vi.fn(), workerNodes: vi.fn(), recommendEncoderQuality: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
     configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), queueRemainingPreview: vi.fn(), queueRemainingCommit: vi.fn(), createQueueBatch: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
@@ -26,7 +26,10 @@ vi.mock('../api/client', async (importOriginal) => {
 import { api } from '../api/client';
 import { AssetsPage } from './AssetsPage';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function testAsset(id: number, path: string, missing = false): Asset {
   return { id, libraryId: 0, libraryName: 'Originals', path, relativePath: path.replace('/media/raw/', ''), groupPath: 'movies/Akira', fileName: path.split('/').pop() ?? '', extension: '.mkv', sizeBytes: 1024, modifiedAt: '2026-08-28T00:00:00Z', status: 'unprocessed', missing, review: { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' }, metadata: { categories: [], tags: [], updatedAt: '' }, conversion: {} };
@@ -95,6 +98,29 @@ function activeQueueJob(id: number, mediaPath: string): QueueJob {
 
 function LocationSearch() {
   return <output data-testid="location-search">{useLocation().search}</output>;
+}
+
+function renderAssetsPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+  return render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+}
+
+async function openAssetInfo(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+  await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+  return screen.findByRole('dialog');
+}
+
+async function openQuickAssetOverrides(dialog: HTMLElement, user: ReturnType<typeof userEvent.setup>) {
+  await user.click(within(dialog).getByRole('tab', { name: 'Quick Asset Overrides' }));
+  const quality = await within(dialog).findByRole('combobox', { name: 'Quality / storage intent' });
+  await waitFor(() => expect(quality.textContent).toContain('Balanced'));
+  return quality;
+}
+
+async function chooseSelectOption(select: HTMLElement, option: string, user: ReturnType<typeof userEvent.setup>) {
+  await user.click(select);
+  await user.click(await screen.findByRole('option', { name: option }));
+  await waitFor(() => expect(select.textContent).toContain(option));
 }
 
 describe('Unprocessed Assets hierarchy', () => {
@@ -277,6 +303,146 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(within(dialog).queryByRole('button', { name: /Akira\.nfo/ })).toBeNull();
     expect(api.assetMetadataSidecars).toHaveBeenCalledWith(path);
   });
+
+  it('closes Asset Info immediately without asking to save', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const user = userEvent.setup();
+    renderAssetsPage();
+
+    const dialog = await openAssetInfo(user);
+    fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('stays clean after Asset Info preference and editable form hydration completes', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const user = userEvent.setup();
+    renderAssetsPage();
+
+    const dialog = await openAssetInfo(user);
+    await openQuickAssetOverrides(dialog, user);
+    fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('prompts after a persisted Asset Info value changes', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const user = userEvent.setup();
+    renderAssetsPage();
+
+    const dialog = await openAssetInfo(user);
+    const quality = await openQuickAssetOverrides(dialog, user);
+    await chooseSelectOption(quality, 'Maximum space saving', user);
+    fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' });
+
+    expect(confirm).toHaveBeenCalledWith('Discard unsaved Asset Info changes?');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
+  it('returns to clean when a persisted Asset Info value is reverted', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const user = userEvent.setup();
+    renderAssetsPage();
+
+    const dialog = await openAssetInfo(user);
+    const quality = await openQuickAssetOverrides(dialog, user);
+    await chooseSelectOption(quality, 'Maximum space saving', user);
+    await chooseSelectOption(quality, 'Balanced', user);
+    fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('resets the dirty baseline after Asset Info saves successfully', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const user = userEvent.setup();
+    renderAssetsPage();
+
+    const dialog = await openAssetInfo(user);
+    const quality = await openQuickAssetOverrides(dialog, user);
+    await chooseSelectOption(quality, 'Maximum space saving', user);
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateAssetEdit).toHaveBeenCalledTimes(1));
+    fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('refreshes new sidecars in Tracks without making a clean Asset Info form dirty', async () => {
+    const path = '/media/raw/movies/Akira/Akira.mkv';
+    const sidecar: ExternalSubtitle = {
+      path: '/media/raw/movies/Akira/Akira.eng.srt', fileName: 'Akira.eng.srt', format: 'srt',
+      language: 'eng', default: false, forced: false, sizeBytes: 100, modifiedAt: '',
+    };
+    const snapshot = { ...testSnapshot(path), subtitleTracks: 1, subtitleStreams: [{ index: 3, codec: 'ass', language: 'eng' }] } as unknown as ScanResult;
+    let sidecars: ExternalSubtitle[] = [];
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot, status: 'current', requiresAnalysis: false, staleComponents: [] });
+    vi.mocked(api.externalAssetSubtitles).mockImplementation(async () => sidecars);
+    vi.mocked(api.subtitleEligibility).mockImplementation(async () => ({
+      embedded: [], external: sidecars,
+      composition: { policyVersion: 'test', primaryCandidates: [], supplementalCandidates: [], eligible: false, maxSupplementals: 0, reason: 'test' },
+    } as never));
+    vi.mocked(api.extractAssetSubtitles).mockImplementation(async () => {
+      sidecars = [sidecar];
+      return { created: [sidecar.path], existing: [], unsupported: [] };
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const user = userEvent.setup();
+    renderAssetsPage();
+
+    const dialog = await openAssetInfo(user);
+    await user.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
+    await user.click(await within(dialog).findByRole('button', { name: 'Generate SRT' }));
+    expect(await within(dialog).findByText(sidecar.fileName)).toBeTruthy();
+    fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(confirm).not.toHaveBeenCalled();
+  }, 15000);
+
+  it('preserves an unsaved Asset Info edit while Tracks sidecars refresh', async () => {
+    const path = '/media/raw/movies/Akira/Akira.mkv';
+    const sidecar: ExternalSubtitle = {
+      path: '/media/raw/movies/Akira/Akira.eng.srt', fileName: 'Akira.eng.srt', format: 'srt',
+      language: 'eng', default: false, forced: false, sizeBytes: 100, modifiedAt: '',
+    };
+    const snapshot = { ...testSnapshot(path), subtitleTracks: 1, subtitleStreams: [{ index: 3, codec: 'ass', language: 'eng' }] } as unknown as ScanResult;
+    let sidecars: ExternalSubtitle[] = [];
+    vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot, status: 'current', requiresAnalysis: false, staleComponents: [] });
+    vi.mocked(api.externalAssetSubtitles).mockImplementation(async () => sidecars);
+    vi.mocked(api.subtitleEligibility).mockImplementation(async () => ({
+      embedded: [], external: sidecars,
+      composition: { policyVersion: 'test', primaryCandidates: [], supplementalCandidates: [], eligible: false, maxSupplementals: 0, reason: 'test' },
+    } as never));
+    vi.mocked(api.extractAssetSubtitles).mockImplementation(async () => {
+      sidecars = [sidecar];
+      return { created: [sidecar.path], existing: [], unsupported: [] };
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const user = userEvent.setup();
+    renderAssetsPage();
+
+    const dialog = await openAssetInfo(user);
+    const quality = await openQuickAssetOverrides(dialog, user);
+    await chooseSelectOption(quality, 'Maximum space saving', user);
+    await user.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
+    await user.click(await within(dialog).findByRole('button', { name: 'Generate SRT' }));
+    expect(await within(dialog).findByText(sidecar.fileName)).toBeTruthy();
+    await user.click(within(dialog).getByRole('tab', { name: 'Overview' }));
+    await user.click(within(dialog).getByRole('tab', { name: 'Quick Asset Overrides' }));
+    const refreshedQuality = await within(dialog).findByRole('combobox', { name: 'Quality / storage intent' });
+    expect(refreshedQuality.textContent).toContain('Maximum space saving');
+    fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' });
+
+    expect(confirm).toHaveBeenCalledWith('Discard unsaved Asset Info changes?');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  }, 15000);
 
   it('does not show backend action-capability diagnostics in Asset Info', async () => {
     const inventory = singleAssetInventory();

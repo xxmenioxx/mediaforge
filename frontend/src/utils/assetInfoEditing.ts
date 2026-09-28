@@ -49,10 +49,18 @@ export function assetInfoRefreshReconciliation(
   draft: AssetInfoEditDocument,
   authoritative: AssetInfoEditDocument,
 ): { baseline: AssetInfoEditDocument; draft: AssetInfoEditDocument; dirty: boolean } {
+  return assetInfoHydrationReconciliation(baseline, draft, authoritative);
+}
+
+export function assetInfoHydrationReconciliation(
+  baseline: AssetInfoEditDocument,
+  draft: AssetInfoEditDocument,
+  hydrated: AssetInfoEditDocument,
+): { baseline: AssetInfoEditDocument; draft: AssetInfoEditDocument; dirty: boolean } {
   if (!assetInfoDocumentsEqual(baseline, draft)) {
     return { baseline, draft, dirty: true };
   }
-  const next = assetInfoEditDocument(authoritative.metadata, authoritative.conversion);
+  const next = assetInfoEditDocument(hydrated.metadata, hydrated.conversion);
   return { baseline: next, draft: next, dirty: false };
 }
 

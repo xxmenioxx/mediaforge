@@ -4,6 +4,7 @@ import {
   assetInfoDiscardDraft,
   assetInfoDocumentsEqual,
   assetInfoEditDocument,
+  assetInfoHydrationReconciliation,
   assetInfoRefreshReconciliation,
   assetInfoSaveFailureReconciliation,
   assetInfoSaveReconciliation,
@@ -24,6 +25,28 @@ const metadata = (patch: Partial<AssetMetadataState> = {}): AssetMetadataState =
 });
 
 describe('asset info editing state', () => {
+  it('compares only normalized editable values across null, empty, and duplicate defaults', () => {
+    const baseline = assetInfoEditDocument(
+      metadata({ categories: [' Drama ', 'Drama'], tags: [' action ', 'action'] }),
+      conversion({ keepAudioStreams: null, keepSubtitleStreams: [], subtitleRoleOverrides: {}, videoMetadata: {} }),
+    );
+    const hydrated = assetInfoEditDocument(
+      metadata({ categories: ['Drama'], tags: ['action'], updatedAt: '2026-09-23T00:00:00Z' }),
+      conversion(),
+    );
+
+    expect(assetInfoDocumentsEqual(baseline, hydrated)).toBe(true);
+  });
+
+  it('marks persisted edits dirty and returns to clean when the user reverts them', () => {
+    const baseline = assetInfoEditDocument(metadata({ categories: ['Drama'] }), conversion({ videoCodec: 'x265' }));
+    const edited = assetInfoEditDocument(metadata({ categories: ['Drama'] }), conversion({ videoCodec: 'x264' }));
+    const reverted = assetInfoEditDocument(metadata({ categories: ['Drama'] }), conversion({ videoCodec: 'x265' }));
+
+    expect(assetInfoDocumentsEqual(baseline, edited)).toBe(false);
+    expect(assetInfoDocumentsEqual(baseline, reverted)).toBe(true);
+  });
+
   it('uses semantic equality for normalized lists and server timestamps', () => {
     const left = assetInfoEditDocument(metadata({ categories: [' Drama ', 'Drama'] }), conversion({ keepAudioStreams: [2, 1, 2], subtitleRoleOverrides: {}, videoCodec: 'hevc' }));
     const right = assetInfoEditDocument(metadata({ categories: ['Drama'], updatedAt: '2026-09-23T00:00:00Z' }), conversion({ keepAudioStreams: [1, 2], videoCodec: 'hevc' }));
@@ -77,6 +100,22 @@ describe('asset info editing state', () => {
     expect(cleanResult.draft).toEqual(authoritative);
     expect(cleanResult.baseline).toEqual(authoritative);
     expect(cleanResult.dirty).toBe(false);
+  });
+
+  it('uses resolved defaults as the clean hydration baseline and preserves a conflicting edit', () => {
+    const baseline = assetInfoEditDocument(metadata(), conversion());
+    const hydrated = assetInfoEditDocument(metadata(), conversion({ optimizationIntent: 'balanced' }));
+    const edited = assetInfoEditDocument(metadata(), conversion({ videoCodec: 'x264' }));
+
+    const cleanResult = assetInfoHydrationReconciliation(baseline, baseline, hydrated);
+    const dirtyResult = assetInfoHydrationReconciliation(baseline, edited, hydrated);
+
+    expect(cleanResult.baseline).toEqual(hydrated);
+    expect(cleanResult.draft).toEqual(hydrated);
+    expect(cleanResult.dirty).toBe(false);
+    expect(dirtyResult.baseline).toEqual(baseline);
+    expect(dirtyResult.draft).toEqual(edited);
+    expect(dirtyResult.dirty).toBe(true);
   });
 
   it('retains the draft and baseline after a failed save and can discard locally', () => {
