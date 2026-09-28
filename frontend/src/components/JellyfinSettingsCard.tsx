@@ -69,6 +69,7 @@ function statusLabel(outcome: JellyfinIntegrationOutcome) {
 
 export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props) {
   const queryClient = useQueryClient();
+  const [persistedBaseline] = useState(() => jellyfinDraft(value));
   const [draft, setDraft] = useState<Draft>(() => jellyfinDraft(value));
   const [credentialDraft, setCredentialDraft] = useState('');
   const [clearCredential, setClearCredential] = useState(false);
@@ -84,6 +85,22 @@ export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props
   const discoveredLibraries = connection.data?.libraries ?? [];
   const latestOutcome = outcomes.data?.[0];
   const canAddMapping = selectedMVForgeLibrary !== '' && selectedJellyfinLibrary !== '' && !draft.mappings.some((mapping) => mapping.jellyfinLibraryId === selectedJellyfinLibrary && mapping.mvforgeLibraryId !== selectedMVForgeLibrary);
+  const mappingIdentity = (mappings: Mapping[]) => mappings
+    .map(({ mvforgeLibraryId, jellyfinLibraryId }) => `${mvforgeLibraryId}:${jellyfinLibraryId}`)
+    .sort()
+    .join('|');
+  const settingsDirty = draft.enabled !== persistedBaseline.enabled
+    || draft.baseUrl !== persistedBaseline.baseUrl
+    || draft.refreshAfterPublish !== persistedBaseline.refreshAfterPublish
+    || draft.refreshTestEncode !== persistedBaseline.refreshTestEncode
+    || draft.debounceSeconds !== persistedBaseline.debounceSeconds
+    || mappingIdentity(draft.mappings) !== mappingIdentity(persistedBaseline.mappings)
+    || credentialDraft.length > 0
+    || clearCredential;
+  const canTestConnection = Boolean(persistedBaseline.baseUrl.trim())
+    && persistedBaseline.credentialConfigured
+    && !settingsDirty
+    && !connection.isPending;
 
   const save = () => onSave({
     ...draft,
@@ -148,10 +165,11 @@ export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props
           </Grid>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
             <Button variant="contained" startIcon={<SaveIcon />} disabled={saving} onClick={save}>Save Jellyfin settings</Button>
-            <Button variant="outlined" disabled={connection.isPending || !draft.baseUrl || !draft.credentialConfigured} onClick={() => connection.mutate()}>
+            <Button variant="outlined" disabled={!canTestConnection} onClick={() => connection.mutate()}>
               {connection.isPending ? 'Testing…' : 'Test connection and discover libraries'}
             </Button>
           </Stack>
+          {settingsDirty ? <Alert severity="info">Save Jellyfin settings before testing the connection or requesting a manual refresh.</Alert> : null}
           {connection.data ? (
             <Alert severity={connection.data.authenticated ? 'success' : 'warning'}>
               {connection.data.authenticated
@@ -194,7 +212,7 @@ export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props
             <TextField select size="small" label="Manual refresh target" value={effectiveManualLibraryId} onChange={(event) => setManualLibraryId(Number(event.target.value))} sx={{ minWidth: { sm: 300 } }}>
               {draft.mappings.map((mapping) => <MenuItem key={mapping.mvforgeLibraryId} value={mapping.mvforgeLibraryId}>{libraries.find((library) => library.id === mapping.mvforgeLibraryId)?.name ?? `Library ${mapping.mvforgeLibraryId}`}</MenuItem>)}
             </TextField>
-            <Button variant="outlined" disabled={!effectiveManualLibraryId || manualRefresh.isPending} onClick={() => manualRefresh.mutate(Number(effectiveManualLibraryId))}>Request manual refresh</Button>
+            <Button variant="outlined" disabled={!effectiveManualLibraryId || settingsDirty || manualRefresh.isPending} onClick={() => manualRefresh.mutate(Number(effectiveManualLibraryId))}>Request manual refresh</Button>
             {latestOutcome ? <Typography variant="body2" color="text.secondary">Last outcome: {statusLabel(latestOutcome)} · {new Date(latestOutcome.updatedAt).toLocaleString()}</Typography> : <Typography variant="body2" color="text.secondary">No refresh outcomes yet.</Typography>}
           </Stack>
           {manualRefresh.isError ? <Alert severity="warning">Unable to record manual refresh request.</Alert> : null}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -649,5 +650,144 @@ func TestJellyfinPermanentConfigurationFailureBecomesRetryableAfterCorrection(t 
 	outcome.FailureClass = "invalid_event"
 	if jellyfinOutcomeRetryEligible(outcome, settings, 11) {
 		t.Fatal("malformed canonical event became retryable")
+	}
+}
+
+func TestJellyfinStaleMixedReasonBatchChecksConfigurationRevisionFirst(t *testing.T) {
+	var jellyfinRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		jellyfinRequests.Add(1)
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	db := jellyfinIntegrationDB(t)
+	addJellyfinLibrary(t, db, 9, t.TempDir())
+	settings := defaultJellyfinSettings()
+	settings.Enabled = true
+	settings.BaseURL = server.URL
+	settings.APIToken = "secret"
+	settings.RefreshAfterPublish = true
+	settings.RefreshTestEncode = true
+	settings.DebounceSeconds = 60
+	settings.Mappings = []jellyfinLibraryMapping{{MVForgeLibraryID: 9, JellyfinLibraryID: "Exact-Jellyfin-ID"}}
+	saveJellyfinSettings(t, db, settings)
+	_, initialRevision, err := loadJellyfinSettingsChecked(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	publishedAt := time.Now().UTC()
+	publication := models.PublisherPublication{
+		PublicationID: "publication-9", QueueJobID: 9, ExecutionNumber: 1, ExecutionPlanID: 9,
+		ExecutionPlanVersion: 1, ExecutionPlanFingerprint: "plan-fingerprint", LibraryID: 9,
+		DestinationRoot: "/library", DestinationPath: "/library/series", PublishMode: "move",
+		ResultArtifactID: "artifact-9", ResultGenerationToken: "generation-9", ResultGenerationVersion: 1,
+		ResultOutputRevision: "output-revision", ValidationRunID: "validation-9", SourcePath: "/source/series.mkv",
+		State: "PUBLISHED", Manifest: models.JSONList{"series.mkv"}, PublishedAt: &publishedAt,
+		OriginalArchiveStatus: "archived",
+	}
+	if err := db.Create(&publication).Error; err != nil {
+		t.Fatal(err)
+	}
+	testEncode := models.TestEncode{
+		ID: 22, SourcePath: "/source/test.mkv", LibraryID: 9, ConfigurationSource: "profile",
+		ConfigurationHash: "configuration-hash", Status: "READY", Phase: "ready",
+		OutputPath: "/library/test.mkv", Keep: true,
+	}
+	if err := db.Create(&testEncode).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert READY first so its now-disabled reason is the first row in the shared server-wide batch.
+	if err := recordJellyfinTrigger(db, jellyfinTrigger{
+		Reason: jellyfinReasonTestReady, SourceKey: testEncodeJellyfinSourceKey(jellyfinReasonTestReady, testEncode.ID),
+		LibraryID: testEncode.LibraryID, TestEncodeID: testEncode.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	coordinator := JellyfinCoordinator{db: db}
+	if err := coordinator.assetPublished(context.Background(), "event-9", models.JSONMap{
+		"publicationId":   publication.PublicationID,
+		"libraryId":       float64(publication.LibraryID),
+		"destinationPath": publication.DestinationPath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var beforeBatch []models.JellyfinIntegrationOutcome
+	if err := db.Order("id asc").Find(&beforeBatch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeBatch) != 2 || beforeBatch[0].Reason != jellyfinReasonTestReady || beforeBatch[1].Reason != jellyfinReasonPublished || beforeBatch[0].ConfigRevision != initialRevision || beforeBatch[1].ConfigRevision != initialRevision || beforeBatch[0].EffectiveTarget != jellyfinTargetServerWide || beforeBatch[1].EffectiveTarget != jellyfinTargetServerWide {
+		t.Fatalf("expected one mixed pending server-wide batch, got %#v", beforeBatch)
+	}
+
+	settings.RefreshTestEncode = false
+	var stored models.AppSetting
+	if err := db.First(&stored, "key = ?", jellyfinSettingsKey).Error; err != nil {
+		t.Fatal(err)
+	}
+	changedAt := stored.UpdatedAt.Add(time.Second)
+	if err := db.Model(&stored).Updates(map[string]any{
+		"value":      jellyfinSettingsStoredValue(settings),
+		"updated_at": changedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, currentRevision, err := loadJellyfinSettingsChecked(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentRevision == initialRevision {
+		t.Fatal("settings update did not advance the configuration revision")
+	}
+	if err := db.Model(&models.JellyfinIntegrationOutcome{}).Where("status = ?", jellyfinStatusPending).Update("due_at", time.Now().UTC().Add(-time.Second)).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	coordinator.processDue()
+	if jellyfinRequests.Load() != 0 {
+		t.Fatalf("stale batch sent %d request(s) to Jellyfin", jellyfinRequests.Load())
+	}
+	var outcomes []models.JellyfinIntegrationOutcome
+	if err := db.Order("id asc").Find(&outcomes).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(outcomes) != 2 {
+		t.Fatalf("integration outcomes=%#v", outcomes)
+	}
+	for _, outcome := range outcomes {
+		if outcome.Status != jellyfinStatusPermanentError || outcome.FailureClass != "configuration_changed" || outcome.ConfigRevision != initialRevision {
+			t.Errorf("stale outcome was not retained as configuration_changed: %#v", outcome)
+		}
+	}
+	if outcomes[0].Reason != jellyfinReasonTestReady || outcomes[1].Reason != jellyfinReasonPublished {
+		t.Fatalf("bounded integration reasons changed: %#v", outcomes)
+	}
+	currentSettings, _, err := loadJellyfinSettingsChecked(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !jellyfinOutcomeRetryEligible(outcomes[1], currentSettings, currentRevision) {
+		t.Error("asset_published was not eligible for retry under the current settings")
+	}
+	if jellyfinOutcomeRetryEligible(outcomes[0], currentSettings, currentRevision) {
+		t.Error("test_encode_ready was eligible after its reason was disabled")
+	}
+
+	var afterPublication models.PublisherPublication
+	if err := db.First(&afterPublication, "publication_id = ?", publication.PublicationID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var afterTestEncode models.TestEncode
+	if err := db.First(&afterTestEncode, testEncode.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if afterPublication.State != publication.State || afterPublication.OriginalArchiveStatus != publication.OriginalArchiveStatus || afterPublication.PublishedAt == nil || !afterPublication.PublishedAt.Equal(*publication.PublishedAt) {
+		t.Errorf("publication lifecycle evidence changed: before=%#v after=%#v", publication, afterPublication)
+	}
+	if afterTestEncode.Status != testEncode.Status || afterTestEncode.Keep != testEncode.Keep || afterTestEncode.DeletedAt != nil {
+		t.Errorf("Test Encode lifecycle evidence changed: before=%#v after=%#v", testEncode, afterTestEncode)
 	}
 }

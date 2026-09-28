@@ -836,12 +836,12 @@ func (coordinator *JellyfinCoordinator) processDue() {
 	if settingsErr != nil {
 		return
 	}
-	if !jellyfinSettingsEnabledForReason(settings, first.Reason) {
-		coordinator.finishBatch(batch, jellyfinStatusSkippedDisabled, "", "", 0, now)
-		return
-	}
 	if revision != first.ConfigRevision {
 		coordinator.finishBatch(batch, jellyfinStatusPermanentError, "configuration_changed", "", 0, now)
+		return
+	}
+	if !jellyfinSettingsEnabledForReason(settings, first.Reason) {
+		coordinator.finishBatch(batch, jellyfinStatusSkippedDisabled, "", "", 0, now)
 		return
 	}
 	maxAttempts := 0
