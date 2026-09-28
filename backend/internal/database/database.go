@@ -48,6 +48,7 @@ func Migrate(db *gorm.DB) error {
 		&models.SourceGroup{},
 		&models.AssetScopeConfiguration{},
 		&models.QueueJob{},
+		&models.QueueBatchPreflight{},
 		&models.ExecutionPlan{},
 		&models.RuntimeSnapshot{},
 		&models.RuntimeState{},

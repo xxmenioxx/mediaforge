@@ -890,6 +890,15 @@ const emptyTrackDraft: TrackProfile = {
 export function ProfileLabPage() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
+  const preflightCandidateId = searchParams.get('preflightCandidateId') ?? '';
+  const preflightRevision = Number(searchParams.get('preflightRevision') ?? 0);
+  const preflightAssetId = searchParams.get('assetId') ?? '';
+  const preflightContext = useQuery({
+    queryKey: ['queueBatchPreflight', preflightCandidateId],
+    queryFn: () => api.getQueueBatchPreflight(preflightCandidateId),
+    enabled: Boolean(preflightCandidateId),
+  });
+  const [preflightContextLoaded, setPreflightContextLoaded] = useState('');
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const adminProfiles = useQuery({ queryKey: ['profiles', 'admin'], queryFn: api.profilesAdmin });
@@ -1019,6 +1028,35 @@ export function ProfileLabPage() {
     if (requestedAssetPath && labAssets.some((asset) => asset.path === requestedAssetPath) && assetPath !== requestedAssetPath) {
       setAssetPath(requestedAssetPath);
     }
+  }
+  const candidateAsset = useMemo(
+    () => preflightContext.data?.assets.find((asset) => asset.id === preflightAssetId),
+    [preflightAssetId, preflightContext.data],
+  );
+  const preflightSignature = `${preflightCandidateId}:${preflightRevision}:${preflightAssetId}`;
+  if (preflightCandidateId && preflightContext.data && candidateAsset?.plan && preflightContext.data.revision === preflightRevision && preflightContext.data.resolved && preflightContextLoaded !== preflightSignature) {
+    const profile = candidateAsset.plan.profile;
+    const draft = profileInputFromSavedProfile(profile);
+    setPreflightContextLoaded(preflightSignature);
+    setVideoDraft({
+      ...draft,
+      ...profile,
+      workerConfig: { ...draft.workerConfig, ...profile.workerConfig, videoEncoder: candidateAsset.plan.selectedEncoder },
+    });
+    setSavedVideoProfileId(profile.id || null);
+    const audio = normalizeAudioProfile(candidateAsset.plan.audioProfileSnapshot);
+    if (audio) {
+      setAudioDraft(audio);
+      setSavedAudioProfileKey(audio.key);
+    }
+    const rawTrack = candidateAsset.plan.trackProfileSnapshot as Partial<TrackProfile>;
+    if (typeof rawTrack.key === 'string') {
+      const track = { ...emptyTrackDraft, ...rawTrack } as TrackProfile;
+      setTrackDraft(track);
+      setSavedTrackProfileKey(track.key);
+      setTrackConversionDraft(trackProfileOverride(track));
+    }
+    setAssetPath(candidateAsset.mediaPath);
   }
   const selectedHardwareEncoder = videoWorkerValue(videoDraft, 'videoEncoder', 'auto');
   const configuredDefaultWorker = String(settings.data?.find((setting) => setting.key === 'workers')?.value?.defaultWorkerName ?? '');
@@ -3024,6 +3062,13 @@ export function ProfileLabPage() {
           Compare original samples against video and audio profile drafts, then save asset-specific profiles for repeatable series, anime, or source families.
         </Typography>
       </PageHeader>
+      {preflightCandidateId ? <Alert severity={preflightContext.data?.revision === preflightRevision && preflightContext.data?.resolved ? 'info' : 'warning'}>
+        {preflightContext.data?.revision === preflightRevision && candidateAsset?.plan
+          ? `Loaded an isolated LAB draft for ${candidateAsset.mediaPath} from Batch Preflight revision ${preflightRevision}. LAB edits do not update the candidate or asset configuration; use Edit in Preflight to apply choices, then resolve again.`
+          : preflightContext.isLoading
+            ? 'Loading the exact Batch Preflight candidate context…'
+            : 'This Batch Preflight candidate is stale, unresolved, or no longer contains this asset. Return to Preflight and resolve it again.'}
+      </Alert> : null}
       <Backdrop
         open={labAnalysisPending}
         sx={{ zIndex: (theme) => theme.zIndex.modal + 1, bgcolor: 'rgba(7, 10, 16, 0.76)', backdropFilter: 'blur(2px)' }}

@@ -38,22 +38,25 @@ const (
 )
 
 type testEncodeRequest struct {
-	SourcePath          string                       `json:"sourcePath" binding:"required"`
-	LibraryID           uint                         `json:"libraryId" binding:"required"`
-	ConfigurationSource string                       `json:"configurationSource" binding:"required"`
-	ProfileID           uint                         `json:"profileId"`
-	AudioProfileKey     string                       `json:"audioProfileKey"`
-	TrackProfileKey     string                       `json:"trackProfileKey"`
-	ProcessingMode      string                       `json:"processingMode"`
-	ResolveAssignments  bool                         `json:"resolveAssignments"`
-	LabProfile          *models.Profile              `json:"labProfile"`
-	LabAudioProfile     models.JSONMap               `json:"labAudioProfile"`
-	LabTrackProfile     models.JSONMap               `json:"labTrackProfile"`
-	LabTrackOverride    AssetConversionOverrideState `json:"labTrackOverride"`
-	StartMode           string                       `json:"startMode"`
-	StartSeconds        float64                      `json:"startSeconds"`
-	DurationSeconds     int                          `json:"durationSeconds"`
-	ConfigurationToken  string                       `json:"configurationToken"`
+	SourcePath           string                       `json:"sourcePath" binding:"required"`
+	LibraryID            uint                         `json:"libraryId" binding:"required"`
+	ConfigurationSource  string                       `json:"configurationSource" binding:"required"`
+	ProfileID            uint                         `json:"profileId"`
+	AudioProfileKey      string                       `json:"audioProfileKey"`
+	TrackProfileKey      string                       `json:"trackProfileKey"`
+	ProcessingMode       string                       `json:"processingMode"`
+	ResolveAssignments   bool                         `json:"resolveAssignments"`
+	LabProfile           *models.Profile              `json:"labProfile"`
+	LabAudioProfile      models.JSONMap               `json:"labAudioProfile"`
+	LabTrackProfile      models.JSONMap               `json:"labTrackProfile"`
+	LabTrackOverride     AssetConversionOverrideState `json:"labTrackOverride"`
+	StartMode            string                       `json:"startMode"`
+	StartSeconds         float64                      `json:"startSeconds"`
+	DurationSeconds      int                          `json:"durationSeconds"`
+	ConfigurationToken   string                       `json:"configurationToken"`
+	PreflightCandidateID string                       `json:"preflightCandidateId"`
+	PreflightRevision    uint                         `json:"preflightRevision"`
+	PreflightAssetID     string                       `json:"preflightAssetId"`
 }
 
 type resolvedTestEncode struct {
@@ -302,7 +305,55 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		"requestedTrackProfileKey": input.TrackProfileKey, "resolveAssignments": input.ResolveAssignments,
 		"configurationToken": strings.TrimSpace(input.ConfigurationToken),
 	}
-	if source == "lab_draft" {
+	if source == "batch_preflight" {
+		candidateID := strings.TrimSpace(input.PreflightCandidateID)
+		assetID := strings.TrimSpace(input.PreflightAssetID)
+		if candidateID == "" || assetID == "" || input.PreflightRevision == 0 {
+			return resolvedTestEncode{}, fmt.Errorf("batch_preflight requires candidate, revision, and asset identity")
+		}
+		var candidate models.QueueBatchPreflight
+		if err := h.db.First(&candidate, "id = ?", candidateID).Error; err != nil {
+			return resolvedTestEncode{}, fmt.Errorf("load Batch Preflight candidate: %w", err)
+		}
+		if candidate.Revision != input.PreflightRevision || !candidate.Resolved {
+			return resolvedTestEncode{}, fmt.Errorf("Batch Preflight candidate revision is stale or unresolved")
+		}
+		state, err := queuePreflightStateFromRecord(candidate)
+		if err != nil {
+			return resolvedTestEncode{}, fmt.Errorf("decode Batch Preflight candidate: %w", err)
+		}
+		var resolved *queueBatchPreflightAsset
+		for index := range state.Assets {
+			if state.Assets[index].ID == assetID {
+				resolved = &state.Assets[index]
+				break
+			}
+		}
+		if resolved == nil || resolved.ResolvedJob == nil || (resolved.Status != queuePreflightReady && resolved.Status != queuePreflightQueued) {
+			return resolvedTestEncode{}, fmt.Errorf("candidate asset has no approved resolved plan")
+		}
+		if filepath.Clean(resolved.MediaPath) != filepath.Clean(path) || filepath.Clean(resolved.ResolvedJob.MediaPath) != filepath.Clean(path) {
+			return resolvedTestEncode{}, fmt.Errorf("candidate asset identity does not match source path")
+		}
+		currentRevision, revisionErr := queuePreflightSourceRevision(path)
+		if revisionErr != nil || currentRevision != resolved.SourceRevision {
+			return resolvedTestEncode{}, fmt.Errorf("source identity changed after Batch Preflight")
+		}
+		job = *resolved.ResolvedJob
+		if job.LibraryID != input.LibraryID {
+			return resolvedTestEncode{}, fmt.Errorf("destination does not match the candidate plan")
+		}
+		if _, frozen := job.ProfileSnapshot[queuePreparationFrozenSnapshotKey]; !frozen {
+			return resolvedTestEncode{}, fmt.Errorf("candidate profile snapshot is not frozen")
+		}
+		requested["batchPreflightCandidateId"] = candidateID
+		requested["batchPreflightRevision"] = input.PreflightRevision
+		requested["batchPreflightAssetId"] = assetID
+		requested["profileId"] = job.ProfileID
+		requested["audioProfileKey"] = job.AudioProfileKey
+		requested["trackProfileKey"] = job.TrackProfileKey
+		requested["profileResolution"] = job.ProfileResolution
+	} else if source == "lab_draft" {
 		if input.LabProfile == nil {
 			return resolvedTestEncode{}, fmt.Errorf("lab_draft requires labProfile")
 		}
@@ -396,6 +447,14 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 }
 
 func resolveTestEncodeVideoProfile(db *gorm.DB, path string, job models.QueueJob, profile models.Profile, override AssetConversionOverrideState) (models.Profile, error) {
+	if _, frozen := job.ProfileSnapshot[queuePreparationFrozenSnapshotKey]; frozen {
+		if selected, ok := job.ProfileSnapshot[models.QueuePreflightSelectedEncoderKey].(string); ok && strings.TrimSpace(selected) != "" {
+			profile = applySelectedEncoder(profile, selected)
+		}
+		profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+		profile.WorkerConfig["qsvAssetAnalysisPath"] = path
+		return profile, nil
+	}
 	profile = applyAssetConversionOverrideToProfile(profile, override)
 	profile.WorkerConfig = restorationWorkerConfigForAsset(profile.WorkerConfig, path)
 	profile = applyFrozenCadenceResolution(job, profile)
@@ -458,6 +517,9 @@ func resolveLabTrackOverride(db *gorm.DB, mediaPath string, profile models.JSONM
 }
 
 func testEncodeConversionOverride(source string, job models.QueueJob, labOverride AssetConversionOverrideState, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
+	if source == "batch_preflight" {
+		return AssetConversionOverrideState{}
+	}
 	if source == "lab_draft" {
 		// The LAB draft is the authoritative video configuration for this kind of
 		// Test Encode. Only the track choices submitted with that same draft may
@@ -509,6 +571,9 @@ func (h AssetHandler) decorateTestEncode(test *models.TestEncode) {
 func normalizedTestEncodeConfigurationSource(value string) string {
 	if strings.EqualFold(strings.TrimSpace(value), "lab_draft") {
 		return "lab_draft"
+	}
+	if strings.EqualFold(strings.TrimSpace(value), "batch_preflight") {
+		return "batch_preflight"
 	}
 	return "effective_asset"
 }

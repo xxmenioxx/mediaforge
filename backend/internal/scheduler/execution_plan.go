@@ -33,6 +33,33 @@ func CreatePendingExecutionPlan(db *gorm.DB, job *models.QueueJob, reason string
 	if err != nil {
 		return models.ExecutionPlan{}, err
 	}
+	return createPendingExecutionPlan(db, job, reason, constraints, constraintsJSON)
+}
+
+// CreatePendingExecutionPlanFromConstraints persists the exact constraints
+// already resolved and reviewed by Batch Preflight without resolving them again.
+func CreatePendingExecutionPlanFromConstraints(db *gorm.DB, job *models.QueueJob, reason string, frozen models.JSONMap) (models.ExecutionPlan, error) {
+	if job == nil || job.ID == 0 {
+		return models.ExecutionPlan{}, fmt.Errorf("job must be persisted before creating an execution plan")
+	}
+	encoded, err := json.Marshal(frozen)
+	if err != nil {
+		return models.ExecutionPlan{}, fmt.Errorf("encode frozen execution constraints: %w", err)
+	}
+	var constraints ExecutionConstraints
+	if err := json.Unmarshal(encoded, &constraints); err != nil {
+		return models.ExecutionPlan{}, fmt.Errorf("decode frozen execution constraints: %w", err)
+	}
+	if err := ValidateExecutionConstraints(constraints); err != nil {
+		return models.ExecutionPlan{}, fmt.Errorf("validate frozen execution constraints: %w", err)
+	}
+	return createPendingExecutionPlan(db, job, reason, constraints, frozen)
+}
+
+func createPendingExecutionPlan(db *gorm.DB, job *models.QueueJob, reason string, constraints ExecutionConstraints, constraintsJSON models.JSONMap) (models.ExecutionPlan, error) {
+	if job == nil || job.ID == 0 {
+		return models.ExecutionPlan{}, fmt.Errorf("job must be persisted before creating an execution plan")
+	}
 
 	var latest models.ExecutionPlan
 	version := 1

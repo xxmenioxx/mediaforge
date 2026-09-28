@@ -199,21 +199,16 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 	plan.DecisionReasons = append(plan.DecisionReasons, snapshot.SelectionReasons...)
 	encoderFailure := ""
 	selectedCapability := capabilities.EncoderCapability{}
-	for _, candidate := range uniqueStrings(append([]string{profile.PreferredEncoder}, []string(profile.AllowedEncoders)...)) {
-		capability, recorded := recordedEncoderCapability(runtimeEncoders, candidate)
-		if !recorded {
-			capability = capabilities.CheckEncoder(candidate)
+	if plan.DecisionSources["selectedEncoder"] == "batch_preflight_frozen" {
+		capability, recorded := recordedEncoderCapability(runtimeEncoders, plan.SelectedEncoder)
+		if !recorded || !capability.Usable {
+			return fmt.Errorf("frozen Batch Preflight encoder is unavailable in its runtime snapshot")
 		}
-		if capability.Usable {
-			plan.SelectedEncoder = candidate
-			selectedCapability = capability
-			break
-		}
-		if capability.Reason != "" {
-			encoderFailure = capability.Reason
-		}
+		selectedCapability = capability
+	} else {
+		plan.SelectedEncoder, selectedCapability, encoderFailure = ResolveExecutionPlanEncoder(profile, runtimeEncoders)
+		plan.DecisionSources["selectedEncoder"] = "profile_constraints_and_runtime_probe"
 	}
-	plan.DecisionSources["selectedEncoder"] = "profile_constraints_and_runtime_probe"
 	inputSize := int64(0)
 	if info, statErr := os.Stat(job.MediaPath); statErr == nil {
 		inputSize = info.Size()
@@ -249,7 +244,15 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 			plan.Evaluation["encoderRecommendation"] = estimate.Recommendation
 		}
 	}
-	plan.OutputPath = reviewOutputPath(job.MediaPath, library, profile.Container)
+	if outputPath := configString(job.ResolvedDestinationSnapshot, "outputPath"); outputPath != "" {
+		plan.OutputPath = outputPath
+		plan.DestinationRoot = configString(job.ResolvedDestinationSnapshot, "destinationRoot")
+		plan.DestinationPath = outputPath
+		plan.LibraryID = job.LibraryID
+		plan.PublishMode = job.PublishMode
+	} else {
+		plan.OutputPath = reviewOutputPath(job.MediaPath, library, profile.Container)
+	}
 	plan.InputSizeBytes = inputSize
 	plan.EstimatedOutputMinBytes = minOutput
 	plan.EstimatedOutputMaxBytes = maxOutput
@@ -385,6 +388,25 @@ func recordedEncoderCapability(encoders models.JSONMap, encoder string) (capabil
 		return capabilities.EncoderCapability{}, false
 	}
 	return capabilities.DecodeEncoderCapability(raw)
+}
+
+// ResolveExecutionPlanEncoder is the shared encoder selection used by
+// ReviewPlanner and Batch Preflight for a frozen profile/runtime snapshot pair.
+func ResolveExecutionPlanEncoder(profile models.Profile, runtimeEncoders models.JSONMap) (string, capabilities.EncoderCapability, string) {
+	failure := ""
+	for _, candidate := range uniqueStrings(append([]string{profile.PreferredEncoder}, []string(profile.AllowedEncoders)...)) {
+		capability, recorded := recordedEncoderCapability(runtimeEncoders, candidate)
+		if !recorded {
+			capability = capabilities.CheckEncoder(candidate)
+		}
+		if capability.Usable {
+			return candidate, capability, failure
+		}
+		if capability.Reason != "" {
+			failure = capability.Reason
+		}
+	}
+	return "", capabilities.EncoderCapability{}, failure
 }
 
 func SetPlanApproval(db *gorm.DB, jobID, planID uint, approve bool) (models.ExecutionPlan, error) {

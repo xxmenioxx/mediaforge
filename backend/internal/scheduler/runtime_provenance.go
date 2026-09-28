@@ -111,3 +111,17 @@ func runtimeSnapshotFromCurrentState(state models.RuntimeState) models.RuntimeSn
 		FingerprintVersion: state.FingerprintVersion,
 	}
 }
+
+// CaptureBatchPreflightRuntimeSnapshot freezes the same persisted runtime
+// authority used by execution-plan evaluation before a candidate is accepted.
+func CaptureBatchPreflightRuntimeSnapshot(db *gorm.DB) (models.RuntimeSnapshot, error) {
+	state, err := runtimeinfo.Current(db)
+	if err != nil {
+		return models.RuntimeSnapshot{}, fmt.Errorf("capture batch-preflight runtime evidence: %w", err)
+	}
+	snapshot, err := runtimeinfo.CaptureAuditSnapshot(db, state, "execution_plan_freeze")
+	if err != nil {
+		return models.RuntimeSnapshot{}, fmt.Errorf("persist batch-preflight runtime evidence: %w", err)
+	}
+	return snapshot, nil
+}

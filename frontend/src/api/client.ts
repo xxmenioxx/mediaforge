@@ -41,6 +41,8 @@ import type {
   QueueReorderInput,
   QueueBatchInput,
   QueueBatchResponse,
+  QueueBatchPreflightInput,
+  QueueBatchPreflightResponse,
   QueueSelectedAssetsInput,
   QueueSelectedAssetsResponse,
   ValidationOverride,
@@ -591,6 +593,33 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(batch),
   }),
+  createQueueBatchPreflight: (input: QueueBatchPreflightInput) =>
+    request<QueueBatchPreflightResponse>('/api/queue/preflights', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  preflightSelectedAssets: (assetIds: number[]) =>
+    request<QueueBatchPreflightResponse>('/api/queue/preflights/selected-assets', {
+      method: 'POST',
+      body: JSON.stringify({ assetIds }),
+    }),
+  getQueueBatchPreflight: (id: string) =>
+    request<QueueBatchPreflightResponse>(`/api/queue/preflights/${encodeURIComponent(id)}`),
+  editQueueBatchPreflight: (id: string, revision: number) =>
+    request<QueueBatchPreflightResponse>(`/api/queue/preflights/${encodeURIComponent(id)}/edit`, {
+      method: 'POST',
+      body: JSON.stringify({ revision }),
+    }),
+  updateQueueBatchPreflight: (id: string, input: QueueBatchPreflightInput) =>
+    request<QueueBatchPreflightResponse>(`/api/queue/preflights/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+  acceptQueueBatchPreflight: (id: string, revision: number, assetIds: string[]) =>
+    request<QueueBatchPreflightResponse>(`/api/queue/preflights/${encodeURIComponent(id)}/accept`, {
+      method: 'POST',
+      body: JSON.stringify({ revision, assetIds }),
+    }),
   queueSelectedAssets: (input: QueueSelectedAssetsInput) =>
     request<QueueSelectedAssetsResponse>('/api/queue/selected-assets', {
       method: 'POST',

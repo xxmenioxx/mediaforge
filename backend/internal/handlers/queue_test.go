@@ -1807,7 +1807,7 @@ func TestQueueCreatePreservesBatchOrderAndNormalizesAssetsWithinBatch(t *testing
 	}
 }
 
-func TestQueueCreateBatchCreatesWholeBatchInNaturalOrder(t *testing.T) {
+func TestBatchPreflightRetainsNaturalOrderWithoutCreatingQueueJobs(t *testing.T) {
 	db, err := gorm.Open(
 		sqlite.Open("file:queue-create-atomic-batch?mode=memory&cache=shared"),
 		&gorm.Config{},
@@ -1823,6 +1823,7 @@ func TestQueueCreateBatchCreatesWholeBatchInNaturalOrder(t *testing.T) {
 		&models.ExecutionPlan{},
 		&models.SchedulerReservation{},
 		&models.AppSetting{},
+		&models.QueueBatchPreflight{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1846,7 +1847,7 @@ func TestQueueCreateBatchCreatesWholeBatchInNaturalOrder(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	router := gin.New()
-	router.POST("/api/queue/batches", NewQueueHandler(db).CreateBatch)
+	router.POST("/api/queue/preflights", NewQueueHandler(db).CreateBatchPreflight)
 
 	body := fmt.Sprintf(
 		`{
@@ -1881,7 +1882,7 @@ func TestQueueCreateBatchCreatesWholeBatchInNaturalOrder(t *testing.T) {
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(
 		http.MethodPost,
-		"/api/queue/batches",
+		"/api/queue/preflights",
 		strings.NewReader(body),
 	)
 	request.Header.Set("Content-Type", "application/json")
@@ -1896,6 +1897,18 @@ func TestQueueCreateBatchCreatesWholeBatchInNaturalOrder(t *testing.T) {
 		)
 	}
 
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Assets) != 3 {
+		t.Fatalf("candidate assets=%d want=3", len(candidate.Assets))
+	}
+	for index, want := range []string{"title.mkv", "title_01.mkv", "title_02.mkv"} {
+		if got := filepath.Base(candidate.Assets[index].MediaPath); got != want {
+			t.Fatalf("candidate asset[%d]=%q want=%q", index, got, want)
+		}
+	}
 	var queued []models.QueueJob
 	if err := db.
 		Where("dismissed_at IS NULL").
@@ -1904,64 +1917,12 @@ func TestQueueCreateBatchCreatesWholeBatchInNaturalOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(queued) != 4 {
-		t.Fatalf("queued jobs=%d want=4: %#v", len(queued), queued)
-	}
-
-	expected := []struct {
-		file          string
-		batchID       string
-		batchPosition int
-		queuePosition int64
-	}{
-		{"existing.mkv", "", 0, 1},
-		{"title.mkv", "batch-b", 1, 2},
-		{"title_01.mkv", "batch-b", 2, 3},
-		{"title_02.mkv", "batch-b", 3, 4},
-	}
-
-	for index, want := range expected {
-		got := queued[index]
-
-		if filepath.Base(got.MediaPath) != want.file {
-			t.Fatalf(
-				"queue position %d file=%q want=%q",
-				index+1,
-				filepath.Base(got.MediaPath),
-				want.file,
-			)
-		}
-
-		if got.BatchID != want.batchID {
-			t.Fatalf(
-				"%q batchID=%q want=%q",
-				got.MediaPath,
-				got.BatchID,
-				want.batchID,
-			)
-		}
-
-		if got.BatchPosition != want.batchPosition {
-			t.Fatalf(
-				"%q batchPosition=%d want=%d",
-				got.MediaPath,
-				got.BatchPosition,
-				want.batchPosition,
-			)
-		}
-
-		if got.QueuePosition != want.queuePosition {
-			t.Fatalf(
-				"%q queuePosition=%d want=%d",
-				got.MediaPath,
-				got.QueuePosition,
-				want.queuePosition,
-			)
-		}
+	if len(queued) != 1 || queued[0].ID != existing.ID {
+		t.Fatalf("candidate creation changed existing Queue state: %#v", queued)
 	}
 }
 
-func TestQueueCreateBatchRollsBackEntireBatchWhenOneAssetReservationFails(t *testing.T) {
+func TestLegacyBatchRouteCannotBypassPreflightOrMutateReservations(t *testing.T) {
 	db, err := gorm.Open(
 		sqlite.Open("file:queue-create-atomic-rollback?mode=memory&cache=shared"),
 		&gorm.Config{},
@@ -1991,10 +1952,6 @@ func TestQueueCreateBatchRollsBackEntireBatchWhenOneAssetReservationFails(t *tes
 	)
 
 	// Deliberately create only a scheduler reservation, not a QueueJob.
-	//
-	// This means prepareBatchQueueJob() will not reject the asset early.
-	// The conflict will happen inside CreateBatch's transaction when
-	// LockQueuedAsset() reaches this asset.
 	existingReservation := models.SchedulerReservation{
 		JobID:    999999,
 		AssetKey: conflictingPath,
@@ -2280,6 +2237,8 @@ func TestQueueSelectedAssetsAnalysisEvidenceIsSharedAndBatchReadOnly(t *testing.
 
 func TestQueueSelectedAssetsCommitPreservesPartialSuccessIntentAndNaturalOrder(t *testing.T) {
 	db := queueSelectedAssetsTestDB(t)
+	rawRoot := t.TempDir()
+	destinationRoot := t.TempDir()
 	profile := authoritativeTestProfile()
 	if err := db.Create(&profile).Error; err != nil {
 		t.Fatal(err)
@@ -2290,14 +2249,25 @@ func TestQueueSelectedAssetsCommitPreservesPartialSuccessIntentAndNaturalOrder(t
 	if err := db.Create(&alternateProfile).Error; err != nil {
 		t.Fatal(err)
 	}
-	successLogical := "/media/raw/Anime/A Success"
-	conflictLogical := "/media/raw/Anime/B Conflict"
+	successLogical := filepath.Join(rawRoot, "Anime", "A Success")
+	conflictLogical := filepath.Join(rawRoot, "Anime", "B Conflict")
 	records := []models.AssetRecord{
 		{Path: successLogical + "/Season 2/Episode 10.mkv", LogicalGroupPath: successLogical, SourcePath: successLogical + "/Season 2/Episode 10.mkv", FileName: "Episode 10.mkv", Status: "unprocessed", SizeBytes: 10},
 		{Path: successLogical + "/Season 2/Episode 2.mkv", LogicalGroupPath: successLogical, SourcePath: successLogical + "/Season 2/Episode 2.mkv", FileName: "Episode 2.mkv", Status: "unprocessed", SizeBytes: 20},
 		{Path: conflictLogical + "/Season 1/Episode 1.mkv", LogicalGroupPath: conflictLogical, SourcePath: conflictLogical + "/Season 1/Episode 1.mkv", FileName: "Episode 1.mkv", Status: "unprocessed", SizeBytes: 30},
 	}
 	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if err := os.MkdirAll(filepath.Dir(record.Path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(record.Path, []byte("test media placeholder"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&models.Library{ID: 9, Name: "Selected assets", SourcePath: rawRoot, DestinationPath: destinationRoot, Type: "anime"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	for _, logicalPath := range []string{successLogical, conflictLogical} {
@@ -2331,6 +2301,7 @@ func TestQueueSelectedAssetsCommitPreservesPartialSuccessIntentAndNaturalOrder(t
 			t.Fatal(err)
 		}
 	}
+	seedQueueSelectedPreflightRuntime(t, db)
 
 	plan := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{records[0].ID, records[2].ID, records[1].ID}, Commit: false})
 	if plan.Summary.Eligible != 3 || plan.Summary.Failed != 0 {
@@ -2340,16 +2311,33 @@ func TestQueueSelectedAssetsCommitPreservesPartialSuccessIntentAndNaturalOrder(t
 		t.Fatal(err)
 	}
 
-	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{records[0].ID, records[2].ID, records[1].ID}, Commit: true})
-	if response.Summary.Queued != 2 || response.Summary.Failed != 1 || len(response.Batches) != 1 {
-		t.Fatalf("partial commit was not explicit: %#v", response)
+	candidate := createQueueSelectedAssetsPreflight(t, db, []uint{records[0].ID, records[2].ID, records[1].ID})
+	readyIDs := make([]string, 0, 2)
+	blockedReservationFound := false
+	for _, asset := range candidate.Assets {
+		if asset.Status == queuePreflightReady {
+			readyIDs = append(readyIDs, asset.ID)
+		} else if asset.MediaPath == records[2].Path && strings.Contains(strings.Join(asset.Blockers, " "), "reservation") {
+			blockedReservationFound = true
+		}
 	}
-	results := map[uint]QueueSelectedAssetResult{}
-	for _, result := range response.Results {
-		results[result.AssetID] = result
+	if len(readyIDs) != 2 || !blockedReservationFound {
+		t.Fatalf("Preflight did not preserve ready and reserved assets: %#v", candidate.Assets)
 	}
-	if results[records[2].ID].Reason != "reservation_conflict" {
-		t.Fatalf("conflicting asset reason=%#v", results[records[2].ID])
+	response := acceptQueueSelectedAssetsPreflight(t, db, candidate, readyIDs)
+	if len(response.Jobs) != 2 || len(response.Assets) != 3 {
+		t.Fatalf("partial acceptance did not preserve the candidate context: %#v", response)
+	}
+	queuedCount, unresolvedCount := 0, 0
+	for _, asset := range response.Assets {
+		if asset.Status == queuePreflightQueued {
+			queuedCount++
+		} else if asset.MediaPath == records[2].Path && asset.Status == queuePreflightBlocked {
+			unresolvedCount++
+		}
+	}
+	if queuedCount != 2 || unresolvedCount != 1 {
+		t.Fatalf("partial acceptance lost Queue or unresolved asset evidence: %#v", response.Assets)
 	}
 
 	var jobs []models.QueueJob
@@ -2363,8 +2351,8 @@ func TestQueueSelectedAssetsCommitPreservesPartialSuccessIntentAndNaturalOrder(t
 		t.Fatalf("mixed effective profiles did not preserve queue intent: %#v", jobs)
 	}
 	for index, job := range jobs {
-		if job.ProfileCapturedAt != nil || len(job.ProfileSnapshot) != 0 || len(job.AudioProfileSnapshot) != 0 || len(job.TrackProfileSnapshot) != 0 {
-			t.Fatalf("Queue Selected performed claim-time freeze during enqueue: %#v", job)
+		if !queueJobFreezeComplete(job) || job.ProfileCapturedAt == nil || job.ActiveExecutionPlanID == nil {
+			t.Fatalf("Queue acceptance did not freeze reviewed material decisions: %#v", job)
 		}
 		videoResolution, _ := job.ProfileResolution["video"].(map[string]any)
 		expectedSource := assetScopeLogicalGroup
@@ -2376,21 +2364,27 @@ func TestQueueSelectedAssetsCommitPreservesPartialSuccessIntentAndNaturalOrder(t
 		}
 	}
 	var plans int64
-	if err := db.Model(&models.ExecutionPlan{}).Count(&plans).Error; err != nil || plans != 0 {
-		t.Fatalf("execution plans=%d err=%v", plans, err)
+	if err := db.Model(&models.ExecutionPlan{}).Count(&plans).Error; err != nil || plans != 2 {
+		t.Fatalf("execution plans=%d err=%v want accepted jobs=2", plans, err)
 	}
 }
 
 func TestQueueSelectedSeasonOnlyBatchUsesSeriesTitleAndCompleteGroupOrdinals(t *testing.T) {
 	db := queueSelectedAssetsTestDB(t)
+	root := t.TempDir()
+	rawRoot := filepath.Join(root, "raw")
+	destinationRoot := filepath.Join(root, "library")
+	if err := os.MkdirAll(destinationRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	profile := authoritativeTestProfile()
 	if err := db.Create(&profile).Error; err != nil {
 		t.Fatal(err)
 	}
 	library := models.Library{
 		Name:            "Series",
-		SourcePath:      "/media/raw",
-		DestinationPath: "/media/library/series",
+		SourcePath:      rawRoot,
+		DestinationPath: destinationRoot,
 		Type:            "tv",
 		ValidationRules: models.JSONMap{"episodeNamingEnabled": true},
 	}
@@ -2398,8 +2392,8 @@ func TestQueueSelectedSeasonOnlyBatchUsesSeriesTitleAndCompleteGroupOrdinals(t *
 		t.Fatal(err)
 	}
 
-	logicalPath := "/media/raw/series/Doctor Who"
-	groupPath := "series/Doctor Who/Season2"
+	logicalPath := filepath.Join(rawRoot, "series", "Doctor Who")
+	groupPath := filepath.Join("series", "Doctor Who", "Season2")
 	names := []string{
 		"DR_WHO_COMPLETE_SERIES_2018_D03_Ttitle_t02.mkv",
 		"DR_WHO_COMPLETE_SERIES_2018_D03_Ttitle_t03.mkv",
@@ -2408,11 +2402,11 @@ func TestQueueSelectedSeasonOnlyBatchUsesSeriesTitleAndCompleteGroupOrdinals(t *
 	}
 	records := make([]models.AssetRecord, 0, len(names))
 	for _, name := range names {
-		mediaPath := filepath.Join("/media/raw", groupPath, name)
+		mediaPath := filepath.Join(rawRoot, groupPath, name)
 		records = append(records, models.AssetRecord{
 			Path:             mediaPath,
 			SourcePath:       mediaPath,
-			RootPath:         "/media/raw",
+			RootPath:         rawRoot,
 			GroupPath:        groupPath,
 			LogicalGroupPath: logicalPath,
 			RelativePath:     filepath.Join(groupPath, name),
@@ -2423,38 +2417,45 @@ func TestQueueSelectedSeasonOnlyBatchUsesSeriesTitleAndCompleteGroupOrdinals(t *
 	if err := db.Create(&records).Error; err != nil {
 		t.Fatal(err)
 	}
+	for _, record := range records {
+		if err := os.MkdirAll(filepath.Dir(record.Path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(record.Path, []byte("test media placeholder"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := db.Create(&models.ProfileAssignment{TargetType: assetScopeLogicalGroup, TargetPath: logicalPath, MediaType: "video", Selection: "profile", VideoProfileID: profile.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: logicalPath, DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
+	seedQueueSelectedPreflightRuntime(t, db)
 
-	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{
-		AssetIDs: []uint{records[3].ID, records[1].ID, records[0].ID},
-		Commit:   true,
-	})
-	if response.Summary.Queued != 3 || response.Summary.Failed != 0 {
-		t.Fatalf("unexpected Queue Selected response: %#v", response)
+	candidate := createQueueSelectedAssetsPreflight(t, db, []uint{records[3].ID, records[1].ID, records[0].ID})
+	readyIDs := make([]string, 0, len(candidate.Assets))
+	for _, asset := range candidate.Assets {
+		if asset.Status != queuePreflightReady || asset.Plan == nil {
+			t.Fatalf("season asset did not resolve in Preflight: %#v", asset)
+		}
+		readyIDs = append(readyIDs, asset.ID)
 	}
-
-	var jobs []models.QueueJob
-	if err := db.Where("batch_id = ?", response.Batches[0].BatchID).Order("batch_position asc").Find(&jobs).Error; err != nil {
-		t.Fatal(err)
-	}
+	response := acceptQueueSelectedAssetsPreflight(t, db, candidate, readyIDs)
+	jobs := response.Jobs
 	if len(jobs) != 3 || jobs[0].BatchName != "Season2" {
-		t.Fatalf("unexpected Queue Selected job shape: %#v", jobs)
+		t.Fatalf("unexpected accepted Queue job shape: %#v", jobs)
 	}
 	wantEpisodes := []int{1, 2, 4}
 	for index, job := range jobs {
-		want := fmt.Sprintf("/media/library/series/Doctor Who/Season2/Doctor Who - S02E%02d.mkv", wantEpisodes[index])
-		if got := plannedOutputPathForJob(db, job, library, profile); got != want {
+		want := filepath.Join(destinationRoot, "Doctor Who", "Season2", fmt.Sprintf("Doctor Who - S02E%02d.mkv", wantEpisodes[index]))
+		if got := workerStringValue(job.ResolvedDestinationSnapshot["outputPath"]); got != want {
 			t.Fatalf("job %d output=%q want=%q", job.ID, got, want)
 		}
 	}
 }
 
-func TestClaimedSelectedQueueJobFreezesCurrentConfigurationOnce(t *testing.T) {
+func TestAcceptedSelectedQueueJobFreezesReviewedConfigurationOnce(t *testing.T) {
 	db := queueSelectedAssetsTestDB(t)
 	sourceDir := t.TempDir()
 	mediaPath := filepath.Join(sourceDir, "Episode 1.mkv")
@@ -2514,20 +2515,37 @@ func TestClaimedSelectedQueueJobFreezesCurrentConfigurationOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{record.ID}, Commit: true})
-	if response.Summary.Queued != 1 {
-		t.Fatalf("selected asset was not queued: %#v", response)
+	candidate := createQueueSelectedAssetsPreflight(t, db, []uint{record.ID})
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightReady || candidate.Assets[0].Plan == nil {
+		t.Fatalf("selected asset did not resolve in Preflight: %#v", candidate.Assets)
 	}
-	var job models.QueueJob
-	if err := db.First(&job).Error; err != nil {
+	var queuedBeforeAcceptance, plansBeforeAcceptance int64
+	if err := db.Model(&models.QueueJob{}).Count(&queuedBeforeAcceptance).Error; err != nil {
 		t.Fatal(err)
 	}
-	if queueJobFreezeComplete(job) || job.ActiveExecutionPlanID != nil {
-		t.Fatalf("Queue commit froze execution state: %#v", job)
+	if err := db.Model(&models.ExecutionPlan{}).Count(&plansBeforeAcceptance).Error; err != nil {
+		t.Fatal(err)
 	}
+	if queuedBeforeAcceptance != 0 || plansBeforeAcceptance != 0 {
+		t.Fatalf("Preflight created Queue state before acceptance: jobs=%d plans=%d", queuedBeforeAcceptance, plansBeforeAcceptance)
+	}
+	reviewedProfile := candidate.Assets[0].Plan.ProfileSnapshot
+	reviewedTracks := candidate.Assets[0].Plan.TrackProfileSnapshot
 	setFallbackFreezeTestSetting(t, db, true)
 	if err := db.Model(&assignment).Update("video_profile_id", second.ID).Error; err != nil {
 		t.Fatal(err)
+	}
+	first.QualityValue = 29
+	if err := db.Save(&first).Error; err != nil {
+		t.Fatal(err)
+	}
+	accepted := acceptQueueSelectedAssetsPreflight(t, db, candidate, []string{candidate.Assets[0].ID})
+	if len(accepted.Jobs) != 1 {
+		t.Fatalf("selected asset was not queued: %#v", accepted)
+	}
+	job := accepted.Jobs[0]
+	if !queueJobFreezeComplete(job) || job.ActiveExecutionPlanID == nil || job.ProfileID != first.ID || snapshotQualityValue(job.ProfileSnapshot) != 18 || !reflect.DeepEqual(job.ProfileSnapshot, reviewedProfile) || !reflect.DeepEqual(job.TrackProfileSnapshot, reviewedTracks) {
+		t.Fatalf("Accept did not freeze the exact reviewed Queue plan: %#v", job)
 	}
 	now := time.Now()
 	if err := db.Model(&job).Updates(map[string]any{"status": JobStatusRunning, "stage": JobStageClaimed, "worker_name": "test-worker", "started_at": &now}).Error; err != nil {
@@ -2541,23 +2559,26 @@ func TestClaimedSelectedQueueJobFreezesCurrentConfigurationOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	frozenTrackPlan, frozenTrackPlanOK := ResolvedTrackPlanFromSnapshot(prepared.TrackProfileSnapshot)
-	if prepared.ProfileID != second.ID || snapshotQualityValue(prepared.ProfileSnapshot) != 21 || !queueJobFreezeComplete(prepared) || prepared.ActiveExecutionPlanID == nil || !frozenTrackPlanOK || !sameStringSlice(resolvedFallbackFormats(frozenTrackPlan), []string{"srt", "ass"}) {
-		t.Fatalf("claim did not freeze the latest effective configuration: %#v", prepared)
+	if prepared.ProfileID != first.ID || snapshotQualityValue(prepared.ProfileSnapshot) != 18 || !queueJobFreezeComplete(prepared) || prepared.ActiveExecutionPlanID == nil || !frozenTrackPlanOK || !sameStringSlice(resolvedFallbackFormats(frozenTrackPlan), []string{"ass"}) {
+		t.Fatalf("claim changed the reviewed configuration after acceptance: %#v", prepared)
 	}
 	second.QualityValue = 30
 	if err := db.Save(&second).Error; err != nil {
 		t.Fatal(err)
 	}
 	setFallbackFreezeTestSetting(t, db, false)
+	if err := db.Model(&assignment).Update("video_profile_id", second.ID).Error; err != nil {
+		t.Fatal(err)
+	}
 	again, err := NewWorkerHandler(db).prepareClaimedQueueJob(prepared)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshotQualityValue(again.ProfileSnapshot) != 21 {
+	if snapshotQualityValue(again.ProfileSnapshot) != 18 {
 		t.Fatalf("completed freeze changed after profile edit: %#v", again.ProfileSnapshot)
 	}
 	againPlan, againPlanOK := ResolvedTrackPlanFromSnapshot(again.TrackProfileSnapshot)
-	if !againPlanOK || !sameStringSlice(resolvedFallbackFormats(againPlan), []string{"srt", "ass"}) {
+	if !againPlanOK || !sameStringSlice(resolvedFallbackFormats(againPlan), []string{"ass"}) {
 		t.Fatalf("completed fallback freeze changed after setting edit: %#v", again.TrackProfileSnapshot)
 	}
 	var scans int64
@@ -2600,7 +2621,7 @@ func TestQueueSelectedAssetsReportsReviewOpenJobAndMaintenanceSeparately(t *test
 	}
 }
 
-func TestQueueSelectedAssetsSkipsNonUnprocessedRecords(t *testing.T) {
+func TestQueueSelectedAssetsPreflightBlocksNonUnprocessedRecords(t *testing.T) {
 	db := queueSelectedAssetsTestDB(t)
 	profile := authoritativeTestProfile()
 	if err := db.Create(&profile).Error; err != nil {
@@ -2618,9 +2639,9 @@ func TestQueueSelectedAssetsSkipsNonUnprocessedRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{record.ID}, Commit: true})
-	if response.Summary.Queued != 0 || response.Summary.Skipped != 1 || len(response.Results) != 1 || response.Results[0].Reason != "not_unprocessed" {
-		t.Fatalf("non-Unprocessed record was not explicitly skipped: %#v", response)
+	candidate := createQueueSelectedAssetsPreflight(t, db, []uint{record.ID})
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightBlocked || !strings.Contains(strings.Join(candidate.Assets[0].Blockers, " "), "Unprocessed") {
+		t.Fatalf("non-Unprocessed record was not shown as a Preflight blocker: %#v", candidate.Assets)
 	}
 	var jobs int64
 	if err := db.Model(&models.QueueJob{}).Count(&jobs).Error; err != nil || jobs != 0 {
@@ -2628,14 +2649,22 @@ func TestQueueSelectedAssetsSkipsNonUnprocessedRecords(t *testing.T) {
 	}
 }
 
-func TestQueueSelectedAssetsDefersInheritedAudioOnlySnapshot(t *testing.T) {
+func TestQueueSelectedAssetsPreflightFreezesInheritedAudioOnlySnapshot(t *testing.T) {
 	db := queueSelectedAssetsTestDB(t)
+	sourceDir := t.TempDir()
+	logicalPath := filepath.Join(sourceDir, "Audio Only")
+	mediaPath := filepath.Join(logicalPath, "Episode 1.mkv")
+	if err := os.MkdirAll(logicalPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mediaPath, []byte("test media placeholder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	fallback := authoritativeTestProfile()
 	if err := db.Create(&fallback).Error; err != nil {
 		t.Fatal(err)
 	}
-	logicalPath := "/media/raw/Anime/Audio Only"
-	record := models.AssetRecord{Path: logicalPath + "/Episode 1.mkv", LogicalGroupPath: logicalPath, SourcePath: logicalPath + "/Episode 1.mkv", FileName: "Episode 1.mkv", Status: "unprocessed"}
+	record := models.AssetRecord{Path: mediaPath, LogicalGroupPath: logicalPath, SourcePath: mediaPath, FileName: filepath.Base(mediaPath), Status: "unprocessed"}
 	if err := db.Create(&record).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -2646,24 +2675,30 @@ func TestQueueSelectedAssetsDefersInheritedAudioOnlySnapshot(t *testing.T) {
 	if err := db.Create(&assignments).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: logicalPath, DestinationSelection: configSelectionValue, DestinationLibraryID: 11}).Error; err != nil {
+	library := models.Library{Name: "Audio only destination", SourcePath: sourceDir, DestinationPath: t.TempDir(), Type: "anime"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: logicalPath, DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.AppSetting{Key: "audioEnhancementProfiles", Value: models.JSONMap{"profiles": models.JSONList{models.JSONMap{"key": "audio-only-profile", "scope": "path", "filters": "volume=0.9"}}}}).Error; err != nil {
 		t.Fatal(err)
 	}
+	seedQueueSelectedPreflightRuntime(t, db)
 
-	response := queueSelectedAssetsRequest(t, db, QueueSelectedAssetsInput{AssetIDs: []uint{record.ID}, Commit: true})
-	if response.Summary.Queued != 1 || response.Summary.Failed != 0 {
-		t.Fatalf("audio-only selection did not queue: %#v", response)
+	candidate := createQueueSelectedAssetsPreflight(t, db, []uint{record.ID})
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightReady || candidate.Assets[0].Plan == nil {
+		t.Fatalf("audio-only asset did not resolve in Preflight: %#v", candidate.Assets)
 	}
-	var job models.QueueJob
-	if err := db.First(&job).Error; err != nil {
-		t.Fatal(err)
+	accepted := acceptQueueSelectedAssetsPreflight(t, db, candidate, []string{candidate.Assets[0].ID})
+	if len(accepted.Jobs) != 1 {
+		t.Fatalf("audio-only selection did not queue: %#v", accepted)
 	}
+	job := accepted.Jobs[0]
 	videoResolution, _ := job.ProfileResolution["video"].(map[string]any)
-	if job.ProcessingMode != ProcessingModeAudioOnly || job.ProfileID != fallback.ID || len(job.AudioProfileSnapshot) != 0 || job.ProfileCapturedAt != nil || videoResolution["selection"] != VideoAssignmentAudioOnly {
-		t.Fatalf("audio-only queue intent was not deferred correctly: %#v", job)
+	if job.ProcessingMode != ProcessingModeAudioOnly || job.ProfileID != fallback.ID || len(job.AudioProfileSnapshot) == 0 || job.ProfileCapturedAt == nil || !queueJobFreezeComplete(job) || videoResolution["selection"] != VideoAssignmentAudioOnly {
+		t.Fatalf("audio-only Queue plan was not frozen at acceptance: %#v", job)
 	}
 }
 
@@ -2677,6 +2712,7 @@ func queueSelectedAssetsTestDB(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(
 		&models.AssetRecord{}, &models.Profile{}, &models.ProfileAssignment{}, &models.AssetScopeConfiguration{},
 		&models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{}, &models.AppSetting{}, &models.ScanResult{}, &models.AssetMaintenanceOperation{}, &models.Library{}, &models.RuntimeSnapshot{}, &models.RuntimeState{},
+		&models.QueueBatchPreflight{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -2704,6 +2740,62 @@ func queueSelectedAssetsRequest(t *testing.T, db *gorm.DB, input QueueSelectedAs
 		t.Fatal(err)
 	}
 	return result
+}
+
+func queueSelectedAssetsPreflightRequest(t *testing.T, db *gorm.DB, method, path string, input any) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler := NewQueueHandler(db)
+	router.POST("/api/queue/preflights/selected-assets", handler.PreflightSelectedAssets)
+	router.POST("/api/queue/preflights/:id/accept", handler.AcceptBatchPreflight)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(method, path, strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	return response
+}
+
+func createQueueSelectedAssetsPreflight(t *testing.T, db *gorm.DB, assetIDs []uint) QueueBatchPreflightResponse {
+	t.Helper()
+	response := queueSelectedAssetsPreflightRequest(t, db, http.MethodPost, "/api/queue/preflights/selected-assets", map[string]any{"assetIds": assetIDs})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("preflight status=%d body=%s", response.Code, response.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	return candidate
+}
+
+func acceptQueueSelectedAssetsPreflight(t *testing.T, db *gorm.DB, candidate QueueBatchPreflightResponse, assetIDs []string) QueueBatchPreflightResponse {
+	t.Helper()
+	response := queueSelectedAssetsPreflightRequest(t, db, http.MethodPost, "/api/queue/preflights/"+candidate.ID+"/accept", map[string]any{"revision": candidate.Revision, "assetIds": assetIDs})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("accept status=%d body=%s", response.Code, response.Body.String())
+	}
+	var accepted QueueBatchPreflightResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	return accepted
+}
+
+func seedQueueSelectedPreflightRuntime(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	now := time.Now()
+	encoders := models.JSONMap{"libx265": models.JSONMap{"listed": true, "usable": true}}
+	if err := db.Create(&models.RuntimeSnapshot{DetectedAt: now, SelectedProfile: "test", Encoders: encoders}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.RuntimeState{SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: now, SelectedProfile: "test", Encoders: encoders, StableFingerprint: "queue-selected-test", FingerprintVersion: "v1"}).Error; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestQueueCaptureFreezesFontAttachmentArtifacts(t *testing.T) {
