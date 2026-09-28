@@ -4,24 +4,31 @@ This document records the main third-party software that MVForge deliberately
 builds, bundles, or directly depends on. Third-party components remain under
 their own licenses.
 
+The tables below summarize the principal components; they are not a complete,
+release-specific license-text bundle. The resolved backend module graph is
+described by `backend/go.mod` and `backend/go.sum`. The resolved frontend
+package graph, versions, and package-declared license fields are in
+`frontend/package-lock.json`. Package metadata is an inventory input, not a
+substitute for reviewing the component's license and required notices.
+
 ## Media processing stack
 
 | Component | Version / source | License family | MVForge use |
 | --- | --- | --- | --- |
 | FFmpeg | 8.1.2 | GPLv3 for the MVForge build | Built with `--enable-gpl --enable-version3`; invoked as a separate executable |
-| x264 | Debian build/runtime package | GPL-compatible | Linked into the FFmpeg build |
-| x265 | Debian build/runtime package | GPL-compatible | Linked into the FFmpeg build |
-| SVT-AV1 | 4.1.0 | BSD-style + patent notice | Built as a shared library for FFmpeg |
-| libaom | Debian package | BSD-style | FFmpeg codec library |
-| dav1d | Debian package | BSD-style | FFmpeg decoder library |
-| libvpx | Debian package | BSD-style | FFmpeg codec library |
+| x264 | Debian `libx264-164` package | GPL-2+ | Dynamically linked into FFmpeg; see the package copyright file |
+| x265 | Debian `libx265-215` package | GPL-2+ | Dynamically linked into FFmpeg; see the package copyright file |
+| SVT-AV1 | 4.1.0 | BSD-2-Clause + patent notice | Built as a shared library; license and patent files are copied into the image |
+| libaom | Debian package | BSD-2-Clause | FFmpeg codec library |
+| dav1d | Debian package | BSD-2-Clause | FFmpeg decoder library |
+| libvpx | Debian package | BSD-3-Clause | FFmpeg codec library |
 | libass | Debian package | ISC-style | Subtitle rendering |
-| libbluray | Debian package | LGPL | Blu-ray structure parsing; MVForge does not bundle libaacs/libbdplus |
-| libmp3lame | Debian package | LGPL | Audio encoding |
-| libopus | Debian package | BSD-style | Audio codec |
-| libvorbis | Debian package | BSD-style | Audio codec |
-| libsoxr | Debian package | LGPL | Resampling |
-| OpenJPEG | Debian package | BSD-style | JPEG 2000 support |
+| libbluray | Debian package | LGPL-2.1+ | Blu-ray structure parsing; MVForge does not bundle libaacs/libbdplus |
+| libmp3lame | Debian package | LGPL-2+ (with file-specific notices) | Audio encoding |
+| libopus | Debian package | BSD-3-Clause (with file-specific notices) | Audio codec |
+| libvorbis | Debian package | BSD-3-Clause (with file-specific notices) | Audio codec |
+| libsoxr | Debian package | LGPL-2.1+ (with file-specific notices) | Resampling |
+| OpenJPEG | Debian package | Mixed package notices | JPEG 2000 support |
 
 ### FFmpeg licensing note
 
@@ -50,16 +57,19 @@ MVForge builds the Intel media stack from pinned commits in
 - libvpl-tools
 - oneVPL Intel GPU runtime
 
-These projects use permissive MIT/BSD-style terms. License material for the
-custom-built components is retained in the backend image where practical.
+License terms and required notices are specific to each upstream component and
+revision. The backend image copies license files for libva, libva-utils,
+gmmlib, media-driver, libvpl, and libvpl-tools. The captured issue #57 build
+did not contain a distinct license/notice file for the oneVPL Intel GPU
+runtime in `/usr/share/licenses/mvforge`; see [the technical audit](docs/compliance/redistribution-audit.md).
 
 ## Subtitle and OCR stack
 
 | Component | Version / source | License family | MVForge use |
 | --- | --- | --- | --- |
-| Subtitle Edit SeConv | 5.1.0-rc15 | MIT | Subtitle conversion helper |
-| SkiaSharp native assets | 3.119.4 | MIT + bundled third-party notices | Native rendering dependency used by SeConv |
-| HarfBuzzSharp native assets | 8.3.1.5 | MIT wrapper + HarfBuzz notices | Text shaping dependency used by SeConv |
+| Subtitle Edit SeConv | 5.1.0-rc15 | MIT (as declared in the inventory) | Subtitle conversion helper; no separate license text is copied to the runtime license directory |
+| SkiaSharp native assets | 3.119.4 | MIT + bundled third-party notices (as declared in the inventory) | Native rendering dependency; no separate notices are copied to the runtime license directory |
+| HarfBuzzSharp native assets | 8.3.1.5 | MIT wrapper + HarfBuzz notices (as declared in the inventory) | Text shaping dependency; no separate notices are copied to the runtime license directory |
 | Tesseract OCR | Debian package | Apache-2.0 | OCR |
 | Hunspell + dictionaries | Debian packages | Package-specific open-source terms | Language/spell resources |
 
@@ -74,9 +84,11 @@ Primary direct dependencies include:
 - TanStack Query — MIT
 - React Router — MIT
 
-Transitive dependencies are not re-licensed by MVForge. Release SBOM
-attestations and package manifests should be treated as the authoritative
-resolved inventory for a specific artifact.
+Transitive dependencies are not re-licensed by MVForge. The container release
+workflow requests SBOM and provenance attestations from BuildKit for each
+published image; retain those attestations with the exact image digest and
+review any license texts or source obligations they identify. A package list
+alone does not satisfy notice or corresponding-source obligations.
 
 ## Debian package notices
 
