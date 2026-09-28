@@ -28,6 +28,8 @@ import type {
   JobLogResponse,
   Profile,
   ProfileInput,
+  ProfileTemplate,
+  CloneProfileTemplateInput,
   ProfileAssignment,
   ProfileAssignmentInput,
   PathBrowseResponse,
@@ -535,6 +537,12 @@ export const api = {
     }),
   profiles: () => request<Profile[]>('/api/profiles'),
   profilesAdmin: () => request<Profile[]>('/api/profiles?includeDisabled=true&includeDeleted=true'),
+  profileTemplates: () => request<ProfileTemplate[]>('/api/profile-templates'),
+  cloneProfileTemplate: ({ key, ...input }: CloneProfileTemplateInput) =>
+    request<Profile>(`/api/profile-templates/${encodeURIComponent(key)}/clone`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   createProfile: (profile: ProfileInput) =>
     request<Profile>('/api/profiles', {
       method: 'POST',
