@@ -156,6 +156,8 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/advisor/evaluate", advisor.Evaluate)
 		api.POST("/advisor/suggest", advisor.Suggest)
 		api.GET("/profiles", profiles.List)
+		api.GET("/profile-templates", profiles.ListTemplates)
+		api.POST("/profile-templates/:key/clone", profiles.CloneTemplate)
 		api.POST("/profiles", profiles.Create)
 		api.POST("/profiles/:id", profiles.Update)
 		api.POST("/profiles/:id/disabled", profiles.SetDisabled)

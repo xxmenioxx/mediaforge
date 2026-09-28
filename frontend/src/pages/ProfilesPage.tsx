@@ -37,6 +37,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { GuidedProfileTemplateChooser } from '../components/GuidedProfileTemplateChooser';
 import { PageHeader } from '../components/PageHeader';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { FrameCadenceControls } from '../components/FrameCadenceControls';
@@ -44,7 +45,7 @@ import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { RestorationControls } from '../components/RestorationControls';
-import type { Profile, ProfileInput, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { Profile, ProfileInput, ProfileTemplate, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions } from '../utils/hardwareQualityPresets';
 import { qsvPStrategySupported, qsvSelectionWarnings, resolveQSVFeatures } from '../utils/qsvCapabilities';
@@ -165,6 +166,11 @@ export function ProfilesPage() {
     queryKey: ['profiles', 'admin'],
     queryFn: api.profilesAdmin,
   });
+  const profileTemplates = useQuery({
+    queryKey: ['profile-templates'],
+    queryFn: api.profileTemplates,
+  });
+  const profileTemplateError = profileTemplates.isError ? profileTemplates.error.message : undefined;
   const runtimeSnapshot = useQuery({ queryKey: ['runtime-state'], queryFn: api.runtimeState });
   const workerNodes = useQuery({ queryKey: ['worker-nodes'], queryFn: api.workerNodes });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
@@ -230,6 +236,16 @@ export function ProfilesPage() {
       await queryClient.invalidateQueries({ queryKey: ['profiles', 'admin'] });
     },
   });
+
+  const cloneProfileTemplate = useMutation({
+    mutationFn: api.cloneProfileTemplate,
+    onSuccess: async (profile) => {
+      await queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      await queryClient.invalidateQueries({ queryKey: ['profiles', 'admin'] });
+      editProfile(profile);
+    },
+  });
+  const profileTemplateCloneError = cloneProfileTemplate.isError ? cloneProfileTemplate.error.message : undefined;
 
   const updateProfile = useMutation({
     mutationFn: api.updateProfile,
@@ -418,209 +434,6 @@ export function ProfilesPage() {
     setProfileJson(JSON.stringify(next, null, 2));
   }
 
-  function applyGuidedPreset(preset: 'archive' | 'streaming' | 'smaller' | 'original' | 'hevc-small' | 'hevc-balanced-fast' | 'hevc-archive' | 'hevc-bulk') {
-    const presets: Record<typeof preset, Partial<ProfileInput>> = {
-      archive: {
-        name: form.name || 'Archive Quality',
-        description: 'Best for preserving high-quality sources. Keeps all audio tracks, subtitles, and chapters.',
-        container: 'mkv',
-        videoCodec: 'x265',
-        audioCodec: 'copy',
-        qualityValue: 20,
-        preserveHdr: true,
-        preserveSubtitles: true,
-        preserveChapters: true,
-        workerConfig: {
-          ...form.workerConfig,
-          videoPreset: 'medium',
-          pixFmt: 'yuv420p10le',
-          videoEncoder: 'libx265',
-          preferredEncoder: 'software',
-          useHardwareIfAvailable: false,
-          addAacStereoTrack: true,
-          aacStereoDefault: false,
-          preserveOriginalAudio: true,
-          preferSrtSubtitles: false,
-          warnSubtitleFormats: true,
-        },
-      },
-      streaming: {
-        name: form.name || 'Streaming Compatible',
-        description: 'Broad playback-oriented video while still preserving all source audio tracks, subtitles, and chapters.',
-        container: 'mkv',
-        videoCodec: 'x264',
-        audioCodec: 'copy',
-        qualityValue: 22,
-        preserveHdr: false,
-        preserveSubtitles: true,
-        preserveChapters: true,
-        workerConfig: {
-          ...form.workerConfig,
-          videoPreset: 'medium',
-          pixFmt: 'yuv420p',
-          videoEncoder: 'auto',
-          preferredEncoder: 'hardware',
-          useHardwareIfAvailable: true,
-          addAacStereoTrack: true,
-          aacStereoDefault: false,
-          preserveOriginalAudio: true,
-          preferSrtSubtitles: true,
-          warnSubtitleFormats: true,
-        },
-      },
-      smaller: {
-        name: form.name || 'Smaller File',
-        description: 'Best for reducing video size while preserving all source audio tracks, subtitles, and chapters.',
-        container: 'mkv',
-        videoCodec: 'x265',
-        audioCodec: 'copy',
-        qualityValue: 25,
-        preserveHdr: false,
-        preserveSubtitles: true,
-        preserveChapters: true,
-        workerConfig: {
-          ...form.workerConfig,
-          videoPreset: 'slow',
-          pixFmt: 'yuv420p10le',
-          videoEncoder: 'libx265',
-          preferredEncoder: 'software',
-          useHardwareIfAvailable: false,
-          addAacStereoTrack: true,
-          aacStereoDefault: false,
-          preserveOriginalAudio: true,
-          preferSrtSubtitles: false,
-          warnSubtitleFormats: true,
-        },
-      },
-      original: {
-        name: form.name || 'Preserve Original',
-        description: 'Best for remuxing or keeping every stream untouched.',
-        container: 'mkv',
-        videoCodec: 'copy',
-        audioCodec: 'copy',
-        qualityValue: 0,
-        preserveHdr: true,
-        preserveSubtitles: true,
-        preserveChapters: true,
-        workerConfig: {
-          ...form.workerConfig,
-          videoPreset: 'medium',
-          pixFmt: 'yuv420p10le',
-        },
-      },
-      'hevc-small': {
-        name: form.name || 'HEVC Small Size',
-        description: 'Software x265 for assets where saving space matters more than speed.',
-        container: 'mkv',
-        videoCodec: 'x265',
-        audioCodec: 'copy',
-        qualityValue: 21,
-        preserveHdr: true,
-        preserveSubtitles: true,
-        preserveChapters: true,
-        workerConfig: {
-          ...form.workerConfig,
-          videoEncoder: 'libx265',
-          preferredEncoder: 'software',
-          useHardwareIfAvailable: false,
-          videoPreset: 'slow',
-          pixFmt: 'yuv420p10le',
-          addAacStereoTrack: true,
-          aacStereoDefault: false,
-          preserveOriginalAudio: true,
-          warnSubtitleFormats: true,
-          preferSrtSubtitles: false,
-        },
-      },
-      'hevc-balanced-fast': {
-        name: form.name || 'HEVC Balanced Fast',
-        description: 'Hardware HEVC for faster queues and lower NAS pressure.',
-        container: 'mkv',
-        videoCodec: 'x265',
-        audioCodec: 'copy',
-        qualityValue: 20,
-        preserveHdr: true,
-        preserveSubtitles: true,
-        preserveChapters: true,
-        workerConfig: {
-          ...form.workerConfig,
-          videoEncoder: 'hevc_qsv',
-          preferredEncoder: 'hardware',
-          useHardwareIfAvailable: true,
-          globalQuality: 18,
-          qsvRateControl: 'icq',
-          qsvLookAheadDepth: 40,
-          qsvExtendedBRC: false,
-          qsvAdaptiveI: true,
-          qsvAdaptiveB: true,
-          videoPreset: 'medium',
-          pixFmt: 'p010le',
-          addAacStereoTrack: true,
-          aacStereoDefault: false,
-          preserveOriginalAudio: true,
-          warnSubtitleFormats: true,
-          preferSrtSubtitles: false,
-        },
-      },
-      'hevc-archive': {
-        name: form.name || 'HEVC Archive Quality',
-        description: 'Software x265 for important movies, concerts, and difficult sources.',
-        container: 'mkv',
-        videoCodec: 'x265',
-        audioCodec: 'copy',
-        qualityValue: 19,
-        preserveHdr: true,
-        preserveSubtitles: true,
-        preserveChapters: true,
-        workerConfig: {
-          ...form.workerConfig,
-          videoEncoder: 'libx265',
-          preferredEncoder: 'software',
-          useHardwareIfAvailable: false,
-          videoPreset: 'slow',
-          pixFmt: 'yuv420p10le',
-          addAacStereoTrack: true,
-          aacStereoDefault: false,
-          preserveOriginalAudio: true,
-          warnSubtitleFormats: true,
-          preferSrtSubtitles: false,
-        },
-      },
-      'hevc-bulk': {
-        name: form.name || 'HEVC Bulk Convert',
-        description: 'Hardware HEVC for large libraries and unattended bulk conversion.',
-        container: 'mkv',
-        videoCodec: 'x265',
-        audioCodec: 'copy',
-        qualityValue: 23,
-        preserveHdr: true,
-        preserveSubtitles: true,
-        preserveChapters: true,
-        workerConfig: {
-          ...form.workerConfig,
-          videoEncoder: 'hevc_qsv',
-          preferredEncoder: 'hardware',
-          useHardwareIfAvailable: true,
-          globalQuality: 21,
-          qsvRateControl: 'icq',
-          qsvLookAheadDepth: 40,
-          qsvExtendedBRC: false,
-          qsvAdaptiveI: true,
-          qsvAdaptiveB: false,
-          videoPreset: 'medium',
-          pixFmt: 'p010le',
-          addAacStereoTrack: true,
-          aacStereoDefault: false,
-          preserveOriginalAudio: true,
-          warnSubtitleFormats: true,
-          preferSrtSubtitles: false,
-        },
-      },
-    };
-
-    setProfileForm(synchronizeAuthoritativeContract({ ...form, ...presets[preset] }));
-  }
-
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const payload = synchronizeAuthoritativeContract({
@@ -644,6 +457,14 @@ export function ProfilesPage() {
     const available = new Set((workerNodes.data ?? []).filter((worker) => worker.status === 'online').flatMap((worker) => [...encoderNamesForWorker(worker)]));
     setProfileForm(synchronizeAuthoritativeContract(applyMVForgeVideoPreferences(initialProfile, getMVForgePreferences(settings.data), available)));
     setShowForm(true);
+  }
+
+  function nextTemplateProfileName(template: ProfileTemplate) {
+    const usedNames = new Set((profiles.data ?? []).map((profile) => profile.name.trim().toLowerCase()));
+    if (!usedNames.has(template.name.toLowerCase())) return template.name;
+    let suffix = 2;
+    while (usedNames.has(`${template.name} (${suffix})`.toLowerCase())) suffix += 1;
+    return `${template.name} (${suffix})`;
   }
 
   function editProfile(profile: Profile) {
@@ -729,54 +550,22 @@ export function ProfilesPage() {
                   </Button>
                 </Stack>
                 <Divider />
-                <Stack>
-                  <Typography variant="h3">Guided Setup</Typography>
-                  <Typography color="text.secondary" variant="body2">
-                    Choose a starting point, then tune only what matters.
-                  </Typography>
-                </Stack>
-                <Grid container spacing={1.5}>
-                  <GuidedPresetButton
-                    label="Archive Quality"
-                    description="Keep quality, HDR, audio, subtitles, and chapters."
-                    onClick={() => applyGuidedPreset('archive')}
+                {editingProfileId === null ? (
+                  <GuidedProfileTemplateChooser
+                    templates={profileTemplates.data ?? []}
+                    loading={profileTemplates.isLoading}
+                    error={profileTemplateError}
+                    cloneError={profileTemplateCloneError}
+                    creating={cloneProfileTemplate.isPending}
+                    onCreateTemplate={(template) => cloneProfileTemplate.mutate({
+                      key: template.key,
+                      templateVersion: template.version,
+                      name: nextTemplateProfileName(template),
+                      scope: 'asset',
+                    })}
+                    onCreateBlank={addProfile}
                   />
-                  <GuidedPresetButton
-                    label="Streaming Compatible"
-                    description="Broad playback support for common devices."
-                    onClick={() => applyGuidedPreset('streaming')}
-                  />
-                  <GuidedPresetButton
-                    label="Smaller File"
-                    description="Reduce file size with sensible defaults."
-                    onClick={() => applyGuidedPreset('smaller')}
-                  />
-                  <GuidedPresetButton
-                    label="Preserve Original"
-                    description="Keep streams untouched when possible."
-                    onClick={() => applyGuidedPreset('original')}
-                  />
-                  <GuidedPresetButton
-                    label="HEVC Small Size"
-                    description="Software x265 for better savings per GB."
-                    onClick={() => applyGuidedPreset('hevc-small')}
-                  />
-                  <GuidedPresetButton
-                    label="HEVC Balanced Fast"
-                    description="Hardware HEVC for fast queues."
-                    onClick={() => applyGuidedPreset('hevc-balanced-fast')}
-                  />
-                  <GuidedPresetButton
-                    label="HEVC Archive Quality"
-                    description="Software x265 for important assets."
-                    onClick={() => applyGuidedPreset('hevc-archive')}
-                  />
-                  <GuidedPresetButton
-                    label="HEVC Bulk Convert"
-                    description="Hardware HEVC for large libraries."
-                    onClick={() => applyGuidedPreset('hevc-bulk')}
-                  />
-                </Grid>
+                ) : null}
 
                 <Divider />
 
@@ -1383,6 +1172,7 @@ export function ProfilesPage() {
                         <Typography fontWeight={700}>{profile.name}</Typography>
                         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
 						  <Chip label={profile.scope === 'path' ? 'Path profile' : 'Asset profile'} size="small" color="info" variant="outlined" />
+                          {profile.templateKey && profile.templateVersion ? <Chip label={`From ${profile.templateKey} v${profile.templateVersion}`} size="small" variant="outlined" /> : null}
                           {profile.optimizationIntent ? <Chip label={profile.optimizationIntent.replaceAll('_', ' ')} size="small" variant="outlined" /> : null}
                           <Chip label={`${profile.qualityMode.toUpperCase()} ${profile.qualityValue}`} size="small" />
                           <Chip label={profile.videoCodec === 'copy' ? 'Original quality' : `CRF ${profile.qualityValue}`} size="small" />
@@ -1451,30 +1241,6 @@ export function ProfilesPage() {
         </Card>
       </Box>
     </>
-  );
-}
-
-function GuidedPresetButton({
-  label,
-  description,
-  onClick,
-}: {
-  label: string;
-  description: string;
-  onClick: () => void;
-}) {
-  return (
-    <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-      <Button
-        variant="outlined"
-        onClick={onClick}
-        title={description}
-        fullWidth
-        sx={{ minHeight: 48, justifyContent: 'flex-start' }}
-      >
-        {label}
-      </Button>
-    </Grid>
   );
 }
 

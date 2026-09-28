@@ -983,6 +983,8 @@ export type Profile = {
   name: string;
   scope: 'asset' | 'path';
   description: string;
+  templateKey?: string;
+  templateVersion?: number;
   container: string;
   videoCodec: string;
   codecFamily: string;
@@ -1031,6 +1033,22 @@ export type ProfileInput = {
   preserveChapters: boolean;
   workerConfig?: VideoWorkerConfig;
   disabled?: boolean;
+};
+
+export type ProfileTemplate = {
+  key: string;
+  version: number;
+  name: string;
+  category: string;
+  description: string;
+  definition: Omit<ProfileInput, 'name' | 'description' | 'scope' | 'disabled'>;
+};
+
+export type CloneProfileTemplateInput = {
+  key: string;
+  templateVersion: number;
+  name: string;
+  scope?: 'asset' | 'path';
 };
 
 export type UpdateProfileInput = ProfileInput & {

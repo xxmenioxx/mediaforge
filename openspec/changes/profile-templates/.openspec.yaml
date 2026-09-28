@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-09-28
+goal: Serve versioned read-only video templates from one backend registry and
+  clone them into independent user profiles with provenance, preserving existing
+  assignments and queue snapshots.
