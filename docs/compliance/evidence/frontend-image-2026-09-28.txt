@@ -1,0 +1,12 @@
+Frontend container technical compliance evidence
+image=sha256:b8a13040d31815da28a3343df0156e841113d8ebbd763c07869d1e7544b6b529 platform=linux/amd64 created=2026-09-28T21:21:10.076455967Z
+
+--- shipped npm inventory ---
+packages=90 unresolved=0
+
+--- shipped third-party notice file ---
+
+     2067    107697 /usr/share/nginx/html/licenses/npm/THIRD_PARTY_NOTICES.txt
+
+/usr/share/nginx/html/licenses/npm/inventory.json
+/usr/share/nginx/html/licenses/npm/THIRD_PARTY_NOTICES.txt
