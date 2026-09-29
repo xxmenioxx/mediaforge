@@ -2,7 +2,7 @@
 
 `GO_MODULES.txt` records the complete resolved `go list -m all` graph for
 `backend/go.mod` and `backend/go.sum`. `GO_LICENSES.csv` is the package/license
-report from `github.com/google/go-licenses` v1.6.0 for the Go packages in the
+report from `github.com/google/go-licenses/v2` v2.0.1 for the Go packages in the
 backend binaries. The `go-modules/` tree contains the license texts collected
 from those exact resolved module versions. The root backend Apache-2.0 license
 is also copied to `backend/LICENSE` so the local main module is classified by

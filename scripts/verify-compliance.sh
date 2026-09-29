@@ -56,7 +56,7 @@ cmp -s LICENSE backend/LICENSE || fail "backend module license differs from repo
 if ! diff -q backend/licenses/GO_MODULES.txt <(cd backend && go list -m all) >/dev/null 2>&1; then
   fail "resolved Go module inventory is stale"
 fi
-if ! diff -q backend/licenses/GO_LICENSES.csv <(cd backend && go run github.com/google/go-licenses@v1.6.0 report ./...) >/dev/null 2>&1; then
+if ! diff -q backend/licenses/GO_LICENSES.csv <(cd backend && ../scripts/go-license-scanner.sh report ./...) >/dev/null 2>&1; then
   fail "Go package/license report is stale or cannot be reproduced"
 fi
 grep -Fq ',Unknown' backend/licenses/GO_LICENSES.csv && fail "Go license report contains an Unknown license"
