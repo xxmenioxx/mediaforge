@@ -58,9 +58,11 @@ entire component's licensing from package metadata alone.
   entry lacks license metadata or bundled license text.
 - Release images: the workflow requests BuildKit SBOM and provenance
   attestations and checks those predicates against each exact image digest.
-  Repository API inspection does not expose that evidence for existing GHCR
-  versions; see `docs/compliance/redistribution-audit.md` and the dated API
-  snapshot under `docs/compliance/evidence/`.
+  Current post-cleanup API lookups confirm both formerly hosted GHCR packages
+  return 404. The pre-deletion version inventory remains historical evidence;
+  repository package metadata did not expose old image manifests or embedded
+  SBOM/provenance. See `docs/compliance/redistribution-audit.md` and both dated
+  API snapshots under `docs/compliance/evidence/`.
 
 ## Debian package evidence and limits
 

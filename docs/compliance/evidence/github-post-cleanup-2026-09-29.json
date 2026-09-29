@@ -1,0 +1,52 @@
+{
+  "capture_window_utc": {
+    "started_at": "2026-09-29T05:02:59Z",
+    "package_lookup_responses_at": "2026-09-29T05:03:16Z"
+  },
+  "repository": {
+    "full_name": "xxmenioxx/mediaforge",
+    "private": true,
+    "visibility": "private",
+    "endpoint": "GET /repos/xxmenioxx/mediaforge"
+  },
+  "current_releases": {
+    "count": 0,
+    "endpoint": "GET /repos/xxmenioxx/mediaforge/releases?per_page=100"
+  },
+  "current_git_tag_refs": {
+    "count": 0,
+    "endpoint": "GET /repos/xxmenioxx/mediaforge/git/matching-refs/tags"
+  },
+  "actions_variables": {
+    "count": 0,
+    "names": [],
+    "endpoint": "GET /repos/xxmenioxx/mediaforge/actions/variables"
+  },
+  "current_packages": {
+    "mvforge-backend": {
+      "package_type": "container",
+      "exists": false,
+      "http_status": 404,
+      "message": "Package not found.",
+      "endpoint": "GET /users/xxmenioxx/packages/container/mvforge-backend"
+    },
+    "mvforge-web": {
+      "package_type": "container",
+      "exists": false,
+      "http_status": 404,
+      "message": "Package not found.",
+      "endpoint": "GET /users/xxmenioxx/packages/container/mvforge-web"
+    }
+  },
+  "historical_observed_state": {
+    "snapshot": "github-packages-2026-09-28.json",
+    "captured_at": "2026-09-28T21:50:14Z",
+    "backend_version_records": 452,
+    "web_version_records": 455,
+    "total_version_records": 907,
+    "status": "historical state before both packages were deleted"
+  },
+  "historical_limitations": [
+    "Current absence of GitHub-hosted artifacts does not establish that historical downloads, clones, forks, cached images, previous copies, or prior license grants were retracted or absent."
+  ]
+}
