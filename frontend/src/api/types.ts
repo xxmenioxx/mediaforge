@@ -354,6 +354,14 @@ export type TestEncode = {
   validationReport: Record<string, unknown>;
   keep: boolean;
   expiresAt?: string;
+  reconciliationStatus: string;
+  reconciliationMessage?: string;
+  lastReconciledAt?: string;
+  outputExists: boolean;
+  artifactCount: number;
+  sidecarArtifactCount: number;
+  knownDiskUsageBytes: number;
+  unknownSizeArtifactCount: number;
   errorMessage: string;
   stale: boolean;
   staleReason?: string;
@@ -361,6 +369,65 @@ export type TestEncode = {
   completedAt?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type TestEncodePolicy = {
+  defaultDurationSeconds: number;
+  defaultStartMode: 'beginning' | 'middle' | 'representative';
+  defaultRetention: 'temporary' | 'keep';
+  temporaryRetentionHours: number;
+  failedRetentionHours: number;
+  maxReconcileBatchSize: number;
+  maxCleanupBatchSize: number;
+};
+
+export type TestEncodeInventorySummary = {
+  totalRuns: number;
+  keepRuns: number;
+  totalKnownBytes: number;
+  keepKnownBytes: number;
+  cleanupEligibleRuns: number;
+  cleanupEligibleBytes: number;
+  unknownSizeArtifacts: number;
+};
+
+export type TestEncodeDeletePreview = {
+  testEncodeCount: number;
+  mediaOutputCount: number;
+  otherArtifactCount: number;
+  estimatedBytes: number;
+  keepCount: number;
+};
+
+export type TestEncodeDeleteSelectionResult = {
+  results: Array<{ id: number; deleted: boolean; error?: string }>;
+};
+
+export type TestEncodeReconcileResponse = {
+  processed: number;
+  limit: number;
+  results: Array<{
+    id: number;
+    previousStatus: string;
+    reconciliationStatus: string;
+    message?: string;
+    outputExists: boolean;
+    artifactCount: number;
+    skippedActive?: boolean;
+  }>;
+  orphanedArtifacts: TestEncodeOrphanArtifact[];
+};
+
+export type TestEncodeOrphanArtifact = {
+  id: number;
+  testEncodeId: number;
+  libraryId: number;
+  path: string;
+  type: string;
+  sizeBytes: number;
+  exists: boolean;
+  safe: boolean;
+  message?: string;
 };
 
 export type TestEncodeInput = {

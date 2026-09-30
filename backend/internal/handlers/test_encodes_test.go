@@ -22,7 +22,7 @@ func testEncodeTestDB(t *testing.T, name string, values ...any) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	modelsToMigrate := []any{&models.TestEncode{}, &models.TaskReservation{}, &models.ScanResult{}, &models.Library{}, &models.AppSetting{}}
+	modelsToMigrate := []any{&models.TestEncode{}, &models.TestEncodeArtifact{}, &models.TaskReservation{}, &models.ScanResult{}, &models.AssetRecord{}, &models.Library{}, &models.AppSetting{}}
 	modelsToMigrate = append(modelsToMigrate, values...)
 	if err := db.AutoMigrate(modelsToMigrate...); err != nil {
 		t.Fatal(err)
@@ -945,6 +945,19 @@ func TestRemoveTestEncodeFilesStaysInsideLibraryAndIncludesSidecars(t *testing.T
 			t.Fatalf("expected %s to be removed, err=%v", path, err)
 		}
 	}
+	if err := (AssetHandler{db: db}).removeTestEncodeFiles(test); err != nil {
+		t.Fatalf("repeated cleanup should be idempotent: %v", err)
+	}
+	if err := os.WriteFile(output, []byte("unrelated replacement"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (AssetHandler{db: db}).removeTestEncodeFiles(test); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(output); err != nil {
+		t.Fatalf("cleanup removed a replacement file after ownership was retired: %v", err)
+	}
+	_ = os.Remove(output)
 	outside := filepath.Join(t.TempDir(), "outside.mkv")
 	if err := os.WriteFile(outside, []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)

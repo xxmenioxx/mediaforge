@@ -13,6 +13,7 @@ import (
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func Open(path string) (*gorm.DB, error) {
@@ -59,6 +60,7 @@ func Migrate(db *gorm.DB) error {
 		&models.DirectPublication{},
 		&models.AssetMaintenanceOperation{},
 		&models.TestEncode{},
+		&models.TestEncodeArtifact{},
 		&models.TaskReservation{},
 		&models.AppSetting{},
 		&models.ProtectedCredential{},
@@ -73,6 +75,12 @@ func Migrate(db *gorm.DB) error {
 		&models.AssetPublishedOutbox{},
 		&models.JellyfinIntegrationOutcome{},
 	); err != nil {
+		return err
+	}
+	if err := backfillTestEncodeArtifactOwnership(db); err != nil {
+		return err
+	}
+	if err := backfillTestEncodePolicy(db); err != nil {
 		return err
 	}
 	if err := migrateSeededProfileProvenance(db); err != nil {
@@ -122,6 +130,122 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	return backfillPendingExecutionPlans(db)
+}
+
+func backfillTestEncodeArtifactOwnership(db *gorm.DB) error {
+	if db == nil || !db.Migrator().HasTable(&models.TestEncode{}) || !db.Migrator().HasTable(&models.TestEncodeArtifact{}) {
+		return nil
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		var tests []models.TestEncode
+		if err := tx.Find(&tests).Error; err != nil {
+			return fmt.Errorf("load Test Encodes for artifact ownership backfill: %w", err)
+		}
+		for _, test := range tests {
+			createdAt := test.CreatedAt
+			if createdAt.IsZero() {
+				createdAt = time.Now().UTC()
+			}
+			artifacts := []models.TestEncodeArtifact{}
+			seen := map[string]struct{}{}
+			add := func(path, kind string, expected bool, sizeBytes int64) {
+				path = filepath.Clean(strings.TrimSpace(path))
+				if path == "." || path == "" {
+					return
+				}
+				if _, exists := seen[path]; exists {
+					return
+				}
+				seen[path] = struct{}{}
+				artifacts = append(artifacts, models.TestEncodeArtifact{
+					TestEncodeID: test.ID, LibraryID: test.LibraryID, Path: path, Type: kind,
+					Expected: expected, State: "owned", SizeBytes: max(int64(0), sizeBytes), CreatedAt: createdAt, UpdatedAt: createdAt,
+				})
+			}
+			add(test.OutputPath, models.TestEncodeArtifactMediaOutput, true, test.OutputSizeBytes)
+			add(test.TemporaryPath, models.TestEncodeArtifactTemporaryMedia, false, 0)
+			for _, raw := range test.SubtitleArtifacts {
+				var item map[string]any
+				switch value := raw.(type) {
+				case map[string]any:
+					item = value
+				case models.JSONMap:
+					item = value
+				}
+				if item == nil {
+					continue
+				}
+				path, _ := item["stagedPath"].(string)
+				add(path, models.TestEncodeArtifactSubtitle, true, 0)
+			}
+			for _, artifact := range artifacts {
+				if err := tx.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "test_encode_id"}, {Name: "path"}},
+					DoNothing: true,
+				}).Create(&artifact).Error; err != nil {
+					return fmt.Errorf("backfill Test Encode %d artifact %q: %w", test.ID, artifact.Path, err)
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func backfillTestEncodePolicy(db *gorm.DB) error {
+	if db == nil || !db.Migrator().HasTable(&models.AppSetting{}) {
+		return nil
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		var existing models.AppSetting
+		findErr := tx.First(&existing, "key = ?", "testEncodePolicy").Error
+		if findErr != nil && findErr != gorm.ErrRecordNotFound {
+			return findErr
+		}
+		legacyRetentionHours := 0
+		if existing.Value != nil {
+			legacyRetentionHours = intFromJSON(existing.Value["temporaryRetentionHours"])
+			if legacyRetentionHours <= 0 {
+				legacyRetentionHours = intFromJSON(existing.Value["retentionHours"])
+			}
+		}
+		if legacyRetentionHours <= 0 && tx.Migrator().HasTable(&models.AppSetting{}) {
+			var housekeeping models.AppSetting
+			if err := tx.First(&housekeeping, "key = ?", "housekeeping").Error; err == nil {
+				legacyRetentionHours = intFromJSON(housekeeping.Value["testEncodeRetentionHours"])
+			} else if err != gorm.ErrRecordNotFound {
+				return err
+			}
+		}
+		if legacyRetentionHours <= 0 {
+			legacyRetentionHours = models.DefaultTestEncodePolicy().TemporaryRetentionHours
+		}
+		legacyRetentionHours = min(24*365, max(1, legacyRetentionHours))
+
+		value := models.JSONMap{}
+		for key, item := range existing.Value {
+			value[key] = item
+		}
+		defaults := models.DefaultTestEncodePolicy().JSONMap()
+		for key, item := range defaults {
+			if _, exists := value[key]; !exists {
+				value[key] = item
+			}
+		}
+		if intFromJSON(existing.Value["temporaryRetentionHours"]) <= 0 {
+			value["temporaryRetentionHours"] = legacyRetentionHours
+		}
+		setting := models.AppSetting{Key: "testEncodePolicy", Value: value, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		if findErr == nil {
+			if err := tx.Model(&existing).Updates(map[string]any{"value": value, "updated_at": setting.UpdatedAt}).Error; err != nil {
+				return fmt.Errorf("backfill Test Encode Settings policy: %w", err)
+			}
+			return nil
+		}
+		if err := tx.Create(&setting).Error; err != nil {
+			return fmt.Errorf("create Test Encode Settings policy: %w", err)
+		}
+		return nil
+	})
 }
 
 func migrateLegacyJellyfinCredential(db *gorm.DB) error {

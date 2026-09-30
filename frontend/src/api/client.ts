@@ -88,6 +88,11 @@ import type {
   TrackProfileResolutionPreview,
   TestEncode,
   TestEncodeInput,
+  TestEncodeInventorySummary,
+  TestEncodeDeletePreview,
+  TestEncodeDeleteSelectionResult,
+  TestEncodeReconcileResponse,
+  TestEncodeOrphanArtifact,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -512,11 +517,24 @@ export const api = {
       body: JSON.stringify(conversion),
     }),
   testEncodes: (sourcePath?: string) => request<TestEncode[]>(`/api/test-encodes${sourcePath ? `?sourcePath=${encodeURIComponent(sourcePath)}` : ''}`),
+  testEncodeInventory: (filters: Record<string, string | number | undefined> = {}) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && String(value).trim() !== '') query.set(key, String(value));
+    }
+    return request<TestEncode[]>(`/api/test-encodes${query.size ? `?${query.toString()}` : ''}`);
+  },
+  testEncodeInventorySummary: () => request<TestEncodeInventorySummary>('/api/test-encodes/summary'),
+  reconcileTestEncodes: (ids: number[] = []) => request<TestEncodeReconcileResponse>('/api/test-encodes/reconcile', { method: 'POST', body: JSON.stringify({ ids }) }),
+  orphanedTestEncodeArtifacts: () => request<{ artifacts: TestEncodeOrphanArtifact[]; limit: number }>('/api/test-encodes/orphans'),
+  deleteOrphanedTestEncodeArtifact: (artifactId: number) => request<{ id: number; deleted: boolean }>(`/api/test-encodes/orphans/${artifactId}`, { method: 'DELETE' }),
+  previewTestEncodeDelete: (ids: number[]) => request<TestEncodeDeletePreview>('/api/test-encodes/delete-preview', { method: 'POST', body: JSON.stringify({ ids }) }),
+  deleteTestEncodes: (ids: number[], confirmKeep = false) => request<TestEncodeDeleteSelectionResult>('/api/test-encodes/delete', { method: 'POST', body: JSON.stringify({ ids, confirmKeep }) }),
   testEncode: (id: number) => request<TestEncode>(`/api/test-encodes/${id}`),
   createTestEncode: (input: TestEncodeInput) => request<TestEncode>('/api/test-encodes', { method: 'POST', body: JSON.stringify(input) }),
   cancelTestEncode: (id: number) => request<{ id: number; status: string }>(`/api/test-encodes/${id}/cancel`, { method: 'POST', body: JSON.stringify({}) }),
   keepTestEncode: (id: number, keep: boolean) => request<TestEncode>(`/api/test-encodes/${id}/keep`, { method: 'POST', body: JSON.stringify({ keep }) }),
-  deleteTestEncode: (id: number) => request<{ id: number; status: string }>(`/api/test-encodes/${id}`, { method: 'DELETE', body: JSON.stringify({}) }),
+  deleteTestEncode: (id: number, confirmKeep = false) => request<{ id: number; status: string }>(`/api/test-encodes/${id}${confirmKeep ? '?confirmKeep=true' : ''}`, { method: 'DELETE' }),
   evaluateAdvisor: (advisorRequest: AdvisorRequest) =>
     request<AdvisorResponse>('/api/advisor/evaluate', {
       method: 'POST',
