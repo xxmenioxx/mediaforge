@@ -827,6 +827,8 @@ export type AdvisorResponse = {
   };
   scan: ScanResult;
   profile: Profile;
+  sourceBitrateEvidence?: SourceBitrateEvidence;
+  bpppfAssessment?: BPPPFAssessment;
 };
 
 export type ProfileCandidate = {
@@ -929,6 +931,8 @@ export type ProfileSuggestion = {
   matchType: 'existing' | 'create' | 'assigned_asset' | 'assigned_path';
   summary: string;
   scan: ScanResult;
+  sourceBitrateEvidence?: SourceBitrateEvidence;
+  bpppfAssessment?: BPPPFAssessment;
   suggestedProfile?: Profile;
   candidates: ProfileCandidate[];
   proposedProfile: ProfileInput;
@@ -1622,6 +1626,10 @@ export type QueueBatchPreflightPlan = {
   audioProfileSnapshot: Record<string, unknown>;
   trackProfileSnapshot: Record<string, unknown>;
   constraints: Record<string, unknown>;
+  qualityEvidence?: {
+    sourceBitrateEvidence?: SourceBitrateEvidence;
+    bpppfAssessment?: BPPPFAssessment;
+  };
   selectedEncoder: string;
   runtimeSnapshotId: number;
   runtimeProfile: string;
@@ -1858,6 +1866,7 @@ export type ScanResult = {
   sizeBytes: number;
   duration: number;
   bitrate: number;
+  sourceBitrateEvidence?: SourceBitrateEvidence;
   videoCodec: string;
   width: number;
   height: number;
@@ -2740,12 +2749,59 @@ export type EncoderRecommendation = {
   bFrameEfficiencyMultiplier?: number;
   bFrameDowngradeReason?: string;
   baseTargetBitrate?: number;
+  bpppfAssessment?: BPPPFAssessment;
+};
+
+export type SourceBitrateSampleWindow = {
+  startSeconds: number;
+  durationSeconds: number;
+  bytes?: number;
+  status: string;
+  reason?: string;
+};
+
+export type SourceBitrateEvidence = {
+  schemaVersion: number;
+  samplingPolicyVersion: number;
+  bitrate: number;
+  minimumBitrate?: number;
+  maximumBitrate?: number;
+  method: 'stream_metadata' | 'matroska_statistics' | 'packet_sampling' | 'container_bitrate' | 'file_size_duration' | 'unavailable' | string;
+  confidence: 'high' | 'medium' | 'low' | 'unavailable' | string;
+  detail?: string;
+  streamIndex?: number;
+  durationSeconds?: number;
+  requestedWindows: number;
+  successfulWindows: number;
+  sampledWindows: SourceBitrateSampleWindow[];
+};
+
+export type BPPPFAssessment = {
+  policyVersion: number;
+  encoderModelVersion: number;
+  status: 'normal' | 'warning' | 'high-risk' | 'unavailable' | string;
+  bpppf?: number;
+  referenceBpppf?: number;
+  referenceBitrate?: number;
+  targetBitrate?: number;
+  bitrateBasis?: string;
+  outputWidth?: number;
+  outputHeight?: number;
+  effectiveFps?: number;
+  codecFamily?: string;
+  encoder?: string;
+  encoderClass?: string;
+  dynamicRange?: 'sdr' | 'hdr' | string;
+  optimizationIntent?: string;
+  explanation: string;
+  heuristicOnly: boolean;
 };
 
 export type QualityRecommendationResponse = {
   requestedProfile: Profile;
   effectiveProfile: Profile;
   recommendation: EncoderRecommendation;
+  sourceBitrateEvidence?: SourceBitrateEvidence;
   capabilitySource: 'active_runtime_state' | 'active_runtime_snapshot' | 'live_backend_probe';
   ffmpegVideoArguments: string[];
   estimatedOutputMinBytes: number;

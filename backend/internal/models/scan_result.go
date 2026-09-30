@@ -10,6 +10,7 @@ type ScanResult struct {
 	SizeBytes                    int64     `json:"sizeBytes"`
 	Duration                     float64   `json:"duration"`
 	Bitrate                      int64     `json:"bitrate"`
+	SourceBitrateEvidence        JSONMap   `json:"sourceBitrateEvidence,omitempty" gorm:"type:json"`
 	VideoCodec                   string    `json:"videoCodec"`
 	Width                        int       `json:"width"`
 	Height                       int       `json:"height"`

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/quality"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -48,15 +49,17 @@ type AdvisorFinding struct {
 }
 
 type ProfileSuggestionResponse struct {
-	MatchType        string                        `json:"matchType"`
-	Summary          string                        `json:"summary"`
-	Scan             models.ScanResult             `json:"scan"`
-	SuggestedProfile *models.Profile               `json:"suggestedProfile,omitempty"`
-	Candidates       []ProfileCandidate            `json:"candidates"`
-	ProposedProfile  ProfileInput                  `json:"proposedProfile"`
-	Insights         AnalysisInsights              `json:"insights"`
-	Findings         []AdvisorFinding              `json:"findings"`
-	RestorationPlan  RestorationRecommendationPlan `json:"restorationPlan"`
+	MatchType             string                         `json:"matchType"`
+	Summary               string                         `json:"summary"`
+	Scan                  models.ScanResult              `json:"scan"`
+	SourceBitrateEvidence *quality.SourceBitrateEvidence `json:"sourceBitrateEvidence,omitempty"`
+	BPPPFAssessment       *quality.BPPPFAssessment       `json:"bpppfAssessment,omitempty"`
+	SuggestedProfile      *models.Profile                `json:"suggestedProfile,omitempty"`
+	Candidates            []ProfileCandidate             `json:"candidates"`
+	ProposedProfile       ProfileInput                   `json:"proposedProfile"`
+	Insights              AnalysisInsights               `json:"insights"`
+	Findings              []AdvisorFinding               `json:"findings"`
+	RestorationPlan       RestorationRecommendationPlan  `json:"restorationPlan"`
 }
 
 type MVForgePreferences struct {
@@ -76,14 +79,16 @@ type AnalysisInsights struct {
 }
 
 type AdvisorResponse struct {
-	Recommendation string            `json:"recommendation"`
-	Score          int               `json:"score"`
-	Summary        string            `json:"summary"`
-	Reasons        []string          `json:"reasons"`
-	Warnings       []string          `json:"warnings"`
-	Estimated      AdvisorEstimation `json:"estimated"`
-	Scan           models.ScanResult `json:"scan"`
-	Profile        models.Profile    `json:"profile"`
+	Recommendation        string                         `json:"recommendation"`
+	Score                 int                            `json:"score"`
+	Summary               string                         `json:"summary"`
+	Reasons               []string                       `json:"reasons"`
+	Warnings              []string                       `json:"warnings"`
+	Estimated             AdvisorEstimation              `json:"estimated"`
+	Scan                  models.ScanResult              `json:"scan"`
+	Profile               models.Profile                 `json:"profile"`
+	SourceBitrateEvidence *quality.SourceBitrateEvidence `json:"sourceBitrateEvidence,omitempty"`
+	BPPPFAssessment       *quality.BPPPFAssessment       `json:"bpppfAssessment,omitempty"`
 }
 
 type AdvisorEstimation struct {
@@ -178,6 +183,17 @@ func (h AdvisorHandler) Suggest(c *gin.Context) {
 		targetCRF = response.SuggestedProfile.QualityValue
 	}
 	response.Insights = analysisInsights(scan, targetCRF)
+	assessmentProfile := profileInputAsModel(proposal)
+	if response.SuggestedProfile != nil {
+		assessmentProfile = *response.SuggestedProfile
+	}
+	sourceBitrateEvidence := sourceBitrateEvidenceForScan(scan)
+	response.SourceBitrateEvidence = &sourceBitrateEvidence
+	assessment := advisorBPPPFAssessment(scan, assessmentProfile)
+	response.BPPPFAssessment = &assessment
+	if assessment.Status == quality.BPPPFStatusWarning || assessment.Status == quality.BPPPFStatusHighRisk {
+		response.Insights.Recommendations = append(response.Insights.Recommendations, assessment.Explanation)
+	}
 	response.Findings = advisorFindings(scan, proposal, preferences, hardwareEncoder, hardwareWorker)
 	applyLocked, lockErr := (QueueHandler{db: h.db}).assetHasOpenJob(request.MediaPath, 0)
 	if lockErr != nil {
@@ -382,6 +398,32 @@ func proposedProfileForScanWithPreferences(scan models.ScanResult, preferences M
 		PreserveSubtitles: scan.SubtitleTracks > 0, PreserveChapters: scan.Chapters > 0,
 		WorkerConfig: models.JSONMap{"encoder": "ffmpeg", "videoEncoder": encoder, "preferredEncoder": preferredMode, "useHardwareIfAvailable": useHardware, "hardwareQualityPreset": qualityPreset, "hardwareQualityPresetScale": 2, "videoPreset": "medium", "pixFmt": "yuv420p10le", "deinterlaceMode": "auto", "preserveOriginalAudio": true, "addAacStereoTrack": false, "aacStereoBitrateKbps": 192},
 	}
+}
+
+func profileInputAsModel(input ProfileInput) models.Profile {
+	return models.Profile{
+		VideoCodec: input.VideoCodec, CodecFamily: input.CodecFamily, EncoderPolicy: input.EncoderPolicy,
+		PreferredEncoder: input.PreferredEncoder, AllowedEncoders: input.AllowedEncoders, FallbackPolicy: input.FallbackPolicy,
+		BitDepth: input.BitDepth, PixelFormat: input.PixelFormat, QualityStrategy: input.QualityStrategy,
+		OptimizationIntent: input.OptimizationIntent, QualityMode: input.QualityMode, QualityValue: input.QualityValue,
+		PreserveHDR: input.PreserveHDR, PreserveSubtitles: input.PreserveSubtitles, PreserveChapters: input.PreserveChapters,
+		WorkerConfig: input.WorkerConfig,
+	}
+}
+
+func advisorBPPPFAssessment(scan models.ScanResult, profile models.Profile) quality.BPPPFAssessment {
+	streams := mediaStreamInventoryFromScan(scan)
+	if len(streams.Video) == 0 {
+		return quality.EvaluateBPPPF(quality.BPPPFInput{})
+	}
+	streams.Video[0].Bitrate = sourceBitrateEvidenceForScan(scan).Bitrate
+	intent := qualityIntentForMedia(profile, scan.Path, streams)
+	encoder := strings.ToLower(strings.TrimSpace(workerStringValue(profile.WorkerConfig["videoEncoder"])))
+	if encoder == "" || encoder == "auto" {
+		encoder = strings.ToLower(resolvedVideoEncoder(profile))
+	}
+	recommendation := genericEncoderRecommendation(profile, intent, encoder)
+	return bpppfAssessmentForRecommendation(profile, encoder, intent, recommendation, streams)
 }
 
 func profileFit(profile models.Profile, proposal ProfileInput, scan models.ScanResult) (int, []string) {
@@ -632,6 +674,13 @@ func (h AdvisorHandler) scanForPath(path string) (models.ScanResult, error) {
 	path = resolveMediaPath(h.db, path)
 	var existing models.ScanResult
 	if err := h.db.Where("path = ?", path).Order("created_at desc").First(&existing).Error; err == nil {
+		if _, current := cachedSourceBitrateEvidence(h.db, path); !current {
+			if info, statErr := os.Stat(path); statErr == nil && !info.IsDir() {
+				if refreshed, _, refreshErr := NewScannerHandler(h.db).scanResolvedFile(path, info, ScanRequest{}, nil); refreshErr == nil {
+					existing = refreshed
+				}
+			}
+		}
 		if ensureFrameStructureRecommendation(&existing) {
 			_ = h.db.Model(&existing).Update("frame_structure_recommendation", existing.FrameStructureRecommendation).Error
 		}
@@ -686,9 +735,15 @@ func evaluateConversion(scan models.ScanResult, profile models.Profile, previous
 		reasons = append(reasons, fmt.Sprintf("The profile would convert video from %s to %s.", fallback(sourceCodec, "unknown"), profile.VideoCodec))
 	}
 
-	if scan.Bitrate > 8_000_000 && targetCodec != "copy" {
+	sourceBitrate := sourceBitrateEvidenceForScan(scan)
+	if sourceBitrate.Bitrate > 8_000_000 && targetCodec != "copy" {
 		score += 15
-		reasons = append(reasons, "The source bitrate is high enough that conversion may reduce storage usage.")
+		reasons = append(reasons, fmt.Sprintf(
+			"The source video bitrate is high enough that conversion may reduce storage usage (%.1f Mbps, %s, %s confidence).",
+			float64(sourceBitrate.Bitrate)/1_000_000,
+			strings.ReplaceAll(sourceBitrate.Method, "_", " "),
+			sourceBitrate.Confidence,
+		))
 	}
 
 	if scan.Width >= 3840 || scan.Height >= 2160 {
@@ -729,6 +784,11 @@ func evaluateConversion(scan models.ScanResult, profile models.Profile, previous
 
 	score = clamp(score, 0, 100)
 	recommendation := recommendationForScore(score)
+	assessment := advisorBPPPFAssessment(scan, profile)
+	if assessment.Status == quality.BPPPFStatusWarning || assessment.Status == quality.BPPPFStatusHighRisk {
+		warnings = append(warnings, assessment.Explanation)
+	}
+	sourceBitrateEvidence := sourceBitrateEvidenceForScan(scan)
 
 	return AdvisorResponse{
 		Recommendation: recommendation,
@@ -741,8 +801,9 @@ func evaluateConversion(scan models.ScanResult, profile models.Profile, previous
 			TargetCodec:      profile.VideoCodec,
 			TargetContainer:  profile.Container,
 		},
-		Scan:    scan,
-		Profile: profile,
+		Scan: scan, Profile: profile,
+		SourceBitrateEvidence: &sourceBitrateEvidence,
+		BPPPFAssessment:       &assessment,
 	}
 }
 

@@ -266,7 +266,7 @@ func (h AssetHandler) prepareCompatiblePreviewDescriptor(input compatiblePreview
 		profile := normalizeHardwareQualityPreset(*previewProfile)
 		if streams, probeErr := probeMediaStreams(path); probeErr == nil && len(streams.Video) > 0 {
 			if streams.Video[0].Bitrate <= 0 {
-				streams.Video[0].Bitrate = estimatedVideoBitrate(streams)
+				streams.Video[0].Bitrate = sourceBitrateEvidenceForInventory(h.db, path, streams).Bitrate
 			}
 			interlace := h.previewInterlaceAnalysis(path, streams)
 			cadence, cadenceRecommendation := h.previewCadenceResolution(path)

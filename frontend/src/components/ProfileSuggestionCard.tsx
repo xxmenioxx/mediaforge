@@ -4,6 +4,7 @@ import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api/client';
+import { SourceBitrateQualityEvidence } from './SourceBitrateQualityEvidence';
 import type { AdvisorFinding, Profile, ProfileSuggestion } from '../api/types';
 
 export function ProfileSuggestionCard({ suggestion, onSelect, onApplyRecommendations, onReviewInLab }: { suggestion: ProfileSuggestion; onSelect?: (profile: Profile) => void; onApplyRecommendations?: (findings: AdvisorFinding[]) => Promise<string>; onReviewInLab?: () => void }) {
@@ -79,6 +80,7 @@ export function ProfileSuggestionCard({ suggestion, onSelect, onApplyRecommendat
               </>
             ) : null}
           </Stack>
+          <SourceBitrateQualityEvidence source={suggestion.sourceBitrateEvidence ?? suggestion.scan.sourceBitrateEvidence} assessment={suggestion.bpppfAssessment} />
           {applyFindings.isSuccess ? <Alert severity="success">{applyFindings.data || 'Selected recommendations applied to this asset.'}</Alert> : null}
           {applyFindings.isError ? <Alert severity="warning">Could not apply recommendation: {applyFindings.error instanceof Error ? applyFindings.error.message : 'unknown error'}</Alert> : null}
           {existing ? (
