@@ -1,4 +1,4 @@
-import type { AssetGroup, Library } from '../api/types';
+import type { AssetGroup, AssetSourceGroup, Library } from '../api/types';
 
 export type LibraryTreeSelection = {
   libraryId: number | null;
@@ -12,6 +12,38 @@ export type LibraryTreeNode = {
   path: string;
   children: LibraryTreeNode[];
 };
+
+export type RawHierarchySelection =
+  | { kind: 'all' }
+  | { kind: 'source'; sourceGroupId: number }
+  | { kind: 'logical'; sourceGroupId: number; logicalGroupId: string }
+  | { kind: 'path'; sourceGroupId: number; logicalGroupId: string; pathId: string };
+
+export type RawHierarchyNode = {
+  id: string;
+  label: string;
+  selection: Exclude<RawHierarchySelection, { kind: 'all' }>;
+  children: RawHierarchyNode[];
+};
+
+export function buildRawHierarchy(sourceGroups: AssetSourceGroup[]): RawHierarchyNode[] {
+  return sourceGroups.map((sourceGroup) => ({
+    id: `source-${sourceGroup.id}`,
+    label: sourceGroup.name,
+    selection: { kind: 'source', sourceGroupId: sourceGroup.id },
+    children: sourceGroup.logicalGroups.map((logicalGroup) => ({
+      id: `source-${sourceGroup.id}-logical-${logicalGroup.id}`,
+      label: logicalGroup.name,
+      selection: { kind: 'logical', sourceGroupId: sourceGroup.id, logicalGroupId: logicalGroup.id },
+      children: logicalGroup.assetPaths.map((path) => ({
+        id: `source-${sourceGroup.id}-logical-${logicalGroup.id}-path-${path.id}`,
+        label: path.isLogicalGroupRoot ? 'Root' : path.displayPath || path.name,
+        selection: { kind: 'path', sourceGroupId: sourceGroup.id, logicalGroupId: logicalGroup.id, pathId: path.id },
+        children: [],
+      })),
+    })),
+  }));
+}
 
 export function buildLibraryTree(groups: AssetGroup[], libraries: Library[]) {
   const roots = new Map<number, LibraryTreeNode>();

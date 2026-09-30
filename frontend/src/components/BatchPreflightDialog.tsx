@@ -133,7 +133,10 @@ export function BatchPreflightDialog({
   const [editBaseline, setEditBaseline] = useState<{ batchName: string; jobs: QueueJobInput[] } | null>(null);
 
   useEffect(() => {
-    if (!initialCandidate) return;
+    if (!initialCandidate) {
+      setCandidate(null);
+      return;
+    }
     setCandidate(initialCandidate);
     setSelected(initialCandidate.assets.filter((asset) => asset.status === 'ready').map((asset) => asset.id));
     setBatchName(initialCandidate.batchName);
