@@ -25,10 +25,12 @@ import PublishIcon from '@mui/icons-material/Publish';
 import SettingsIcon from '@mui/icons-material/Settings';
 import ScienceIcon from '@mui/icons-material/Science';
 import AltRouteIcon from '@mui/icons-material/AltRoute';
+import AssessmentOutlinedIcon from '@mui/icons-material/AssessmentOutlined';
+import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import MenuIcon from '@mui/icons-material/Menu';
 import CloseIcon from '@mui/icons-material/Close';
 import { useState } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import packageJson from '../../package.json';
 
 type NavItem = {
@@ -48,6 +50,7 @@ const navSections: NavSection[] = [
     items: [
       { label: 'Dashboard', path: '/', icon: <DashboardIcon /> },
       { label: 'Assets', path: '/assets', icon: <VideoLibraryIcon /> },
+      { label: 'Reports', path: '/assets?location=library&evidence=reports', icon: <AssessmentOutlinedIcon /> },
       { label: 'Profile Lab', path: '/profile-lab', icon: <ScienceIcon /> },
     ],
   },
@@ -73,6 +76,7 @@ const navSections: NavSection[] = [
     label: 'System',
     items: [
       { label: 'History', path: '/history', icon: <HistoryIcon /> },
+      { label: 'Logs', path: '/logs', icon: <ArticleOutlinedIcon /> },
       { label: 'Settings', path: '/settings', icon: <SettingsIcon /> },
     ],
   },
@@ -81,9 +85,20 @@ const navSections: NavSection[] = [
 const expandedWidth = 248;
 const collapsedWidth = 76;
 
+function isNavigationItemActive(item: NavItem, pathname: string, evidenceView: boolean): boolean {
+  if (item.label === 'Assets') return pathname === '/assets' && !evidenceView;
+  if (item.label === 'Reports') return pathname === '/assets' && evidenceView;
+
+  const itemPath = item.path.split('?')[0];
+  if (itemPath === '/') return pathname === '/';
+  return pathname === itemPath || pathname.startsWith(`${itemPath}/`);
+}
+
 export function AppLayout() {
   const [isHovering, setIsHovering] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const location = useLocation();
+  const evidenceView = new URLSearchParams(location.search).get('evidence') === 'reports';
   const isExpanded = isHovering;
   const drawerWidth = isExpanded ? expandedWidth : collapsedWidth;
 
@@ -136,6 +151,7 @@ export function AppLayout() {
                     component={NavLink}
                     to={item.path}
                     end={item.path === '/'}
+                    className={isNavigationItemActive(item, location.pathname, evidenceView) ? 'active' : ''}
                     onClick={() => setMobileOpen(false)}
                     sx={{ borderRadius: 1, mb: 0.25, minHeight: 44, color: 'text.secondary', '&.active': { bgcolor: 'rgba(79,179,255,0.14)', color: 'primary.main' } }}
                   >
@@ -209,6 +225,7 @@ export function AppLayout() {
                       component={NavLink}
                       to={item.path}
                       end={item.path === '/'}
+                      className={isNavigationItemActive(item, location.pathname, evidenceView) ? 'active' : ''}
                       sx={{
                         borderRadius: 1,
                         mb: 0.35,
