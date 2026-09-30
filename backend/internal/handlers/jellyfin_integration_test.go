@@ -619,8 +619,8 @@ func TestTestEncodePartialCleanupRequestsReconciliationWithoutDeletingRecord(t *
 	if response.Code != http.StatusConflict {
 		t.Fatalf("partial cleanup status=%d body=%s", response.Code, response.Body.String())
 	}
-	if _, err := os.Stat(output); !os.IsNotExist(err) {
-		t.Fatalf("first Library artifact was not removed, stat err=%v", err)
+	if _, err := os.Stat(output); err != nil {
+		t.Fatalf("preflight failure removed or changed an owned artifact, stat err=%v", err)
 	}
 	var persisted models.TestEncode
 	if err := db.First(&persisted, testEncode.ID).Error; err != nil {
@@ -629,12 +629,12 @@ func TestTestEncodePartialCleanupRequestsReconciliationWithoutDeletingRecord(t *
 	if persisted.Status != testEncodeReady || persisted.DeletedAt != nil {
 		t.Fatalf("partial cleanup changed Test Encode lifecycle: status=%q deletedAt=%v", persisted.Status, persisted.DeletedAt)
 	}
-	var outcome models.JellyfinIntegrationOutcome
-	if err := db.First(&outcome, "source_key = ?", testEncodeJellyfinSourceKey(jellyfinReasonTestRemoved, testEncode.ID)).Error; err != nil {
-		t.Fatalf("partial cleanup did not record separate Jellyfin reconciliation: %v", err)
+	var outcomeCount int64
+	if err := db.Model(&models.JellyfinIntegrationOutcome{}).Where("source_key = ?", testEncodeJellyfinSourceKey(jellyfinReasonTestRemoved, testEncode.ID)).Count(&outcomeCount).Error; err != nil {
+		t.Fatal(err)
 	}
-	if outcome.Reason != jellyfinReasonTestRemoved || outcome.Status != jellyfinStatusPending || outcome.LibraryID != testEncode.LibraryID {
-		t.Fatalf("partial cleanup outcome=%#v", outcome)
+	if outcomeCount != 0 {
+		t.Fatalf("preflight rejection unexpectedly requested Jellyfin reconciliation")
 	}
 }
 

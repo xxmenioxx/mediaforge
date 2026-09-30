@@ -152,12 +152,26 @@ func RunHousekeeping(db *gorm.DB, dryRun bool) (HousekeepingReport, error) {
 		report.RecoveredBytes += candidate.SizeBytes
 	}
 	if db.Migrator().HasTable(&models.TestEncode{}) {
+		testEncodePolicy := testEncodePolicyFromSettings(db)
 		var tests []models.TestEncode
-		if err := db.Where("deleted_at IS NULL AND keep = ? AND expires_at IS NOT NULL AND expires_at <= ? AND status NOT IN ?", false, report.RanAt, []string{testEncodeWaiting, testEncodeRunning}).Find(&tests).Error; err != nil {
+		query := db.Where("deleted_at IS NULL AND keep = ? AND expires_at IS NOT NULL AND expires_at <= ? AND status NOT IN ?",
+			false, report.RanAt, []string{testEncodeWaiting, testEncodeRunning, testEncodeDeleted, "expired"})
+		if activeIDs := testEncodeActiveOperationIDs(); len(activeIDs) > 0 {
+			query = query.Where("id NOT IN ?", activeIDs)
+		}
+		if err := query.Order("expires_at ASC").Order("id ASC").Limit(testEncodePolicy.MaxCleanupBatchSize).Find(&tests).Error; err != nil {
 			report.Errors = append(report.Errors, err.Error())
 		} else {
 			for _, test := range tests {
-				candidate := HousekeepingCandidate{Path: test.OutputPath, TestEncodeID: test.ID, Reason: "Test Encode retention expired", ModifiedAt: test.UpdatedAt.UTC().Format(time.RFC3339), SizeBytes: test.OutputSizeBytes}
+				if testEncodeOperationActive(test.ID) {
+					continue
+				}
+				diskUsage, usageErr := (AssetHandler{db: db}).testEncodeOwnedArtifactDiskUsage(test)
+				if usageErr != nil {
+					report.Errors = append(report.Errors, fmt.Sprintf("test encode %d: %v", test.ID, usageErr))
+					continue
+				}
+				candidate := HousekeepingCandidate{Path: test.OutputPath, TestEncodeID: test.ID, Reason: "Test Encode retention expired", ModifiedAt: test.UpdatedAt.UTC().Format(time.RFC3339), SizeBytes: diskUsage}
 				report.Candidates = append(report.Candidates, candidate)
 				if dryRun {
 					continue
@@ -170,11 +184,14 @@ func RunHousekeeping(db *gorm.DB, dryRun bool) (HousekeepingReport, error) {
 					})
 				}
 				if cleanupErr != nil {
+					_ = db.Model(&test).Updates(map[string]any{
+						"reconciliation_status": "cleanup_failed", "reconciliation_message": cleanupErr.Error(), "last_reconciled_at": report.RanAt,
+					}).Error
 					report.Errors = append(report.Errors, fmt.Sprintf("test encode %d: %v", test.ID, cleanupErr))
 					continue
 				}
 				now := report.RanAt
-				_ = db.Model(&test).Updates(map[string]any{"status": "expired", "phase": "expired", "deleted_at": &now, "output_path": "", "temporary_path": "", "updated_at": now}).Error
+				_ = db.Model(&test).Updates(map[string]any{"status": "expired", "phase": "expired", "deleted_at": &now, "output_path": "", "temporary_path": "", "subtitle_artifacts": models.JSONList{}, "updated_at": now}).Error
 				report.RemovedPaths = append(report.RemovedPaths, candidate.Path)
 				report.RecoveredBytes += candidate.SizeBytes
 			}

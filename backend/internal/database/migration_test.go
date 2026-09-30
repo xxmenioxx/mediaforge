@@ -433,13 +433,114 @@ func TestMigrateAddsTestEncodeLifecycleTables(t *testing.T) {
 	if err := Migrate(db); err != nil {
 		t.Fatal(err)
 	}
-	if !db.Migrator().HasTable(&models.TestEncode{}) || !db.Migrator().HasTable(&models.TaskReservation{}) {
+	if !db.Migrator().HasTable(&models.TestEncode{}) || !db.Migrator().HasTable(&models.TestEncodeArtifact{}) || !db.Migrator().HasTable(&models.TaskReservation{}) {
 		t.Fatal("Test Encode lifecycle tables were not migrated")
 	}
-	for _, column := range []string{"requested_configuration", "effective_configuration", "configuration_hash", "ffmpeg_command", "temporary_path", "expires_at"} {
+	for _, column := range []string{"requested_configuration", "effective_configuration", "configuration_hash", "ffmpeg_command", "temporary_path", "expires_at", "reconciliation_status", "reconciliation_message", "last_reconciled_at"} {
 		if !db.Migrator().HasColumn(&models.TestEncode{}, column) {
 			t.Fatalf("test_encodes.%s was not migrated", column)
 		}
+	}
+}
+
+func TestMigrateBackfillsTestEncodeArtifactOwnershipIdempotently(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "test-encode-artifact-backfill.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.TestEncode{}); err != nil {
+		t.Fatal(err)
+	}
+	kept := true
+	created := time.Date(2026, 8, 12, 9, 30, 0, 0, time.UTC)
+	testEncode := models.TestEncode{
+		SourceAssetID: 77, SourcePath: "/raw/source.mkv", LibraryID: 9,
+		Status: "ready", Phase: "ready", Keep: kept, CreatedAt: created,
+		OutputPath: "/library/MVForge Test T31.mkv", OutputSizeBytes: 1234,
+		TemporaryPath:     "/library/MVForge Test T31.tmp.mkv",
+		SubtitleArtifacts: models.JSONList{map[string]any{"stagedPath": "/library/MVForge Test T31.eng.srt"}},
+	}
+	if err := db.Create(&testEncode).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var artifacts []models.TestEncodeArtifact
+	if err := db.Where("test_encode_id = ?", testEncode.ID).Order("path ASC").Find(&artifacts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 3 {
+		t.Fatalf("artifact backfill count = %d, want 3: %#v", len(artifacts), artifacts)
+	}
+	want := map[string]string{
+		"/library/MVForge Test T31.mkv":     models.TestEncodeArtifactMediaOutput,
+		"/library/MVForge Test T31.tmp.mkv": models.TestEncodeArtifactTemporaryMedia,
+		"/library/MVForge Test T31.eng.srt": models.TestEncodeArtifactSubtitle,
+	}
+	for _, artifact := range artifacts {
+		if artifact.Type != want[artifact.Path] || artifact.LibraryID != testEncode.LibraryID || artifact.CreatedAt.IsZero() {
+			t.Fatalf("unexpected backfilled ownership: %#v", artifact)
+		}
+	}
+	var migrated models.TestEncode
+	if err := db.First(&migrated, testEncode.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !migrated.Keep || migrated.OutputPath != testEncode.OutputPath || migrated.OutputSizeBytes != testEncode.OutputSizeBytes || migrated.ReconciliationStatus != "unknown" {
+		t.Fatalf("historical run was not preserved: %#v", migrated)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	if err := db.Model(&models.TestEncodeArtifact{}).Where("test_encode_id = ?", testEncode.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("repeated migration created duplicate artifacts: count=%d", count)
+	}
+}
+
+func TestMigrateBackfillsTestEncodePolicyFromLegacyHousekeeping(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "test-encode-policy-backfill.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{
+		Key: "housekeeping", Value: models.JSONMap{"testEncodeRetentionHours": 48},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var setting models.AppSetting
+	if err := db.First(&setting, "key = ?", "testEncodePolicy").Error; err != nil {
+		t.Fatal(err)
+	}
+	if intFromJSON(setting.Value["temporaryRetentionHours"]) != 48 ||
+		setting.Value["defaultRetention"] != "temporary" || intFromJSON(setting.Value["failedRetentionHours"]) != 6 {
+		t.Fatalf("unexpected migrated Test Encode policy: %#v", setting.Value)
+	}
+
+	setting.Value["temporaryRetentionHours"] = 72
+	setting.Value["defaultRetention"] = "keep"
+	if err := db.Save(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&setting, "key = ?", "testEncodePolicy").Error; err != nil {
+		t.Fatal(err)
+	}
+	if intFromJSON(setting.Value["temporaryRetentionHours"]) != 72 || setting.Value["defaultRetention"] != "keep" {
+		t.Fatalf("migration overwrote configured Test Encode policy: %#v", setting.Value)
 	}
 }
 

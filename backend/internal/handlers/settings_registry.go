@@ -58,7 +58,7 @@ func buildSettingDefinitions() map[string]settingDefinition {
 		{"storageRoles", "assets"}, {"workspace", "assets"}, {"assetInventory", "assets"},
 		{"assetTypes", "assets"}, {"assetCategories", "assets"}, {"trackProfilePathAssignments", "assets"},
 		{"workers", "pipeline"}, {"pipelineAutomation", "pipeline"}, {"validation", "pipeline"},
-		{"cancellationPolicy", "operations"}, {"housekeeping", "operations"},
+		{"cancellationPolicy", "operations"}, {"housekeeping", "operations"}, {testEncodePolicySettingKey, "test-encode"},
 		{"originalRetentionPolicy", "archive"},
 		{"subtitleSettings", "pipeline"}, {translationSettingsKey, "pipeline"},
 		{jellyfinSettingsKey, "providers-integrations"},
@@ -75,6 +75,12 @@ func buildSettingDefinitions() map[string]settingDefinition {
 	})
 	definitions["runtimePolicy"] = withValidation(definitions["runtimePolicy"], func(_ settingsMutationContext, value models.JSONMap) error {
 		return runtimeinfo.ValidateRuntimePolicyValue(value)
+	})
+	definitions[testEncodePolicySettingKey] = withValidation(definitions[testEncodePolicySettingKey], func(_ settingsMutationContext, value models.JSONMap) error {
+		return validateTestEncodePolicyValue(value)
+	})
+	definitions[testEncodePolicySettingKey] = withNormalizer(definitions[testEncodePolicySettingKey], func(_ settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
+		return normalizeTestEncodePolicyValue(value)
 	})
 	definitions[analysisPolicySettingKey] = withValidation(definitions[analysisPolicySettingKey], func(_ settingsMutationContext, value models.JSONMap) error {
 		return validateAnalysisPolicy(value)

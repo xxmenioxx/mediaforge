@@ -9,7 +9,7 @@ import type { Library, TestEncode } from '../api/types';
 import { TestEncodeDialog } from './TestEncodeDialog';
 
 vi.mock('../api/client', () => ({ api: {
-  testEncodes: vi.fn(), jellyfinOutcomes: vi.fn(), retryJellyfinOutcome: vi.fn(), createTestEncode: vi.fn(), cancelTestEncode: vi.fn(), keepTestEncode: vi.fn(), deleteTestEncode: vi.fn(),
+  settings: vi.fn(), testEncodes: vi.fn(), jellyfinOutcomes: vi.fn(), retryJellyfinOutcome: vi.fn(), createTestEncode: vi.fn(), cancelTestEncode: vi.fn(), keepTestEncode: vi.fn(), deleteTestEncode: vi.fn(),
 } }));
 
 const readyTest = {
@@ -18,7 +18,8 @@ const readyTest = {
   profileId: 9, profileVersion: 2, workerName: 'nas', effectiveEncoder: 'hevc_qsv', startSeconds: 40, durationSeconds: 20,
   status: 'ready', phase: 'ready', progress: 100, ffmpegCommand: 'ffmpeg -ss 40 -i input -t 20 output',
   outputPath: '/library/episode - MVForge Test T4.mkv', outputSizeBytes: 50, subtitleArtifacts: [], validationReport: { videoTracks: 1 },
-  keep: false, errorMessage: '', createdAt: '2026-08-21T00:00:00Z', updatedAt: '2026-08-21T00:00:01Z',
+  keep: false, reconciliationStatus: 'healthy', outputExists: true, artifactCount: 1, sidecarArtifactCount: 0, knownDiskUsageBytes: 50, unknownSizeArtifactCount: 0,
+  errorMessage: '', createdAt: '2026-08-21T00:00:00Z', updatedAt: '2026-08-21T00:00:01Z',
   stale: false,
 } satisfies TestEncode;
 
@@ -45,6 +46,7 @@ function renderDialog(configurationSource: 'effective_asset' | 'lab_draft' = 'ef
 describe('TestEncodeDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.settings).mockResolvedValue([]);
     vi.mocked(api.testEncodes).mockResolvedValue([]);
     vi.mocked(api.jellyfinOutcomes).mockResolvedValue([]);
     vi.mocked(api.retryJellyfinOutcome).mockResolvedValue({
@@ -52,6 +54,7 @@ describe('TestEncodeDialog', () => {
       updatedAt: '2026-09-27T12:00:00Z', testEncodeId: readyTest.id, retryEligible: false,
     });
     vi.mocked(api.createTestEncode).mockResolvedValue(readyTest);
+    vi.mocked(api.deleteTestEncode).mockResolvedValue({ id: readyTest.id, status: 'deleted' });
   });
 
   it('creates an independent test with the selected window and effective Asset configuration', async () => {
@@ -123,5 +126,25 @@ describe('TestEncodeDialog', () => {
     await user.click(await screen.findByRole('option', { name: 'Anime' }));
     await user.click(screen.getByRole('button', { name: /generate new test encode/i }));
     await waitFor(() => expect(api.createTestEncode).toHaveBeenCalledWith(expect.objectContaining({ libraryId: 3 })));
+  });
+
+  it('applies the Test Encode sample defaults from Settings', async () => {
+    vi.mocked(api.settings).mockResolvedValue([{ key: 'testEncodePolicy', domain: 'test-encode', value: { defaultDurationSeconds: 42, defaultStartMode: 'middle' } } as never]);
+    const user = userEvent.setup();
+    renderDialog();
+    expect(await screen.findByDisplayValue('42')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /generate new test encode/i }));
+    await waitFor(() => expect(api.createTestEncode).toHaveBeenCalledWith(expect.objectContaining({ startMode: 'middle', durationSeconds: 42 })));
+  });
+
+  it('passes explicit confirmation when deleting a Keep Test Encode', async () => {
+    vi.mocked(api.testEncodes).mockResolvedValue([{ ...readyTest, keep: true }]);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const user = userEvent.setup();
+    renderDialog();
+    await user.click(await screen.findByRole('button', { name: /^delete$/i }));
+    await waitFor(() => expect(api.deleteTestEncode).toHaveBeenCalledWith(readyTest.id, true));
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/delete keep test encode/i));
+    confirm.mockRestore();
   });
 });

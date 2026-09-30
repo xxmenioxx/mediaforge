@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -125,17 +126,24 @@ func TestHousekeepingExpiresTestEncodeEvenWhenWorkRootDoesNotExist(t *testing.T)
 	if err := db.Create(&library).Error; err != nil {
 		t.Fatal(err)
 	}
-	output := filepath.Join(libraryRoot, "Episode - MVForge Test T1.mkv")
-	if err := os.WriteFile(output, []byte("sample"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	expired := time.Now().Add(-time.Hour)
-	test := models.TestEncode{
-		SourcePath: "/raw/episode.mkv", LibraryID: library.ID, ConfigurationSource: "effective_asset",
-		Status: testEncodeReady, Phase: "ready", OutputPath: output, OutputSizeBytes: 6, ExpiresAt: &expired,
+	tests := []models.TestEncode{
+		{SourcePath: "/raw/episode.mkv", Status: testEncodeReady, Phase: "ready", OutputPath: filepath.Join(libraryRoot, "ready-test.mkv")},
+		{SourcePath: "/raw/failed.mkv", Status: testEncodeFailed, Phase: "failed", OutputPath: filepath.Join(libraryRoot, "failed-test.mkv")},
+		{SourcePath: "/raw/canceled.mkv", Status: testEncodeCanceled, Phase: "canceled", OutputPath: filepath.Join(libraryRoot, "canceled-test.mkv")},
+		{SourcePath: "/raw/kept.mkv", Status: testEncodeReady, Phase: "ready", OutputPath: filepath.Join(libraryRoot, "kept-test.mkv"), Keep: true},
 	}
-	if err := db.Create(&test).Error; err != nil {
-		t.Fatal(err)
+	for index := range tests {
+		tests[index].LibraryID = library.ID
+		tests[index].ConfigurationSource = "effective_asset"
+		tests[index].OutputSizeBytes = 6
+		tests[index].ExpiresAt = &expired
+		if err := os.WriteFile(tests[index].OutputPath, []byte("sample"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&tests[index]).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := db.Create(&models.AppSetting{Key: "storageRoles", Value: models.JSONMap{"work": models.JSONMap{"path": missingWorkRoot}}}).Error; err != nil {
 		t.Fatal(err)
@@ -144,16 +152,75 @@ func TestHousekeepingExpiresTestEncodeEvenWhenWorkRootDoesNotExist(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.RemovedPaths) != 1 || report.RemovedPaths[0] != output || report.RecoveredBytes != 6 {
+	if len(report.RemovedPaths) != 3 || report.RecoveredBytes != 18 {
 		t.Fatalf("unexpected Test Encode cleanup report: %#v", report)
 	}
-	if _, err := os.Stat(output); !os.IsNotExist(err) {
-		t.Fatalf("expired output remains: %v", err)
+	for index, test := range tests {
+		_, err := os.Stat(test.OutputPath)
+		if index == len(tests)-1 {
+			if err != nil {
+				t.Fatalf("Keep output was removed automatically: %v", err)
+			}
+			continue
+		}
+		if !os.IsNotExist(err) {
+			t.Fatalf("expired output remains: %v", err)
+		}
 	}
-	if err := db.Unscoped().First(&test, test.ID).Error; err != nil {
+	var test models.TestEncode
+	if err := db.Unscoped().First(&test, tests[0].ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if test.Status != "expired" || test.DeletedAt == nil || test.OutputPath != "" {
 		t.Fatalf("unexpected Test Encode tombstone: %#v", test)
+	}
+}
+
+func TestHousekeepingDoesNotDeleteActiveTestEncodeArtifacts(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:housekeeping-active-test-encode?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.AppSetting{}, &models.Library{}, &models.TestEncode{}, &models.TestEncodeArtifact{}, &models.AssetRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	workRoot := filepath.Join(t.TempDir(), "missing-work")
+	library := models.Library{Name: "TV", DestinationPath: root}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(root, "active-test.mkv")
+	if err := os.WriteFile(output, []byte("active"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expired := time.Now().Add(-time.Hour)
+	testEncode := models.TestEncode{SourcePath: "/raw/source.mkv", LibraryID: library.ID, ConfigurationSource: "global", ConfigurationHash: "active", Status: testEncodeReady, Phase: "ready", OutputPath: output, ExpiresAt: &expired}
+	if err := db.Create(&testEncode).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.TestEncodeArtifact{TestEncodeID: testEncode.ID, LibraryID: library.ID, Path: output, Type: models.TestEncodeArtifactMediaOutput, Expected: true, State: "owned"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "storageRoles", Value: models.JSONMap{"work": models.JSONMap{"path": workRoot}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	testEncodeProcesses.Lock()
+	testEncodeProcesses.cancel[testEncode.ID] = context.CancelFunc(func() {})
+	testEncodeProcesses.Unlock()
+	t.Cleanup(func() {
+		testEncodeProcesses.Lock()
+		delete(testEncodeProcesses.cancel, testEncode.ID)
+		testEncodeProcesses.Unlock()
+	})
+	report, err := RunHousekeeping(db, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Candidates) != 0 || len(report.RemovedPaths) != 0 {
+		t.Fatalf("active Test Encode appeared in automatic cleanup: %#v", report)
+	}
+	if _, err := os.Stat(output); err != nil {
+		t.Fatalf("active Test Encode artifact was removed: %v", err)
 	}
 }

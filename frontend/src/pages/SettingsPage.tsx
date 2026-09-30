@@ -49,6 +49,7 @@ import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import { AssetDefaultsCard } from '../components/AssetDefaultsCard';
 import { JellyfinSettingsCard } from '../components/JellyfinSettingsCard';
+import { TestEncodeSettingsDomain } from './TestEncodeSettingsDomain';
 import type { HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
 import { defaultMVForgePreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { encoderNamesForWorker } from '../utils/workerEncoders';
@@ -106,7 +107,7 @@ type DirectPlayValue = { enabled: boolean; strategy: string; targetClients: stri
 type AnalysisMode = 'fast' | 'balanced' | 'thorough' | 'custom';
 type AnalysisPolicyValue = { mode: AnalysisMode; adaptiveAnalysis: boolean; earlyConfidenceEnabled: boolean; earlyConfidenceThreshold: number; initialWindows: number; maximumWindows: number; windowSeconds: number; positions: number[]; interlaceValidation: 'automatic' | 'always'; cropDepth: 'reduced' | 'normal' | 'full'; reuseSnapshots: boolean; incrementalRefresh: boolean; concurrentAssets: number };
 type ProfileSampleEstimatePolicyValue = { hardwareWindows: number; softwareWindows: number; operationTimeoutMinutes: number };
-type HousekeepingValue = { autoEnabled: boolean; intervalHours: number; failedRetentionDays: number; canceledRetentionDays: number; orphanRetentionDays: number; testEncodeRetentionHours: number };
+type HousekeepingValue = { autoEnabled: boolean; intervalHours: number; failedRetentionDays: number; canceledRetentionDays: number; orphanRetentionDays: number };
 type RuntimePolicyValue = { schemaVersion: number; mode: 'automatic' | 'manual'; preferredProfile: string; fallbackProfile: string; overrides: Record<string, RuntimeProfileOverride> };
 
 export type WorkerJobStartPacingMode = 'time' | 'progress';
@@ -283,7 +284,7 @@ function remoteExecutorsValue(value: unknown): RemoteExecutorsValue {
   };
 }
 
-const settingsSections = ['overview', 'general', 'providers-integrations', 'pipeline', 'analysis', 'runtime', 'assets', 'asset-defaults', 'archive', 'operations'] as const;
+const settingsSections = ['overview', 'general', 'providers-integrations', 'pipeline', 'analysis', 'runtime', 'assets', 'asset-defaults', 'archive', 'test-encode', 'operations'] as const;
 type SettingsSection = (typeof settingsSections)[number];
 
 function isSettingsSection(value: string | null): value is SettingsSection {
@@ -656,6 +657,15 @@ export function SettingsPage() {
                 availableEncoders={[...new Set((workerNodes.data ?? []).flatMap((worker) => [...encoderNamesForWorker(worker)]))]}
                 saving={updateSetting.isPending}
                 onSave={(value) => updateSetting.mutate({ key: 'mvforgePreferences', value: value as unknown as Record<string, unknown> })}
+              />
+            ) : null}
+
+            {section === 'test-encode' ? (
+              <TestEncodeSettingsDomain
+                key={JSON.stringify(settings.data?.find((item) => item.key === 'testEncodePolicy')?.value ?? null)}
+                value={settings.data?.find((item) => item.key === 'testEncodePolicy')?.value}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'testEncodePolicy', value })}
               />
             ) : null}
 
@@ -1161,6 +1171,7 @@ function SettingsDomainNavigation({ section, onChange }: { section: SettingsSect
     { key: 'assets' as const, title: 'Assets & Storage', description: 'Asset types, categories, inventory, controlled paths, storage roles and workspace strategy.', color: 'success.main' },
     { key: 'asset-defaults' as const, title: 'Asset Defaults', description: 'Non-destructive fallback policies for video, audio, tracks, subtitles and attachments.', color: 'warning.main' },
     { key: 'archive' as const, title: 'Original Archive', description: 'Archive locations, retention period and safe automatic deletion policy.', color: 'secondary.main' },
+    { key: 'test-encode' as const, title: 'Test Encode', description: 'Test defaults, retained runs, artifact reconciliation and cleanup.', color: 'info.main' },
     { key: 'operations' as const, title: 'Operations', description: 'Scheduler recovery, cancellation cleanup, housekeeping and system-wide logs.', color: 'warning.main' },
   ];
   return <Stack spacing={2}>
@@ -1415,7 +1426,6 @@ function housekeepingValue(value: Record<string, unknown> | undefined): Housekee
     autoEnabled: booleanValue(value?.autoEnabled, true), intervalHours: numberValue(value?.intervalHours, 24),
     failedRetentionDays: numberValue(value?.failedRetentionDays, 7), canceledRetentionDays: numberValue(value?.canceledRetentionDays, 3),
     orphanRetentionDays: numberValue(value?.orphanRetentionDays, 7),
-    testEncodeRetentionHours: numberValue(value?.testEncodeRetentionHours, 24),
   };
 }
 
@@ -1475,7 +1485,6 @@ function HousekeepingCard({ value, saving, preview, result, busy, onSave, onPrev
       <Grid size={{ xs: 12, md: 3 }}>{daysField('failedRetentionDays', 'Failed retention (days)')}</Grid>
       <Grid size={{ xs: 12, md: 3 }}>{daysField('canceledRetentionDays', 'Canceled retention (days)')}</Grid>
       <Grid size={{ xs: 12, md: 3 }}>{daysField('orphanRetentionDays', 'Orphan retention (days)')}</Grid>
-      <Grid size={{ xs: 12, md: 3 }}><TextField type="number" label="Test Encode retention (hours)" value={draft.testEncodeRetentionHours} inputProps={{ min: 1, max: 8760 }} onChange={(event) => setDraft({ ...draft, testEncodeRetentionHours: Math.min(8760, Math.max(1, Number(event.target.value))) })} fullWidth /></Grid>
     </Grid>
     <Alert severity="info">Completed but unpublished outputs and running/queued jobs are never housekeeping candidates. Use Preview before manual cleanup.</Alert>
     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>

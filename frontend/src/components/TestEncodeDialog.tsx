@@ -36,9 +36,16 @@ type Props = {
 export function TestEncodeDialog({ open, onClose, sourcePath, libraries, defaultLibraryId = 0, request }: Props) {
   const queryClient = useQueryClient();
   const [libraryId, setLibraryId] = useState(defaultLibraryId || libraries[0]?.id || 0);
-  const [startMode, setStartMode] = useState<TestEncodeInput['startMode']>('representative');
+  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings, enabled: open });
+  const policy = settings.data?.find((item) => item.key === 'testEncodePolicy')?.value;
+  const configuredStartMode = policy?.defaultStartMode === 'beginning' || policy?.defaultStartMode === 'middle' || policy?.defaultStartMode === 'representative'
+    ? policy.defaultStartMode
+    : 'representative';
+  const [startModeOverride, setStartModeOverride] = useState<TestEncodeInput['startMode']>();
+  const startMode = startModeOverride ?? configuredStartMode;
   const [startSeconds, setStartSeconds] = useState(0);
-  const [durationSeconds, setDurationSeconds] = useState(20);
+  const [durationSecondsOverride, setDurationSecondsOverride] = useState<number>();
+  const durationSeconds = durationSecondsOverride ?? (typeof policy?.defaultDurationSeconds === 'number' ? policy.defaultDurationSeconds : 20);
   const [details, setDetails] = useState<TestEncode | null>(null);
   const [detailsTab, setDetailsTab] = useState(0);
   const selectedLibraryId = libraryId || defaultLibraryId || libraries[0]?.id || 0;
@@ -66,7 +73,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
   });
   const cancel = useMutation({ mutationFn: api.cancelTestEncode, onSuccess: invalidate });
   const keep = useMutation({ mutationFn: ({ id, value }: { id: number; value: boolean }) => api.keepTestEncode(id, value), onSuccess: invalidate });
-  const remove = useMutation({ mutationFn: api.deleteTestEncode, onSuccess: invalidate });
+  const remove = useMutation({ mutationFn: ({ id, confirmKeep }: { id: number; confirmKeep: boolean }) => api.deleteTestEncode(id, confirmKeep), onSuccess: invalidate });
   const retryJellyfin = useMutation({
     mutationFn: api.retryJellyfinOutcome,
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['jellyfinOutcomes'] }),
@@ -96,14 +103,14 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
               <TextField select size="small" label="Destination library" value={selectedLibraryId || ''} onChange={(event) => setLibraryId(Number(event.target.value))} fullWidth>
                 {libraries.map((library) => <MenuItem key={library.id} value={library.id}>{library.name}</MenuItem>)}
               </TextField>
-              <TextField select size="small" label="Sample position" value={startMode} onChange={(event) => setStartMode(event.target.value as TestEncodeInput['startMode'])} fullWidth>
+              <TextField select size="small" label="Sample position" value={startMode} onChange={(event) => setStartModeOverride(event.target.value as TestEncodeInput['startMode'])} fullWidth>
                 <MenuItem value="representative">Representative</MenuItem>
                 <MenuItem value="beginning">Beginning</MenuItem>
                 <MenuItem value="middle">Middle</MenuItem>
                 <MenuItem value="custom">Custom</MenuItem>
               </TextField>
               {startMode === 'custom' ? <TextField size="small" type="number" label="Start seconds" value={startSeconds} inputProps={{ min: 0, step: 1 }} onChange={(event) => setStartSeconds(Math.max(0, Number(event.target.value) || 0))} fullWidth /> : null}
-              <TextField size="small" type="number" label="Duration" value={durationSeconds} inputProps={{ min: 5, max: 120 }} onChange={(event) => setDurationSeconds(Math.min(120, Math.max(5, Number(event.target.value) || 20)))} fullWidth />
+              <TextField size="small" type="number" label="Duration" value={durationSeconds} inputProps={{ min: 5, max: 120 }} onChange={(event) => setDurationSecondsOverride(Math.min(120, Math.max(5, Number(event.target.value) || 20)))} fullWidth />
             </Stack>
             <Button variant="contained" disabled={!selectedLibraryId || create.isPending} onClick={() => create.mutate()}>
               {create.isPending ? 'Preparing…' : 'Generate New Test Encode'}
@@ -127,6 +134,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
                       {item.effectiveEncoder ? <Chip size="small" label={item.effectiveEncoder} /> : null}
                       {item.keep ? <Chip size="small" color="info" label="Kept" /> : null}
                       {!item.keep && item.expiresAt ? <Chip size="small" label={`Expires ${new Date(item.expiresAt).toLocaleString()}`} /> : null}
+                      {item.reconciliationStatus && item.reconciliationStatus !== 'unknown' ? <Chip size="small" variant="outlined" label={item.reconciliationStatus.replace(/_/g, ' ')} /> : null}
                       {testEncodeIsStale(item, request) ? <Chip size="small" color="warning" label="Stale" /> : null}
                     </Stack>
                     <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{item.outputPath || item.phase}</Typography>
@@ -135,7 +143,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
                     {(item.status === 'waiting' || item.status === 'generating') ? <Button size="small" color="warning" onClick={() => cancel.mutate(item.id)}>Cancel</Button> : null}
                     {item.status === 'ready' ? <FormControlLabel control={<Switch size="small" checked={item.keep} onChange={(_, value) => keep.mutate({ id: item.id, value })} />} label="Keep" /> : null}
                     <Button size="small" onClick={() => openDetails(item)}>Details</Button>
-                    {!['waiting', 'generating'].includes(item.status) ? <Button size="small" color="error" onClick={() => { if (window.confirm(`Delete Test Encode T${item.id}?`)) remove.mutate(item.id); }}>Delete</Button> : null}
+                    {!['waiting', 'generating'].includes(item.status) ? <Button size="small" color="error" onClick={() => { if (window.confirm(item.keep ? `Delete Keep Test Encode T${item.id} and its owned artifacts?` : `Delete Test Encode T${item.id}?`)) remove.mutate({ id: item.id, confirmKeep: item.keep }); }}>Delete</Button> : null}
                   </Stack>
                 </Stack>
                 {(item.status === 'waiting' || item.status === 'generating') ? <LinearProgress variant={item.progress > 0 ? 'determinate' : 'indeterminate'} value={item.progress} /> : null}

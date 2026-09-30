@@ -81,12 +81,20 @@ func recoverInterruptedTestEncodes(db *gorm.DB) {
 	var interrupted []models.TestEncode
 	_ = db.Where("status IN ?", []string{testEncodeWaiting, testEncodeRunning}).Find(&interrupted).Error
 	for _, test := range interrupted {
-		_ = (AssetHandler{db: db}).removeTestEncodeFiles(test)
 		now := time.Now()
-		_ = db.Model(&models.TestEncode{}).Where("id = ?", test.ID).Updates(map[string]any{
+		updates := map[string]any{
 			"status": testEncodeFailed, "phase": "interrupted", "progress": 0,
 			"error_message": "Test Encode was interrupted by application restart", "completed_at": &now, "updated_at": now,
-		}).Error
+		}
+		if !test.Keep {
+			expires := now.Add(time.Duration(testEncodePolicyFromSettings(db).FailedRetentionHours) * time.Hour)
+			updates["expires_at"] = &expires
+		}
+		if _, cleanupErr := (AssetHandler{db: db}).removeTestEncodeFilesWithEvidence(test); cleanupErr != nil {
+			updates["reconciliation_status"] = "cleanup_failed"
+			updates["reconciliation_message"] = cleanupErr.Error()
+		}
+		_ = db.Model(&models.TestEncode{}).Where("id = ?", test.ID).Updates(updates).Error
 	}
 	// Remove reservations created by older releases. They are legacy data and
 	// must never affect scheduler capacity after Test Encode was decoupled.
@@ -96,24 +104,7 @@ func recoverInterruptedTestEncodes(db *gorm.DB) {
 }
 
 func (h AssetHandler) ListTestEncodes(c *gin.Context) {
-	query := h.db.Where("deleted_at IS NULL").Order("created_at DESC")
-	if sourcePath := strings.TrimSpace(c.Query("sourcePath")); sourcePath != "" {
-		resolved, err := h.resolveMediaPath(sourcePath)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		query = query.Where("source_path = ?", filepath.Clean(resolved))
-	}
-	var tests []models.TestEncode
-	if err := query.Find(&tests).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	for index := range tests {
-		h.decorateTestEncode(&tests[index])
-	}
-	c.JSON(http.StatusOK, tests)
+	h.listTestEncodeInventory(c)
 }
 
 func (h AssetHandler) GetTestEncode(c *gin.Context) {
@@ -158,14 +149,20 @@ func (h AssetHandler) CreateTestEncode(c *gin.Context) {
 	resolved.requested["samplingPlanIdentity"] = plan.PlanIdentity
 	now := time.Now()
 	modified := info.ModTime()
-	expires := now.Add(time.Duration(testEncodeRetentionHours(h.db)) * time.Hour)
+	policy := testEncodePolicyFromSettings(h.db)
+	keep := policy.DefaultRetention == "keep"
+	var expiresAt *time.Time
+	if !keep {
+		expires := now.Add(time.Duration(policy.TemporaryRetentionHours) * time.Hour)
+		expiresAt = &expires
+	}
 	test := models.TestEncode{
 		SourcePath: resolved.job.MediaPath, SourceFingerprint: fingerprint, SourceSizeBytes: info.Size(), SourceModifiedAt: &modified,
 		LibraryID: resolved.library.ID, ConfigurationSource: normalizedTestEncodeConfigurationSource(input.ConfigurationSource),
 		RequestedConfiguration: resolved.requested, ProfileID: resolved.job.ProfileID, ProfileVersion: resolved.job.ProfileVersion,
 		StartSeconds: start, DurationSeconds: duration, Status: testEncodeRunning, Phase: "preparing", Progress: 1,
 		StartedAt: &now,
-		ExpiresAt: &expires, CreatedAt: now, UpdatedAt: now,
+		Keep:      keep, ExpiresAt: expiresAt, CreatedAt: now, UpdatedAt: now,
 	}
 	var record models.AssetRecord
 	if h.db.Where("path = ?", resolved.job.MediaPath).Order("updated_at DESC").First(&record).Error == nil {
@@ -195,9 +192,14 @@ func (h AssetHandler) CancelTestEncode(c *gin.Context) {
 		cancel()
 	}
 	now := time.Now()
-	_ = h.db.Model(&models.TestEncode{}).Where("id = ?", test.ID).Updates(map[string]any{
+	updates := map[string]any{
 		"status": testEncodeCanceled, "phase": "canceled", "canceled_at": &now, "updated_at": now,
-	}).Error
+	}
+	if !test.Keep {
+		expires := now.Add(time.Duration(testEncodePolicyFromSettings(h.db).FailedRetentionHours) * time.Hour)
+		updates["expires_at"] = &expires
+	}
+	_ = h.db.Model(&models.TestEncode{}).Where("id = ?", test.ID).Updates(updates).Error
 	c.JSON(http.StatusAccepted, gin.H{"status": testEncodeCanceled, "id": test.ID})
 }
 
@@ -213,11 +215,17 @@ func (h AssetHandler) KeepTestEncode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	updates := map[string]any{"keep": input.Keep, "updated_at": time.Now()}
+	now := time.Now()
+	updates := map[string]any{"keep": input.Keep, "updated_at": now}
 	if input.Keep {
 		updates["expires_at"] = nil
 	} else {
-		expires := time.Now().Add(time.Duration(testEncodeRetentionHours(h.db)) * time.Hour)
+		policy := testEncodePolicyFromSettings(h.db)
+		hours := policy.TemporaryRetentionHours
+		if test.Status == testEncodeFailed || test.Status == testEncodeCanceled {
+			hours = policy.FailedRetentionHours
+		}
+		expires := now.Add(time.Duration(hours) * time.Hour)
 		updates["expires_at"] = &expires
 	}
 	if err := h.db.Model(&test).Updates(updates).Error; err != nil {
@@ -226,36 +234,6 @@ func (h AssetHandler) KeepTestEncode(c *gin.Context) {
 	}
 	_ = h.db.First(&test, test.ID).Error
 	c.JSON(http.StatusOK, test)
-}
-
-func (h AssetHandler) DeleteTestEncode(c *gin.Context) {
-	test, ok := h.testEncodeFromParam(c)
-	if !ok {
-		return
-	}
-	if test.Status == testEncodeWaiting || test.Status == testEncodeRunning {
-		c.JSON(http.StatusConflict, gin.H{"error": "cancel the generating test before deleting it"})
-		return
-	}
-	mutated, cleanupErr := h.removeTestEncodeFilesWithEvidence(test)
-	if test.Status == testEncodeReady && mutated {
-		_ = recordJellyfinTrigger(h.db, jellyfinTrigger{
-			Reason: jellyfinReasonTestRemoved, SourceKey: testEncodeJellyfinSourceKey(jellyfinReasonTestRemoved, test.ID),
-			LibraryID: test.LibraryID, TestEncodeID: test.ID, Reconcile: true,
-		})
-	}
-	if cleanupErr != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": cleanupErr.Error()})
-		return
-	}
-	now := time.Now()
-	if err := h.db.Model(&test).Updates(map[string]any{
-		"status": testEncodeDeleted, "phase": "deleted", "deleted_at": &now, "output_path": "", "temporary_path": "", "updated_at": now,
-	}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"id": test.ID, "status": testEncodeDeleted})
 }
 
 func (h AssetHandler) testEncodeFromParam(c *gin.Context) (models.TestEncode, bool) {
@@ -589,9 +567,13 @@ func cloneTestEncodeJSONMap(value models.JSONMap) models.JSONMap {
 }
 
 func resolveTestEncodeWindow(db *gorm.DB, path, mode string, custom float64, requestedDuration int) (float64, int) {
-	duration := min(120, max(5, requestedDuration))
+	policy := testEncodePolicyFromSettings(db)
 	if requestedDuration == 0 {
-		duration = 20
+		requestedDuration = policy.DefaultDurationSeconds
+	}
+	duration := min(120, max(5, requestedDuration))
+	if strings.TrimSpace(mode) == "" {
+		mode = policy.DefaultStartMode
 	}
 	var scan models.ScanResult
 	_ = db.Where("path = ?", filepath.Clean(path)).Order("updated_at DESC").First(&scan).Error
@@ -630,14 +612,7 @@ func testEncodeCanonicalSourceDuration(db *gorm.DB, path string, start float64, 
 }
 
 func testEncodeRetentionHours(db *gorm.DB) int {
-	var setting models.AppSetting
-	if db.First(&setting, "key = ?", "testEncodePolicy").Error == nil {
-		return min(24*365, max(1, intSetting(setting.Value, "retentionHours", 24)))
-	}
-	if db.First(&setting, "key = ?", "housekeeping").Error == nil {
-		return min(24*365, max(1, intSetting(setting.Value, "testEncodeRetentionHours", 24)))
-	}
-	return 24
+	return testEncodePolicyFromSettings(db).TemporaryRetentionHours
 }
 
 func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
@@ -730,38 +705,44 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 	if result.RowsAffected == 0 || ctx.Err() != nil {
 		return
 	}
+	if err := persistTestEncodeArtifactSet(h.db, id, testEncodeArtifactSet(test, output, temporary, nil, false)); err != nil {
+		h.failTestEncode(id, err)
+		return
+	}
 
 	artifactPlan := plan
 	artifactPlan.OutputPath = temporary
 	subtitleArtifacts, err := generateSubtitleArtifacts(ctx, artifactPlan)
 	if err != nil {
 		_ = h.db.Model(&models.TestEncode{}).Where("id = ?", id).Update("subtitle_artifacts", subtitleArtifactsJSON(subtitleArtifacts)).Error
+		_ = persistTestEncodeArtifactSet(h.db, id, testEncodeArtifactSet(test, output, temporary, subtitleArtifacts, false))
 		h.failTestEncode(id, fmt.Errorf("generate test subtitle sidecars: %w", err))
 		return
 	}
 	externalArtifacts, err := generateTestExternalSubtitleArtifacts(ctx, artifactPlan, subtitleArtifacts)
 	if err != nil {
-		for _, artifact := range subtitleArtifacts {
-			_ = os.Remove(artifact.StagedPath)
-		}
+		_ = h.db.Model(&models.TestEncode{}).Where("id = ?", id).Update("subtitle_artifacts", subtitleArtifactsJSON(subtitleArtifacts)).Error
+		_ = persistTestEncodeArtifactSet(h.db, id, testEncodeArtifactSet(test, output, temporary, subtitleArtifacts, false))
 		h.failTestEncode(id, fmt.Errorf("generate external test subtitle sidecars: %w", err))
 		return
 	}
 	subtitleArtifacts = append(subtitleArtifacts, externalArtifacts...)
 	if err := h.db.Model(&models.TestEncode{}).Where("id = ?", id).Update("subtitle_artifacts", subtitleArtifactsJSON(subtitleArtifacts)).Error; err != nil {
-		for _, artifact := range subtitleArtifacts {
-			_ = os.Remove(artifact.StagedPath)
-		}
+		h.failTestEncode(id, err)
+		return
+	}
+	if err := persistTestEncodeArtifactSet(h.db, id, testEncodeArtifactSet(test, output, temporary, subtitleArtifacts, false)); err != nil {
 		h.failTestEncode(id, err)
 		return
 	}
 	if err := h.runTestEncodeFFmpeg(ctx, id, args, float64(test.DurationSeconds)); err != nil {
-		for _, artifact := range subtitleArtifacts {
-			_ = os.Remove(artifact.StagedPath)
-		}
-		_ = os.Remove(temporary)
 		if ctx.Err() == nil {
 			h.failTestEncode(id, err)
+		} else {
+			var canceled models.TestEncode
+			if h.db.First(&canceled, id).Error == nil {
+				_, _ = h.removeTestEncodeFilesForOwner(canceled, id)
+			}
 		}
 		return
 	}
@@ -771,6 +752,10 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 	}
 	if err := activateTestSubtitleArtifacts(subtitleArtifacts, temporary, output); err != nil {
 		h.failTestEncode(id, fmt.Errorf("activate test subtitle sidecars: %w", err))
+		return
+	}
+	if err := persistTestEncodeArtifactSet(h.db, id, testEncodeArtifactSet(test, output, "", subtitleArtifacts, true)); err != nil {
+		h.failTestEncode(id, err)
 		return
 	}
 	outputInfo, err := os.Stat(output)
@@ -823,13 +808,42 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 		}
 	}
 	completed := time.Now()
-	readyResult := h.db.Model(&models.TestEncode{}).Where("id = ? AND status = ?", id, testEncodeRunning).Updates(map[string]any{
-		"status": testEncodeReady, "phase": "ready", "progress": 100, "completed_at": &completed,
-		"output_size_bytes": outputInfo.Size(), "subtitle_artifacts": subtitleArtifactsJSON(subtitleArtifacts),
-		"validation_report": report, "temporary_path": "", "updated_at": completed,
+	artifacts := testEncodeArtifactSet(test, output, "", subtitleArtifacts, true)
+	for index := range artifacts {
+		if info, statErr := os.Stat(artifacts[index].Path); statErr == nil && !info.IsDir() {
+			artifacts[index].SizeBytes = info.Size()
+		}
+	}
+	if err := persistTestEncodeArtifactSet(h.db, id, artifacts); err != nil {
+		h.failTestEncode(id, err)
+		return
+	}
+	var readyResult *gorm.DB
+	readyResultErr := h.db.Transaction(func(tx *gorm.DB) error {
+		var current models.TestEncode
+		if err := tx.First(&current, id).Error; err != nil {
+			return err
+		}
+		updates := map[string]any{
+			"status": testEncodeReady, "phase": "ready", "progress": 100, "completed_at": &completed,
+			"output_size_bytes": outputInfo.Size(), "subtitle_artifacts": subtitleArtifactsJSON(subtitleArtifacts),
+			"validation_report": report, "temporary_path": "", "updated_at": completed,
+		}
+		if current.Keep {
+			updates["expires_at"] = nil
+		} else {
+			expires := completed.Add(time.Duration(testEncodePolicyFromSettings(tx).TemporaryRetentionHours) * time.Hour)
+			updates["expires_at"] = &expires
+		}
+		readyResult = tx.Model(&models.TestEncode{}).Where("id = ? AND status = ?", id, testEncodeRunning).Updates(updates)
+		return readyResult.Error
 	})
+	if readyResultErr != nil {
+		h.failTestEncode(id, readyResultErr)
+		return
+	}
 	validationPassed, _ := report["passed"].(bool)
-	if readyResult.Error == nil && readyResult.RowsAffected == 1 && validationPassed {
+	if readyResult != nil && readyResult.RowsAffected == 1 && validationPassed {
 		_ = recordJellyfinTestEncodeReady(h.db, id, test.LibraryID, true, validationPassed)
 	}
 }
@@ -1116,11 +1130,20 @@ func (h AssetHandler) failTestEncode(id uint, err error) {
 	if test.Status == testEncodeCanceled {
 		return
 	}
-	_ = h.removeTestEncodeFiles(test)
 	now := time.Now()
-	_ = h.db.Model(&models.TestEncode{}).Where("id = ?", id).Updates(map[string]any{
+	updates := map[string]any{
 		"status": testEncodeFailed, "phase": "failed", "progress": 0, "error_message": err.Error(), "completed_at": &now, "updated_at": now,
-	}).Error
+	}
+	if !test.Keep {
+		expires := now.Add(time.Duration(testEncodePolicyFromSettings(h.db).FailedRetentionHours) * time.Hour)
+		updates["expires_at"] = &expires
+	}
+	_, cleanupErr := h.removeTestEncodeFilesForOwner(test, id)
+	if cleanupErr != nil {
+		updates["reconciliation_status"] = "cleanup_failed"
+		updates["reconciliation_message"] = cleanupErr.Error()
+	}
+	_ = h.db.Model(&models.TestEncode{}).Where("id = ?", id).Updates(updates).Error
 }
 
 func configurationHash(value any) string {
@@ -1132,31 +1155,6 @@ func configurationHash(value any) string {
 func (h AssetHandler) removeTestEncodeFiles(test models.TestEncode) error {
 	_, err := h.removeTestEncodeFilesWithEvidence(test)
 	return err
-}
-
-func (h AssetHandler) removeTestEncodeFilesWithEvidence(test models.TestEncode) (bool, error) {
-	var library models.Library
-	if err := h.db.First(&library, test.LibraryID).Error; err != nil {
-		return false, err
-	}
-	mutated := false
-	for _, candidate := range append([]string{test.OutputPath, test.TemporaryPath}, subtitleArtifactPaths(test.SubtitleArtifacts)...) {
-		candidate = filepath.Clean(strings.TrimSpace(candidate))
-		if candidate == "." || candidate == "" {
-			continue
-		}
-		if !pathIsInside(candidate, library.DestinationPath) {
-			return mutated, fmt.Errorf("refusing to delete Test Encode file outside its Library destination")
-		}
-		if err := os.Remove(candidate); err != nil {
-			if !os.IsNotExist(err) {
-				return mutated, err
-			}
-		} else {
-			mutated = true
-		}
-	}
-	return mutated, nil
 }
 
 func subtitleArtifactPaths(values models.JSONList) []string {
