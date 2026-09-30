@@ -48,6 +48,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
   const durationSeconds = durationSecondsOverride ?? (typeof policy?.defaultDurationSeconds === 'number' ? policy.defaultDurationSeconds : 20);
   const [details, setDetails] = useState<TestEncode | null>(null);
   const [detailsTab, setDetailsTab] = useState(0);
+  const [qualificationWindowFocus, setQualificationWindowFocus] = useState('');
   const selectedLibraryId = libraryId || defaultLibraryId || libraries[0]?.id || 0;
   const tests = useQuery({
     queryKey: ['testEncodes', sourcePath],
@@ -74,6 +75,13 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
   const cancel = useMutation({ mutationFn: api.cancelTestEncode, onSuccess: invalidate });
   const keep = useMutation({ mutationFn: ({ id, value }: { id: number; value: boolean }) => api.keepTestEncode(id, value), onSuccess: invalidate });
   const remove = useMutation({ mutationFn: ({ id, confirmKeep }: { id: number; confirmKeep: boolean }) => api.deleteTestEncode(id, confirmKeep), onSuccess: invalidate });
+  const evaluateQualification = useMutation({
+    mutationFn: api.evaluateTestEncodeProfileQualification,
+    onSuccess: async (qualification) => {
+      setDetails((current) => current ? { ...current, profileQualification: qualification } : current);
+      await invalidate();
+    },
+  });
   const retryJellyfin = useMutation({
     mutationFn: api.retryJellyfinOutcome,
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['jellyfinOutcomes'] }),
@@ -81,6 +89,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
   const busy = create.isPending || cancel.isPending || keep.isPending || remove.isPending;
   const openDetails = (item: TestEncode) => {
     setDetailsTab(0);
+    setQualificationWindowFocus('');
     setDetails(item);
   };
   const closeDetails = () => {
@@ -136,6 +145,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
                       {!item.keep && item.expiresAt ? <Chip size="small" label={`Expires ${new Date(item.expiresAt).toLocaleString()}`} /> : null}
                       {item.reconciliationStatus && item.reconciliationStatus !== 'unknown' ? <Chip size="small" variant="outlined" label={item.reconciliationStatus.replace(/_/g, ' ')} /> : null}
                       {testEncodeIsStale(item, request) ? <Chip size="small" color="warning" label="Stale" /> : null}
+                      {item.profileQualification ? <Chip size="small" color={qualificationColor(item.profileQualification.outcome, item.profileQualification.stale)} label={`Qualification · ${item.profileQualification.stale ? 'STALE' : item.profileQualification.outcome}`} /> : item.status === 'ready' ? <Chip size="small" variant="outlined" label="Not qualified" /> : null}
                     </Stack>
                     <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{item.outputPath || item.phase}</Typography>
                   </Stack>
@@ -181,6 +191,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
             <Tab label="Configuration" />
             <Tab label="FFmpeg" />
             <Tab label="Validation" />
+            <Tab label="Profile Qualification" />
           </Tabs>
 
           {detailsTab === 0 ? (
@@ -216,18 +227,167 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
               <Typography variant="body2" color="text.secondary">The effective command generated for this sample.</Typography>
               <TextField label="Effective FFmpeg command" value={details?.ffmpegCommand || 'Not available yet'} multiline minRows={10} inputProps={{ readOnly: true }} />
             </Stack>
-          ) : (
+          ) : detailsTab === 3 ? (
             <Stack spacing={2} role="tabpanel" aria-label="Validation">
               <AVTimingSummary report={details?.validationReport} />
               <TextField label="Validation report" value={JSON.stringify(details?.validationReport ?? {}, null, 2)} multiline minRows={8} inputProps={{ readOnly: true }} />
               <TextField label="Subtitle artifacts" value={JSON.stringify(details?.subtitleArtifacts ?? [], null, 2)} multiline minRows={5} inputProps={{ readOnly: true }} />
             </Stack>
+          ) : (
+            <ProfileQualificationDetails
+              test={details}
+              busy={evaluateQualification.isPending}
+              error={evaluateQualification.error?.message}
+              onEvaluate={() => details && evaluateQualification.mutate(details.id)}
+              focusedWindow={qualificationWindowFocus}
+              onFocusWindow={(identity) => {
+                setQualificationWindowFocus(identity);
+                window.requestAnimationFrame(() => document.getElementById(`profile-qualification-window-${encodeURIComponent(identity)}`)?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }));
+              }}
+            />
           )}
         </DialogContent>
         <DialogActions><Button onClick={closeDetails}>Close</Button></DialogActions>
       </Dialog>
     </>
   );
+}
+
+function ProfileQualificationDetails({
+  test,
+  busy,
+  error,
+  onEvaluate,
+  focusedWindow,
+  onFocusWindow,
+}: {
+  test: TestEncode | null;
+  busy: boolean;
+  error?: string;
+  onEvaluate: () => void;
+  focusedWindow: string;
+  onFocusWindow: (identity: string) => void;
+}) {
+  const qualification = test?.profileQualification;
+  const rawEvidence = test?.validationReport?.perceptualEvidence;
+  const evidence = rawEvidence && typeof rawEvidence === 'object' ? rawEvidence as Record<string, unknown> : undefined;
+  const windows = Array.isArray(evidence?.windows) ? evidence.windows as Array<Record<string, unknown>> : [];
+  const worstWindow = qualification?.worstWindowIdentity;
+  const severity = qualification?.stale ? 'warning' : qualification ? qualificationAlertSeverity(qualification.outcome) : 'info';
+
+  return (
+    <Stack spacing={1.5} role="tabpanel" aria-label="Profile Qualification">
+      {qualification ? (
+        <>
+          <Alert severity={severity}>
+            Profile Qualification: {qualification.stale ? 'STALE' : qualification.outcome}
+            {qualification.staleReason ? ` · ${qualification.staleReason}` : ''}
+          </Alert>
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+            <Chip size="small" label={`Policy · ${qualification.qualityPolicyVersion}`} />
+            <Chip size="small" label={`Intent · ${String(qualification.evidenceProvenance.optimizationIntent ?? 'resolved profile')}`} />
+            <Chip size="small" label={`Evidence · ${qualification.perceptualEvidenceIdentity || 'unavailable'}`} />
+          </Stack>
+          <DetailRow label="Scope" value={qualification.qualifiedScope} />
+          <DetailRow label="Profile fingerprint" value={qualification.resolvedProfileFingerprint || 'unavailable'} />
+          <DetailRow label="Reference identity" value={qualification.referenceIdentity || 'unavailable'} />
+          <DetailRow label="Candidate identity" value={qualification.candidateIdentity || 'unavailable'} />
+          {qualification.staleReason ? <Alert severity="warning">Requalification is required: {qualification.staleReason}</Alert> : null}
+          {qualification.warnings.map((warning, index) => <Alert key={`${index}-${warning}`} severity="warning">{warning}</Alert>)}
+          <Typography variant="subtitle2">Policy rules</Typography>
+          {qualification.rules.map((rule, index) => (
+            <Box key={`${rule.key}-${index}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1 }}>
+              <Stack spacing={0.5}>
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75} alignItems={{ sm: 'center' }}>
+                  <Chip size="small" color={qualificationRuleColor(rule.outcome)} label={rule.outcome} />
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>{rule.key}</Typography>
+                  {rule.sceneCategory ? <Chip size="small" variant="outlined" label={rule.sceneCategory.replace(/_/g, ' ')} /> : null}
+                </Stack>
+                <Typography variant="body2">{rule.explanation}</Typography>
+                {rule.observed !== undefined || rule.reference !== undefined || rule.allowedTolerance !== undefined ? (
+                  <Typography variant="caption" color="text.secondary">
+                    Observed {formatEvidenceValue(rule.observed)} · Reference {formatEvidenceValue(rule.reference)} · Allowed tolerance {formatEvidenceValue(rule.allowedTolerance)}
+                  </Typography>
+                ) : null}
+                {rule.windowIdentity ? <Button size="small" sx={{ alignSelf: 'flex-start' }} onClick={() => onFocusWindow(rule.windowIdentity!)}>Open {rule.windowIdentity}</Button> : null}
+                <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                  Provenance: {JSON.stringify(rule.evidenceProvenance ?? {})}
+                </Typography>
+              </Stack>
+            </Box>
+          ))}
+          {worstWindow ? (
+            <Button variant="outlined" onClick={() => onFocusWindow(worstWindow)}>
+              Compare worst scene{qualification.worstSceneCategory ? ` · ${qualification.worstSceneCategory.replace(/_/g, ' ')}` : ''}
+            </Button>
+          ) : null}
+          <Typography variant="subtitle2">Existing evidence windows</Typography>
+          {windows.length ? windows.map((windowEvidence, index) => {
+            const identity = typeof windowEvidence.windowIdentity === 'string' ? windowEvidence.windowIdentity : `window-${index + 1}`;
+            const metrics = Array.isArray(windowEvidence.metrics) ? windowEvidence.metrics as Array<Record<string, unknown>> : [];
+            const pair = windowEvidence.pairIdentity && typeof windowEvidence.pairIdentity === 'object' ? windowEvidence.pairIdentity as Record<string, unknown> : {};
+            return (
+              <Box id={`profile-qualification-window-${encodeURIComponent(identity)}`} key={identity} sx={{ border: 1, borderColor: focusedWindow === identity ? 'primary.main' : 'divider', borderRadius: 1, p: 1 }}>
+                <Stack spacing={0.5}>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>{qualificationWindowLabel(windowEvidence)} · {identity}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {String(windowEvidence.startSeconds ?? '?')}s + {String(windowEvidence.durationSeconds ?? '?')}s · roles {Array.isArray(windowEvidence.roles) ? windowEvidence.roles.join(', ') : 'unavailable'}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                    Existing comparison pair · {String(pair.identity ?? 'unavailable')}
+                  </Typography>
+                  <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                    {metrics.map((metric, metricIndex) => <Chip key={`${String(metric.identity ?? metricIndex)}`} size="small" color={metric.status === 'available' ? 'default' : 'warning'} label={`${String(metric.logicalMetric ?? 'metric')} · ${String(metric.status ?? 'unavailable')}${metric.value !== undefined ? ` · ${formatEvidenceValue(metric.value)}` : ''}`} />)}
+                  </Stack>
+                </Stack>
+              </Box>
+            );
+          }) : <Alert severity="warning">No persisted source-to-candidate windows are available for this Test Encode.</Alert>}
+        </>
+      ) : (
+        <Alert severity="warning">
+          This Test Encode has no stored qualification. Evaluation uses only its existing frozen #70 sampling plan and persisted #69 evidence.
+        </Alert>
+      )}
+      {error ? <Alert severity="error">{error}</Alert> : null}
+      {!qualification && test?.status === 'ready' ? <Button variant="contained" disabled={busy} onClick={onEvaluate}>{busy ? 'Evaluating existing evidence…' : 'Evaluate existing evidence'}</Button> : null}
+      {test?.status !== 'ready' ? <Typography variant="body2" color="text.secondary">A ready Test Encode candidate is required.</Typography> : null}
+      <Typography variant="caption" color="text.secondary">
+        Qualification is pre-batch confidence. It does not replace post-conversion Validation. Evidence shown here is reused from this Test Encode; rendering this view creates no new media.
+      </Typography>
+    </Stack>
+  );
+}
+
+function qualificationAlertSeverity(outcome: string): 'success' | 'warning' | 'error' | 'info' {
+  if (outcome === 'PASS') return 'success';
+  if (outcome === 'FAIL') return 'error';
+  return 'warning';
+}
+
+function qualificationColor(outcome: string, stale = false): 'success' | 'warning' | 'error' {
+  if (stale) return 'warning';
+  if (outcome === 'PASS') return 'success';
+  if (outcome === 'FAIL') return 'error';
+  return 'warning';
+}
+
+function qualificationRuleColor(outcome: string): 'success' | 'warning' | 'error' | 'default' {
+  if (outcome === 'PASS') return 'success';
+  if (outcome === 'FAIL') return 'error';
+  if (outcome === 'PASS_WITH_WARNINGS' || outcome === 'REVIEW_REQUIRED' || outcome === 'WARNING') return 'warning';
+  return 'default';
+}
+
+function formatEvidenceValue(value: unknown): string {
+  if (value === undefined || value === null) return 'unavailable';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function qualificationWindowLabel(windowEvidence: Record<string, unknown>): string {
+  const roles = Array.isArray(windowEvidence.roles) ? windowEvidence.roles.map((role) => String(role).replace(/_/g, ' ')) : [];
+  return roles.length ? roles.join(' · ') : (windowEvidence.primary ? 'Typical scene' : 'Sample scene');
 }
 
 function DetailRow({ label, value, path = false }: { label: string; value: string; path?: boolean }) {

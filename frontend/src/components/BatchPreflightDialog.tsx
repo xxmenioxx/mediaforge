@@ -65,7 +65,10 @@ function planSummary(asset: QueueBatchPreflightAsset) {
       <Typography variant="caption" color="text.secondary">{label}</Typography>
       <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{value}</Typography>
     </Grid>)}
-    {plan.qualityEvidence ? <Grid size={{ xs: 12 }}><SourceBitrateQualityEvidence source={plan.qualityEvidence.sourceBitrateEvidence} assessment={plan.qualityEvidence.bpppfAssessment} /></Grid> : null}
+    {plan.qualityEvidence ? <Grid size={{ xs: 12 }}>
+      <SourceBitrateQualityEvidence source={plan.qualityEvidence.sourceBitrateEvidence} assessment={plan.qualityEvidence.bpppfAssessment} />
+      {plan.qualityEvidence.profileQualification ? <ProfileQualificationPreflightEvidence qualification={plan.qualityEvidence.profileQualification} /> : null}
+    </Grid> : null}
     <Grid size={{ xs: 12 }}>
       <Typography variant="caption" color="text.secondary">Frozen plan evidence</Typography>
       <Box component="details" sx={{ mt: 0.5 }}>
@@ -76,6 +79,39 @@ function planSummary(asset: QueueBatchPreflightAsset) {
       </Box>
     </Grid>
   </Grid>;
+}
+
+function ProfileQualificationPreflightEvidence({ qualification }: { qualification: NonNullable<NonNullable<NonNullable<QueueBatchPreflightAsset['plan']>['qualityEvidence']>['profileQualification']> }) {
+  const status = qualification.status;
+  const severity = status === 'PASS' ? 'success' : status === 'FAIL' ? 'error' : status === 'PASS_WITH_WARNINGS' ? 'warning' : 'warning';
+  return (
+    <Stack spacing={0.75} sx={{ mt: 1 }} data-testid="preflight-profile-qualification">
+      <Alert severity={severity}>
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>Profile Qualification: {status}</Typography>
+        {qualification.message ? <Typography variant="body2">{qualification.message}</Typography> : null}
+      </Alert>
+      {qualification.qualificationId ? <Typography variant="caption" color="text.secondary">
+        Policy {qualification.policyVersion} · qualification {qualification.qualificationId} · Test Encode T{qualification.testEncodeId}
+      </Typography> : null}
+      {qualification.worstWindowIdentity ? <Typography variant="body2">
+        Worst evidence window: {qualification.worstSceneCategory?.replace(/_/g, ' ') || 'scene'} · {qualification.worstWindowIdentity}
+      </Typography> : null}
+      {qualification.warnings?.map((warning, index) => <Alert key={`${index}-${warning}`} severity="warning">{warning}</Alert>)}
+      {qualification.rules?.length ? <Box component="details">
+        <Box component="summary" sx={{ cursor: 'pointer', typography: 'caption' }}>Reviewed qualification rules and evidence</Box>
+        <Stack spacing={0.5} sx={{ mt: 0.75 }}>
+          {qualification.rules.map((rule, index) => <Box key={`${rule.key}-${index}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 0.75 }}>
+            <Typography variant="caption" sx={{ fontWeight: 600 }}>{rule.outcome} · {rule.key}{rule.sceneCategory ? ` · ${rule.sceneCategory.replace(/_/g, ' ')}` : ''}</Typography>
+            <Typography variant="body2">{rule.explanation}</Typography>
+            <Typography variant="caption" color="text.secondary">Window {rule.windowIdentity || 'not window-specific'} · observed {recordText({ value: rule.observed }, 'value') || 'unavailable'} · reference {recordText({ value: rule.reference }, 'value') || 'unavailable'} · tolerance {recordText({ value: rule.allowedTolerance }, 'value') || 'unavailable'}</Typography>
+          </Box>)}
+        </Stack>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75, overflowWrap: 'anywhere' }}>
+          Frozen evidence provenance: {JSON.stringify({ sourceRevision: qualification.sourceRevision, sourceFingerprint: qualification.sourceFingerprint, profileFingerprint: qualification.resolvedProfileFingerprint, evidence: qualification.perceptualEvidenceIdentity, reference: qualification.referenceIdentity, candidate: qualification.candidateIdentity })}
+        </Typography>
+      </Box> : null}
+    </Stack>
+  );
 }
 
 export function BatchPreflightDialog({

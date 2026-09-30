@@ -433,13 +433,55 @@ func TestMigrateAddsTestEncodeLifecycleTables(t *testing.T) {
 	if err := Migrate(db); err != nil {
 		t.Fatal(err)
 	}
-	if !db.Migrator().HasTable(&models.TestEncode{}) || !db.Migrator().HasTable(&models.TestEncodeArtifact{}) || !db.Migrator().HasTable(&models.TaskReservation{}) {
+	if !db.Migrator().HasTable(&models.TestEncode{}) || !db.Migrator().HasTable(&models.TestEncodeArtifact{}) || !db.Migrator().HasTable(&models.TaskReservation{}) || !db.Migrator().HasTable(&models.ProfileQualification{}) {
 		t.Fatal("Test Encode lifecycle tables were not migrated")
 	}
-	for _, column := range []string{"requested_configuration", "effective_configuration", "configuration_hash", "ffmpeg_command", "temporary_path", "expires_at", "reconciliation_status", "reconciliation_message", "last_reconciled_at"} {
+	for _, index := range []string{"idx_profile_qualification_evaluation", "idx_profile_qualification_scope"} {
+		if !db.Migrator().HasIndex(&models.ProfileQualification{}, index) {
+			t.Fatalf("profile_qualifications.%s was not migrated", index)
+		}
+	}
+	for _, column := range []string{"requested_configuration", "effective_configuration", "configuration_hash", "ffmpeg_command", "temporary_path", "expires_at", "reconciliation_status", "reconciliation_message", "last_reconciled_at", "source_revision", "resolved_profile_fingerprint"} {
 		if !db.Migrator().HasColumn(&models.TestEncode{}, column) {
 			t.Fatalf("test_encodes.%s was not migrated", column)
 		}
+	}
+}
+
+func TestProfileQualificationMigrationIsIdempotentAndAppendOnly(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "profile-qualification.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	qualification := models.ProfileQualification{
+		ID: "qualification:migration", TestEncodeID: 2, SourceAssetID: 3, SourcePath: "/raw/source.mkv",
+		SourceRevision: "physical-source", SourceFingerprint: "source-fingerprint", ProfileID: 4,
+		ProfileVersion: 5, ResolvedProfileFingerprint: "resolved-profile", CandidateIdentity: "candidate",
+		CandidateRevision: "candidate-revision", SamplingPlanSchemaVersion: "sampling-schema",
+		SamplingPlanPolicyVersion: "sampling-policy", SamplingPlanIdentity: "sampling-plan",
+		PerceptualEvidenceIdentity: "perceptual-evidence", ReferenceIdentity: "reference",
+		QualityPolicyVersion: "profile-qualification-policy-v1", Outcome: models.QualityOutcomePass,
+		Rules: models.JSONList{}, Warnings: models.JSONList{}, QualifiedScope: "asset_profile_candidate_evidence",
+		EvidenceProvenance: models.JSONMap{}, CreatedAt: time.Now().UTC(),
+	}
+	if err := db.Create(&qualification).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.ProfileQualification{}).Where("id = ?", qualification.ID).Update("outcome", models.QualityOutcomeFail).Error; err == nil {
+		t.Fatal("qualification update was not rejected")
+	}
+	if err := db.Where("id = ?", qualification.ID).Delete(&models.ProfileQualification{}).Error; err == nil {
+		t.Fatal("qualification delete was not rejected")
+	}
+	var count int64
+	if err := db.Model(&models.ProfileQualification{}).Where("id = ?", qualification.ID).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("immutable qualification disappeared: count=%d err=%v", count, err)
 	}
 }
 

@@ -531,6 +531,7 @@ export const api = {
   previewTestEncodeDelete: (ids: number[]) => request<TestEncodeDeletePreview>('/api/test-encodes/delete-preview', { method: 'POST', body: JSON.stringify({ ids }) }),
   deleteTestEncodes: (ids: number[], confirmKeep = false) => request<TestEncodeDeleteSelectionResult>('/api/test-encodes/delete', { method: 'POST', body: JSON.stringify({ ids, confirmKeep }) }),
   testEncode: (id: number) => request<TestEncode>(`/api/test-encodes/${id}`),
+  evaluateTestEncodeProfileQualification: (id: number) => request<NonNullable<TestEncode['profileQualification']>>(`/api/test-encodes/${id}/profile-qualification/evaluate`, { method: 'POST', body: JSON.stringify({}) }),
   createTestEncode: (input: TestEncodeInput) => request<TestEncode>('/api/test-encodes', { method: 'POST', body: JSON.stringify(input) }),
   cancelTestEncode: (id: number) => request<{ id: number; status: string }>(`/api/test-encodes/${id}/cancel`, { method: 'POST', body: JSON.stringify({}) }),
   keepTestEncode: (id: number, keep: boolean) => request<TestEncode>(`/api/test-encodes/${id}/keep`, { method: 'POST', body: JSON.stringify({ keep }) }),

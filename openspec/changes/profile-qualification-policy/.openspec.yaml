@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-09-29
+goal: "Evaluate the currently resolved Video Profile against identity-bound #69
+  evidence over frozen #70 windows, and freeze reviewed provenance in Queue
+  Batch Preflight."

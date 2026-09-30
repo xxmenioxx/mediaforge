@@ -61,6 +61,7 @@ func Migrate(db *gorm.DB) error {
 		&models.AssetMaintenanceOperation{},
 		&models.TestEncode{},
 		&models.TestEncodeArtifact{},
+		&models.ProfileQualification{},
 		&models.TaskReservation{},
 		&models.AppSetting{},
 		&models.ProtectedCredential{},
@@ -90,6 +91,9 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	if err := migrateValidationAppendOnly(db); err != nil {
+		return err
+	}
+	if err := migrateProfileQualificationAppendOnly(db); err != nil {
 		return err
 	}
 	if err := migratePublisherAppendOnly(db); err != nil {
@@ -338,6 +342,18 @@ func migrateValidationAppendOnly(db *gorm.DB) error {
 		`CREATE TRIGGER IF NOT EXISTS validation_runs_no_delete BEFORE DELETE ON validation_runs BEGIN SELECT RAISE(ABORT, 'validation runs are append-only'); END`,
 		`CREATE TRIGGER IF NOT EXISTS validation_overrides_no_update BEFORE UPDATE ON validation_overrides BEGIN SELECT RAISE(ABORT, 'validation overrides are immutable'); END`,
 		`CREATE TRIGGER IF NOT EXISTS validation_overrides_no_delete BEFORE DELETE ON validation_overrides BEGIN SELECT RAISE(ABORT, 'validation overrides are append-only'); END`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateProfileQualificationAppendOnly(db *gorm.DB) error {
+	for _, statement := range []string{
+		`CREATE TRIGGER IF NOT EXISTS profile_qualifications_no_update BEFORE UPDATE ON profile_qualifications BEGIN SELECT RAISE(ABORT, 'profile qualifications are immutable'); END`,
+		`CREATE TRIGGER IF NOT EXISTS profile_qualifications_no_delete BEFORE DELETE ON profile_qualifications BEGIN SELECT RAISE(ABORT, 'profile qualifications are append-only'); END`,
 	} {
 		if err := db.Exec(statement).Error; err != nil {
 			return err

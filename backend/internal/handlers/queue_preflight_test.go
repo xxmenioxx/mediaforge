@@ -102,7 +102,19 @@ func queuePreflightInput(fixture queuePreflightFixture, batchName string) QueueB
 
 func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	fixture := newQueuePreflightFixture(t, 1)
+	fixture.profile.OptimizationIntent = "balanced"
+	if err := fixture.db.Model(&models.Profile{}).Where("id = ?", fixture.profile.ID).Update("optimization_intent", fixture.profile.OptimizationIntent).Error; err != nil {
+		t.Fatal(err)
+	}
 	addQueuePreflightBitrateScan(t, fixture.db, fixture.paths[0], 1_000_000)
+	var source models.AssetRecord
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&source).Error; err != nil {
+		t.Fatal(err)
+	}
+	sourceRevision, err := queuePreflightSourceRevision(fixture.paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
 	router := queuePreflightRouter(fixture.db)
 	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", queuePreflightInput(fixture, "Season 1"))
 	if created.Code != http.StatusCreated {
@@ -118,8 +130,64 @@ func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	if candidate.Assets[0].Plan.ProfileVersion < 1 || candidate.Assets[0].Plan.ProfileCapturedAt == nil {
 		t.Fatalf("candidate did not expose frozen profile version and capture time: %#v", candidate.Assets[0].Plan)
 	}
+	frozenProfile, err := scheduler.RestoreProfileSnapshot(candidate.Assets[0].Plan.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileFingerprint, err := resolvedProfileFingerprint(frozenProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualCandidate, qualEvidence := profileQualificationFixture(t, true, 95)
+	qualCandidate.SourceAssetID, qualCandidate.SourcePath, qualCandidate.SourceRevision = source.ID, fixture.paths[0], sourceRevision
+	qualCandidate.Profile, qualCandidate.ResolvedProfileFingerprint = frozenProfile, profileFingerprint
+	qualEvidence = addQualificationArtifactDefaults(qualEvidence, "medium")
+	for index := range qualEvidence.ArtifactEvidence {
+		if qualEvidence.ArtifactEvidence[index].Kind == "temporal_instability" {
+			qualEvidence.ArtifactEvidence[index].Status = "unsupported"
+			qualEvidence.ArtifactEvidence[index].Scope = ""
+			qualEvidence.ArtifactEvidence[index].PairIdentity = nil
+		}
+	}
+	qualEvidence, err = ComputePerceptualEvidenceSetIdentity(qualEvidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualificationAssessment := EvaluateProfileQualification(qualCandidate, qualEvidence)
+	if qualificationAssessment.Outcome != models.QualityOutcomePassWithWarnings {
+		t.Fatalf("qualification fixture outcome=%s rules=%#v", qualificationAssessment.Outcome, qualificationAssessment.Rules)
+	}
+	testEncode := models.TestEncode{
+		ID: qualCandidate.TestEncodeID, SourceAssetID: source.ID, SourcePath: fixture.paths[0], SourceFingerprint: qualCandidate.SourceFingerprint,
+		SourceRevision: sourceRevision, ResolvedProfileFingerprint: profileFingerprint, ConfigurationHash: qualCandidate.ConfigurationIdentity,
+		ProfileID: frozenProfile.ID, ProfileVersion: candidate.Assets[0].Plan.ProfileVersion, Status: testEncodeReady,
+		RequestedConfiguration: models.JSONMap{"samplingPlan": qualCandidate.Plan, "samplingPlanIdentity": qualCandidate.Plan.PlanIdentity},
+		EffectiveConfiguration: models.JSONMap{"profile": frozenProfile},
+		ValidationReport:       models.JSONMap{"perceptualEvidence": qualEvidence},
+	}
+	if err := fixture.db.Create(&testEncode).Error; err != nil {
+		t.Fatal(err)
+	}
+	qualification := profileQualificationModel(qualCandidate, qualEvidence, qualificationAssessment, time.Now().UTC())
+	if err := fixture.db.Create(&qualification).Error; err != nil {
+		t.Fatal(err)
+	}
+	updated := queuePreflightRequest(t, router, http.MethodPut, "/preflights/"+candidate.ID, QueueBatchPreflightInput{
+		BatchID: candidate.BatchID, BatchName: candidate.BatchName, Revision: candidate.Revision,
+		Jobs: queuePreflightInput(fixture, candidate.BatchName).Jobs,
+	})
+	if updated.Code != http.StatusOK {
+		t.Fatalf("resolve qualification update status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	if err := json.Unmarshal(updated.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
 	if candidate.Assets[0].Plan.QualityEvidence == nil {
 		t.Fatal("candidate omitted persisted source bitrate and BPPPF evidence")
+	}
+	qualificationEvidence, _ := snapshotCacheMap(candidate.Assets[0].Plan.QualityEvidence["profileQualification"])
+	if stringFromUnknown(qualificationEvidence["status"]) != models.QualityOutcomePassWithWarnings || stringFromUnknown(qualificationEvidence["qualificationId"]) != qualification.ID {
+		t.Fatalf("candidate omitted current Profile Qualification provenance: %#v", qualificationEvidence)
 	}
 	sourceEvidence, _ := snapshotCacheMap(candidate.Assets[0].Plan.QualityEvidence["sourceBitrateEvidence"])
 	if stringFromUnknown(sourceEvidence["method"]) != quality.SourceBitrateMethodStreamMetadata || jsonInt64(sourceEvidence["bitrate"]) != 1_000_000 {
@@ -220,10 +288,46 @@ func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	if err := fixture.db.First(&acceptedPlan, *job.ActiveExecutionPlanID).Error; err != nil {
 		t.Fatal(err)
 	}
+	acceptedQualityEvidence, _ := snapshotCacheMap(acceptedPlan.Evaluation["qualityEvidence"])
+	acceptedQualification, _ := snapshotCacheMap(acceptedQualityEvidence["profileQualification"])
+	if stringFromUnknown(acceptedQualification["qualificationId"]) != qualification.ID || stringFromUnknown(acceptedQualification["policyVersion"]) != profileQualificationPolicyVersion {
+		t.Fatalf("accepted execution plan lost the exact qualification reviewed in Preflight: %#v", acceptedQualification)
+	}
 	acceptedEvidenceJSON, acceptedEvidenceErr := json.Marshal(acceptedPlan.Evaluation["qualityEvidence"])
 	reviewedEvidenceJSON, reviewedEvidenceErr := json.Marshal(candidate.Assets[0].Plan.QualityEvidence)
 	if acceptedEvidenceErr != nil || reviewedEvidenceErr != nil || !bytes.Equal(acceptedEvidenceJSON, reviewedEvidenceJSON) {
 		t.Fatalf("accepted ExecutionPlan evidence differs from reviewed evidence: %#v", acceptedPlan.Evaluation["qualityEvidence"])
+	}
+}
+
+func TestBatchPreflightUnqualifiedProfileAddsWarningWithoutBlocking(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	var source models.AssetRecord
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&source).Error; err != nil {
+		t.Fatal(err)
+	}
+	revision, err := queuePreflightSourceRevision(fixture.paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := scheduler.CaptureProfileSnapshot(fixture.profile, time.Now().UTC(), "profile-qualification-preflight-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := []queueBatchPreflightAsset{{
+		ID: "unqualified", MediaPath: fixture.paths[0], AssetRecordID: &source.ID, SourceRevision: revision,
+		Status: queuePreflightReady, Blockers: []string{}, Warnings: []string{}, Constraints: models.JSONMap{"ready": true},
+		ResolvedJob: &models.QueueJob{ProfileSnapshot: snapshot},
+	}}
+	if err := attachPreflightProfileQualifications(fixture.db, assets); err != nil {
+		t.Fatal(err)
+	}
+	qualification, ok := assets[0].QualityEvidence["profileQualification"].(profileQualificationPreflightView)
+	if !ok || qualification.Status != "NOT_QUALIFIED" {
+		t.Fatalf("missing qualification was not surfaced as unqualified: %#v", assets[0].QualityEvidence)
+	}
+	if assets[0].Status != queuePreflightReady || len(assets[0].Blockers) != 0 || len(assets[0].Warnings) == 0 {
+		t.Fatalf("unqualified evidence changed Queue blocking behavior: %#v", assets[0])
 	}
 }
 
