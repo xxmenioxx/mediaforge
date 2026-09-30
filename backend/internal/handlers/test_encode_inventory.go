@@ -110,6 +110,10 @@ func (h AssetHandler) listTestEncodeInventory(c *gin.Context) {
 			h.decorateTestEncode(&tests[index])
 		}
 	}
+	if err := h.attachTestEncodeQualifications(tests); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, tests)
 }
 

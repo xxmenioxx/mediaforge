@@ -282,10 +282,19 @@ type MetricCapability struct {
 }
 
 type ArtifactEvidence struct {
-	Kind     string         `json:"kind"`
-	Status   string         `json:"status"`
-	Reason   string         `json:"reason,omitempty"`
-	Evidence models.JSONMap `json:"evidence,omitempty"`
+	Identity            string                  `json:"identity,omitempty"`
+	Kind                string                  `json:"kind"`
+	Status              string                  `json:"status"`
+	Reason              string                  `json:"reason,omitempty"`
+	Scope               string                  `json:"scope,omitempty"`
+	Version             string                  `json:"version,omitempty"`
+	WindowIdentity      string                  `json:"windowIdentity,omitempty"`
+	PairIdentity        *ComparisonPairIdentity `json:"pairIdentity,omitempty"`
+	ReferenceSeverity   string                  `json:"referenceSeverity,omitempty"`
+	CandidateSeverity   string                  `json:"candidateSeverity,omitempty"`
+	ReferenceConfidence string                  `json:"referenceConfidence,omitempty"`
+	CandidateConfidence string                  `json:"candidateConfidence,omitempty"`
+	Evidence            models.JSONMap          `json:"evidence,omitempty"`
 }
 
 type PerceptualEvidenceSet struct {
@@ -439,6 +448,7 @@ func orderedPerceptualWindows(plan SamplingPlan, windows []PerceptualWindowEvide
 func ComputePerceptualEvidenceSetIdentity(value PerceptualEvidenceSet) (PerceptualEvidenceSet, error) {
 	value.Identity = ""
 	value.RequestedMetrics = canonicalMetricDescriptors(value.RequestedMetrics)
+	value.ArtifactEvidence = canonicalArtifactEvidence(value.ArtifactEvidence)
 	identity, err := canonicalEvidenceHash("perceptual-evidence", struct {
 		SchemaVersion             string             `json:"schemaVersion"`
 		PolicyVersion             string             `json:"policyVersion"`
@@ -451,12 +461,14 @@ func ComputePerceptualEvidenceSetIdentity(value PerceptualEvidenceSet) (Perceptu
 			PairIdentity   string `json:"pairIdentity,omitempty"`
 			Status         string `json:"status"`
 		} `json:"windowLedger"`
+		ArtifactEvidence []ArtifactEvidence `json:"artifactEvidence,omitempty"`
 	}{
 		SchemaVersion: value.SchemaVersion, PolicyVersion: value.PolicyVersion,
 		SamplingPlanIdentity: value.SamplingPlanIdentity, SourceRevision: value.SourceRevision,
 		RuntimeCapabilityIdentity: value.RuntimeCapabilityIdentity,
 		RequestedMetrics:          canonicalMetricDescriptors(value.RequestedMetrics),
 		WindowLedger:              perceptualWindowLedger(value.Windows),
+		ArtifactEvidence:          canonicalArtifactEvidence(value.ArtifactEvidence),
 	})
 	if err != nil {
 		return PerceptualEvidenceSet{}, err
@@ -475,6 +487,42 @@ func canonicalMetricDescriptors(values []MetricDescriptor) []MetricDescriptor {
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].LogicalMetric != result[j].LogicalMetric {
 			return result[i].LogicalMetric < result[j].LogicalMetric
+		}
+		return result[i].Identity < result[j].Identity
+	})
+	return result
+}
+
+func canonicalArtifactEvidence(values []ArtifactEvidence) []ArtifactEvidence {
+	result := append([]ArtifactEvidence(nil), values...)
+	for index := range result {
+		result[index].Identity, _ = canonicalEvidenceHash("artifact-evidence", struct {
+			Kind                string                  `json:"kind"`
+			Status              string                  `json:"status"`
+			Reason              string                  `json:"reason,omitempty"`
+			Scope               string                  `json:"scope,omitempty"`
+			Version             string                  `json:"version,omitempty"`
+			WindowIdentity      string                  `json:"windowIdentity,omitempty"`
+			PairIdentity        *ComparisonPairIdentity `json:"pairIdentity,omitempty"`
+			ReferenceSeverity   string                  `json:"referenceSeverity,omitempty"`
+			CandidateSeverity   string                  `json:"candidateSeverity,omitempty"`
+			ReferenceConfidence string                  `json:"referenceConfidence,omitempty"`
+			CandidateConfidence string                  `json:"candidateConfidence,omitempty"`
+			Evidence            models.JSONMap          `json:"evidence,omitempty"`
+		}{
+			result[index].Kind, result[index].Status, result[index].Reason, result[index].Scope,
+			result[index].Version, result[index].WindowIdentity, result[index].PairIdentity,
+			result[index].ReferenceSeverity, result[index].CandidateSeverity,
+			result[index].ReferenceConfidence, result[index].CandidateConfidence,
+			result[index].Evidence,
+		})
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Kind != result[j].Kind {
+			return result[i].Kind < result[j].Kind
+		}
+		if result[i].WindowIdentity != result[j].WindowIdentity {
+			return result[i].WindowIdentity < result[j].WindowIdentity
 		}
 		return result[i].Identity < result[j].Identity
 	})
@@ -552,7 +600,10 @@ func artifactEvidenceFromProvenance(provenance models.JSONMap) []ArtifactEvidenc
 		if signal.Value != nil {
 			evidence["value"] = *signal.Value
 		}
-		result = append(result, ArtifactEvidence{Kind: kind, Status: signal.Availability, Evidence: evidence})
+		result = append(result, ArtifactEvidence{
+			Kind: kind, Status: signal.Availability, Scope: "source_context",
+			Version: fmt.Sprintf("restoration-analysis-v%d", restorationAnalysisVersion), Evidence: evidence,
+		})
 	}
 	appendSignal("blocking", analysis.Blocking)
 	appendSignal("blur_detail_loss", analysis.EdgeDetail)

@@ -76,6 +76,14 @@ function candidate(overrides: Partial<QueueBatchPreflightResponse> = {}): QueueB
         qualityEvidence: {
           sourceBitrateEvidence: { schemaVersion: 1, samplingPolicyVersion: 1, bitrate: 1_100_000, method: 'packet_sampling', confidence: 'low', requestedWindows: 5, successfulWindows: 4, sampledWindows: [] },
           bpppfAssessment: { policyVersion: 1, encoderModelVersion: 1, status: 'high-risk', bpppf: 0.02, referenceBpppf: 0.045, explanation: 'Planning heuristic for reviewed output geometry and cadence.', heuristicOnly: true },
+          profileQualification: {
+            status: 'PASS_WITH_WARNINGS', qualificationId: 'qualification:reviewed', policyVersion: 'profile-qualification-policy-v1',
+            testEncodeId: 41, sourceRevision: 'source-revision-1', sourceFingerprint: 'source-fingerprint-1',
+            resolvedProfileFingerprint: 'resolved-profile-v1:abc', perceptualEvidenceIdentity: 'evidence:abc',
+            referenceIdentity: 'reference:abc', candidateIdentity: 'candidate:abc',
+            rules: [{ key: 'artifact.blocking', outcome: 'PASS', disposition: 'blocking', explanation: 'No candidate blocking regression.' }],
+            warnings: ['One selected high motion window needs manual review.'],
+          },
         },
         runtimeSnapshotId: 11, runtimeProfile: 'desktop_safe', destination: { destinationRoot: '/library' },
         publishMode: 'standard', processingMode: 'full_encode',
@@ -110,6 +118,8 @@ describe('BatchPreflightDialog', () => {
     expect(screen.getByText('Source video bitrate: 1.10 Mbps')).toBeTruthy();
     expect(screen.getByText('Packet windows succeeded: 4/5')).toBeTruthy();
     expect(screen.getByText(/BPPPF planning rail: high-risk/)).toBeTruthy();
+    expect(screen.getByText(/Profile Qualification: PASS_WITH_WARNINGS/)).toBeTruthy();
+    expect(screen.getAllByText(/qualification:reviewed/).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     await screen.findByRole('button', { name: 'Resolve Preflight again' });
     expect(mocks.edit).toHaveBeenCalledWith('candidate-1', 1);

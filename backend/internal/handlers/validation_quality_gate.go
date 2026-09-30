@@ -625,7 +625,7 @@ func reduceValidationOutcome(findings []validationFinding) (string, bool) {
 	actionable := false
 	for _, finding := range findings {
 		if finding.Disposition == "blocking" && finding.State == "FAIL" {
-			return "FAIL", hasActionableFinding(findings)
+			return models.QualityOutcomeFail, hasActionableFinding(findings)
 		}
 		if finding.Disposition == "blocking" && (finding.State == "REVIEW_REQUIRED" || finding.State == "UNVERIFIED") {
 			unresolved = true
@@ -638,12 +638,12 @@ func reduceValidationOutcome(findings []validationFinding) (string, bool) {
 		}
 	}
 	if unresolved {
-		return "REVIEW_REQUIRED", actionable
+		return models.QualityOutcomeReviewRequired, actionable
 	}
 	if warning {
-		return "PASS_WITH_WARNINGS", actionable
+		return models.QualityOutcomePassWithWarnings, actionable
 	}
-	return "PASS", false
+	return models.QualityOutcomePass, false
 }
 
 func validationDisplayScore(findings []validationFinding) int {

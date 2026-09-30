@@ -365,10 +365,55 @@ export type TestEncode = {
   errorMessage: string;
   stale: boolean;
   staleReason?: string;
+  profileQualification?: ProfileQualification;
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ProfileQualificationRuleResult = {
+  key: string;
+  outcome: string;
+  disposition: string;
+  observed?: unknown;
+  reference?: unknown;
+  allowedTolerance?: unknown;
+  windowIdentity?: string;
+  sceneCategory?: string;
+  explanation: string;
+  evidenceProvenance?: Record<string, unknown>;
+};
+
+export type ProfileQualification = {
+  id: string;
+  testEncodeId: number;
+  sourceAssetId: number;
+  sourcePath: string;
+  sourceRevision: string;
+  sourceFingerprint: string;
+  profileId: number;
+  profileVersion: number;
+  resolvedProfileFingerprint: string;
+  candidateIdentity: string;
+  candidateRevision: string;
+  samplingPlanSchemaVersion: string;
+  samplingPlanPolicyVersion: string;
+  samplingPlanIdentity: string;
+  perceptualEvidenceIdentity: string;
+  referenceIdentity: string;
+  qualityPolicyVersion: string;
+  outcome: 'PASS' | 'PASS_WITH_WARNINGS' | 'REVIEW_REQUIRED' | 'FAIL';
+  rules: ProfileQualificationRuleResult[];
+  warnings: string[];
+  qualifiedScope: string;
+  evidenceProvenance: Record<string, unknown>;
+  worstWindowIdentity?: string;
+  worstSceneCategory?: string;
+  worstRuleKeys?: string[];
+  createdAt: string;
+  stale?: boolean;
+  staleReason?: string;
 };
 
 export type TestEncodePolicy = {
@@ -1696,6 +1741,25 @@ export type QueueBatchPreflightPlan = {
   qualityEvidence?: {
     sourceBitrateEvidence?: SourceBitrateEvidence;
     bpppfAssessment?: BPPPFAssessment;
+    profileQualification?: {
+      status: string;
+      message?: string;
+      qualificationId?: string;
+      outcome?: string;
+      policyVersion?: string;
+      testEncodeId?: number;
+      sourceAssetId?: number;
+      sourceRevision?: string;
+      sourceFingerprint?: string;
+      resolvedProfileFingerprint?: string;
+      perceptualEvidenceIdentity?: string;
+      referenceIdentity?: string;
+      candidateIdentity?: string;
+      worstWindowIdentity?: string;
+      worstSceneCategory?: string;
+      rules?: ProfileQualificationRuleResult[];
+      warnings?: string[];
+    };
   };
   selectedEncoder: string;
   runtimeSnapshotId: number;

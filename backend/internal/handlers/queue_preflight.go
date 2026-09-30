@@ -758,6 +758,9 @@ func (h QueueHandler) resolveQueueBatchPreflight(input QueueBatchPreflightInput,
 		item.RuntimeProfile = runtime.SelectedProfile
 		state.Assets = append(state.Assets, item)
 	}
+	if err := attachPreflightProfileQualifications(h.db, state.Assets); err != nil {
+		return queueBatchPreflightState{}, err
+	}
 	return state, nil
 }
 

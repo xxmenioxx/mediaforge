@@ -2711,6 +2711,7 @@ func queueSelectedAssetsTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&models.AssetRecord{}, &models.Profile{}, &models.ProfileAssignment{}, &models.AssetScopeConfiguration{},
+		&models.TestEncode{}, &models.ProfileQualification{},
 		&models.QueueJob{}, &models.ExecutionPlan{}, &models.SchedulerReservation{}, &models.AppSetting{}, &models.ScanResult{}, &models.AssetMaintenanceOperation{}, &models.Library{}, &models.RuntimeSnapshot{}, &models.RuntimeState{},
 		&models.QueueBatchPreflight{},
 	); err != nil {

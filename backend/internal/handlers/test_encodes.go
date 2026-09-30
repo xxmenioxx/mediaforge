@@ -113,6 +113,10 @@ func (h AssetHandler) GetTestEncode(c *gin.Context) {
 		return
 	}
 	h.decorateTestEncode(&test)
+	if err := h.attachTestEncodeQualifications([]models.TestEncode{test}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, test)
 }
 
@@ -137,6 +141,16 @@ func (h AssetHandler) CreateTestEncode(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "fingerprint source: " + err.Error()})
 		return
 	}
+	physicalRevision, err := queuePreflightSourceRevision(resolved.job.MediaPath)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "identify source revision: " + err.Error()})
+		return
+	}
+	profileFingerprint, err := resolvedProfileFingerprint(resolved.profile)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "fingerprint resolved profile: " + err.Error()})
+		return
+	}
 	start, duration := resolveTestEncodeWindow(h.db, resolved.job.MediaPath, input.StartMode, input.StartSeconds, input.DurationSeconds)
 	sourceDuration := testEncodeCanonicalSourceDuration(h.db, resolved.job.MediaPath, start, duration)
 	plan := h.samplingPlanForFrozenWindow(
@@ -157,7 +171,8 @@ func (h AssetHandler) CreateTestEncode(c *gin.Context) {
 		expiresAt = &expires
 	}
 	test := models.TestEncode{
-		SourcePath: resolved.job.MediaPath, SourceFingerprint: fingerprint, SourceSizeBytes: info.Size(), SourceModifiedAt: &modified,
+		SourcePath: resolved.job.MediaPath, SourceFingerprint: fingerprint, SourceRevision: physicalRevision,
+		ResolvedProfileFingerprint: profileFingerprint, SourceSizeBytes: info.Size(), SourceModifiedAt: &modified,
 		LibraryID: resolved.library.ID, ConfigurationSource: normalizedTestEncodeConfigurationSource(input.ConfigurationSource),
 		RequestedConfiguration: resolved.requested, ProfileID: resolved.job.ProfileID, ProfileVersion: resolved.job.ProfileVersion,
 		StartSeconds: start, DurationSeconds: duration, Status: testEncodeRunning, Phase: "preparing", Progress: 1,
@@ -845,6 +860,12 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 	validationPassed, _ := report["passed"].(bool)
 	if readyResult != nil && readyResult.RowsAffected == 1 && validationPassed {
 		_ = recordJellyfinTestEncodeReady(h.db, id, test.LibraryID, true, validationPassed)
+	}
+	if readyResult != nil && readyResult.RowsAffected == 1 {
+		var completedTest models.TestEncode
+		if h.db.First(&completedTest, id).Error == nil {
+			_, _ = h.evaluateAndPersistProfileQualification(completedTest)
+		}
 	}
 }
 

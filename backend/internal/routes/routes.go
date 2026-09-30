@@ -131,6 +131,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/test-encodes/reconcile", assets.ReconcileTestEncodes)
 		api.POST("/test-encodes", assets.CreateTestEncode)
 		api.GET("/test-encodes/:id", assets.GetTestEncode)
+		api.POST("/test-encodes/:id/profile-qualification/evaluate", assets.EvaluateTestEncodeProfileQualification)
 		api.POST("/test-encodes/:id/cancel", assets.CancelTestEncode)
 		api.POST("/test-encodes/:id/keep", assets.KeepTestEncode)
 		api.DELETE("/test-encodes/:id", assets.DeleteTestEncode)

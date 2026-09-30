@@ -5,11 +5,11 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
-import type { Library, TestEncode } from '../api/types';
+import type { Library, ProfileQualification, TestEncode } from '../api/types';
 import { TestEncodeDialog } from './TestEncodeDialog';
 
 vi.mock('../api/client', () => ({ api: {
-  settings: vi.fn(), testEncodes: vi.fn(), jellyfinOutcomes: vi.fn(), retryJellyfinOutcome: vi.fn(), createTestEncode: vi.fn(), cancelTestEncode: vi.fn(), keepTestEncode: vi.fn(), deleteTestEncode: vi.fn(),
+  settings: vi.fn(), testEncodes: vi.fn(), jellyfinOutcomes: vi.fn(), retryJellyfinOutcome: vi.fn(), createTestEncode: vi.fn(), cancelTestEncode: vi.fn(), keepTestEncode: vi.fn(), deleteTestEncode: vi.fn(), evaluateTestEncodeProfileQualification: vi.fn(),
 } }));
 
 const readyTest = {
@@ -24,6 +24,20 @@ const readyTest = {
 } satisfies TestEncode;
 
 const testLibraries: Library[] = [{ id: 2, name: 'TV', sourcePath: '/raw', destinationPath: '/library', type: 'tv', validationRules: {}, createdAt: '', updatedAt: '' }];
+
+const qualification: ProfileQualification = {
+  id: 'qualification:41', testEncodeId: 41, sourceAssetId: 9, sourcePath: '/raw/show/episode.mkv',
+  sourceRevision: 'source-revision', sourceFingerprint: 'source-fingerprint', profileId: 8, profileVersion: 3,
+  resolvedProfileFingerprint: 'resolved-profile-v1:abc', candidateIdentity: 'candidate:41', candidateRevision: 'revision:41',
+  samplingPlanSchemaVersion: 'sampling-schema-v1', samplingPlanPolicyVersion: 'sampling-policy-v1', samplingPlanIdentity: 'plan:41',
+  perceptualEvidenceIdentity: 'evidence:41', referenceIdentity: 'reference:41', qualityPolicyVersion: 'profile-qualification-policy-v1',
+  outcome: 'REVIEW_REQUIRED', rules: [{ key: 'metric.worst_window', outcome: 'REVIEW_REQUIRED', disposition: 'blocking',
+    observed: 84, reference: 92, allowedTolerance: 0, windowIdentity: 'window:motion', sceneCategory: 'high_motion',
+    explanation: 'The high motion window is below the MVForge policy floor.', evidenceProvenance: { pairIdentity: 'pair:motion' } }],
+  warnings: ['Review the high motion sample.'], qualifiedScope: 'asset_profile_candidate_evidence',
+  evidenceProvenance: { optimizationIntent: 'balanced' }, worstWindowIdentity: 'window:motion', worstSceneCategory: 'high_motion',
+  worstRuleKeys: ['metric.worst_window'], createdAt: '2026-09-29T00:00:00Z',
+};
 
 function renderDialog(configurationSource: 'effective_asset' | 'lab_draft' = 'effective_asset', defaultLibraryId = 2, libraries = testLibraries) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -55,6 +69,7 @@ describe('TestEncodeDialog', () => {
     });
     vi.mocked(api.createTestEncode).mockResolvedValue(readyTest);
     vi.mocked(api.deleteTestEncode).mockResolvedValue({ id: readyTest.id, status: 'deleted' });
+    vi.mocked(api.evaluateTestEncodeProfileQualification).mockResolvedValue(qualification);
   });
 
   it('creates an independent test with the selected window and effective Asset configuration', async () => {
@@ -114,6 +129,36 @@ describe('TestEncodeDialog', () => {
     expect(screen.getByRole('button', { name: 'Retry Jellyfin refresh' })).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Retry Jellyfin refresh' }));
     await waitFor(() => expect(api.retryJellyfinOutcome).toHaveBeenCalledWith(91, expect.anything()));
+  });
+
+  it('shows rule explanations and jumps to the existing worst evidence window', async () => {
+    vi.mocked(api.testEncodes).mockResolvedValue([{
+      ...readyTest,
+      id: qualification.testEncodeId,
+      profileQualification: qualification,
+      validationReport: { perceptualEvidence: { windows: [{ windowIdentity: 'window:motion', startSeconds: 22, durationSeconds: 5, roles: ['high_motion'], pairIdentity: { identity: 'pair:motion' }, metrics: [{ logicalMetric: 'VMAF', status: 'available', value: { kind: 'finite', value: 84 } }] }] } },
+    }]);
+    const user = userEvent.setup();
+    renderDialog();
+    await user.click(await screen.findByRole('button', { name: /details/i }));
+    await user.click(screen.getByRole('tab', { name: /profile qualification/i }));
+    expect(screen.getAllByText('REVIEW_REQUIRED').length).toBeGreaterThan(0);
+    expect(screen.getByText('The high motion window is below the MVForge policy floor.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /compare worst scene/i }));
+    expect(screen.getByText(/22s \+ 5s/)).toBeTruthy();
+    expect(screen.getAllByText(/pair:motion/).length).toBeGreaterThan(0);
+  });
+
+  it('evaluates persisted evidence without creating another Test Encode', async () => {
+    vi.mocked(api.testEncodes).mockResolvedValue([readyTest]);
+    const user = userEvent.setup();
+    renderDialog();
+    await user.click(await screen.findByRole('button', { name: /details/i }));
+    await user.click(screen.getByRole('tab', { name: /profile qualification/i }));
+    await user.click(screen.getByRole('button', { name: /evaluate existing evidence/i }));
+    await waitFor(() => expect(api.evaluateTestEncodeProfileQualification).toHaveBeenCalledWith(readyTest.id, expect.anything()));
+    expect(api.createTestEncode).not.toHaveBeenCalled();
+    expect((await screen.findAllByText('REVIEW_REQUIRED')).length).toBeGreaterThan(0);
   });
 
   it('opens without an inherited destination and allows choosing one inside', async () => {

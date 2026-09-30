@@ -693,6 +693,18 @@ func TestValidationOutcomeReductionUsesRulesAndDispositionNotScore(t *testing.T)
 	}
 }
 
+func TestProfileQualificationPassDoesNotBypassFinalValidationFailure(t *testing.T) {
+	qualification := models.ProfileQualification{Outcome: models.QualityOutcomePass}
+	if qualification.Outcome != models.QualityOutcomePass {
+		t.Fatal("test precondition: qualification should pass")
+	}
+	finalOutputFinding := validationFinding{Key: "output.integrity", Disposition: "blocking", State: "FAIL"}
+	outcome, _ := reduceValidationOutcome([]validationFinding{finalOutputFinding})
+	if outcome != models.QualityOutcomeFail {
+		t.Fatalf("pre-batch qualification PASS bypassed final output Validation: outcome=%s", outcome)
+	}
+}
+
 func TestOverrideUsesServerActorRequiresReasonAndCannotOverrideIdentity(t *testing.T) {
 	db := testEncodeTestDB(t, "quality-gate-override-actor", &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
 	root := t.TempDir()
