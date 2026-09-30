@@ -65,8 +65,8 @@ import { FrameCadenceControls } from '../components/FrameCadenceControls';
 import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
-import { AssetsSummaryStrip, LibraryTreePanel, SelectedAssetDetail } from '../components/AssetsWorkspace';
-import { assetPathWithin, formatDurationSummary, type LibraryTreeSelection } from '../components/assetsWorkspaceModel';
+import { AssetsSummaryStrip, LibraryTreePanel, RawHierarchyPanel, SelectedAssetDetail } from '../components/AssetsWorkspace';
+import { assetPathWithin, formatDurationSummary, type LibraryTreeSelection, type RawHierarchySelection } from '../components/assetsWorkspaceModel';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
@@ -102,7 +102,8 @@ const VIDEO_PROFILE_AUDIO_ONLY = -2;
 export function AssetsPage() {
   const [queuePreflightCandidate, setQueuePreflightCandidate] = useState<QueueBatchPreflightResponse | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialLocation = searchParams.get('location') === 'library' || ['library', 'converted', 'archive', 'reports'].includes(searchParams.get('tab') ?? '') ? 'library' : 'unprocessed';
+  const legacyTabValue = searchParams.get('tab') ?? '';
+  const tab: 'raw' | 'library' = searchParams.get('location') === 'library' || ['library', 'converted', 'archive', 'reports'].includes(legacyTabValue) ? 'library' : 'raw';
   const initialProvenance = searchParams.get('provenance') ?? (searchParams.get('tab') === 'converted' ? 'converted' : '');
   useEffect(() => {
     const handleCandidate = (event: Event) => setQueuePreflightCandidate((event as CustomEvent<QueueBatchPreflightResponse>).detail);
@@ -115,7 +116,6 @@ export function AssetsPage() {
   }, []);
   const originalFilterValue = searchParams.get('original') ?? '';
   const originalFilter = originalFilterValue === 'archived' ? '' : originalFilterValue;
-  const [tab, setTab] = useState<'unprocessed' | 'library'>(initialLocation);
   const [libraryDecision, setLibraryDecision] = useState<string>(initialProvenance);
   const [validationFilter, setValidationFilter] = useState(searchParams.get('validation') ?? '');
   const [workflowFilter, setWorkflowFilter] = useState(searchParams.get('workflow') ?? '');
@@ -125,7 +125,6 @@ export function AssetsPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const activeAdvancedFilters = [originalFilter, validationFilter, workflowFilter, attentionFilter].filter(Boolean).length;
-	const [sourceGroupId, setSourceGroupId] = useState(0);
   const legacyTab = searchParams.get('tab');
   const unsupportedLegacyTab = legacyTab && !['unprocessed', 'library', 'converted', 'archive', 'reports'].includes(legacyTab);
   useEffect(() => {
@@ -156,6 +155,26 @@ export function AssetsPage() {
     // `asset` remains a supported legacy deep link that selects a specific asset.
     // Once the search field is edited, keep the search term separate from that selection.
     if (value !== (searchParams.get('search') ?? searchParams.get('asset') ?? '')) next.delete('asset');
+    setSearchParams(next);
+  };
+  const switchLocation = (location: 'raw' | 'library') => {
+    const next = new URLSearchParams(searchParams);
+    const commonSearch = next.get('search') ?? next.get('asset') ?? '';
+    next.set('location', location);
+    next.delete('tab');
+    next.delete('asset');
+    if (commonSearch) next.set('search', commonSearch);
+    if (location === 'raw') {
+      for (const key of ['provenance', 'mediaArea', 'validation', 'original', 'workflow', 'attention', 'evidence']) next.delete(key);
+      setLibraryDecision('');
+      setValidationFilter('');
+      setWorkflowFilter('');
+      setAttentionFilter('');
+      setMediaArea('');
+    } else {
+      for (const key of ['sourceGroup', 'logicalGroup', 'path']) next.delete(key);
+    }
+    setAdvancedOpen(false);
     setSearchParams(next);
   };
   const jobs = useQuery({
@@ -193,24 +212,12 @@ export function AssetsPage() {
   const acceptedCount = safeArray(assets.data?.accepted).length;
   const sourceGroups = safeArray(assets.data?.sourceGroups);
   const legacyAssetPath = searchParams.get('asset') ?? '';
-  const [previousLegacyAssetSelection, setPreviousLegacyAssetSelection] = useState({
-    legacyAssetPath,
-    sourceGroups: assets.data?.sourceGroups,
-  });
-  if (previousLegacyAssetSelection.legacyAssetPath !== legacyAssetPath || previousLegacyAssetSelection.sourceGroups !== assets.data?.sourceGroups) {
-    setPreviousLegacyAssetSelection({ legacyAssetPath, sourceGroups: assets.data?.sourceGroups });
-    if (legacyAssetPath && sourceGroups.length) {
-      const containing = sourceGroups.find((group) => safeArray(group.logicalGroups).some((logical) => safeArray(logical.assetPaths).some((path) => safeArray(path.assets).some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)))));
-      if (containing) setSourceGroupId(containing.id);
-    }
-  }
   const libraryGroups = safeArray(assets.data?.libraryGroups);
   const canonicalLibraryGroups = libraryGroups.length ? libraryGroups : safeArray(assets.data?.convertedGroups);
   const statusGroups = safeArray(
     tab === 'library' ? canonicalLibraryGroups : assets.data?.rawGroups ?? assets.data?.unprocessedGroups,
   );
 	const currentGroups = statusGroups;
-	const selectedSourceGroup = sourceGroups.find((group) => group.id === sourceGroupId) ?? sourceGroups[0];
   const allInventoryGroups = [
     ...safeArray(assets.data?.unprocessedGroups), ...safeArray(assets.data?.libraryGroups),
     ...safeArray(assets.data?.convertedGroups),
@@ -236,9 +243,20 @@ export function AssetsPage() {
   return (
     <>
       <Box component="header" sx={{ px: { xs: 2, md: 4 }, pt: { xs: 1.5, md: 2 }, pb: 0.5 }}>
-        <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 0.5 }}>
-          <Typography component="h1" variant="h1" sx={{ fontSize: '1.45rem', lineHeight: 1.2 }}>Assets</Typography>
-          <Typography variant="caption" color="text.secondary">Library and Unprocessed inventory</Typography>
+        <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={0.5} sx={{ mb: 0.5 }}>
+          <Stack direction="row" alignItems="baseline" spacing={1}>
+            <Typography component="h1" variant="h1" sx={{ fontSize: '1.45rem', lineHeight: 1.2 }}>Assets</Typography>
+            <Typography variant="caption" color="text.secondary">{tab === 'raw' ? 'Source inventory' : 'Library inventory'}</Typography>
+          </Stack>
+          <Tabs
+            value={tab}
+            onChange={(_, value: 'raw' | 'library') => switchLocation(value)}
+            aria-label="Asset inventory context"
+            sx={{ minHeight: 40, '& .MuiTab-root': { minHeight: 40, minWidth: 92 } }}
+          >
+            <Tab label="RAW" value="raw" />
+            <Tab label="Library" value="library" />
+          </Tabs>
         </Stack>
         <AssetsSummaryStrip
           total={totalAssetsSummary}
@@ -260,25 +278,6 @@ export function AssetsPage() {
               justifyContent="space-between"
               spacing={1.5}
             >
-              <Tabs
-                value={tab}
-                onChange={(_, value) => {
-                  setTab(value);
-                  setAssetQuery('');
-                  setLibraryDecision('');
-                  setValidationFilter('');
-                  setWorkflowFilter('');
-                  setAttentionFilter('');
-                  setMediaArea('');
-                  setSearchParams(value === 'library' ? { location: 'library' } : { location: 'raw' });
-                }}
-                variant="scrollable"
-                scrollButtons="auto"
-                sx={{ minHeight: 48, flexShrink: 0 }}
-              >
-                <Tab label={<AssetTabLabel label="Unprocessed" count={unprocessedCount} color="warning" />} value="unprocessed" />
-                <Tab label={<AssetTabLabel label="Library" count={libraryCount} color="primary" />} value="library" />
-              </Tabs>
               <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ flex: 1 }}>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" alignItems={{ xs: 'stretch', sm: 'center' }} sx={{ width: '100%' }}>
                   <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => syncAssets.mutate()} disabled={syncAssets.isPending} sx={{ minHeight: 40 }}>
@@ -366,11 +365,6 @@ export function AssetsPage() {
                 </Stack>
               </Stack>
             </Stack>
-			{sourceGroups.length > 0 && tab === 'unprocessed' ? (
-				<Tabs value={selectedSourceGroup?.id ?? false} onChange={(_, value) => { setSourceGroupId(value); setAssetQuery(''); }} variant="scrollable" scrollButtons="auto" sx={{ mt: 1, borderTop: 1, borderColor: 'divider' }}>
-					{sourceGroups.map((group) => <Tab key={group.id} value={group.id} label={`${group.name} (${group.fileCount})`} />)}
-				</Tabs>
-			) : null}
             {tab === 'library' && libraryDecision === 'converted' ? <Alert severity="info" sx={{ mt: 1.25 }}>Converted is a Library provenance projection. Re-processing and original retention remain independent lifecycle evidence.</Alert> : null}
             {syncAssets.isSuccess ? (
               <Alert severity={syncAssets.data.reviewMatches > 0 ? 'warning' : 'success'} sx={{ mt: 1 }}>
@@ -382,11 +376,11 @@ export function AssetsPage() {
           {syncAssets.isError ? <Alert severity="warning" sx={{ m: 2 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
           {showEvidence ? (
             <AssetReportsPanel inventory={assets.data} />
-		  ) : tab === 'unprocessed' ? (
-			<AssetsErrorBoundary boundaryKey={`unprocessed-${selectedSourceGroup?.id ?? 'empty'}`}>
-				<UnprocessedAssetsView
-					key={selectedSourceGroup?.id ?? 'empty'}
-					sourceGroup={selectedSourceGroup}
+		  ) : tab === 'raw' ? (
+			<AssetsErrorBoundary boundaryKey="raw">
+				<RawAssetsView
+					key={assetQuery}
+					sourceGroups={sourceGroups}
 					libraries={libraries.data ?? []}
 					profiles={profiles.data ?? []}
 					audioProfiles={audioProfiles}
@@ -456,15 +450,6 @@ function LegacyAnalysisRecords({ settings }: { settings: AppSetting[] }) {
       </Stack>
     </Collapse>
   </Box>;
-}
-
-function AssetTabLabel({ label, count, color }: { label: string; count: number; color: 'warning' | 'success' | 'primary' | 'default' }) {
-  return (
-    <Stack direction="row" alignItems="center" spacing={1}>
-      <Typography fontWeight={700}>{label}</Typography>
-      <Chip label={count} color={color} size="small" />
-    </Stack>
-  );
 }
 
 function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
@@ -681,7 +666,7 @@ type AssetTableProps = {
 };
 
 function AssetTable(props: AssetTableProps) {
-  return props.mode === 'library'
+  return props.mode !== 'unprocessed'
     ? <LibraryAssetTable {...props} />
     : <LegacyAssetTable {...props} />;
 }
@@ -809,7 +794,7 @@ function LibraryAssetTable({
     queryKey: ['assetSnapshot', selectedAsset?.path ?? ''],
     queryFn: () => api.latestSnapshot(selectedAsset!.path),
     enabled: Boolean(selectedAsset && !selectedAsset.missing),
-    staleTime: 0,
+    staleTime: 15_000,
   });
   const selectedPathGroup = treeSelection.path
     ? visibleGroups.find((group) => normalizePath(group.path) === normalizePath(treeSelection.path))
@@ -887,9 +872,10 @@ function LibraryAssetTable({
                     <TableCell sx={{ width: '37%' }}>Name</TableCell>
                     <TableCell sx={{ width: '13%' }}>Status</TableCell>
                     <TableCell sx={{ width: '17%' }}>Profile</TableCell>
-                    <TableCell sx={{ width: '12%' }}>Subtitles</TableCell>
-                    <TableCell sx={{ width: '8%' }}>Duration</TableCell>
-                    <TableCell sx={{ width: '13%' }}>Modified</TableCell>
+                  <TableCell sx={{ width: '12%' }}>Subtitles</TableCell>
+                  <TableCell sx={{ width: '8%' }}>Duration</TableCell>
+                  <TableCell sx={{ width: '13%' }}>Modified</TableCell>
+                  <TableCell padding="checkbox" sx={{ width: 42 }} />
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -1010,47 +996,314 @@ type AssetCollection = {
   sizeBytes: number;
 };
 
-function UnprocessedAssetsView({
-	sourceGroup, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query, legacyAssetPath,
-}: {
-	sourceGroup?: AssetSourceGroup;
-	libraries: Library[];
-	profiles: Profile[];
-	audioProfiles: AudioEnhancementProfile[];
-	trackProfiles: TrackProfile[];
-	settings: AppSetting[];
-	assetCategories: string[];
-	queueJobs: QueueJob[];
-	runningSnapshotPaths: Set<string>;
-	query: string;
-	legacyAssetPath: string;
+function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query, legacyAssetPath }: {
+  sourceGroups: AssetSourceGroup[];
+  libraries: Library[];
+  profiles: Profile[];
+  audioProfiles: AudioEnhancementProfile[];
+  trackProfiles: TrackProfile[];
+  settings: AppSetting[];
+  assetCategories: string[];
+  queueJobs: QueueJob[];
+  runningSnapshotPaths: Set<string>;
+  query: string;
+  legacyAssetPath: string;
 }) {
-	const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(() => new Set());
-	if (!sourceGroup) return <CardContent><Alert severity="info">No Unprocessed Source Groups found.</Alert></CardContent>;
-	const cleanQuery = query.trim().toLowerCase();
-	const logicalGroups = safeArray(sourceGroup.logicalGroups).filter((logicalGroup) => sourceLogicalGroupMatches(logicalGroup, cleanQuery));
-	return (
-		<Box sx={{ borderTop: 1, borderColor: 'divider', px: { xs: 1, sm: 2 }, pb: 2 }}>
-			<Box sx={{ px: 2, py: 1.5 }}>
-				<Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}><Typography variant="h2">{sourceGroup.name}</Typography><SourceGroupConfigureButton sourceGroup={sourceGroup} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} /></Stack>
-				<Typography variant="body2" color="text.secondary">{countLabel(sourceGroup.assetCount, 'asset')} · {countLabel(sourceGroup.titleCount, 'title')} · {countLabel(sourceGroup.pathCount, 'path')} · {formatBytes(sourceGroup.totalSizeBytes)}</Typography>
-				{selectedSelectableAssetsForLogicalGroups(sourceGroup.logicalGroups, selectedAssetIds).length ? <UnprocessedSelectionToolbar selectedAssetIds={selectedAssetIds} logicalGroups={sourceGroup.logicalGroups} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} queueJobs={queueJobs} onClear={() => setSelectedAssetIds(new Set())} /> : null}
-			</Box>
-			<Stack spacing={1.25}>{logicalGroups.map((logicalGroup) => <UnprocessedLogicalGroup key={logicalGroup.id} logicalGroup={logicalGroup} legacyAssetPath={legacyAssetPath} selectedAssetIds={selectedAssetIds} onAssetSelectionChange={(assetIds, selected) => setSelectedAssetIds((current) => { const next = new Set(current); for (const assetId of assetIds) { if (selected) next.add(assetId); else next.delete(assetId); } return next; })} libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} settings={settings} assetCategories={assetCategories} queueJobs={queueJobs} runningSnapshotPaths={runningSnapshotPaths} />)}{!logicalGroups.length ? <Alert severity="info">No Unprocessed assets match this search.</Alert> : null}</Stack>
-		</Box>
-	);
+  const [selectionState, setSelectionState] = useState<RawHierarchySelection | null>(null);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(() => new Set());
+  const [selectedAssetPathState, setSelectedAssetPathState] = useState({ identity: '', path: '' });
+  const [pageState, setPageState] = useState({ identity: '', page: 0 });
+  const [rowsPerPage, setRowsPerPage] = useState(25);
+  const selectedActions = useRef<{ path: string; actions: AssetWorkspaceActions } | null>(null);
+  const registerActions = useCallback((path: string, actions: AssetWorkspaceActions | null) => {
+    if (actions) selectedActions.current = { path, actions };
+    else if (selectedActions.current?.path === path) selectedActions.current = null;
+  }, []);
+  const cleanQuery = query.trim().toLowerCase();
+  const filteredSourceGroups = useMemo(() => sourceGroups.map((sourceGroup) => ({
+    ...sourceGroup,
+    logicalGroups: safeArray(sourceGroup.logicalGroups).filter((logicalGroup) => sourceLogicalGroupMatches(logicalGroup, cleanQuery)),
+  })).filter((sourceGroup) => sourceGroup.logicalGroups.length > 0), [sourceGroups, cleanQuery]);
+  const deepLinkSelection = useMemo(() => legacyAssetPath
+    ? sourceGroups.flatMap((sourceGroup) => safeArray(sourceGroup.logicalGroups).flatMap((logicalGroup) => safeArray(logicalGroup.assetPaths).map((path) => ({ sourceGroup, logicalGroup, path }))))
+      .find(({ path }) => safeArray(path.assets).some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)))
+    : undefined, [legacyAssetPath, sourceGroups]);
+  const firstLogicalGroup = filteredSourceGroups[0]?.logicalGroups[0];
+  const selection = selectionState ?? (deepLinkSelection
+    ? { kind: 'path' as const, sourceGroupId: deepLinkSelection.sourceGroup.id, logicalGroupId: deepLinkSelection.logicalGroup.id, pathId: deepLinkSelection.path.id }
+    : firstLogicalGroup
+      ? { kind: 'logical' as const, sourceGroupId: filteredSourceGroups[0].id, logicalGroupId: firstLogicalGroup.id }
+      : { kind: 'all' as const });
+  const selectionKind = selection.kind;
+  const selectionSourceGroupId = selection.kind === 'all' ? null : selection.sourceGroupId;
+  const selectionLogicalGroupId = selection.kind === 'logical' || selection.kind === 'path' ? selection.logicalGroupId : '';
+  const selectionPathId = selection.kind === 'path' ? selection.pathId : '';
+  const rawContext = useMemo(() => {
+    const sourceGroup = selectionSourceGroupId === null ? undefined : sourceGroups.find((group) => group.id === selectionSourceGroupId);
+    const visibleSourceGroup = selectionSourceGroupId === null ? undefined : filteredSourceGroups.find((group) => group.id === selectionSourceGroupId);
+    const logicalGroup = selectionKind === 'logical' || selectionKind === 'path'
+      ? visibleSourceGroup?.logicalGroups.find((group) => group.id === selectionLogicalGroupId)
+      : undefined;
+    const selectedPath = selectionKind === 'path'
+      ? logicalGroup?.assetPaths.find((path) => path.id === selectionPathId)
+      : undefined;
+    const contextLogicalGroups = selectionKind === 'all'
+      ? filteredSourceGroups.flatMap((group) => group.logicalGroups)
+      : selectionKind === 'source'
+        ? visibleSourceGroup?.logicalGroups ?? []
+        : logicalGroup ? [logicalGroup] : [];
+    const pathEntries = contextLogicalGroups.flatMap((group) => safeArray(group.assetPaths)
+      .filter((path) => !selectedPath || path.id === selectedPath.id)
+      .map((path) => ({ path, logicalGroup: group, sourceGroup: filteredSourceGroups.find((candidate) => candidate.logicalGroups.some((logical) => logical.id === group.id)) ?? sourceGroup }))
+      .filter((entry): entry is { path: import('../api/types').AssetPath; logicalGroup: AssetLogicalGroup; sourceGroup: AssetSourceGroup } => Boolean(entry.sourceGroup)));
+    const seen = new Set<string>();
+    const visibleAssets = pathEntries.flatMap(({ path, logicalGroup, sourceGroup }) => safeArray(path.assets).flatMap((asset) => {
+      const identity = normalizePath(asset.path);
+      if (seen.has(identity)) return [];
+      seen.add(identity);
+      return [{ asset, group: assetGroupFromTreePath(path), path, logicalGroup, sourceGroup }];
+    }));
+    return { sourceGroup, logicalGroup, selectedPath, contextLogicalGroups, visibleAssets };
+  }, [filteredSourceGroups, selectionKind, selectionLogicalGroupId, selectionPathId, selectionSourceGroupId, sourceGroups]);
+  const { sourceGroup, logicalGroup, selectedPath, contextLogicalGroups, visibleAssets } = rawContext;
+  const contextIdentity = `${query}\u0000${selection.kind}\u0000${selection.kind === 'all' ? '' : selection.sourceGroupId}\u0000${selection.kind === 'logical' || selection.kind === 'path' ? selection.logicalGroupId : ''}\u0000${selection.kind === 'path' ? selection.pathId : ''}`;
+  const page = pageState.identity === contextIdentity ? pageState.page : 0;
+  const requestedSelectedAssetPath = selectedAssetPathState.identity === contextIdentity ? selectedAssetPathState.path : '';
+  const pageCount = Math.max(1, Math.ceil(visibleAssets.length / rowsPerPage));
+  const visiblePage = Math.min(page, pageCount - 1);
+  const pageRows = visibleAssets.slice(visiblePage * rowsPerPage, visiblePage * rowsPerPage + rowsPerPage);
+  const selectedAssetPath = requestedSelectedAssetPath || pageRows[0]?.asset.path || '';
+  const selectedEntry = pageRows.find(({ asset }) => normalizePath(asset.path) === normalizePath(selectedAssetPath));
+  const selectedAsset = selectedEntry?.asset;
+  const selectedGroup = selectedEntry?.group;
+  const selectedSnapshot = useQuery({
+    queryKey: ['assetSnapshot', selectedAsset?.path ?? ''],
+    queryFn: () => api.latestSnapshot(selectedAsset!.path),
+    enabled: Boolean(selectedAsset && !selectedAsset.missing),
+    staleTime: 15_000,
+  });
+  const pageAssetIds = pageRows.filter(({ asset }) => !asset.missing).map(({ asset }) => asset.id).filter((id): id is number => typeof id === 'number' && id > 0);
+  const effectiveConfigurations = useQuery({
+    queryKey: ['effectiveAssetConfiguration', 'raw-workspace', ...pageAssetIds],
+    queryFn: () => api.effectiveAssetConfigurations(pageAssetIds),
+    enabled: pageAssetIds.length > 0,
+    staleTime: 15_000,
+  });
+  const selectedEffective = selectedAsset?.id ? effectiveConfigurations.data?.configurations[String(selectedAsset.id)] : undefined;
+  const selectedProfileId = selectedEffective?.video.videoProfileId ?? 0;
+  const selectedProfileName = selectedProfileId ? profiles.find((profile) => profile.id === selectedProfileId)?.name ?? 'Unavailable' : 'Inherited';
+  const selectedJob = selectedAsset ? associatedJobForCurrentPublication(selectedAsset, queueJobs) : undefined;
+  const selectedPipeline = selectedAsset ? assetPipelineState(selectedAsset, selectedJob, false) : undefined;
+  const selectedSnapshotData = selectedSnapshot.data?.snapshot ?? null;
+  const selectedSubtitleSummary = selectedSnapshotData
+    ? `${selectedSnapshotData.subtitleStreams.length} ${selectedSnapshotData.subtitleStreams.length === 1 ? 'track' : 'tracks'}${selectedSnapshotData.subtitleStreams.some((stream) => stream.language) ? ` · ${Array.from(new Set(selectedSnapshotData.subtitleStreams.map((stream) => stream.language).filter(Boolean))).slice(0, 3).join(', ')}` : ''}`
+    : 'Unavailable';
+  const selectedCanAssignProfile = Boolean(selectedAsset && !hidePreConversionActionsForAsset(selectedAsset) && !selectedAsset.missing && !assetHasOpenJob(selectedAsset, queueJobs));
+  const selectedCanTestEncode = Boolean(selectedAsset && testEncodeEligibleAsset(selectedAsset, 'unprocessed') && assetInfoCapability(selectedAsset, 'lab').allowed);
+  const selectedPathGroup = selectedPath ? assetGroupFromTreePath(selectedPath) : undefined;
+  const contextLabel = selection.kind === 'all'
+    ? 'All RAW assets'
+    : selection.kind === 'source'
+      ? sourceGroup?.name ?? 'RAW source'
+      : selection.kind === 'logical'
+        ? logicalGroup?.name ?? 'RAW title'
+        : selectedPath?.isLogicalGroupRoot ? `${logicalGroup?.name ?? 'RAW title'} · Root` : selectedPath?.displayPath || selectedPath?.name || 'RAW path';
+  const setTreeSelection = (next: RawHierarchySelection) => {
+    setSelectionState(next);
+    setSelectedAssetIds(new Set());
+    setSelectedAssetPathState({ identity: '', path: '' });
+    setPageState({ identity: '', page: 0 });
+  };
+  const setSelectedAssetPath = (path: string) => setSelectedAssetPathState({ identity: contextIdentity, path });
+  const setPage = (nextPage: number) => setPageState({ identity: contextIdentity, page: nextPage });
+  const scopedSelectedAssets = selectedSelectableAssetsForLogicalGroups(contextLogicalGroups, selectedAssetIds);
+  const updateSelectedAssets = (assetIds: number[], selected: boolean) => setSelectedAssetIds((current) => {
+    const next = new Set(current);
+    for (const assetId of assetIds) {
+      if (selected) next.add(assetId);
+      else next.delete(assetId);
+    }
+    return next;
+  });
+
+  return (
+    <Box sx={{ borderTop: 1, borderColor: 'divider', p: { xs: 1, sm: 1.5 } }}>
+      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 1, lg: 1.5 }} alignItems="stretch" sx={{ minWidth: 0 }}>
+        <RawHierarchyPanel key={filteredSourceGroups.map((group) => group.id).join(':')} sourceGroups={filteredSourceGroups} selection={selection} onSelect={setTreeSelection} />
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          {sourceGroup ? (
+            <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: 0.5, pb: 0.75 }}>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="h2" sx={{ fontSize: '1rem', lineHeight: 1.3 }} noWrap title={sourceGroup.name}>{sourceGroup.name}</Typography>
+                <Typography variant="caption" color="text.secondary">{countLabel(sourceGroup.assetCount, 'asset')} · {countLabel(sourceGroup.titleCount, 'title')} · {countLabel(sourceGroup.pathCount, 'path')} · {formatBytes(sourceGroup.totalSizeBytes)}</Typography>
+              </Box>
+              <SourceGroupConfigureButton sourceGroup={sourceGroup} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} />
+            </Stack>
+          ) : null}
+          {selection.kind === 'logical' && logicalGroup ? (
+            <UnprocessedLogicalGroup
+              key={logicalGroup.id}
+              logicalGroup={logicalGroup}
+              legacyAssetPath=""
+              selectedAssetIds={selectedAssetIds}
+              onAssetSelectionChange={updateSelectedAssets}
+              libraries={libraries}
+              profiles={profiles}
+              audioProfiles={audioProfiles}
+              trackProfiles={trackProfiles}
+              settings={settings}
+              assetCategories={assetCategories}
+              queueJobs={queueJobs}
+              runningSnapshotPaths={runningSnapshotPaths}
+              headerOnly
+            />
+          ) : selection.kind === 'source' ? null : (
+            <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: 0.5, pb: 0.75 }}>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="h2" sx={{ fontSize: '1rem', lineHeight: 1.3 }} noWrap title={contextLabel}>{contextLabel}</Typography>
+                <Typography variant="caption" color="text.secondary">{visibleAssets.length.toLocaleString()} {visibleAssets.length === 1 ? 'asset' : 'assets'}</Typography>
+              </Box>
+            </Stack>
+          )}
+          {scopedSelectedAssets.length ? (
+            <UnprocessedSelectionToolbar
+              selectedAssetIds={selectedAssetIds}
+              logicalGroups={contextLogicalGroups}
+              profiles={profiles}
+              audioProfiles={audioProfiles}
+              trackProfiles={trackProfiles}
+              libraries={libraries}
+              categories={assetCategories}
+              queueJobs={queueJobs}
+              onClear={() => setSelectedAssetIds(new Set())}
+            />
+          ) : null}
+          {selectedPathGroup ? (
+            <Table size="small" aria-label={`Actions for ${selectedPathGroup.path}`} sx={{ mb: 0.75, tableLayout: 'fixed' }}>
+              <TableBody>
+                <AssetGroupRow
+                  group={selectedPathGroup}
+                  libraries={libraries}
+                  profiles={profiles}
+                  audioProfiles={audioProfiles}
+                  trackProfiles={trackProfiles}
+                  settings={settings}
+                  assetCategories={assetCategories}
+                  queueJobs={queueJobs}
+                  runningSnapshotPaths={runningSnapshotPaths}
+                  mode="unprocessed"
+                  compactPathHeader
+                />
+              </TableBody>
+            </Table>
+          ) : null}
+          {visibleAssets.length ? (
+            <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', borderTop: selectedPathGroup ? 0 : 1, borderColor: 'divider' }}>
+              <Table size="small" aria-label="RAW assets" sx={{ width: '100%', minWidth: { xs: 720, sm: 760 }, tableLayout: 'fixed', '& td, & th': { py: 0.7 } }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell padding="checkbox" sx={{ width: 42 }} />
+                    <TableCell sx={{ width: '35%' }}>Name</TableCell>
+                    <TableCell sx={{ width: '14%' }}>Status</TableCell>
+                    <TableCell sx={{ width: '17%' }}>Profile</TableCell>
+                    <TableCell sx={{ width: '12%' }}>Subtitles</TableCell>
+                    <TableCell sx={{ width: '9%' }}>Duration</TableCell>
+                    <TableCell sx={{ width: '13%' }}>Modified</TableCell>
+                    <TableCell padding="checkbox" sx={{ width: 42 }} />
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {pageRows.map(({ asset, path }) => {
+                    const effective = asset.id ? effectiveConfigurations.data?.configurations[String(asset.id)] : undefined;
+                    const track = trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey);
+                    return (
+                      <AssetRow
+                        key={asset.id ?? asset.path}
+                        asset={asset}
+                        autoOpenAssetInfo={Boolean(legacyAssetPath && normalizePath(asset.path) === normalizePath(legacyAssetPath))}
+                        compactLibrary
+                        compactRaw
+                        selected={normalizePath(asset.path) === normalizePath(selectedAssetPath)}
+                        onSelectAsset={() => setSelectedAssetPath(asset.path)}
+                        onRegisterWorkspaceActions={registerActions}
+                        libraries={libraries}
+                        profiles={profiles}
+                        audioProfiles={audioProfiles}
+                        trackProfiles={trackProfiles}
+                        pathTrackProfile={track}
+                        assetCategories={assetCategories}
+                        groupCategory={effective?.category.category ?? ''}
+                        confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)}
+                        groupProfileId={effective?.video.videoProfileId ?? 0}
+                        groupAudioProfileKey={effective?.audio.profileKey ?? ''}
+                        groupLibraryId={effective?.destination.destinationLibraryId ?? 0}
+                        hasOpenJob={assetHasOpenJob(asset, queueJobs)}
+                        queueJobs={queueJobs}
+                        snapshotRunning={runningSnapshotPaths.has(asset.path)}
+                        mode="unprocessed"
+                        srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)}
+                        bulkSelected={Boolean(asset.id && selectedAssetIds.has(asset.id))}
+                        bulkSelectionEnabled
+                        bulkSelectionDisabled={asset.missing || !asset.id}
+                        onBulkSelectionChange={(_, selected) => { if (asset.id) updateSelectedAssets([asset.id], selected); }}
+                      />
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </Box>
+          ) : (
+            <Alert severity="info" sx={{ mt: 1 }}>{sourceGroups.length ? 'No RAW assets match this context or search.' : 'No RAW Source Groups found.'}</Alert>
+          )}
+          {visibleAssets.length ? (
+            <TablePagination
+              component="div"
+              count={visibleAssets.length}
+              page={visiblePage}
+              rowsPerPage={rowsPerPage}
+              rowsPerPageOptions={[10, 25, 50, 100]}
+              onPageChange={(_, nextPage) => { setPage(nextPage); setSelectedAssetPath(''); }}
+              onRowsPerPageChange={(event) => { setRowsPerPage(Number(event.target.value)); setPage(0); setSelectedAssetPath(''); }}
+              sx={{ '& .MuiTablePagination-toolbar': { px: { xs: 0.5, sm: 1 } }, '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } } }}
+            />
+          ) : null}
+          {selectedAsset && selectedGroup && selectedEntry ? (
+            <SelectedAssetDetail
+              asset={selectedAsset}
+              pathContext={`${selectedEntry.sourceGroup.name} · ${selectedEntry.logicalGroup.name} · ${selectedEntry.path.isLogicalGroupRoot ? 'Root' : selectedEntry.path.displayPath || selectedEntry.path.name}`}
+              status={selectedPipeline?.label ?? statusLabel(selectedAsset.status)}
+              assignedProfile={selectedProfileName}
+              snapshot={selectedSnapshotData}
+              snapshotLoading={selectedSnapshot.isLoading}
+              subtitlesSummary={selectedSubtitleSummary}
+              modifiedLabel={formatDate(selectedAsset.modifiedAt)}
+              sizeLabel={formatBytes(selectedAsset.sizeBytes)}
+              onPlayPreview={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.playPreview()}
+              onAssignProfile={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.assignProfile()}
+              onTestEncode={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.testEncode()}
+              onMore={(anchor) => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.openMore(anchor)}
+              canAssignProfile={selectedCanAssignProfile}
+              canTestEncode={selectedCanTestEncode}
+              testEncodeDisabled={selectedAsset.missing || assetHasOpenJob(selectedAsset, queueJobs)}
+            />
+          ) : null}
+        </Box>
+      </Stack>
+    </Box>
+  );
 }
 
 type PreparedSelectionQueue = QueueSelectedAssetsResponse;
 
-function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths }: {
-	logicalGroup: AssetLogicalGroup; legacyAssetPath: string; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>;
+function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, headerOnly = false }: {
+	logicalGroup: AssetLogicalGroup; legacyAssetPath: string; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>; headerOnly?: boolean;
 }) {
 	const queryClient = useQueryClient();
 	const targetPath = safeArray(logicalGroup.assetPaths).find((path) => safeArray(path.assets).some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)));
-	const [expanded, setExpanded] = useState(Boolean(targetPath));
+	const [expanded, setExpanded] = useState(!headerOnly && Boolean(targetPath));
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set(targetPath && !targetPath.isLogicalGroupRoot ? [targetPath.id] : []));
 	const [titleSnapshotsOpen, setTitleSnapshotsOpen] = useState(false);
+	const [titleActionsAnchor, setTitleActionsAnchor] = useState<HTMLElement | null>(null);
 	const paths = safeArray(logicalGroup.assetPaths);
 	const assets = selectableAssetsForPaths(paths);
 	const titleHasOpenJob = paths.some((path) => safeArray(path.assets).some((asset) => assetHasOpenJob(asset, queueJobs)));
@@ -1069,7 +1322,7 @@ function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetI
 	const effectiveConfigurations = useQuery({
 		queryKey: ['effectiveAssetConfiguration', 'batch', ...assetIds],
 		queryFn: () => api.effectiveAssetConfigurations(assetIds),
-		enabled: expanded && assetIds.length > 0,
+		enabled: expanded && !headerOnly && assetIds.length > 0,
 		staleTime: 15_000,
 	});
 	const [titleAdvisorResults, setTitleAdvisorResults] = useState<Array<{ asset: Asset; response?: AdvisorResponse; error?: string }>>([]);
@@ -1123,18 +1376,36 @@ function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetI
 	};
 	return <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
 		<Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: 1, py: 1, bgcolor: 'rgba(255,255,255,0.035)' }}>
-			<Stack direction="row" alignItems="center" spacing={0.5}><Checkbox size="small" checked={groupSelection.checked} indeterminate={groupSelection.indeterminate} disabled={!assets.length} onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select title ${logicalGroup.name}` }} /><IconButton size="small" onClick={() => setExpanded((value) => !value)} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${logicalGroup.name}`}><ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography variant="h3">{logicalGroup.name}</Typography><Typography variant="body2" color="text.secondary">{countLabel(logicalGroup.assetCount, 'asset')} · {countLabel(logicalGroup.pathCount, 'path')} · {formatBytes(logicalGroup.totalSizeBytes)}</Typography></Box></Stack>
+			<Stack direction="row" alignItems="center" spacing={0.5}><Checkbox size="small" checked={groupSelection.checked} indeterminate={groupSelection.indeterminate} disabled={!assets.length} onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select title ${logicalGroup.name}` }} />{headerOnly ? null : <IconButton size="small" onClick={() => setExpanded((value) => !value)} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${logicalGroup.name}`}><ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'none' }} /></IconButton>}<Box><Typography variant="h3">{logicalGroup.name}</Typography><Typography variant="body2" color="text.secondary">{countLabel(logicalGroup.assetCount, 'asset')} · {countLabel(logicalGroup.pathCount, 'path')} · {formatBytes(logicalGroup.totalSizeBytes)}</Typography></Box></Stack>
 			<Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
 				<ScopeConfigureButton targetType="logical_group" scopeKey={logicalGroup.path} label="Configure title" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} readOnly={titleHasOpenJob} />
-				<Button size="small" variant="outlined" startIcon={<ManageSearchIcon />} onClick={() => setTitleSnapshotsOpen(true)} disabled={!titleSnapshotGroup}>Snapshots</Button>
 				<Button size="small" variant="outlined" startIcon={<InfoOutlinedIcon />} onClick={() => runTitleAdvisor.mutate()} disabled={!assets.length || runTitleAdvisor.isPending}>{runTitleAdvisor.isPending ? 'Running Advisor…' : 'Run Advisor'}</Button>
-				<Button size="small" variant="outlined" color="success" onClick={() => publishTitleAsIs.mutate()} disabled={!assets.length || titleHasOpenJob || assets.some((asset) => asset.review?.requiresReview) || publishTitleAsIs.isPending}>{publishTitleAsIs.isPending ? 'Publishing…' : 'Publish as-is'}</Button>
+				{headerOnly ? (
+					<>
+						<Tooltip title="More title actions">
+							<IconButton size="small" aria-label={`More title actions for ${logicalGroup.name}`} onClick={(event) => setTitleActionsAnchor(event.currentTarget)}>
+								<MoreVertIcon fontSize="small" />
+							</IconButton>
+						</Tooltip>
+						<Menu anchorEl={titleActionsAnchor} open={Boolean(titleActionsAnchor)} onClose={() => setTitleActionsAnchor(null)}>
+							<MenuItem onClick={() => { setTitleActionsAnchor(null); setTitleSnapshotsOpen(true); }} disabled={!titleSnapshotGroup}>Snapshots</MenuItem>
+							<MenuItem onClick={() => { setTitleActionsAnchor(null); publishTitleAsIs.mutate(); }} disabled={!assets.length || titleHasOpenJob || assets.some((asset) => asset.review?.requiresReview) || publishTitleAsIs.isPending}>
+								{publishTitleAsIs.isPending ? 'Publishing…' : 'Publish as-is'}
+							</MenuItem>
+						</Menu>
+					</>
+				) : (
+					<>
+						<Button size="small" variant="outlined" startIcon={<ManageSearchIcon />} onClick={() => setTitleSnapshotsOpen(true)} disabled={!titleSnapshotGroup}>Snapshots</Button>
+						<Button size="small" variant="outlined" color="success" onClick={() => publishTitleAsIs.mutate()} disabled={!assets.length || titleHasOpenJob || assets.some((asset) => asset.review?.requiresReview) || publishTitleAsIs.isPending}>{publishTitleAsIs.isPending ? 'Publishing…' : 'Publish as-is'}</Button>
+					</>
+				)}
 			</Stack>
 		</Stack>
 		{titleAdvisorResults.length ? <Alert severity={titleAdvisorResults.some((result) => result.error) ? 'warning' : 'success'} sx={{ m: 1 }}>{titleAdvisorResults.length} asset{titleAdvisorResults.length === 1 ? '' : 's'} evaluated · {titleAdvisorResults.filter((result) => result.response?.recommendation === 'worth_it').length} comply · {titleAdvisorResults.filter((result) => result.response?.recommendation === 'maybe').length} review · {titleAdvisorResults.filter((result) => result.error).length} failed</Alert> : null}
 		{publishTitleAsIs.isSuccess ? <Alert severity="success" sx={{ m: 1 }}>{publishTitleAsIs.data.message}</Alert> : null}
 		{publishTitleAsIs.isError && publishTitleAsIs.error.message !== 'Publish as-is canceled.' ? <Alert severity="warning" sx={{ m: 1 }}>{publishTitleAsIs.error.message}</Alert> : null}
-		<Collapse in={expanded} unmountOnExit>
+		{headerOnly ? null : <Collapse in={expanded} unmountOnExit>
       <Stack spacing={1} sx={{ p: 1.25 }}>
           {rootPaths.map((path) => 
             <Box key={path.id}>{renderAssets(path)}</Box>
@@ -1163,7 +1434,7 @@ function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetI
               <ScopeConfigureButton targetType="path" scopeKey={path.path} label="Configure" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact readOnly={pathHasOpenJob} /></Stack><Collapse in={open} unmountOnExit><Box sx={{ p: 1 }}>{renderAssets(path)}</Box></Collapse></Box>; 
             })}
         </Stack>
-    </Collapse>
+		</Collapse>}
 		{titleSnapshotGroup ? <PathSnapshotsDialog open={titleSnapshotsOpen} group={titleSnapshotGroup} title={logicalGroup.name} pathLabels={snapshotPathLabels} runningSnapshotPaths={runningSnapshotPaths} onClose={() => setTitleSnapshotsOpen(false)} /> : null}
 	</Box>;
 }
@@ -2236,6 +2507,20 @@ function AssetGroupRow({
           </TableCell>
           <TableCell align="right" sx={{ width: 190 }} onClick={(event) => event.stopPropagation()}>
             <Stack direction="row" alignItems="center" justifyContent="flex-end" spacing={0.5}>
+              {compactPathHeader && mode === 'unprocessed' ? (
+                <ScopeConfigureButton
+                  targetType="path"
+                  scopeKey={group.path}
+                  label="Configure"
+                  profiles={profiles}
+                  audioProfiles={audioProfiles}
+                  trackProfiles={trackProfiles}
+                  libraries={libraries}
+                  categories={assetCategories}
+                  compact
+                  readOnly={groupAssets.some((asset) => assetHasOpenJob(asset, queueJobs))}
+                />
+              ) : null}
               {!isReadOnlyGroup && mode !== 'converted' ? (
                 <Button
                   size="small"
@@ -2244,6 +2529,16 @@ function AssetGroupRow({
                   disabled={!isConfidenceEnabled || effectiveProfileId <= 0 || groupAssets.every((asset) => asset.missing) || runPathAdvisor.isPending}
                 >
                   Advisor
+                </Button>
+              ) : null}
+              {mode === 'unprocessed' && !isReadOnlyGroup ? (
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={queuePath}
+                  disabled={profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending || (!effectiveProfileId && !selectedAudioProfileKey && !selectedTrackProfileKey) || !selectedLibraryId || !groupAssets.length || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
+                >
+                  Queue
                 </Button>
               ) : null}
               {isLibraryGroup && !isReadOnlyGroup ? (
@@ -2928,6 +3223,7 @@ function AssetRow({
 	autoOpenAssetInfo = false,
 	compactUnprocessed = false,
   compactLibrary = false,
+  compactRaw = false,
   selected = false,
   onSelectAsset,
   onRegisterWorkspaceActions,
@@ -2954,8 +3250,9 @@ function AssetRow({
 }: {
   asset: Asset;
 	autoOpenAssetInfo?: boolean;
-	compactUnprocessed?: boolean;
+  compactUnprocessed?: boolean;
   compactLibrary?: boolean;
+  compactRaw?: boolean;
   selected?: boolean;
   onSelectAsset?: () => void;
   onRegisterWorkspaceActions?: (path: string, actions: AssetWorkspaceActions | null) => void;
@@ -3030,6 +3327,7 @@ function AssetRow({
   const [assetMenuAnchor, setAssetMenuAnchor] = useState<HTMLElement | null>(null);
   const [showAdvisorDialog, setShowAdvisorDialog] = useState(false);
   const [showTestEncodeDialog, setShowTestEncodeDialog] = useState(false);
+  const assetInfoOpenedRef = useRef(false);
   const [assetEditQueueMessage, setAssetEditQueueMessage] = useState('');
   const [previewMode, setPreviewMode] = useState<'compatible' | 'original'>('compatible');
   const assetReview = asset.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
@@ -3048,6 +3346,7 @@ function AssetRow({
 
   useEffect(() => {
     if (autoOpenAssetInfo) {
+      assetInfoOpenedRef.current = true;
       setSnapshotTab('overview');
       setShowSnapshotDialog(true);
     }
@@ -3095,7 +3394,7 @@ function AssetRow({
     queryKey: ['assetSnapshot', asset.path],
     queryFn: () => api.latestSnapshot(asset.path),
     enabled: showSnapshotDialog && ['analysis', 'tracks', 'advisor', 'conversion', 'test-encode', 'history'].includes(snapshotTab) && !asset.missing,
-    staleTime: 0,
+    staleTime: 15_000,
   });
   const legacyAnalysisSettings = useQuery({
     queryKey: ['settings'],
@@ -3149,6 +3448,7 @@ function AssetRow({
   const profileSuggestion = useQuery({
     queryKey: ['profileSuggestion', asset.path, snapshotData?.updatedAt ?? ''],
     queryFn: () => api.suggestProfile(asset.path),
+    staleTime: 15_000,
     enabled:
       showSnapshotDialog &&
       snapshotTab === 'advisor' &&
@@ -3379,7 +3679,7 @@ function AssetRow({
   const canGenerateTestEncode = testEncodeEligibleAsset(asset, mode);
   const labCapability = assetInfoCapability(asset, 'lab');
   const renameCapability = assetInfoCapability(asset, 'rename');
-  const rowColumnCount = compactLibrary ? 6 : compactUnprocessed ? 5 : isConverted
+  const rowColumnCount = compactLibrary ? bulkSelectionEnabled ? 8 : 7 : compactUnprocessed ? 5 : isConverted
     ? bulkSelectionEnabled ? 8 : 7
     : isAccepted ? 5 : 10;
   const associatedJob = associatedJobForCurrentPublication(asset, queueJobs);
@@ -3551,6 +3851,14 @@ function AssetRow({
 
   function openSnapshotDialog(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
+    openAssetInfoDialog();
+  }
+
+  function openAssetInfoDialog() {
+    if (assetInfoOpenedRef.current) {
+      void queryClient.invalidateQueries({ queryKey: ['assetSnapshot', asset.path] });
+    }
+    assetInfoOpenedRef.current = true;
     setSnapshotTab('overview');
     setSelectedEvidenceJobId(null);
     setShowSnapshotDialog(true);
@@ -4331,12 +4639,26 @@ async function generateExternalSubtitle(
           }}
           sx={{ cursor: 'pointer' }}
         >
+          {bulkSelectionEnabled ? (
+            <TableCell padding="checkbox">
+              <Checkbox
+                size="small"
+                checked={bulkSelected}
+                disabled={bulkSelectionDisabled}
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => event.stopPropagation()}
+                onChange={(event) => onBulkSelectionChange(asset.path, event.target.checked)}
+                inputProps={{ 'aria-label': `Select asset ${asset.fileName}` }}
+              />
+            </TableCell>
+          ) : null}
           <TableCell sx={{ minWidth: 0 }}>
             <Tooltip title={asset.fileName}>
               <Typography variant="body2" fontWeight={600} noWrap sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {assetTitle(asset)}
               </Typography>
             </Tooltip>
+            {compactRaw ? <Typography variant="caption" color="text.secondary" noWrap title={asset.groupPath || asset.relativePath}>{asset.groupPath || asset.relativePath}</Typography> : null}
           </TableCell>
           <TableCell>
             <Typography variant="body2" noWrap title={pipelineState.label}>{pipelineState.label}</Typography>
@@ -4369,6 +4691,13 @@ async function generateExternalSubtitle(
           </TableCell>
           <TableCell>
             <Typography variant="body2" noWrap title={asset.modifiedAt}>{formatDate(asset.modifiedAt)}</Typography>
+          </TableCell>
+          <TableCell padding="checkbox" align="right" onClick={(event) => event.stopPropagation()}>
+            <Tooltip title="More asset actions">
+              <IconButton size="small" aria-label={`More actions for ${asset.fileName}`} onClick={(event) => setAssetMenuAnchor(event.currentTarget)}>
+                <MoreVertIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
           </TableCell>
         </TableRow>
       ) : <TableRow hover>
@@ -4651,7 +4980,7 @@ async function generateExternalSubtitle(
       </TableCell>
       </TableRow>}
       <Menu anchorEl={assetMenuAnchor} open={Boolean(assetMenuAnchor)} onClose={() => setAssetMenuAnchor(null)}>
-        <MenuItem onClick={() => { setAssetMenuAnchor(null); setSnapshotTab('overview'); setShowSnapshotDialog(true); }}>Asset Info</MenuItem>
+        <MenuItem onClick={() => { setAssetMenuAnchor(null); openAssetInfoDialog(); }}>Asset Info</MenuItem>
         {!hidePreConversionActions && mode !== 'converted' ? (
           <MenuItem onClick={() => { setAssetMenuAnchor(null); setShowAdvisorDialog(true); }} disabled={!confidenceEnabled || effectiveProfileId <= 0 || !assetInfoCapability(asset, 'refreshAnalysis').allowed}>
             Advisor

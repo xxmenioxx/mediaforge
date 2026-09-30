@@ -16,7 +16,7 @@ vi.mock('../api/client', async (importOriginal) => {
     latestSnapshot: vi.fn(), startSnapshotOperation: vi.fn(), snapshotOperation: vi.fn(), externalAssetSubtitles: vi.fn(), extractAssetSubtitles: vi.fn(), assetMetadataSidecars: vi.fn(), trackMaintenanceInventory: vi.fn(), subtitleEligibility: vi.fn(), subtitleExtractionOperations: vi.fn(),
     suggestProfile: vi.fn(), runtimeState: vi.fn(), workerNodes: vi.fn(), recommendEncoderQuality: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
-    configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), queueRemainingPreview: vi.fn(), queueRemainingCommit: vi.fn(), createQueueBatch: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
+    configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), queueRemainingPreview: vi.fn(), queueRemainingCommit: vi.fn(), createQueueBatch: vi.fn(), preflightSelectedAssets: vi.fn(), acceptQueueBatchPreflight: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
     updateAssetConversion: vi.fn(), updateAssetMetadata: vi.fn(), updateAssetEdit: vi.fn(), testEncodes: vi.fn(),
     jobArtifacts: vi.fn(), executionPlans: vi.fn(),
     },
@@ -96,6 +96,22 @@ function activeQueueJob(id: number, mediaPath: string): QueueJob {
   } as QueueJob;
 }
 
+function testBatchPreflightCandidate(assetIds: number[], readyIds = assetIds, queuedIds: number[] = []) {
+  return {
+    id: 'candidate-raw-test', revision: queuedIds.length ? 2 : 1, resolved: true, batchId: 'batch-raw-test', batchName: 'Akira',
+    assets: assetIds.map((assetId) => {
+      const mediaPath = assetId === 1 ? '/media/raw/movies/Akira/Akira.mkv' : '/media/raw/movies/Akira/extras/Trailer.mkv';
+      return {
+        id: `asset-${assetId}`, assetRecordId: assetId, mediaPath, batchId: 'batch-raw-test', batchName: 'Akira',
+        input: { mediaPath, libraryId: 1, profileId: 1, priority: 5 },
+        status: queuedIds.includes(assetId) ? 'queued' as const : readyIds.includes(assetId) ? 'ready' as const : 'blocked' as const,
+        blockers: readyIds.includes(assetId) || queuedIds.includes(assetId) ? [] : ['Asset requires review'], warnings: [],
+        ...(queuedIds.includes(assetId) ? { queuedJobId: assetId + 100 } : {}),
+      };
+    }),
+  };
+}
+
 function LocationSearch() {
   return <output data-testid="location-search">{useLocation().search}</output>;
 }
@@ -105,9 +121,20 @@ function renderAssetsPage(queryClient = new QueryClient({ defaultOptions: { quer
 }
 
 async function openAssetInfo(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-  await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+  const details = await screen.findByTestId('selected-asset-detail');
+  await user.click(within(details).getByRole('button', { name: 'More actions for Akira.mkv' }));
+  await user.click(await screen.findByRole('menuitem', { name: 'Asset Info' }));
   return screen.findByRole('dialog');
+}
+
+async function openTitleActions(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('button', { name: 'More title actions for Akira' }));
+}
+
+function openAssetInfoWithFireEvent() {
+  const details = screen.getByTestId('selected-asset-detail');
+  fireEvent.click(within(details).getByRole('button', { name: 'More actions for Akira.mkv' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Asset Info' }));
 }
 
 async function openQuickAssetOverrides(dialog: HTMLElement, user: ReturnType<typeof userEvent.setup>) {
@@ -165,6 +192,11 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.testEncodes).mockResolvedValue([]);
     vi.mocked(api.jobArtifacts).mockResolvedValue({ resultPath: '/reports/job-101.json', asIsPath: '' } as never);
     vi.mocked(api.executionPlans).mockResolvedValue([]);
+    vi.mocked(api.preflightSelectedAssets).mockImplementation(async (assetIds) => testBatchPreflightCandidate(assetIds) as never);
+    vi.mocked(api.acceptQueueBatchPreflight).mockImplementation(async (_candidateId, _revision, selectedAssetIds) => {
+      const queuedIds = selectedAssetIds.map((id) => Number(id.replace('asset-', '')));
+      return testBatchPreflightCandidate(queuedIds, [], queuedIds) as never;
+    });
     vi.mocked(api.profileAssignments).mockResolvedValue([]);
     vi.mocked(api.updateProfileAssignment).mockResolvedValue({ status: 'inherited' });
     vi.mocked(api.assetScopeConfigurations).mockResolvedValue([]);
@@ -192,36 +224,39 @@ describe('Unprocessed Assets hierarchy', () => {
     }));
   });
 
-  it('renders root assets directly and only child paths as nested accordions', async () => {
+  it('renders RAW title assets in the shared scan table and keeps path actions in context', async () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     expect(await screen.findByRole('heading', { name: 'Akira' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Configure title' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Snapshots' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Run Advisor' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Publish as-is' })).toBeTruthy();
+    await openTitleActions(user);
+    expect(screen.getByRole('menuitem', { name: 'Snapshots' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Publish as-is' })).toBeTruthy();
+    await user.keyboard('{Escape}');
     expect(screen.getByText('3 assets · 1 title · 2 paths · 3.00 KB')).toBeTruthy();
     expect(screen.queryByLabelText('Media area')).toBeNull();
     expect(screen.queryByRole('columnheader', { name: 'Path' })).toBeNull();
     expect(screen.queryByRole('columnheader', { name: 'Library' })).toBeNull();
     expect(screen.queryByRole('columnheader', { name: 'Confidence' })).toBeNull();
-    expect(api.effectiveAssetConfigurations).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.effectiveAssetConfigurations).toHaveBeenCalledWith([1, 2]));
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
     await waitFor(() => expect(api.effectiveAssetConfigurations).toHaveBeenCalledTimes(1));
     expect(api.effectiveAssetConfigurations).toHaveBeenCalledWith([1, 2]);
     expect(api.effectiveAssetConfiguration).not.toHaveBeenCalled();
-    expect(await screen.findByText('Akira.mkv')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Queue Akira.mkv' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Toggle review for Akira.mkv' })).toBeTruthy();
-    expect(screen.getByText('extras')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /expand root/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Root path settings' })).toBeNull();
-    expect(screen.queryByRole('button', { name: /path actions/i })).toBeNull();
-    // One SourceGroup Configure plus one nested path Configure; Root contributes none.
-    expect(screen.getAllByRole('button', { name: 'Configure' })).toHaveLength(2);
-    expect(screen.getAllByRole('button', { name: 'Snapshots' })).toHaveLength(1);
+    const rawTable = screen.getByRole('table', { name: 'RAW assets' });
+    expect(await within(rawTable).findByText('Akira.mkv')).toBeTruthy();
+    await user.click(within(rawTable).getByRole('button', { name: 'More actions for Akira.mkv' }));
+    expect(screen.getByRole('menuitem', { name: 'Queue asset' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Mark for review' })).toBeTruthy();
+    await user.keyboard('{Escape}');
+    const rawNavigation = screen.getByRole('navigation', { name: 'RAW source hierarchy' });
+    const rawTree = within(rawNavigation).getByRole('tree', { name: 'RAW sources' });
+    expect(within(rawTree).getByRole('treeitem', { name: 'extras' })).toBeTruthy();
+    await user.click(within(rawTree).getByRole('treeitem', { name: 'extras' }));
+    expect(screen.getAllByRole('button', { name: 'Configure' }).length).toBeGreaterThan(0);
   });
 
   it('opens and generates Test Encode without persisting unsaved Asset Overrides', async () => {
@@ -247,7 +282,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     expect(await screen.findByRole('tab', { name: 'MVForge Suggestions' })).toBeTruthy();
     await user.click(await screen.findByRole('tab', { name: 'Test Encode' }));
     await user.click(await screen.findByRole('button', { name: 'Generate Test Encode' }));
@@ -281,7 +316,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).queryByRole('tab', { name: 'Attachments' })).toBeNull();
     expect(within(dialog).queryByRole('tab', { name: 'Subtitles' })).toBeNull();
@@ -460,7 +495,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     const dialog = await screen.findByRole('dialog');
     await within(dialog).findByTestId('asset-info-overview');
 
@@ -476,18 +511,20 @@ describe('Unprocessed Assets hierarchy', () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
-    const snapshots = await screen.findAllByRole('button', { name: 'Snapshots' });
-    expect(snapshots).toHaveLength(1);
-    await user.click(snapshots[0]);
-    expect(await screen.findByRole('heading', { name: 'Snapshots · Akira' })).toBeTruthy();
-    expect(screen.getByText('Akira.mkv')).toBeTruthy();
-    expect(screen.getByText('Trailer.mkv')).toBeTruthy();
-    expect(screen.getByRole('cell', { name: 'Root' })).toBeTruthy();
-    expect(screen.getByRole('cell', { name: 'extras' })).toBeTruthy();
-    expect(await screen.findByRole('button', { name: 'Regenerate' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Generate' })).toBeTruthy();
+    await openTitleActions(user);
+    const snapshots = screen.getByRole('menuitem', { name: 'Snapshots' });
+    expect(snapshots).toBeTruthy();
+    await user.click(snapshots);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Snapshots · Akira' })).toBeTruthy();
+    expect(within(dialog).getByText('Akira.mkv')).toBeTruthy();
+    expect(within(dialog).getByText('Trailer.mkv')).toBeTruthy();
+    expect(within(dialog).getByRole('cell', { name: 'Root' })).toBeTruthy();
+    expect(within(dialog).getByRole('cell', { name: 'extras' })).toBeTruthy();
+    expect(await within(dialog).findByRole('button', { name: 'Regenerate' })).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Generate' })).toBeTruthy();
 
-    await user.click(screen.getByRole('button', { name: 'Regenerate' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Regenerate' }));
     await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledWith({ path: '/media/raw/movies/Akira/Akira.mkv', force: true, analysisSeconds: 20 }));
   });
 
@@ -516,7 +553,8 @@ describe('Unprocessed Assets hierarchy', () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
-    await user.click(await screen.findByRole('button', { name: 'Publish as-is' }));
+    await openTitleActions(user);
+    await user.click(screen.getByRole('menuitem', { name: 'Publish as-is' }));
     await waitFor(() => expect(api.publishAssetsAsIs).toHaveBeenCalledWith({ sourcePath: '/media/raw/movies/Akira', destinationLibraryId: 5 }));
   });
 
@@ -533,7 +571,8 @@ describe('Unprocessed Assets hierarchy', () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
-    await user.click(await screen.findByRole('button', { name: 'Publish as-is' }));
+    await openTitleActions(user);
+    await user.click(screen.getByRole('menuitem', { name: 'Publish as-is' }));
     expect(await screen.findByText('Configure the same effective Destination for every asset in this title before publishing as-is.')).toBeTruthy();
     expect(api.publishAssetsAsIs).not.toHaveBeenCalled();
   });
@@ -544,7 +583,8 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.assets).mockResolvedValue(inventory);
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
-    expect((await screen.findByRole('button', { name: 'Publish as-is' }) as HTMLButtonElement).disabled).toBe(true);
+    await openTitleActions(userEvent.setup());
+    expect((screen.getByRole('menuitem', { name: 'Publish as-is' }) as HTMLLIElement).getAttribute('aria-disabled')).toBe('true');
   });
 
   it('keeps nested path configuration as an explicit inheritance-aware override', async () => {
@@ -552,7 +592,10 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(screen.getAllByRole('button', { name: 'Configure' })[1]);
+    const rawTree = screen.getByRole('tree', { name: 'RAW sources' });
+    await user.click(within(rawTree).getByRole('treeitem', { name: 'extras' }));
+    const pathActions = screen.getByRole('table', { name: 'Actions for /media/raw/movies/Akira/extras' });
+    await user.click(within(pathActions).getByRole('button', { name: 'Configure' }));
     expect(await screen.findByRole('heading', { name: 'Configure' })).toBeTruthy();
     expect((screen.getByLabelText('Video profile') as HTMLInputElement).value).toContain('Inherit');
     expect((screen.getByLabelText('Audio profile') as HTMLInputElement).value).toContain('Inherit');
@@ -572,7 +615,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     expect(await screen.findByRole('heading', { name: 'Asset Snapshot' })).toBeTruthy();
     await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledWith('/media/raw/movies/Akira/Akira.mkv'));
@@ -607,7 +650,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'MVForge Suggestions' }));
     await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledWith('/media/raw/movies/Akira/Akira.mkv'));
     await waitFor(() => expect(api.suggestProfile).toHaveBeenCalledWith('/media/raw/movies/Akira/Akira.mkv'));
@@ -623,7 +666,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     expect(await screen.findByText('No snapshot available for the current source revision.')).toBeTruthy();
     expect(api.suggestProfile).not.toHaveBeenCalled();
@@ -665,7 +708,7 @@ describe('Unprocessed Assets hierarchy', () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
 
     expect(await screen.findByTestId('asset-info-overview')).toBeTruthy();
     const dialog = screen.getByRole('dialog');
@@ -681,7 +724,8 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(within(dialog).queryByText('Integration evidence')).toBeNull();
     expect(within(dialog).queryByText(/active Queue operation/)).toBeNull();
     expect(within(dialog).queryByText('Backend action capabilities')).toBeNull();
-    expect(api.latestSnapshot).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledWith(asset.path));
+    expect(api.latestSnapshot).toHaveBeenCalledTimes(1);
     expect(api.externalAssetSubtitles).not.toHaveBeenCalled();
     expect(api.subtitleEligibility).not.toHaveBeenCalled();
     expect(api.suggestProfile).not.toHaveBeenCalled();
@@ -750,7 +794,7 @@ describe('Unprocessed Assets hierarchy', () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     const dialog = screen.getByRole('dialog');
     await user.click(within(dialog).getByRole('tab', { name: 'Job Information' }));
     await user.click(within(dialog).getByRole('tab', { name: 'Validation' }));
@@ -770,7 +814,8 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter initialEntries={[`/assets?location=raw&asset=${encodeURIComponent(path)}`]}><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
     expect(await screen.findByTestId('asset-info-overview')).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe('true');
-    expect(api.latestSnapshot).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledWith(path));
+    expect(api.latestSnapshot).toHaveBeenCalledTimes(1);
     expect(api.startSnapshotOperation).not.toHaveBeenCalled();
     expect(api.evaluateAdvisor).not.toHaveBeenCalled();
   });
@@ -781,7 +826,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     const dialog = screen.getByRole('dialog');
     await user.click(within(dialog).getByRole('tab', { name: 'Job Information' }));
     expect(within(dialog).getByText('No MVForge processing history is linked to this asset.')).toBeTruthy();
@@ -808,7 +853,7 @@ describe('Unprocessed Assets hierarchy', () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     const dialog = screen.getByRole('dialog');
     await user.click(within(dialog).getByRole('tab', { name: 'Job Information' }));
     await user.click(within(dialog).getByRole('tab', { name: 'Current publication' }));
@@ -839,7 +884,7 @@ describe('Unprocessed Assets hierarchy', () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     const dialog = screen.getByRole('dialog');
     await user.click(within(dialog).getByRole('tab', { name: 'Job Information' }));
     await user.click(within(dialog).getByRole('tab', { name: 'Current publication' }));
@@ -877,7 +922,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'MVForge Suggestions' }));
     await waitFor(() => expect(api.suggestProfile).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole('tab', { name: 'MVForge Suggestions' }));
@@ -911,7 +956,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(await screen.findByRole('tab', { name: 'Quick Asset Overrides' }));
 
     expect(await screen.findByText(/Effective GOP: 19 frames/)).toBeTruthy();
@@ -924,7 +969,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     await user.click(await screen.findByRole('button', { name: 'Analyze asset' }));
     await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1));
@@ -937,7 +982,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     expect(await screen.findByRole('heading', { name: 'Asset Snapshot' })).toBeTruthy();
     expect(api.startSnapshotOperation).not.toHaveBeenCalled();
@@ -952,7 +997,7 @@ describe('Unprocessed Assets hierarchy', () => {
     const view = render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     await user.click(await screen.findByRole('button', { name: 'Analyze asset' }));
     await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1));
@@ -972,10 +1017,10 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(await screen.findByRole('heading', { name: 'Akira' })).toBeTruthy();
     await waitFor(() => expect(api.assetScopeConfigurations).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole('button', { name: 'Expand Akira' }));
-    expect(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' })).toBeTruthy();
+    expect(within(await screen.findByTestId('selected-asset-detail')).getByRole('button', { name: 'More actions for Akira.mkv' })).toBeTruthy();
     expect(api.assetScopeConfigurations).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    openAssetInfoWithFireEvent();
     await waitFor(() => expect(api.assetScopeConfigurations).toHaveBeenCalledTimes(2));
   });
 
@@ -996,8 +1041,8 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Asset Info Akira.mkv' })).toHaveProperty('disabled', false));
-    fireEvent.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    expect(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'More actions for Akira.mkv' })).toHaveProperty('disabled', false);
+    openAssetInfoWithFireEvent();
 
     const dialog = await screen.findByRole('dialog');
     const destinationMode = await within(dialog).findByLabelText('Destination mode');
@@ -1021,9 +1066,9 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    openAssetInfoWithFireEvent();
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('tab', { name: 'Analysis' }));
-    await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledWith('/media/raw/movies/Akira/Akira.mkv'));
+    expect(queryClient.getQueryData(['assetSnapshot', '/media/raw/movies/Akira/Akira.mkv'])).toEqual(snapshotState);
     const dialog = await screen.findByRole('dialog');
     await within(dialog).findByText('Video format');
     fireEvent.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
@@ -1075,8 +1120,8 @@ describe('Unprocessed Assets hierarchy', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Expand Akira' }));
     await waitFor(() => expect(api.effectiveAssetConfigurations).toHaveBeenCalled());
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Asset Info Akira.mkv' })).toHaveProperty('disabled', false));
-    fireEvent.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    expect(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'More actions for Akira.mkv' })).toHaveProperty('disabled', false);
+    openAssetInfoWithFireEvent();
 
     const dialog = await screen.findByRole('dialog');
     const destinationMode = await within(dialog).findByLabelText('Destination mode');
@@ -1115,9 +1160,9 @@ describe('Unprocessed Assets hierarchy', () => {
     const expandButton = document.querySelector<HTMLButtonElement>('[aria-label="Expand Akira"]');
     expect(expandButton).not.toBeNull();
     fireEvent.click(expandButton!);
-    const assetInfoButton = document.querySelector<HTMLButtonElement>('[aria-label="Asset Info Akira.mkv"]');
-    expect(assetInfoButton).toHaveProperty('disabled', false);
-    fireEvent.click(assetInfoButton!);
+    const detailActions = within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'More actions for Akira.mkv' });
+    expect(detailActions).toHaveProperty('disabled', false);
+    openAssetInfoWithFireEvent();
     let dialog = document.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog).not.toBeNull();
     let destinationMode = within(dialog!).getByLabelText('Destination mode');
@@ -1131,7 +1176,7 @@ describe('Unprocessed Assets hierarchy', () => {
 
     fireEvent.keyDown(dialog!, { key: 'Escape', code: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    fireEvent.click(assetInfoButton!);
+    openAssetInfoWithFireEvent();
     dialog = await screen.findByRole('dialog');
     destinationMode = within(dialog).getByLabelText('Destination mode');
     expect(destinationMode.textContent).toContain('Inherit');
@@ -1149,8 +1194,8 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Asset Info Akira.mkv' })).toHaveProperty('disabled', false));
-    fireEvent.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    expect(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'More actions for Akira.mkv' })).toHaveProperty('disabled', false);
+    openAssetInfoWithFireEvent();
     const dialog = await screen.findByRole('dialog');
     await within(dialog).findByRole('heading', { name: 'Overview' });
 
@@ -1216,8 +1261,14 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(await screen.findByRole('tab', { name: /Library/ }));
     await user.click(await screen.findByRole('combobox', { name: 'Provenance' }));
     await user.click(await screen.findByRole('option', { name: /Converted/ }));
-    await user.click(await screen.findByText('/media/library/series/Akira'));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Converted Episode.mkv' }));
+    const libraryTree = await screen.findByRole('tree', { name: 'Library folders' });
+    await user.click(within(libraryTree).getByRole('button', { name: 'Expand Series' }));
+    await user.click(within(libraryTree).getByRole('treeitem', { name: 'Akira' }));
+    const convertedRow = await screen.findByText('Converted Episode.mkv');
+    await user.click(convertedRow.closest('tr')!);
+    const convertedDetails = await screen.findByTestId('selected-asset-detail');
+    await user.click(within(convertedDetails).getByRole('button', { name: 'More actions for Converted Episode.mkv' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Asset Info' }));
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('tab', { name: 'Overview' }));
     expect(within(dialog).queryByRole('tab', { name: 'MVForge Suggestions' })).toBeNull();
@@ -1242,7 +1293,8 @@ describe('Unprocessed Assets hierarchy', () => {
 		render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
 		fireEvent.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-		expect(await screen.findByText(label)).toBeTruthy();
+		const rawTable = screen.getByRole('table', { name: 'RAW assets' });
+		expect(await within(rawTable).findByText(label)).toBeTruthy();
 		expect(inventory.unprocessed[0].status).toBe('unprocessed');
 	});
 
@@ -1253,7 +1305,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     await user.click(await screen.findByRole('button', { name: 'Refresh analysis' }));
     await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1));
@@ -1268,12 +1320,12 @@ describe('Unprocessed Assets hierarchy', () => {
     const view = render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     expect(await screen.findByText(/Snapshot evidence is stale/)).toBeTruthy();
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape', code: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Asset Snapshot' })).toBeNull());
-    await user.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     expect(await screen.findByText(/Snapshot evidence is stale/)).toBeTruthy();
     expect(api.startSnapshotOperation).not.toHaveBeenCalled();
@@ -1281,7 +1333,7 @@ describe('Unprocessed Assets hierarchy', () => {
     view.unmount();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     expect(await screen.findByText(/Snapshot evidence is stale/)).toBeTruthy();
     expect(api.startSnapshotOperation).not.toHaveBeenCalled();
@@ -1294,7 +1346,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     await user.click(await screen.findByRole('button', { name: 'Analyze asset' }));
     await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1));
@@ -1304,7 +1356,7 @@ describe('Unprocessed Assets hierarchy', () => {
 
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape', code: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Asset Snapshot' })).toBeNull());
-    await user.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     expect(await screen.findByText('newer-stored-codec')).toBeTruthy();
     expect(screen.queryByText('analyzed-codec')).toBeNull();
@@ -1321,7 +1373,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     await user.click(await screen.findByRole('button', { name: 'Refresh analysis' }));
     await waitFor(() => expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1));
@@ -1331,7 +1383,7 @@ describe('Unprocessed Assets hierarchy', () => {
 
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape', code: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Asset Snapshot' })).toBeNull());
-    await user.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     expect(await screen.findByText('newest-stored-codec')).toBeTruthy();
     expect(screen.queryByText('rescanned-codec')).toBeNull();
@@ -1344,13 +1396,13 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     await user.click(await screen.findByRole('button', { name: 'Analyze asset' }));
     expect(await screen.findByText(/snapshot test failure/)).toBeTruthy();
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Asset Snapshot' })).toBeNull());
-    await user.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
 
     expect(await screen.findByText('No snapshot available for the current source revision.')).toBeTruthy();
@@ -1365,7 +1417,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     await user.click(await screen.findByRole('button', { name: 'Analyze asset' }));
     expect(await screen.findByText('rename-analyzed-codec')).toBeTruthy();
@@ -1379,7 +1431,7 @@ describe('Unprocessed Assets hierarchy', () => {
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Asset Snapshot' })).toBeNull());
     expect(vi.mocked(api.renameAsset).mock.calls[0]?.[0]).toEqual({ path: '/media/raw/movies/Akira/Akira.mkv', fileName: 'Akira Renamed.mkv' });
 
-    await user.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     expect(await screen.findByText('rename-newer-stored-codec')).toBeTruthy();
     expect(screen.queryByText('rename-analyzed-codec')).toBeNull();
@@ -1393,7 +1445,7 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     await user.click(screen.getByRole('tab', { name: 'Analysis' }));
     await user.click(await screen.findByRole('button', { name: 'Refresh analysis' }));
     expect(await screen.findByText(/rename snapshot failure/)).toBeTruthy();
@@ -1403,13 +1455,13 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(screen.getByRole('button', { name: 'Rename' }));
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Asset Snapshot' })).toBeNull());
 
-    await user.click(screen.getByRole('button', { name: 'Asset Info Akira.mkv' }));
+    await openAssetInfo(user);
     expect(await screen.findByRole('tab', { name: 'Overview' })).toBeTruthy();
     expect(screen.queryByText(/rename snapshot failure/)).toBeNull();
     expect(api.startSnapshotOperation).toHaveBeenCalledTimes(1);
   }, 20000);
 
-  it('selects a collapsed title using only selectable descendants and keeps missing assets visible', async () => {
+  it('selects a RAW title and keeps missing descendants visible when browsing a path', async () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
@@ -1419,10 +1471,12 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(screen.getByText('1 title selected · 2 assets · 2.00 KB')).toBeTruthy();
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    await user.click(screen.getByRole('button', { name: 'Expand path extras' }));
-    expect(await screen.findByText('Missing.mkv')).toBeTruthy();
-    expect((screen.getByRole('checkbox', { name: 'Select Missing.mkv' }) as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByRole('checkbox', { name: 'Select path extras' }) as HTMLInputElement).checked).toBe(true);
+    const rawTree = screen.getByRole('tree', { name: 'RAW sources' });
+    await user.click(within(rawTree).getByRole('treeitem', { name: 'extras' }));
+    const rawTable = screen.getByRole('table', { name: 'RAW assets' });
+    expect(await within(rawTable).findByText('Missing.mkv')).toBeTruthy();
+    expect((within(rawTable).getByRole('checkbox', { name: 'Select asset Missing.mkv' }) as HTMLInputElement).disabled).toBe(true);
+    expect(within(rawTable).getByText('Trailer.mkv')).toBeTruthy();
   });
 
   it('loads persisted title values and saves only the explicitly changed dimension', async () => {
@@ -1465,7 +1519,7 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(api.updateAssetScopeConfiguration).not.toHaveBeenCalled();
   });
 
-  it('plans and commits Queue selected using only Asset IDs and exposes partial results', async () => {
+  it('previews Queue selected and routes the same Asset IDs into Batch Preflight', async () => {
     vi.mocked(api.queueSelectedAssets).mockImplementation(async ({ assetIds, commit }) => commit ? {
       summary: { selected: 1, eligible: 0, queued: 0, skipped: 1, failed: 0, titleCount: 1, sizeBytes: 1024 },
       results: [
@@ -1481,12 +1535,13 @@ describe('Unprocessed Assets hierarchy', () => {
       batches: [],
     });
     const user = userEvent.setup();
+    vi.mocked(api.preflightSelectedAssets).mockImplementation(async (assetIds) => testBatchPreflightCandidate(assetIds, [1]) as never);
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('checkbox', { name: 'Select title Akira' }));
     await user.click(screen.getByRole('button', { name: 'Queue selected' }));
     await waitFor(() => expect(api.queueSelectedAssets).toHaveBeenCalledWith({ assetIds: [1, 2], commit: false }));
-    expect(api.effectiveAssetConfigurations).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.effectiveAssetConfigurations).toHaveBeenCalledWith([1, 2]));
     expect(api.createQueueBatch).not.toHaveBeenCalled();
     expect(await screen.findByText('Will be queued: 1')).toBeTruthy();
     const preflight = screen.getByRole('dialog');
@@ -1495,13 +1550,16 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(within(preflight).getByText('Snapshot #11')).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Queue 1 assets' }));
-    await waitFor(() => expect(api.queueSelectedAssets).toHaveBeenCalledWith({ assetIds: [1, 2], commit: true }));
-    expect(await screen.findByText('0 queued · 1 skipped · 0 failed')).toBeTruthy();
-    expect(screen.getByText('Asset 1: Asset already has an open Queue job')).toBeTruthy();
+    await waitFor(() => expect(api.preflightSelectedAssets).toHaveBeenCalledWith([1, 2]));
+    const batchPreflight = await screen.findByRole('dialog', { name: 'Batch Preflight · Akira' });
+    expect(within(batchPreflight).getByText(/Reviewed plan is the plan frozen into Queue/)).toBeTruthy();
+    expect(within(batchPreflight).getByText('Asset requires review')).toBeTruthy();
+    await user.click(within(batchPreflight).getByRole('button', { name: 'Accept & Queue (1)' }));
+    await waitFor(() => expect(api.acceptQueueBatchPreflight).toHaveBeenCalledWith('candidate-raw-test', 1, ['asset-1']));
     expect(api.createQueueBatch).not.toHaveBeenCalled();
   });
 
-  it('Queue Remaining previews and commits the identical complete group IDs', async () => {
+  it('Queue Remaining previews then opens Batch Preflight with the same complete group IDs', async () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
@@ -1510,11 +1568,13 @@ describe('Unprocessed Assets hierarchy', () => {
     await waitFor(() => expect(api.queueRemainingPreview).toHaveBeenCalledWith([1, 2]));
     const dialogQueueButton = (await screen.findAllByRole('button', { name: /Queue Remaining/ })).at(-1)!;
     await user.click(dialogQueueButton);
-    await waitFor(() => expect(api.queueRemainingCommit).toHaveBeenCalledWith([1, 2]));
-    expect(await screen.findByText('2 queued · 0 skipped · 0 failed')).toBeTruthy();
+    await waitFor(() => expect(api.preflightSelectedAssets).toHaveBeenCalledWith([1, 2]));
+    const batchPreflight = await screen.findByRole('dialog', { name: 'Batch Preflight · Akira' });
+    await user.click(within(batchPreflight).getByRole('button', { name: 'Accept & Queue (2)' }));
+    await waitFor(() => expect(api.acceptQueueBatchPreflight).toHaveBeenCalledWith('candidate-raw-test', 1, ['asset-1', 'asset-2']));
   });
 
-  it('keeps the Assets selection and result in place after a successful Queue selected commit', async () => {
+  it('keeps the RAW title selection in place after Batch Preflight accepts Queue selected', async () => {
     const user = userEvent.setup();
     render(<MemoryRouter initialEntries={['/assets?tab=unprocessed']}><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
@@ -1524,24 +1584,18 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(screen.getByRole('button', { name: 'Queue selected' }));
     await user.click(await screen.findByRole('button', { name: 'Queue 2 assets' }));
 
-    expect(await screen.findByText('2 queued · 0 skipped · 0 failed')).toBeTruthy();
+    const batchPreflight = await screen.findByRole('dialog', { name: 'Batch Preflight · Akira' });
+    await user.click(within(batchPreflight).getByRole('button', { name: 'Accept & Queue (2)' }));
+    await waitFor(() => expect(api.acceptQueueBatchPreflight).toHaveBeenCalledWith('candidate-raw-test', 1, ['asset-1', 'asset-2']));
     await waitFor(() => expect(vi.mocked(api.assets).mock.calls.length).toBeGreaterThan(assetCallsBeforeQueue));
     expect(vi.mocked(api.assetScopeConfigurations).mock.calls.length).toBe(scopeCallsBeforeQueue);
-    await user.click(screen.getByRole('button', { name: 'Close' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Queue selected titles' })).toBeNull());
+    await user.click(within(batchPreflight).getByRole('button', { name: 'Close' }));
     expect(screen.getByRole('checkbox', { name: 'Select title Akira' })).toHaveProperty('checked', true);
     expect(screen.getByRole('heading', { name: 'Akira' })).toBeTruthy();
   });
 
-  it('keeps focus and restores Queue selected actions after a commit failure', async () => {
-    vi.mocked(api.queueSelectedAssets).mockImplementation(async ({ assetIds, commit }) => {
-      if (commit) throw new Error('Queue service unavailable');
-      return {
-        summary: { selected: assetIds.length, eligible: assetIds.length, queued: 0, skipped: 0, failed: 0, titleCount: 1, sizeBytes: assetIds.length * 1024 },
-        results: assetIds.map((assetId) => ({ assetId, outcome: 'eligible' as const, batchId: 'selected-test-001', batchName: 'Akira' })),
-        batches: [],
-      };
-    });
+  it('keeps focus and restores Queue selected actions after preflight creation fails', async () => {
+    vi.mocked(api.preflightSelectedAssets).mockRejectedValue(new Error('Queue service unavailable'));
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
@@ -1568,8 +1622,10 @@ describe('Unprocessed Assets hierarchy', () => {
     expect((screen.getByRole('button', { name: 'Queue selected' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Configure selected' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('2 assets already locked by an active Queue job. Read-only details remain available.')).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Publish as-is' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Run Advisor' }) as HTMLButtonElement).disabled).toBe(false);
+    await openTitleActions(user);
+    expect((screen.getByRole('menuitem', { name: 'Publish as-is' }) as HTMLLIElement).getAttribute('aria-disabled')).toBe('true');
+    await user.keyboard('{Escape}');
 
     await user.click(screen.getByRole('button', { name: 'Configure title' }));
     expect(await screen.findByText('This scope has an active Queue job. Configuration is read-only until the job finishes.')).toBeTruthy();
@@ -1578,8 +1634,10 @@ describe('Unprocessed Assets hierarchy', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Configure title' })).toBeNull());
 
     await user.click(screen.getByRole('button', { name: 'Expand Akira' }));
-    expect((await screen.findByRole('button', { name: 'Asset Info Akira.mkv' }) as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByRole('button', { name: 'Queue Akira.mkv' }) as HTMLButtonElement).disabled).toBe(true);
+    const details = await screen.findByTestId('selected-asset-detail');
+    await user.click(within(details).getByRole('button', { name: 'More actions for Akira.mkv' }));
+    expect((screen.getByRole('menuitem', { name: 'Asset Info' }) as HTMLLIElement).getAttribute('aria-disabled')).toBeNull();
+    expect((screen.getByRole('menuitem', { name: 'Queue asset' }) as HTMLLIElement).getAttribute('aria-disabled')).toBe('true');
   });
 
   it('configures only fully selected LogicalGroups in one transactional request', async () => {
@@ -1648,7 +1706,15 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(screen.getByRole('combobox', { name: 'Original' }));
     expect(screen.queryByRole('option', { name: 'Archived' })).toBeNull();
     await user.keyboard('{Escape}');
-    await user.click(screen.getByText('/media/library/anime/Akira'));
+    const libraryNavigation = await screen.findByRole('navigation', { name: 'Library tree' });
+    await screen.findByRole('treeitem', { name: 'Anime' });
+    await user.click(within(libraryNavigation).getByRole('treeitem', { name: 'Anime' }));
+    await user.click(within(libraryNavigation).getByRole('button', { name: 'Expand Anime' }));
+    await user.click(within(libraryNavigation).getByRole('treeitem', { name: 'anime' }));
+    await user.click(within(libraryNavigation).getByRole('button', { name: 'Expand anime' }));
+    await user.click(within(libraryNavigation).getByRole('treeitem', { name: 'Akira' }));
+    await user.click(screen.getByRole('button', { name: 'More actions for /media/library/anime/Akira' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Path configuration and more actions' }));
     expect(screen.getAllByRole('button', { name: 'Move path' })).toHaveLength(1);
     expect(screen.getByRole('combobox', { name: 'Move path to library' })).toBeTruthy();
 
