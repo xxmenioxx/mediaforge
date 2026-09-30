@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,6 +27,28 @@ func TestGOPEditDoesNotChangeUnmeasuredSizeEstimate(t *testing.T) {
 	longEstimate := genericEncoderRecommendation(long, intent, "libx265")
 	if shortEstimate.EstimatedOutputSizeMin == nil || longEstimate.EstimatedOutputSizeMin == nil || *shortEstimate.EstimatedOutputSizeMin != *longEstimate.EstimatedOutputSizeMin || *shortEstimate.EstimatedOutputSizeMax != *longEstimate.EstimatedOutputSizeMax {
 		t.Fatalf("GOP duration must not invent an unmeasured storage-saving multiplier: short=%#v long=%#v", shortEstimate, longEstimate)
+	}
+}
+
+func TestBPPPFRecommendationUsesEffectiveOutputValuesWithoutChangingProfile(t *testing.T) {
+	target := int64(1_000_000)
+	profile := models.Profile{
+		VideoCodec: "x265", CodecFamily: "hevc", QualityValue: 18, OptimizationIntent: "balanced",
+		WorkerConfig: models.JSONMap{
+			"effectiveOutputWidth": 1280, "effectiveOutputHeight": 720,
+			"effectiveOutputFrameRate": "24000/1001", "videoEncoder": "libx265",
+		},
+	}
+	intent := quality.NewIntent(quality.IntentInput{SourceWidth: 3840, SourceHeight: 2160, SourceVideoBitrate: 20_000_000})
+	recommendation := quality.EncoderRecommendation{TargetBitrate: &target}
+	streams := MediaStreamInventory{Video: []MediaStream{{Width: 3840, Height: 2160, FrameRate: "60/1"}}}
+	assessment := bpppfAssessmentForRecommendation(profile, "libx265", intent, recommendation, streams)
+	want := float64(target) / (1280 * 720 * (24000.0 / 1001.0))
+	if assessment.OutputWidth != 1280 || assessment.OutputHeight != 720 || math.Abs(assessment.EffectiveFPS-24000.0/1001.0) > 0.0001 || math.Abs(assessment.BPPPF-want) > 0.000001 {
+		t.Fatalf("rail used source instead of effective output values: %#v want bpppf %.6f", assessment, want)
+	}
+	if profile.QualityValue != 18 || profile.WorkerConfig["effectiveOutputWidth"] != 1280 {
+		t.Fatalf("rail changed the selected profile: %#v", profile)
 	}
 }
 

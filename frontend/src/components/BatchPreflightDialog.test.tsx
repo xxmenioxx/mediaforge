@@ -73,6 +73,10 @@ function candidate(overrides: Partial<QueueBatchPreflightResponse> = {}): QueueB
         profileSnapshot: { profileVersion: 3 }, profileVersion: 3, profileCapturedAt: '2026-09-28T12:00:00Z',
         profileResolution: { video: { source: 'path_assignment' } }, audioProfileSnapshot: { key: 'audio-v2' },
         trackProfileSnapshot: { key: 'tracks-v4' }, constraints: { qualityValue: 18 }, selectedEncoder: 'libx265',
+        qualityEvidence: {
+          sourceBitrateEvidence: { schemaVersion: 1, samplingPolicyVersion: 1, bitrate: 1_100_000, method: 'packet_sampling', confidence: 'low', requestedWindows: 5, successfulWindows: 4, sampledWindows: [] },
+          bpppfAssessment: { policyVersion: 1, encoderModelVersion: 1, status: 'high-risk', bpppf: 0.02, referenceBpppf: 0.045, explanation: 'Planning heuristic for reviewed output geometry and cadence.', heuristicOnly: true },
+        },
         runtimeSnapshotId: 11, runtimeProfile: 'desktop_safe', destination: { destinationRoot: '/library' },
         publishMode: 'standard', processingMode: 'full_encode',
       },
@@ -103,6 +107,9 @@ describe('BatchPreflightDialog', () => {
     expect(screen.getByText(/video: path_assignment/)).toBeTruthy();
     expect(screen.getByText(/v3 · captured 2026-09-28/)).toBeTruthy();
     expect(screen.getByText(/Encoder fallback reviewed/)).toBeTruthy();
+    expect(screen.getByText('Source video bitrate: 1.10 Mbps')).toBeTruthy();
+    expect(screen.getByText('Packet windows succeeded: 4/5')).toBeTruthy();
+    expect(screen.getByText(/BPPPF planning rail: high-risk/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     await screen.findByRole('button', { name: 'Resolve Preflight again' });
     expect(mocks.edit).toHaveBeenCalledWith('candidate-1', 1);

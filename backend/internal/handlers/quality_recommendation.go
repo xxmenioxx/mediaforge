@@ -20,15 +20,16 @@ type qualityRecommendationInput struct {
 }
 
 type qualityRecommendationResponse struct {
-	RequestedProfile     models.Profile                `json:"requestedProfile"`
-	EffectiveProfile     models.Profile                `json:"effectiveProfile"`
-	Recommendation       quality.EncoderRecommendation `json:"recommendation"`
-	CapabilitySource     string                        `json:"capabilitySource"`
-	FFmpegVideoArguments []string                      `json:"ffmpegVideoArguments"`
-	EstimatedOutputMin   int64                         `json:"estimatedOutputMinBytes"`
-	EstimatedOutputMax   int64                         `json:"estimatedOutputMaxBytes"`
-	EstimatedSavingsMin  int64                         `json:"estimatedSavingsMinBytes"`
-	EstimatedSavingsMax  int64                         `json:"estimatedSavingsMaxBytes"`
+	RequestedProfile      models.Profile                 `json:"requestedProfile"`
+	EffectiveProfile      models.Profile                 `json:"effectiveProfile"`
+	Recommendation        quality.EncoderRecommendation  `json:"recommendation"`
+	SourceBitrateEvidence *quality.SourceBitrateEvidence `json:"sourceBitrateEvidence,omitempty"`
+	CapabilitySource      string                         `json:"capabilitySource"`
+	FFmpegVideoArguments  []string                       `json:"ffmpegVideoArguments"`
+	EstimatedOutputMin    int64                          `json:"estimatedOutputMinBytes"`
+	EstimatedOutputMax    int64                          `json:"estimatedOutputMaxBytes"`
+	EstimatedSavingsMin   int64                          `json:"estimatedSavingsMinBytes"`
+	EstimatedSavingsMax   int64                          `json:"estimatedSavingsMaxBytes"`
 }
 
 // QualityRecommendation returns the encoder-specific effective values for a
@@ -46,6 +47,7 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 	profile = normalizeHardwareQualityPreset(profile)
 	streams := MediaStreamInventory{}
 	resolvedPath := ""
+	var sourceBitrateEvidence *quality.SourceBitrateEvidence
 	if path := strings.TrimSpace(input.Path); path != "" {
 		var err error
 		resolvedPath, err = h.resolveMediaPath(path)
@@ -63,8 +65,10 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "could not inspect the asset video stream"})
 			return
 		}
-		if streams.Video[0].Bitrate <= 0 {
-			streams.Video[0].Bitrate = estimatedVideoBitrate(streams)
+		evidence := sourceBitrateEvidenceForInventory(h.db, resolvedPath, streams)
+		sourceBitrateEvidence = &evidence
+		if evidence.Bitrate > 0 {
+			streams.Video[0].Bitrate = evidence.Bitrate
 		}
 	}
 	intent := qualityIntentForMedia(profile, resolvedPath, streams)
@@ -126,6 +130,11 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 		return
 	}
 	profile = resolveHEVCLevel(profile, streams)
+	assessment := bpppfAssessmentForRecommendation(profile, encoder, intent, recommendation, streams)
+	recommendation.BPPPF = &assessment
+	if assessment.Status == quality.BPPPFStatusWarning || assessment.Status == quality.BPPPFStatusHighRisk {
+		recommendation.Warnings = append(recommendation.Warnings, assessment.Explanation)
+	}
 	args := videoCodecArgsForResolvedEncoder(profile, firstVideoStream(streams), encoder)
 	if encoder == "hevc_qsv" {
 		args = append(args, qsvWorkerArgsForCapability(profile, capability)...)
@@ -151,7 +160,8 @@ func (h AssetHandler) QualityRecommendation(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, qualityRecommendationResponse{
 		RequestedProfile: requested, EffectiveProfile: profile, Recommendation: recommendation,
-		CapabilitySource: capabilitySource, FFmpegVideoArguments: args,
+		SourceBitrateEvidence: sourceBitrateEvidence,
+		CapabilitySource:      capabilitySource, FFmpegVideoArguments: args,
 		EstimatedOutputMin: minimum, EstimatedOutputMax: maximum,
 		EstimatedSavingsMin: max(int64(0), sourceSize-maximum), EstimatedSavingsMax: max(int64(0), sourceSize-minimum),
 	})

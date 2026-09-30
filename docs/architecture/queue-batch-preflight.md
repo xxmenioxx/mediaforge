@@ -60,3 +60,19 @@ contracts; it does not introduce another resolver or worker engine.
 Preflight reuses persisted ScanResult and analysis evidence. It does not walk
 the Library or run probes solely to render review. Candidate creation and each
 re-resolution capture one runtime audit snapshot for the bounded asset set.
+
+Quality review may include the versioned `sourceBitrateEvidence` component
+from that same current ScanResult. After the selected runtime encoder is
+resolved, Preflight calculates a BPPPF rail from the candidate's effective
+output geometry, FPS, codec, encoder class, dynamic range, and optimization
+goal. It adds the source provenance and rail assessment to the existing
+`sourceAnalysisEvidence` manifest and shows a non-blocking warning when the
+rail is crossed. The rail never edits the reviewed profile.
+
+Acceptance copies those exact values into the Queue snapshot and
+`ExecutionPlan` evaluation/decision sources. ReviewPlanner may project the
+stored assessment, but it does not sample the source or calculate another
+rail. Worker execution does not recompute this evidence or apply the warning as
+a bitrate floor. The #42 cache adds a versioned `ScanResult.sourceBitrateEvidence`
+field and refreshes only that analysis component; it does not add a second
+analysis store.

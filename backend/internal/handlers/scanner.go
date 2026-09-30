@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/quality"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -338,6 +339,7 @@ const snapshotCacheSchemaVersion = 1
 
 var snapshotAnalysisVersions = models.JSONMap{
 	"metadata":       1,
+	"sourceBitrate":  quality.SourceBitrateEvidenceSchemaVersion,
 	"interlace":      interlaceAnalysisCacheVersion,
 	"crop":           3,
 	"restoration":    restorationAnalysisVersion,
@@ -345,7 +347,7 @@ var snapshotAnalysisVersions = models.JSONMap{
 	"cadence":        cadenceAnalysisVersion,
 }
 
-var snapshotComponentNames = []string{"metadata", "interlace", "crop", "restoration", "frameStructure", "cadence"}
+var snapshotComponentNames = []string{"metadata", "sourceBitrate", "interlace", "crop", "restoration", "frameStructure", "cadence"}
 
 func snapshotFingerprint(path string, info os.FileInfo) models.JSONMap {
 	fingerprint := models.JSONMap{"path": filepath.Clean(path)}
@@ -473,6 +475,11 @@ func snapshotComponentStatus(result models.ScanResult, component string) string 
 	switch component {
 	case "metadata":
 		if len(result.VideoStreams)+len(result.AudioStreams)+len(result.SubtitleStreams) > 0 || result.Duration > 0 || result.Container != "" {
+			return "valid"
+		}
+		return "missing"
+	case "sourceBitrate":
+		if workerIntValue(result.SourceBitrateEvidence["schemaVersion"], 0) == quality.SourceBitrateEvidenceSchemaVersion {
 			return "valid"
 		}
 		return "missing"
@@ -780,6 +787,15 @@ func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, ex
 	}
 	if len(probe.Streams) == 0 || (strings.TrimSpace(probe.Format.FormatName) == "" && strings.TrimSpace(probe.Format.Duration) == "") {
 		return models.ScanResult{}, fmt.Errorf("cached metadata cannot be decoded for incremental refresh")
+	}
+	if slices.Contains(staleComponents, "sourceBitrate") {
+		report("source_bitrate", 24, "Refreshing source video bitrate evidence")
+		evidence := resolveSourceBitrateEvidence(ctx, path, info.Size(), probe, quality.SampleSourceVideoPackets)
+		if existing.RawProbe == nil {
+			existing.RawProbe = models.JSONMap{}
+		}
+		existing.RawProbe["sourceBitrateEvidence"] = sourceBitrateEvidenceMap(evidence)
+		existing.SourceBitrateEvidence = sourceBitrateEvidenceMap(evidence)
 	}
 	video := firstStream(probe.Streams, "video")
 	duration := existing.Duration
@@ -1417,6 +1433,15 @@ func runFFProbeWithProgressContext(ctx context.Context, path string, analysisSec
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		raw = models.JSONMap{}
 	}
+	fileSize := parseInt(probe.Format.Size)
+	if fileSize <= 0 {
+		if info, statErr := os.Stat(path); statErr == nil {
+			fileSize = info.Size()
+		}
+	}
+	report("source_bitrate", 24, "Resolving cached source video bitrate evidence")
+	sourceBitrate := resolveSourceBitrateEvidence(ctx, path, fileSize, probe, quality.SampleSourceVideoPackets)
+	raw["sourceBitrateEvidence"] = sourceBitrateEvidenceMap(sourceBitrate)
 	video := firstStream(probe.Streams, "video")
 	duration := parseFloat(probe.Format.Duration)
 	samplingPlan := canonicalSamplingPlan(duration, samplingPolicy)
@@ -1488,6 +1513,7 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 		SizeBytes:                    size,
 		Duration:                     duration,
 		Bitrate:                      bitrate,
+		SourceBitrateEvidence:        sourceBitrateEvidenceFromRaw(raw),
 		VideoCodec:                   video.CodecName,
 		Width:                        video.Width,
 		Height:                       video.Height,
@@ -1514,6 +1540,81 @@ func buildScanResult(path string, size int64, probe FFProbeResult, raw models.JS
 	result.FrameStructureRecommendation = frameStructureRecommendationMap(result)
 	result.HEVCLevelRecommendation = hevcLevelRecommendationMap(result)
 	return result
+}
+
+func resolveSourceBitrateEvidence(
+	ctx context.Context,
+	path string,
+	fileSize int64,
+	probe FFProbeResult,
+	sampler func(context.Context, string, string, float64, int) []quality.SourceBitrateSampleWindow,
+) quality.SourceBitrateEvidence {
+	input := sourceBitrateInputFromProbe(probe, fileSize)
+	if !quality.NeedsSourcePacketSampling(input) || !quality.CanSampleSourcePackets(probe.Format.FormatName) || sampler == nil {
+		return quality.ResolveSourceBitrate(input)
+	}
+	if err := ctx.Err(); err != nil {
+		return quality.ResolveSourceBitrate(input)
+	}
+	windows := quality.DistributedSourcePacketWindows(input.DurationSeconds)
+	input.RequestedWindows = len(windows)
+	sampleContext, cancel := context.WithTimeout(ctx, 12*time.Second)
+	input.SampleWindows = sampler(sampleContext, path, probe.Format.FormatName, input.DurationSeconds, 0)
+	cancel()
+	return quality.ResolveSourceBitrate(input)
+}
+
+func sourceBitrateInputFromProbe(probe FFProbeResult, fileSize int64) quality.SourceBitrateInput {
+	duration := parseFloat(probe.Format.Duration)
+	videoIndex := -1
+	for _, stream := range probe.Streams {
+		if stream.CodecType == "video" {
+			videoIndex = stream.Index
+			break
+		}
+	}
+	input := quality.SourceBitrateInput{
+		ContainerBitrate: parseInt(probe.Format.Bitrate), FileSizeBytes: fileSize,
+		DurationSeconds: duration, Video: quality.SourceStreamFacts{Index: videoIndex},
+		Audio: []quality.SourceStreamFacts{}, Subtitles: []quality.SourceStreamFacts{},
+	}
+	for _, stream := range probe.Streams {
+		facts := quality.SourceStreamFacts{
+			Index: stream.Index, Bitrate: parseInt(stream.Bitrate),
+			DurationSeconds: parseFloat(stream.Duration), Tags: stream.Tags,
+		}
+		switch stream.CodecType {
+		case "video":
+			if stream.Index == videoIndex {
+				input.Video = facts
+			}
+		case "audio":
+			input.Audio = append(input.Audio, facts)
+		case "subtitle":
+			input.Subtitles = append(input.Subtitles, facts)
+		}
+	}
+	return input
+}
+
+func sourceBitrateEvidenceMap(evidence quality.SourceBitrateEvidence) models.JSONMap {
+	encoded, err := json.Marshal(evidence)
+	if err != nil {
+		return models.JSONMap{}
+	}
+	value := models.JSONMap{}
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		return models.JSONMap{}
+	}
+	return value
+}
+
+func sourceBitrateEvidenceFromRaw(raw models.JSONMap) models.JSONMap {
+	value, ok := snapshotCacheMap(raw["sourceBitrateEvidence"])
+	if !ok {
+		return models.JSONMap{}
+	}
+	return models.JSONMap(value)
 }
 
 func colorPolicyPresentationForScan(scan models.ScanResult) models.JSONMap {
@@ -1794,16 +1895,14 @@ func streamSizeBytes(stream FFProbeStream) int64 {
 }
 
 func streamBitrate(stream FFProbeStream) int64 {
-	if value := parseInt(stream.Bitrate); value > 0 {
-		return value
-	}
-	if inheritedMatroskaStatisticsAreStale(stream) {
-		return 0
-	}
-	for _, key := range []string{"BPS", "BPS-eng"} {
-		if value := parseInt(tagValue(stream.Tags, key, "")); value > 0 {
-			return value
-		}
+	evidence := quality.ResolveSourceBitrate(quality.SourceBitrateInput{
+		Video: quality.SourceStreamFacts{
+			Index: stream.Index, Bitrate: parseInt(stream.Bitrate),
+			DurationSeconds: parseFloat(stream.Duration), Tags: stream.Tags,
+		},
+	})
+	if evidence.Method == quality.SourceBitrateMethodStreamMetadata || evidence.Method == quality.SourceBitrateMethodMatroskaStatistics {
+		return evidence.Bitrate
 	}
 	return 0
 }

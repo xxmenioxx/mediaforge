@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/quality"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -101,6 +102,7 @@ func queuePreflightInput(fixture queuePreflightFixture, batchName string) QueueB
 
 func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	fixture := newQueuePreflightFixture(t, 1)
+	addQueuePreflightBitrateScan(t, fixture.db, fixture.paths[0], 1_000_000)
 	router := queuePreflightRouter(fixture.db)
 	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", queuePreflightInput(fixture, "Season 1"))
 	if created.Code != http.StatusCreated {
@@ -115,6 +117,20 @@ func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	}
 	if candidate.Assets[0].Plan.ProfileVersion < 1 || candidate.Assets[0].Plan.ProfileCapturedAt == nil {
 		t.Fatalf("candidate did not expose frozen profile version and capture time: %#v", candidate.Assets[0].Plan)
+	}
+	if candidate.Assets[0].Plan.QualityEvidence == nil {
+		t.Fatal("candidate omitted persisted source bitrate and BPPPF evidence")
+	}
+	sourceEvidence, _ := snapshotCacheMap(candidate.Assets[0].Plan.QualityEvidence["sourceBitrateEvidence"])
+	if stringFromUnknown(sourceEvidence["method"]) != quality.SourceBitrateMethodStreamMetadata || jsonInt64(sourceEvidence["bitrate"]) != 1_000_000 {
+		t.Fatalf("candidate source evidence changed: %#v", sourceEvidence)
+	}
+	assessment, _ := snapshotCacheMap(candidate.Assets[0].Plan.QualityEvidence["bpppfAssessment"])
+	if stringFromUnknown(assessment["status"]) != quality.BPPPFStatusHighRisk {
+		t.Fatalf("expected a frozen high-risk planning warning, got %#v", assessment)
+	}
+	if len(candidate.Assets[0].Warnings) == 0 {
+		t.Fatal("Preflight omitted its BPPPF warning")
 	}
 	var queuedCount, executionPlanCount int64
 	if err := fixture.db.Model(&models.QueueJob{}).Count(&queuedCount).Error; err != nil {
@@ -181,12 +197,58 @@ func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	if err := fixture.db.Model(&models.Profile{}).Where("id = ?", fixture.profile.ID).Update("quality_value", 42).Error; err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(job.MediaPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(job.MediaPath, []byte("source changed after review"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	resolvedProfile, err := resolveQueueVideoProfile(fixture.db, job.MediaPath, job, profile, AssetConversionOverrideState{}, "mutated-encoder")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resolvedProfile.QualityValue != fixture.profile.QualityValue || workerStringValue(resolvedProfile.WorkerConfig["videoEncoder"]) != "libx265" {
 		t.Fatalf("worker changed reviewed profile after acceptance: %#v", resolvedProfile)
+	}
+	manifest, manifestOK := snapshotCacheMap(job.ProfileSnapshot[models.QueueSourceAnalysisEvidenceKey])
+	frozenBitrate, bitrateOK := decodeSourceBitrateEvidence(manifest["sourceBitrateEvidence"])
+	frozenRail, railOK := snapshotCacheMap(manifest["bpppfAssessment"])
+	if !manifestOK || !bitrateOK || frozenBitrate.Bitrate != 1_000_000 || !railOK || stringFromUnknown(frozenRail["status"]) != quality.BPPPFStatusHighRisk {
+		t.Fatalf("worker altered or discarded reviewed evidence after source change: manifest=%#v", manifest)
+	}
+	var acceptedPlan models.ExecutionPlan
+	if err := fixture.db.First(&acceptedPlan, *job.ActiveExecutionPlanID).Error; err != nil {
+		t.Fatal(err)
+	}
+	acceptedEvidenceJSON, acceptedEvidenceErr := json.Marshal(acceptedPlan.Evaluation["qualityEvidence"])
+	reviewedEvidenceJSON, reviewedEvidenceErr := json.Marshal(candidate.Assets[0].Plan.QualityEvidence)
+	if acceptedEvidenceErr != nil || reviewedEvidenceErr != nil || !bytes.Equal(acceptedEvidenceJSON, reviewedEvidenceJSON) {
+		t.Fatalf("accepted ExecutionPlan evidence differs from reviewed evidence: %#v", acceptedPlan.Evaluation["qualityEvidence"])
+	}
+}
+
+func addQueuePreflightBitrateScan(t *testing.T, db *gorm.DB, path string, bitrate int64) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := quality.SourceBitrateEvidence{
+		SchemaVersion: quality.SourceBitrateEvidenceSchemaVersion, SamplingPolicy: quality.SourceBitrateSamplingPolicyVersion,
+		Bitrate: bitrate, Method: quality.SourceBitrateMethodStreamMetadata, Confidence: "high",
+		StreamIndex: intPointer(0), DurationSeconds: 90, SampledWindows: []quality.SourceBitrateSampleWindow{},
+	}
+	scan := models.ScanResult{
+		Path: path, FileName: filepath.Base(path), Container: "matroska", SizeBytes: info.Size(), Duration: 90,
+		Bitrate: 10_000_000, SourceBitrateEvidence: sourceBitrateEvidenceMap(evidence), VideoCodec: "h264",
+		Width: 1920, Height: 1080, VideoStreams: models.JSONList{models.JSONMap{
+			"index": 0, "codec": "h264", "bitrate": bitrate, "width": 1920, "height": 1080,
+			"avgFrameRate": "24/1", "realFrameRate": "24/1", "duration": 90,
+		}}, AudioStreams: models.JSONList{}, RawProbe: models.JSONMap{},
+	}
+	stampSnapshotCacheMetadata(&scan, path, info)
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
 	}
 }
 

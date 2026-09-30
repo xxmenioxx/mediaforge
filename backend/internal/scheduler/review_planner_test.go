@@ -33,6 +33,10 @@ func TestConditionalReviewEstimatesAndAutoApproves(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	snapshot[models.QueueSourceAnalysisEvidenceKey] = models.JSONMap{
+		"sourceBitrateEvidence": models.JSONMap{"schemaVersion": 1, "bitrate": int64(1_000_000), "method": "packet_sampling", "confidence": "low"},
+		"bpppfAssessment":       models.JSONMap{"policyVersion": 1, "status": "high-risk", "heuristicOnly": true},
+	}
 	job := models.QueueJob{MediaPath: inputPath, LibraryID: library.ID, ProfileID: profile.ID, ProfileVersion: 1, ProfileSnapshot: snapshot, Priority: 1, Status: "queued"}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
@@ -41,8 +45,27 @@ func TestConditionalReviewEstimatesAndAutoApproves(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	plan.Warnings = append(plan.Warnings, "Frozen BPPPF planning warning")
+	if err := db.Save(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := EvaluateReviewPlan(db, &plan); err != nil {
 		t.Fatal(err)
+	}
+	qualityEvidence, err := jsonMap(plan.Evaluation["qualityEvidence"])
+	if err != nil {
+		t.Fatalf("ReviewPlanner did not project frozen quality evidence: %v", err)
+	}
+	assessment, err := jsonMap(qualityEvidence["bpppfAssessment"])
+	if err != nil || assessment["status"] != "high-risk" {
+		t.Fatalf("ReviewPlanner changed the frozen rail assessment: %#v err=%v", assessment, err)
+	}
+	warningPreserved := false
+	for _, warning := range plan.Warnings {
+		warningPreserved = warningPreserved || warning == "Frozen BPPPF planning warning"
+	}
+	if !warningPreserved {
+		t.Fatalf("ReviewPlanner dropped the reviewed warning: %#v", plan.Warnings)
 	}
 	if plan.Status != ExecutionPlanReady || plan.ApprovalStatus != ApprovalAutoApproved {
 		t.Fatalf("expected conditional auto approval, got %#v", plan)

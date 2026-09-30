@@ -555,7 +555,7 @@ func (h AssetHandler) runProfileSampleEstimateWithPolicy(
 		return nil, newProfileSampleEstimateError(http.StatusBadRequest, "asset has no video stream")
 	}
 	if streams.Video[0].Bitrate <= 0 {
-		streams.Video[0].Bitrate = estimatedVideoBitrate(streams)
+		streams.Video[0].Bitrate = sourceBitrateEvidenceForInventory(h.db, resolvedPath, streams).Bitrate
 	}
 	qualityIntent := qualityIntentForMedia(profile, resolvedPath, streams)
 	profile = applyVideoToolboxQualityRecommendation(profile, qualityIntent)

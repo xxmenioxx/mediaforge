@@ -144,6 +144,7 @@ type EncoderRecommendation struct {
 	BFrameEfficiencyMultiplier float64  `json:"bFrameEfficiencyMultiplier,omitempty"`
 	BFrameDowngradeReason      string   `json:"bFrameDowngradeReason,omitempty"`
 	BaseTargetBitrate          *int64   `json:"baseTargetBitrate,omitempty"`
+	BPPPF                      *BPPPFAssessment `json:"bpppfAssessment,omitempty"`
 }
 
 type Translator interface {

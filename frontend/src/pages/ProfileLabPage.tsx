@@ -110,6 +110,7 @@ import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { TrackProfileResolutionPreview } from '../components/TrackProfileResolutionPreview';
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
 import { PageHeader } from '../components/PageHeader';
+import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
 import { FrameStructureControls } from '../components/FrameStructureControls';
 import { FrameCadenceControls } from '../components/FrameCadenceControls';
 import { LabComparisonViewport } from '../components/LabComparisonViewport';
@@ -7004,6 +7005,7 @@ function VideoProfileSaveReview({ profile, source, asset, previewNormalization, 
           <EncoderRecommendationChips result={recommendation} />
         </Box>
       ) : <Alert severity="info">Effective configuration is still being calculated.</Alert>}
+      {recommendation ? <SourceBitrateQualityEvidence source={recommendation.sourceBitrateEvidence} assessment={recommendation.recommendation.bpppfAssessment} /> : null}
       <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
         <Typography fontWeight={700} sx={{ mb: 1 }}>Video Profile track impact</Typography>
         <Stack spacing={0.5}>

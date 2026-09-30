@@ -18,6 +18,7 @@ import {
   Typography,
 } from '@mui/material';
 import { api, waitForCompatiblePreviewReady } from '../api/client';
+import { SourceBitrateQualityEvidence } from './SourceBitrateQualityEvidence';
 import type {
   QueueBatchPreflightAsset,
   QueueBatchPreflightInput,
@@ -64,12 +65,13 @@ function planSummary(asset: QueueBatchPreflightAsset) {
       <Typography variant="caption" color="text.secondary">{label}</Typography>
       <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{value}</Typography>
     </Grid>)}
+    {plan.qualityEvidence ? <Grid size={{ xs: 12 }}><SourceBitrateQualityEvidence source={plan.qualityEvidence.sourceBitrateEvidence} assessment={plan.qualityEvidence.bpppfAssessment} /></Grid> : null}
     <Grid size={{ xs: 12 }}>
       <Typography variant="caption" color="text.secondary">Frozen plan evidence</Typography>
       <Box component="details" sx={{ mt: 0.5 }}>
         <Box component="summary" sx={{ cursor: 'pointer', typography: 'caption' }}>Profile provenance, audio, tracks, constraints and destination snapshots</Box>
         <Box component="pre" sx={{ overflow: 'auto', maxHeight: 240, whiteSpace: 'pre-wrap', fontSize: 11 }}>
-          {JSON.stringify({ profile: plan.profileSnapshot, profileResolution: plan.profileResolution, audio: plan.audioProfileSnapshot, tracks: plan.trackProfileSnapshot, constraints: plan.constraints, destination: plan.destination }, null, 2)}
+          {JSON.stringify({ profile: plan.profileSnapshot, profileResolution: plan.profileResolution, qualityEvidence: plan.qualityEvidence, audio: plan.audioProfileSnapshot, tracks: plan.trackProfileSnapshot, constraints: plan.constraints, destination: plan.destination }, null, 2)}
         </Box>
       </Box>
     </Grid>

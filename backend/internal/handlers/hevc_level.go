@@ -149,27 +149,7 @@ func scanObservedHEVCLevelIDC(scan models.ScanResult) int {
 }
 
 func scanVideoBitrate(scan models.ScanResult) int64 {
-	if len(scan.VideoStreams) > 0 {
-		if stream, ok := scan.VideoStreams[0].(map[string]interface{}); ok {
-			if bitrate := int64(workerNumberValue(stream["bitrate"], 0)); bitrate > 0 {
-				return bitrate
-			}
-		}
-	}
-	if scan.Bitrate <= 0 {
-		return 0
-	}
-	audioBitrate := int64(0)
-	for _, raw := range scan.AudioStreams {
-		if stream, ok := raw.(map[string]interface{}); ok {
-			audioBitrate += int64(workerNumberValue(stream["bitrate"], 0))
-		}
-	}
-	estimate := scan.Bitrate - audioBitrate - scan.Bitrate/100
-	if estimate > 0 {
-		return estimate
-	}
-	return scan.Bitrate
+	return sourceBitrateEvidenceForScan(scan).Bitrate
 }
 
 func hevcLevelRecommendationMap(scan models.ScanResult) models.JSONMap {

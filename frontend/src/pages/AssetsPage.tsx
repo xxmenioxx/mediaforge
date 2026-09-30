@@ -65,6 +65,7 @@ import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { PageHeader } from '../components/PageHeader';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
+import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
 import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
@@ -5161,6 +5162,7 @@ function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; a
             )}
           </Grid>
         </Grid>
+        <SourceBitrateQualityEvidence source={advisor.sourceBitrateEvidence ?? advisor.scan.sourceBitrateEvidence} assessment={advisor.bpppfAssessment} />
       </Stack>
     </Box>
   );
@@ -6294,6 +6296,7 @@ function AssetConversionOverridePanel({
                     {displayedEncoderRecommendation.estimatedSavingsMaxBytes > 0 ? <Chip size="small" color="success" label={`Estimated saving · ${formatBytes(displayedEncoderRecommendation.estimatedSavingsMinBytes)}–${formatBytes(displayedEncoderRecommendation.estimatedSavingsMaxBytes)}`} /> : null}
                   </Stack>
                   {displayedEncoderRecommendation.recommendation.bFrameDowngradeReason ? <Alert severity="warning">{displayedEncoderRecommendation.recommendation.bFrameDowngradeReason}</Alert> : null}
+                  <SourceBitrateQualityEvidence source={displayedEncoderRecommendation.sourceBitrateEvidence} assessment={displayedEncoderRecommendation.recommendation.bpppfAssessment} />
                   <Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>FFmpeg video: {displayedEncoderRecommendation.ffmpegVideoArguments.join(' ')}</Typography>
                 </Stack>
               ) : null}

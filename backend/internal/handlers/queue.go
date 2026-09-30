@@ -2205,6 +2205,11 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 				components = append(components, "cadenceRecommendation")
 			}
 		}
+		var sourceBitrateEvidence models.JSONMap
+		if evidence, ok := cachedSourceBitrateEvidence(h.db, path); ok {
+			sourceBitrateEvidence = sourceBitrateEvidenceMap(evidence)
+			components = append(components, "sourceBitrate")
+		}
 		var plan SamplingPlan
 		if currentRevisionErr == nil {
 			plan, _ = samplingPlanFromPersistedScan(scan, path, currentRevision, scan.Duration, frameStructureSamplingPolicy(h.db), nil, samplingPlanPolicyVersion)
@@ -2224,7 +2229,7 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 		snapshot["samplingPlanIdentity"] = plan.PlanIdentity
 		components = append(components, "samplingPlan")
 		if identity := assetAnalysisSourceIdentity(scan); identity != nil {
-			snapshot[sourceAnalysisEvidenceSnapshotKey] = models.JSONMap{
+			manifest := models.JSONMap{
 				"status": "unavailable",
 				"sourceIdentity": models.JSONMap{
 					"path": identity.Path, "snapshotId": identity.SnapshotID,
@@ -2233,11 +2238,19 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 				},
 				"components": components,
 			}
+			if sourceBitrateEvidence != nil {
+				manifest["sourceBitrateEvidence"] = sourceBitrateEvidence
+			}
+			snapshot[sourceAnalysisEvidenceSnapshotKey] = manifest
 		} else if len(components) > 0 {
-			snapshot[sourceAnalysisEvidenceSnapshotKey] = models.JSONMap{
+			manifest := models.JSONMap{
 				"status": "unavailable", "unavailableReason": "source_identity_unavailable",
 				"components": components,
 			}
+			if sourceBitrateEvidence != nil {
+				manifest["sourceBitrateEvidence"] = sourceBitrateEvidence
+			}
+			snapshot[sourceAnalysisEvidenceSnapshotKey] = manifest
 		}
 	} else if strings.TrimSpace(path) != "" {
 		fingerprint := filepath.Clean(path)

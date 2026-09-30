@@ -221,6 +221,7 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 	if plan.Evaluation == nil {
 		plan.Evaluation = models.JSONMap{}
 	}
+	applyFrozenQualityEvidence(plan, job)
 	if source, probed := probeMediaEstimate(job.MediaPath); probed {
 		if sampledVideoBytes, sampleEncoder, found := persistedProfileSampleEstimate(db, job.MediaPath, profile); found && sampleEncoder == plan.SelectedEncoder {
 			source.MeasuredVideoBitrate = int64(float64(sampledVideoBytes) * 8 / source.DurationSeconds)
@@ -340,6 +341,27 @@ func EvaluateReviewPlan(db *gorm.DB, plan *models.ExecutionPlan) error {
 		}
 	}
 	return db.Save(plan).Error
+}
+
+func applyFrozenQualityEvidence(plan *models.ExecutionPlan, job models.QueueJob) {
+	if plan == nil || plan.Evaluation == nil {
+		return
+	}
+	manifest, err := jsonMap(job.ProfileSnapshot[models.QueueSourceAnalysisEvidenceKey])
+	if err != nil {
+		return
+	}
+	qualityEvidence := models.JSONMap{}
+	for _, key := range []string{"sourceBitrateEvidence", "bpppfAssessment"} {
+		if value, exists := manifest[key]; exists {
+			qualityEvidence[key] = value
+		}
+	}
+	if len(qualityEvidence) == 0 {
+		return
+	}
+	plan.Evaluation["qualityEvidence"] = qualityEvidence
+	plan.DecisionSources["qualityEvidence"] = models.QueueSourceAnalysisEvidenceKey
 }
 
 func schedulerQualityCapabilities(encoder string, profile models.Profile, capability capabilities.EncoderCapability) quality.WorkerCapabilities {

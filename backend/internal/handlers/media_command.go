@@ -105,6 +105,7 @@ type MediaStream struct {
 	StartTimeValid     bool
 	SampleAspectRatio  string
 	DisplayAspectRatio string
+	BitrateTags        map[string]string
 }
 
 type MediaAudioStream struct {
@@ -117,6 +118,7 @@ type MediaAudioStream struct {
 	Default        bool
 	Forced         bool
 	Bitrate        int64
+	BitrateTags    map[string]string
 	StartTime      float64
 	StartTimeValid bool
 }
@@ -655,9 +657,6 @@ func buildMediaJobPlan(inputPath string, outputPath string, profile models.Profi
 	streams, err := probeMediaStreams(inputPath)
 	if err != nil {
 		return MediaJobPlan{}, err
-	}
-	if len(streams.Video) > 0 && streams.Video[0].Bitrate <= 0 {
-		streams.Video[0].Bitrate = estimatedVideoBitrate(streams)
 	}
 
 	fieldOrder := "unknown"
@@ -3007,7 +3006,7 @@ func probeMediaStreamsWithFrameCount(inputPath string, countFrames bool) (MediaS
 		args = append(args, "-count_frames")
 	}
 	args = append(args,
-		"-show_entries", "format=duration,bit_rate:stream=index,codec_type,codec_name,channels,channel_layout,field_order,pix_fmt,color_range,color_space,color_transfer,color_primaries,width,height,bit_rate,avg_frame_rate,r_frame_rate,nb_read_frames,start_time,sample_aspect_ratio,display_aspect_ratio:stream_tags=language,title:stream_disposition=default,forced,attached_pic,still_image",
+		"-show_entries", "format=duration,bit_rate:stream=index,codec_type,codec_name,channels,channel_layout,field_order,pix_fmt,color_range,color_space,color_transfer,color_primaries,width,height,bit_rate,avg_frame_rate,r_frame_rate,nb_read_frames,start_time,sample_aspect_ratio,display_aspect_ratio:stream_tags=language,title,BPS,BPS-eng,NUMBER_OF_BYTES,NUMBER_OF_BYTES-eng,ENCODER,encoder,_STATISTICS_WRITING_APP,_STATISTICS_WRITING_APP-eng:stream_disposition=default,forced,attached_pic,still_image",
 		"-show_chapters",
 		"-of", "json",
 		inputPath,
@@ -3098,6 +3097,7 @@ func probeMediaStreamsWithFrameCount(inputPath string, countFrames bool) (MediaS
 			StartTimeValid:     optionalSeconds(stream.StartTime) != nil,
 			SampleAspectRatio:  stream.SampleAspectRatio,
 			DisplayAspectRatio: stream.DisplayAspectRatio,
+			BitrateTags:        stream.Tags,
 		}
 		switch stream.CodecType {
 		case "video":
@@ -3113,6 +3113,7 @@ func probeMediaStreamsWithFrameCount(inputPath string, countFrames bool) (MediaS
 				Default:        stream.Disposition.Default == 1,
 				Forced:         stream.Disposition.Forced == 1,
 				Bitrate:        parseInt(stream.Bitrate),
+				BitrateTags:    stream.Tags,
 				StartTime:      parseFloat(stream.StartTime),
 				StartTimeValid: optionalSeconds(stream.StartTime) != nil,
 			})
@@ -3125,23 +3126,6 @@ func probeMediaStreamsWithFrameCount(inputPath string, countFrames bool) (MediaS
 		}
 	}
 	return inventory, nil
-}
-
-func estimatedVideoBitrate(streams MediaStreamInventory) int64 {
-	if streams.TotalBitrate <= 0 {
-		return 0
-	}
-	audioBitrate := int64(0)
-	for _, stream := range streams.Audio {
-		audioBitrate += stream.Bitrate
-	}
-	// Leave a small allowance for container/subtitle overhead when the video
-	// stream itself does not report bit_rate.
-	estimate := streams.TotalBitrate - audioBitrate - streams.TotalBitrate/100
-	if estimate < 0 {
-		return 0
-	}
-	return estimate
 }
 
 func originalAudioTitle(stream MediaAudioStream) string {

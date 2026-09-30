@@ -313,7 +313,7 @@ printf '%s\n' 'Repeated Fields: Neither: 100 Top: 0 Bottom: 0' 'Multi frame dete
 		t.Fatalf("motion refresh failed: cached=%t err=%v phases=%v", cached, err, phases)
 	}
 	reused, refreshed, _ := snapshotRefreshDetails(result, false)
-	if slices.Contains(phases, "metadata") || slices.Contains(phases, "frame_structure") || slices.Contains(phases, "crop") || !slices.Contains(phases, "interlace") || !slices.Equal(refreshed, []string{"cadence", "interlace"}) || !slices.Equal(reused, []string{"metadata", "crop", "restoration", "frameStructure"}) {
+	if slices.Contains(phases, "metadata") || slices.Contains(phases, "frame_structure") || slices.Contains(phases, "crop") || !slices.Contains(phases, "interlace") || !slices.Equal(refreshed, []string{"cadence", "interlace"}) || !slices.Equal(reused, []string{"metadata", "sourceBitrate", "crop", "restoration", "frameStructure"}) {
 		t.Fatalf("unexpected motion refresh: phases=%v reused=%v refreshed=%v", phases, reused, refreshed)
 	}
 }
@@ -365,7 +365,7 @@ printf '%s\n' 'Repeated Fields: Neither: 100 Top: 0 Bottom: 0' 'Multi frame dete
 		t.Fatalf("Balanced to Thorough refresh failed: cached=%t err=%v phases=%v", cached, err, phases)
 	}
 	reused, refreshed, _ := snapshotRefreshDetails(result, false)
-	if !slices.Equal(refreshed, []string{"cadence", "crop", "frameStructure", "interlace"}) || !slices.Equal(reused, []string{"metadata", "restoration"}) || slices.Contains(phases, "metadata") || !slices.Contains(phases, "incremental_refresh") {
+	if !slices.Equal(refreshed, []string{"cadence", "crop", "frameStructure", "interlace"}) || !slices.Equal(reused, []string{"metadata", "sourceBitrate", "restoration"}) || slices.Contains(phases, "metadata") || !slices.Contains(phases, "incremental_refresh") {
 		t.Fatalf("unexpected Thorough refresh: phases=%v reused=%v refreshed=%v", phases, reused, refreshed)
 	}
 }
@@ -2138,8 +2138,8 @@ func TestArchivedOriginalInheritancePreservesStaleComponentProvenance(t *testing
 		wantRefreshed []string
 		wantReused    []string
 	}{
-		{component: "interlace", wantRefreshed: []string{"cadence", "interlace"}, wantReused: []string{"metadata", "crop", "restoration", "frameStructure"}},
-		{component: "crop", wantRefreshed: []string{"crop"}, wantReused: []string{"metadata", "interlace", "restoration", "frameStructure", "cadence"}},
+		{component: "interlace", wantRefreshed: []string{"cadence", "interlace"}, wantReused: []string{"metadata", "sourceBitrate", "crop", "restoration", "frameStructure"}},
+		{component: "crop", wantRefreshed: []string{"crop"}, wantReused: []string{"metadata", "sourceBitrate", "interlace", "restoration", "frameStructure", "cadence"}},
 	} {
 		t.Run(testCase.component, func(t *testing.T) {
 			binDir := t.TempDir()

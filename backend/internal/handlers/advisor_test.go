@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/quality"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -75,6 +76,48 @@ func TestUnverifiedLibraryAssetCanBeRecommendedFromTechnicalEvidence(t *testing.
 		if strings.Contains(reason, "already lives in Library") {
 			t.Fatalf("location-only assumption remains in reasons: %q", reason)
 		}
+	}
+}
+
+func TestAdvisorUsesVideoOnlyBitrateEvidenceForHighBitrateReason(t *testing.T) {
+	scan := models.ScanResult{
+		VideoCodec: "h264", Bitrate: 52_000_000, Width: 1920, Height: 1080,
+		VideoStreams: models.JSONList{models.JSONMap{"index": 0, "bitrate": int64(3_000_000)}},
+		AudioStreams: models.JSONList{models.JSONMap{"index": 1, "bitrate": int64(48_000_000)}},
+	}
+	response := evaluateConversion(scan, models.Profile{VideoCodec: "hevc", CodecFamily: "hevc"}, false)
+	for _, reason := range response.Reasons {
+		if strings.Contains(reason, "source video bitrate is high enough") {
+			t.Fatalf("audio-heavy container bitrate inflated the Advisor evidence: %q", reason)
+		}
+	}
+}
+
+func TestAdvisorReportsBPPPFRiskAsContextBesideSourceEvidence(t *testing.T) {
+	scan := models.ScanResult{
+		Path: "/raw/movie.mkv", VideoCodec: "h264", Width: 1920, Height: 1080,
+		Duration: 120, VideoStreams: models.JSONList{models.JSONMap{
+			"index": 0, "codec": "h264", "bitrate": int64(1_000_000),
+			"width": 1920, "height": 1080, "avgFrameRate": "24/1",
+		}}, SourceBitrateEvidence: sourceBitrateEvidenceMap(quality.SourceBitrateEvidence{
+			SchemaVersion: quality.SourceBitrateEvidenceSchemaVersion, SamplingPolicy: quality.SourceBitrateSamplingPolicyVersion,
+			Bitrate: 1_000_000, Method: quality.SourceBitrateMethodStreamMetadata, Confidence: "high",
+			StreamIndex: intPointer(0), DurationSeconds: 120, SampledWindows: []quality.SourceBitrateSampleWindow{},
+		}),
+	}
+	profile := models.Profile{VideoCodec: "x265", CodecFamily: "hevc", QualityMode: "crf", QualityValue: 18, OptimizationIntent: "balanced", WorkerConfig: models.JSONMap{"videoEncoder": "libx265"}}
+	response := evaluateConversion(scan, profile, false)
+	if response.BPPPFAssessment == nil || response.BPPPFAssessment.Status != quality.BPPPFStatusHighRisk {
+		t.Fatalf("expected Advisor to expose its heuristic BPPPF risk: %#v", response.BPPPFAssessment)
+	}
+	if response.SourceBitrateEvidence == nil || response.SourceBitrateEvidence.Method != quality.SourceBitrateMethodStreamMetadata {
+		t.Fatalf("Advisor omitted canonical source bitrate provenance: %#v", response.SourceBitrateEvidence)
+	}
+	if len(response.Warnings) == 0 || !strings.Contains(response.Warnings[len(response.Warnings)-1], "measured LAB evidence remains authoritative") {
+		t.Fatalf("Advisor warning did not label the rail as contextual: %#v", response.Warnings)
+	}
+	if profile.WorkerConfig["qsvTargetBitrate"] != nil {
+		t.Fatalf("BPPPF assessment mutated the selected profile: %#v", profile.WorkerConfig)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/quality"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -72,6 +73,7 @@ type queueBatchPreflightAsset struct {
 	Warnings        []string         `json:"warnings"`
 	ResolvedJob     *models.QueueJob `json:"resolvedJob,omitempty"`
 	Constraints     models.JSONMap   `json:"constraints,omitempty"`
+	QualityEvidence models.JSONMap   `json:"qualityEvidence,omitempty"`
 	SelectedEncoder string           `json:"selectedEncoder,omitempty"`
 	RuntimeProfile  string           `json:"runtimeProfile,omitempty"`
 	QueuedJobID     uint             `json:"queuedJobId,omitempty"`
@@ -86,6 +88,7 @@ type QueueBatchPreflightPlan struct {
 	AudioProfileSnapshot models.JSONMap `json:"audioProfileSnapshot"`
 	TrackProfileSnapshot models.JSONMap `json:"trackProfileSnapshot"`
 	Constraints          models.JSONMap `json:"constraints"`
+	QualityEvidence      models.JSONMap `json:"qualityEvidence,omitempty"`
 	SelectedEncoder      string         `json:"selectedEncoder"`
 	RuntimeSnapshotID    uint           `json:"runtimeSnapshotId"`
 	RuntimeProfile       string         `json:"runtimeProfile"`
@@ -183,6 +186,7 @@ func queuePreflightResponse(record models.QueueBatchPreflight, state queueBatchP
 					ProfileVersion: job.ProfileVersion, ProfileCapturedAt: job.ProfileCapturedAt,
 					AudioProfileSnapshot: job.AudioProfileSnapshot, TrackProfileSnapshot: job.TrackProfileSnapshot,
 					Constraints: asset.Constraints, SelectedEncoder: asset.SelectedEncoder,
+					QualityEvidence:   asset.QualityEvidence,
 					RuntimeSnapshotID: state.RuntimeSnapshotID, RuntimeProfile: asset.RuntimeProfile,
 					DestinationSnapshot: job.ResolvedDestinationSnapshot,
 					PublishMode:         job.PublishMode, ProcessingMode: job.ProcessingMode,
@@ -565,6 +569,18 @@ func (h QueueHandler) resolveQueueBatchPreflight(input QueueBatchPreflightInput,
 	if err != nil {
 		return queueBatchPreflightState{}, fmt.Errorf("load Queue reservations: %w", err)
 	}
+	sourceScans := map[string]models.ScanResult{}
+	if h.db.Migrator().HasTable(&models.ScanResult{}) {
+		var scans []models.ScanResult
+		if h.db.Where("path IN ?", paths).Order("updated_at desc, id desc").Find(&scans).Error == nil {
+			for _, scan := range scans {
+				key := filepath.Clean(scan.Path)
+				if _, exists := sourceScans[key]; !exists {
+					sourceScans[key] = scan
+				}
+			}
+		}
+	}
 	for index, input := range jobs {
 		itemID, err := queueBatchPreflightID()
 		if err != nil {
@@ -669,6 +685,27 @@ func (h QueueHandler) resolveQueueBatchPreflight(input QueueBatchPreflightInput,
 			item.Warnings = append(item.Warnings, fmt.Sprintf("Encoder fallback: %s is selected instead of preferred %s", item.SelectedEncoder, constraints.PreferredEncoder))
 		}
 		job.ProfileSnapshot[models.QueuePreflightSelectedEncoderKey] = item.SelectedEncoder
+		if scan, ok := sourceScans[filepath.Clean(job.MediaPath)]; ok {
+			if info, statErr := os.Stat(job.MediaPath); statErr == nil {
+				if evidence, evidenceOK := cachedSourceBitrateEvidenceFromScan(job.MediaPath, info, scan); evidenceOK {
+					assessment := bpppfAssessmentForQueueProfile(profile, item.SelectedEncoder, scan, evidence)
+					item.QualityEvidence = models.JSONMap{
+						"sourceBitrateEvidence": sourceBitrateEvidenceMap(evidence),
+						"bpppfAssessment":       assessment,
+					}
+					manifest, manifestOK := snapshotCacheMap(job.ProfileSnapshot[sourceAnalysisEvidenceSnapshotKey])
+					if !manifestOK {
+						manifest = models.JSONMap{"components": []string{}}
+					}
+					manifest["sourceBitrateEvidence"] = item.QualityEvidence["sourceBitrateEvidence"]
+					manifest["bpppfAssessment"] = assessment
+					job.ProfileSnapshot[sourceAnalysisEvidenceSnapshotKey] = manifest
+					if assessment.Status == quality.BPPPFStatusWarning || assessment.Status == quality.BPPPFStatusHighRisk {
+						item.Warnings = append(item.Warnings, assessment.Explanation)
+					}
+				}
+			}
+		}
 		var library models.Library
 		if err := h.db.First(&library, job.LibraryID).Error; err != nil {
 			item.Blockers = append(item.Blockers, "Destination library is unavailable")
@@ -1014,6 +1051,10 @@ func (h QueueHandler) persistAcceptedPreflightJobs(tx *gorm.DB, candidateID stri
 			plan.Evaluation = models.JSONMap{}
 		}
 		plan.Evaluation["batchPreflightCandidateId"] = candidateID
+		if asset.QualityEvidence != nil {
+			plan.Evaluation["qualityEvidence"] = asset.QualityEvidence
+			plan.DecisionSources["qualityEvidence"] = "batch_preflight_frozen"
+		}
 		if err := tx.Save(&plan).Error; err != nil {
 			return err
 		}
