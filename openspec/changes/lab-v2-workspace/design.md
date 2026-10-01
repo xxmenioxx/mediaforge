@@ -1,6 +1,14 @@
 ## Context
 
-See `proposal.md` and `specs/lab-v2-workspace/spec.md`. The approved visual authority is `/Users/anuelvs/Documents/MediaForge/docs/design-reference/lab-v2.png`; the static Figma Make reference source is `/Users/anuelvs/Documents/MediaForge/docs/design-reference/lab-v2-make/src/App.tsx` and `src/index.css`. The screenshot supplies the composition and proportion. Its sample asset, metric values, labels, menu state, and sample thumbnails are illustrative, not application data.
+See `proposal.md` and `specs/lab-v2-workspace/spec.md`.
+
+## Authority and visual reference
+
+- **Behavior and domain:** [GitHub issue #183](https://github.com/xxmenioxx/mediaforge/issues/183), this OpenSpec change, and existing MediaForge code.
+- **Durable visual direction:** the approved design sections in [GitHub issue #183](https://github.com/xxmenioxx/mediaforge/issues/183). The issue contains no direct Figma/Make URL or attached screenshot, so there is no separately versioned pixel reference in this change.
+- **Figma Make:** design-generation/reference material used during implementation only. It is not a runtime or production-code dependency. The reviewed screenshot contains third-party media artwork, and the repository has no redistribution license for that artwork; the screenshot is therefore not committed.
+
+The approved design's sample asset, metric values, labels, menu state, and sample thumbnails are illustrative, not application data.
 
 The production route already runs inside `AppLayout`, which owns the collapsed navigation rail, mobile drawer, top-level search, and account controls. `ProfileLabPage` owns the selected asset, video/audio/track drafts, profile scope, preview range, compatible preview identities, and Fidelity evidence. `TestEncodeDialog` owns Test Encode creation and canonical lifecycle actions; `api.testEncodes(sourcePath)` uses the bounded retained Test Encode endpoint, and the dialog and LAB can share its React Query key. Test Encode rows carry output identity, range, execution/retention state, validation report, and any persisted Profile Qualification. The #157 and #142 contracts therefore require no backend change for this presentation.
 

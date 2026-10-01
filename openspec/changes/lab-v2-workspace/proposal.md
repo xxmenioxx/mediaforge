@@ -25,4 +25,6 @@ None. The work changes LAB presentation and interaction while preserving existin
 - Frontend: `ProfileLabPage`, focused LAB presentation components, and LAB tests.
 - OpenSpec: a new `lab-v2-workspace` capability.
 - No backend API, persisted model, worker, scheduler, Queue, Validation, Publisher, profile resolver, media-analysis, or dependency changes are intended.
-- Visual reference: `/Users/anuelvs/Documents/MediaForge/docs/design-reference/lab-v2.png`; the read-only Make reference implementation is under `/Users/anuelvs/Documents/MediaForge/docs/design-reference/lab-v2-make/`.
+- Behavioral and domain authority: [GitHub issue #183](https://github.com/xxmenioxx/mediaforge/issues/183), this OpenSpec change, and the existing MediaForge code.
+- Durable visual direction: the approved design sections in [GitHub issue #183](https://github.com/xxmenioxx/mediaforge/issues/183). The issue has no direct Figma/Make URL or attached screenshot.
+- Figma Make was used as an implementation-time design-generation/reference source only. Its export is not part of MediaForge's production architecture or a runtime dependency. The reviewed screenshot contains third-party media artwork with no redistribution license recorded in the repository, so it is not committed.
