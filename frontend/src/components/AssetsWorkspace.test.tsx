@@ -129,7 +129,8 @@ describe('Assets workspace presentation', () => {
     expect(screen.getByText('Container · MATROSKA')).toBeTruthy();
     expect(screen.getByText('Resolution · 1920 × 1080')).toBeTruthy();
     expect(screen.getByText('Audio · aac 2ch ja')).toBeTruthy();
-    expect(screen.getByText('Subtitles · 2 tracks · ja, en')).toBeTruthy();
+    expect(screen.getByText('Subtitles')).toBeTruthy();
+    expect(screen.getByText('2 tracks · ja, en')).toBeTruthy();
     expect(screen.getAllByRole('button', { name: /Play preview of Episode 01.mkv/ })).toHaveLength(1);
     expect((screen.getByRole('img', { name: 'Episode 01.mkv preview' }) as HTMLImageElement).getAttribute('src')).toContain('/api/assets/preview?path=');
     expect(screen.queryByRole('button', { name: /View.*Play|Play.*View/ })).toBeNull();

@@ -2,7 +2,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppLayout } from './components/AppLayout';
 import { DashboardPage } from './pages/DashboardPage';
 import { LibrariesPage } from './pages/LibrariesPage';
-import { AssetsPage } from './pages/AssetsPage';
+import { AssetsPage, ReportsPage } from './pages/AssetsPage';
 import { AudioProfilesPage } from './pages/AudioProfilesPage';
 import { ProfileLabPage } from './pages/ProfileLabPage';
 import { ProfilesPage } from './pages/ProfilesPage';
@@ -22,8 +22,9 @@ export default function App() {
       <Route element={<AppLayout />}>
         <Route index element={<DashboardPage />} />
         <Route path="libraries" element={<LibrariesPage />} />
-        <Route path="assets" element={<AssetsPage />} />
+        <Route path="assets" element={<AssetsRoute />} />
         <Route path="assets/:legacyView" element={<LegacyAssetsRoute />} />
+        <Route path="reports/*" element={<ReportsPage />} />
         <Route path="analysis" element={<LegacyAnalysisRoute />} />
         <Route path="profile-lab" element={<ProfileLabPage />} />
         <Route path="profiles" element={<ProfilesPage />} />
@@ -44,6 +45,15 @@ export default function App() {
   );
 }
 
+export function AssetsRoute() {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  if (params.get('evidence') === 'reports' || params.get('tab') === 'reports') {
+    return <Navigate to="/reports" replace />;
+  }
+  return <AssetsPage />;
+}
+
 export function LegacyAnalysisRoute() {
   const location = useLocation();
   const params = new URLSearchParams(location.search);
@@ -59,6 +69,7 @@ export function LegacyAnalysisRoute() {
 export function LegacyAssetsRoute() {
   const location = useLocation();
   const view = location.pathname.split('/').filter(Boolean).at(-1);
+  if (view === 'reports') return <Navigate to="/reports" replace />;
   const params = new URLSearchParams(location.search);
   params.delete('tab');
   if (view === 'unprocessed') {
@@ -69,9 +80,6 @@ export function LegacyAssetsRoute() {
   } else if (view === 'archive') {
     params.set('location', 'library');
     params.delete('original');
-  } else if (view === 'reports') {
-    params.set('location', 'library');
-    params.set('evidence', 'reports');
   } else {
     return <div role="alert">This Assets route is no longer an inventory context. Open RAW or Library and use the persisted lifecycle filters.</div>;
   }

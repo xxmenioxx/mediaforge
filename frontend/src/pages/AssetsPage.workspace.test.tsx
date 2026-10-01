@@ -19,7 +19,7 @@ vi.mock('../api/client', async (importOriginal) => {
 });
 
 import { api } from '../api/client';
-import { AssetsPage } from './AssetsPage';
+import { AssetsPage, ReportsPage } from './AssetsPage';
 
 afterEach(cleanup);
 
@@ -127,6 +127,57 @@ function renderRawPage(initialUrl = '/assets?location=raw') {
   return { ...view, queryClient };
 }
 
+function renderReportsPage() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <MemoryRouter initialEntries={['/reports']}>
+      <QueryClientProvider client={queryClient}>
+        <ReportsPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+}
+
+function inventoryWithReports(): AssetInventory {
+  const missingAsset = { ...asset(99, 'Missing Episode.mkv'), status: 'missing', missing: true };
+  return {
+    ...rawWorkspaceInventory(),
+    missing: [missingAsset],
+    reports: {
+      unprocessedFiles: 2,
+      libraryFiles: 1,
+      unverifiedFiles: 1,
+      acceptedFiles: 0,
+      convertedFiles: 0,
+      convertedSpaceSavedBytes: 0,
+      convertedComparedFiles: 0,
+      convertedOriginalBytes: 0,
+      convertedOutputBytes: 0,
+      archiveFiles: 0,
+      archiveBytes: 0,
+      expiredArchive: 0,
+      missingFiles: 1,
+      missingActionable: 1,
+      missingHistorical: 0,
+    },
+  } as unknown as AssetInventory;
+}
+
+describe('Reports page content', () => {
+  it('uses persisted inventory reports and keeps missing-record actions reachable', async () => {
+    vi.clearAllMocks();
+    vi.mocked(api.assets).mockResolvedValue(inventoryWithReports());
+    renderReportsPage();
+
+    expect((await screen.findAllByText('Unprocessed')).length).toBeGreaterThan(0);
+    expect(screen.getByText('Missing assets requiring attention')).toBeTruthy();
+    const missingTable = screen.getByRole('table');
+    expect(within(missingTable).getByText('/media/library/anime/Series/Season 01/Missing Episode.mkv')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Remove missing asset Missing Episode.mkv' })).toBeTruthy();
+    expect(api.assets).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Library Assets workspace', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -158,6 +209,8 @@ describe('Library Assets workspace', () => {
     expect(screen.getByLabelText('Completed: 3').textContent).toBe('3');
     expect(screen.getByLabelText('Needs Review: 0').textContent).toBe('0');
     expect(screen.queryByRole('img')).toBeNull();
+    const libraryTree = screen.getByRole('tree', { name: 'Library folders' });
+    expect(within(libraryTree).getByRole('treeitem', { name: 'All Library assets' }).getAttribute('aria-selected')).toBe('true');
     expect(screen.getByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv').getAttribute('aria-label')).toBe('A Very Long Episode Filename That Should Stay Inside Its Column.mkv');
     expect(api.latestSnapshot).not.toHaveBeenCalled();
 
@@ -166,6 +219,7 @@ describe('Library Assets workspace', () => {
     await user.click(screen.getByRole('treeitem', { name: /Series/ }));
     expect(screen.getByTestId('asset-query').textContent).toBe('?location=library&search=Episode');
     expect(screen.getByText(/2 assets/)).toBeTruthy();
+    expect(screen.getByRole('navigation', { name: 'Library location' }).textContent).toContain('Series');
     expect(api.latestSnapshot).not.toHaveBeenCalled();
   });
 
@@ -177,8 +231,10 @@ describe('Library Assets workspace', () => {
     await user.click(row.closest('tr')!);
 
     const details = await screen.findByTestId('selected-asset-detail');
-    expect(within(details).getByText('Profile · Library HEVC')).toBeTruthy();
-    expect(within(details).getByText(/Subtitles · 2 tracks/)).toBeTruthy();
+    expect(within(details).getByText('Profile')).toBeTruthy();
+    expect(within(details).getByText('Library HEVC')).toBeTruthy();
+    expect(within(details).getByText('Subtitles')).toBeTruthy();
+    expect(within(details).getByText(/2 tracks/)).toBeTruthy();
     expect(within(details).getByText('Video · hevc')).toBeTruthy();
     expect(within(details).getByText('Resolution · 1920 × 1080')).toBeTruthy();
     expect(within(details).getByText(/Audio · aac 2ch ja/)).toBeTruthy();
@@ -295,6 +351,13 @@ describe('RAW Assets workspace', () => {
     expect(within(tree).getByRole('treeitem', { name: 'Anime' })).toBeTruthy();
     const title = within(tree).getByRole('treeitem', { name: 'Attack on Titan' });
     expect(title.getAttribute('aria-selected')).toBe('true');
+    const rawBreadcrumbs = screen.getByRole('navigation', { name: 'RAW source location' }).textContent ?? '';
+    expect(rawBreadcrumbs).toContain('RAW');
+    expect(rawBreadcrumbs).toContain('Anime');
+    expect(rawBreadcrumbs).toContain('Attack on Titan');
+    expect(await screen.findByTestId('selected-asset-detail')).toBeTruthy();
+    await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledTimes(1));
+    expect(api.latestSnapshot).toHaveBeenCalledWith('/media/raw/anime/Attack on Titan/S01E01.mkv');
     expect(screen.getByRole('button', { name: 'Run Advisor' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Configure title' })).toBeTruthy();
 
@@ -305,6 +368,7 @@ describe('RAW Assets workspace', () => {
     const extras = within(tree).getByRole('treeitem', { name: 'extras' });
     await user.click(extras);
     expect(extras.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('navigation', { name: 'RAW source location' }).textContent).toContain('extras');
     const rawTable = await screen.findByRole('table', { name: 'RAW assets' });
     expect(within(rawTable).getByText('Trailer.mkv')).toBeTruthy();
     expect(within(rawTable).queryByText('S01E01.mkv')).toBeNull();
@@ -320,7 +384,10 @@ describe('RAW Assets workspace', () => {
     expect(within(details).getAllByRole('button', { name: /Play preview/ })).toHaveLength(1);
     expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
     expect(within(details).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
-    expect(within(details).getByText('Profile · Inherited')).toBeTruthy();
+    expect(within(details).getByText('Profile')).toBeTruthy();
+    expect(within(details).getByText('Inherited')).toBeTruthy();
+    await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledTimes(2));
+    expect(api.latestSnapshot).toHaveBeenLastCalledWith('/media/raw/anime/Attack on Titan/extras/Trailer.mkv');
 
     await user.click(within(details).getByRole('button', { name: 'More actions for Trailer.mkv' }));
     expect(await screen.findByRole('menuitem', { name: 'Asset Info' })).toBeTruthy();

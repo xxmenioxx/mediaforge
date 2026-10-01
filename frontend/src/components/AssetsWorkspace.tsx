@@ -1,9 +1,10 @@
 import {
   Box,
+  Breadcrumbs,
   Button,
   ButtonBase,
+  Card,
   Collapse,
-  Divider,
   Grid,
   IconButton,
   List,
@@ -14,8 +15,13 @@ import {
   Typography,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import PlayCircleOutlineIcon from '@mui/icons-material/PlayCircleOutline';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
+import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
+import AutorenewOutlinedIcon from '@mui/icons-material/AutorenewOutlined';
+import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
+import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined';
 import { useState } from 'react';
 import { api } from '../api/client';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, ScanResult } from '../api/types';
@@ -28,33 +34,85 @@ export function AssetsSummaryStrip({ total, processing, completed, needsReview }
   needsReview: number;
 }) {
   const items = [
-    ['Total Assets', total],
-    ['Processing', processing],
-    ['Completed', completed],
-    ['Needs Review', needsReview],
+    { label: 'Total Assets', value: total, icon: <StorageOutlinedIcon />, color: 'info.main', tint: 'rgba(42, 156, 255, 0.14)' },
+    { label: 'Processing', value: processing, icon: <AutorenewOutlinedIcon />, color: 'secondary.main', tint: 'rgba(158, 93, 255, 0.14)' },
+    { label: 'Completed', value: completed, icon: <TaskAltOutlinedIcon />, color: 'success.main', tint: 'rgba(0, 206, 145, 0.14)' },
+    { label: 'Needs Review', value: needsReview, icon: <ReportProblemOutlinedIcon />, color: 'error.main', tint: 'rgba(255, 74, 98, 0.14)' },
   ] as const;
 
   return (
-    <Stack
+    <Box
       component="section"
       aria-label="Asset summary"
-      direction="row"
-      divider={<Divider orientation="vertical" flexItem />}
       sx={{
-        minHeight: 44,
-        alignItems: 'center',
-        borderBottom: 1,
-        borderColor: 'divider',
-        '& > *': { flex: 1, minWidth: 0 },
+        display: 'grid',
+        gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(4, minmax(0, 1fr))' },
+        gap: { xs: 1, sm: 1.25 },
       }}
     >
-      {items.map(([label, value]) => (
-        <Box key={label} sx={{ px: { xs: 1, sm: 1.5 }, py: 0.5 }}>
-          <Typography variant="caption" color="text.secondary" noWrap>{label}</Typography>
-          <Typography variant="body2" fontWeight={700} aria-label={`${label}: ${value}`}>{value.toLocaleString()}</Typography>
-        </Box>
+      {items.map(({ label, value, icon, color, tint }) => (
+        <Card
+          key={label}
+          variant="outlined"
+          sx={{
+            display: 'flex',
+            minWidth: 0,
+            minHeight: { xs: 72, sm: 82 },
+            alignItems: 'center',
+            gap: { xs: 1, sm: 1.5 },
+            px: { xs: 1, sm: 1.5 },
+            py: 1,
+            borderRadius: 1.5,
+            bgcolor: 'background.paper',
+            borderColor: 'divider',
+          }}
+        >
+          <Box aria-hidden="true" sx={{
+            display: 'grid',
+            placeItems: 'center',
+            width: { xs: 36, sm: 44 },
+            height: { xs: 36, sm: 44 },
+            flexShrink: 0,
+            borderRadius: 1.25,
+            bgcolor: tint,
+            color,
+            '& svg': { fontSize: { xs: 20, sm: 24 } },
+          }}>
+            {icon}
+          </Box>
+          <Stack spacing={0.15} sx={{ minWidth: 0 }}>
+            <Typography variant="caption" color="text.secondary" noWrap>{label}</Typography>
+            <Typography variant="h2" fontWeight={700} aria-label={`${label}: ${value}`} sx={{ fontSize: { xs: '1.1rem', sm: '1.25rem' }, lineHeight: 1.1 }}>
+              {value.toLocaleString()}
+            </Typography>
+          </Stack>
+        </Card>
       ))}
-    </Stack>
+    </Box>
+  );
+}
+
+export function WorkspaceBreadcrumbs({ segments, label }: { segments: string[]; label: string }) {
+  return (
+    <Breadcrumbs
+      aria-label={label}
+      separator={<NavigateNextIcon fontSize="small" />}
+      maxItems={4}
+      itemsBeforeCollapse={2}
+      itemsAfterCollapse={1}
+      sx={{
+        minWidth: 0,
+        '& .MuiBreadcrumbs-ol': { flexWrap: 'nowrap' },
+        '& .MuiBreadcrumbs-li': { minWidth: 0 },
+        '& .MuiTypography-root': { maxWidth: { xs: '7rem', sm: '12rem', lg: '16rem' }, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      }}
+    >
+      {segments.map((segment, index) => (
+        <Typography key={`${index}-${segment}`} variant="caption" color={index === segments.length - 1 ? 'text.primary' : 'text.secondary'} title={segment}>
+          {segment}
+        </Typography>
+      ))}
+    </Breadcrumbs>
   );
 }
 
@@ -100,12 +158,14 @@ export function LibraryTreePanel({ groups, libraries, selection, onSelect }: {
             }
           }}
           sx={{
-            minHeight: 34,
+            minHeight: 36,
             borderRadius: 1,
-            py: 0.25,
-            pl: Math.min(1 + (level - 1) * 1.25, 6),
+            borderLeft: '2px solid transparent',
+            py: 0.3,
+            pl: Math.min(1 + (level - 1) * 1.35, 6),
             pr: 0.75,
-            '&[aria-selected="true"]': { bgcolor: 'action.selected', color: 'primary.main' },
+            '&[aria-selected="true"]': { bgcolor: 'rgba(101, 86, 255, 0.16)', color: 'primary.main', borderLeftColor: 'primary.main' },
+            '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
           }}
         >
           {hasChildren ? (
@@ -141,18 +201,22 @@ export function LibraryTreePanel({ groups, libraries, selection, onSelect }: {
       component="nav"
       aria-label="Library tree"
       sx={{
-        width: { xs: '100%', lg: '28%' },
-        maxWidth: { lg: 400 },
-        flex: { xs: '1 1 auto', lg: '0 0 28%' },
+        width: { xs: '100%', lg: '27%' },
+        maxWidth: { lg: 350 },
+        flex: { xs: '1 1 auto', lg: '0 0 27%' },
         minWidth: 0,
-        borderRight: { xs: 0, lg: 1 },
-        borderBottom: { xs: 1, lg: 0 },
+        alignSelf: 'stretch',
+        border: 1,
         borderColor: 'divider',
-        pr: { xs: 0, lg: 1 },
-        pb: { xs: 1, lg: 0 },
+        borderRadius: 1.5,
+        bgcolor: 'background.paper',
+        p: 1,
       }}
     >
-      <Typography variant="overline" color="text.secondary" sx={{ px: 1.25, lineHeight: 2.5 }}>Library</Typography>
+      <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ px: 0.5, pb: 0.75 }}>
+        <Typography variant="subtitle2" fontWeight={700}>Library</Typography>
+        <Typography variant="caption" color="text.secondary">{nodes.length} {nodes.length === 1 ? 'library' : 'libraries'}</Typography>
+      </Stack>
       <List role="tree" aria-label="Library folders" dense disablePadding>
         <ListItemButton
           component="div"
@@ -167,7 +231,7 @@ export function LibraryTreePanel({ groups, libraries, selection, onSelect }: {
               onSelect({ libraryId: null, path: '' });
             }
           }}
-          sx={{ minHeight: 34, borderRadius: 1, py: 0.25, px: 1.25, '&[aria-selected="true"]': { bgcolor: 'action.selected', color: 'primary.main' } }}
+          sx={{ minHeight: 36, borderRadius: 1, borderLeft: '2px solid transparent', py: 0.3, px: 1, '&[aria-selected="true"]': { bgcolor: 'rgba(101, 86, 255, 0.16)', color: 'primary.main', borderLeftColor: 'primary.main' }, '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 } }}
         >
           <ListItemText primary="All Library assets" primaryTypographyProps={{ variant: 'body2', noWrap: true }} sx={{ my: 0 }} />
         </ListItemButton>
@@ -227,12 +291,14 @@ export function RawHierarchyPanel({ sourceGroups, selection, onSelect }: {
             }
           }}
           sx={{
-            minHeight: 34,
+            minHeight: 36,
             borderRadius: 1,
-            py: 0.25,
-            pl: Math.min(1 + (level - 1) * 1.25, 6),
+            borderLeft: '2px solid transparent',
+            py: 0.3,
+            pl: Math.min(1 + (level - 1) * 1.35, 6),
             pr: 0.75,
-            '&[aria-selected="true"]': { bgcolor: 'action.selected', color: 'primary.main' },
+            '&[aria-selected="true"]': { bgcolor: 'rgba(101, 86, 255, 0.16)', color: 'primary.main', borderLeftColor: 'primary.main' },
+            '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
           }}
         >
           {hasChildren ? (
@@ -264,18 +330,22 @@ export function RawHierarchyPanel({ sourceGroups, selection, onSelect }: {
       component="nav"
       aria-label="RAW source hierarchy"
       sx={{
-        width: { xs: '100%', lg: '28%' },
-        maxWidth: { lg: 400 },
-        flex: { xs: '1 1 auto', lg: '0 0 28%' },
+        width: { xs: '100%', lg: '27%' },
+        maxWidth: { lg: 350 },
+        flex: { xs: '1 1 auto', lg: '0 0 27%' },
         minWidth: 0,
-        borderRight: { xs: 0, lg: 1 },
-        borderBottom: { xs: 1, lg: 0 },
+        alignSelf: 'stretch',
+        border: 1,
         borderColor: 'divider',
-        pr: { xs: 0, lg: 1 },
-        pb: { xs: 1, lg: 0 },
+        borderRadius: 1.5,
+        bgcolor: 'background.paper',
+        p: 1,
       }}
     >
-      <Typography variant="overline" color="text.secondary" sx={{ px: 1.25, lineHeight: 2.5 }}>Source groups</Typography>
+      <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ px: 0.5, pb: 0.75 }}>
+        <Typography variant="subtitle2" fontWeight={700}>RAW source groups</Typography>
+        <Typography variant="caption" color="text.secondary">{nodes.length} {nodes.length === 1 ? 'group' : 'groups'}</Typography>
+      </Stack>
       <List role="tree" aria-label="RAW sources" dense disablePadding>
         <ListItemButton
           component="div"
@@ -290,7 +360,7 @@ export function RawHierarchyPanel({ sourceGroups, selection, onSelect }: {
               onSelect({ kind: 'all' });
             }
           }}
-          sx={{ minHeight: 34, borderRadius: 1, py: 0.25, px: 1.25, '&[aria-selected="true"]': { bgcolor: 'action.selected', color: 'primary.main' } }}
+          sx={{ minHeight: 36, borderRadius: 1, borderLeft: '2px solid transparent', py: 0.3, px: 1, '&[aria-selected="true"]': { bgcolor: 'rgba(101, 86, 255, 0.16)', color: 'primary.main', borderLeftColor: 'primary.main' }, '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 } }}
         >
           <ListItemText primary="All RAW assets" primaryTypographyProps={{ variant: 'body2', noWrap: true }} sx={{ my: 0 }} />
         </ListItemButton>
@@ -352,15 +422,36 @@ export function SelectedAssetDetail({
       : 'Unavailable';
   const subtitleCount = snapshot?.subtitleStreams.length;
   const subtitleValue = snapshotLoading ? 'Loading…' : subtitlesSummary || (subtitleCount === undefined ? 'Unavailable' : `${subtitleCount} ${subtitleCount === 1 ? 'track' : 'tracks'}`);
+  const summaryValues = [
+    ['Profile', assignedProfile || 'Unavailable'],
+    ['Subtitles', subtitleValue],
+    ['Duration', formatDurationSummary(duration)],
+    ['Modified', modifiedLabel || 'Unavailable'],
+  ];
+  const technicalValues = [
+    ['Container', container],
+    ['Size', sizeLabel],
+    ['Video', videoCodec],
+    ['Resolution', resolution],
+    ['Audio', audioSummary],
+  ];
 
   return (
     <Box
       component="section"
       aria-label={`Details for ${asset.fileName}`}
       data-testid="selected-asset-detail"
-      sx={{ borderTop: 1, borderColor: 'divider', px: { xs: 1, sm: 1.5 }, py: 1.25, bgcolor: 'background.paper' }}
+      sx={{
+        mt: 1.25,
+        p: { xs: 1, sm: 1.5 },
+        border: 1,
+        borderColor: 'divider',
+        borderRadius: 1.5,
+        bgcolor: 'background.paper',
+        boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+      }}
     >
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ xs: 'stretch', sm: 'center' }}>
+      <Stack direction={{ xs: 'column', xl: 'row' }} spacing={{ xs: 1.25, xl: 1.5 }} alignItems={{ xs: 'stretch', xl: 'center' }}>
         <Tooltip title={`Play preview of ${asset.fileName}`}>
           <span>
             <ButtonBase
@@ -368,15 +459,18 @@ export function SelectedAssetDetail({
               disabled={asset.missing}
               aria-label={`Play preview of ${asset.fileName}`}
               sx={{
-                width: { xs: '100%', sm: 220, xl: 280 },
-                height: { xs: 148, sm: 108, xl: 128 },
+                width: { xs: '100%', sm: 240, xl: 280 },
+                aspectRatio: '16 / 9',
+                height: 'auto',
                 flexShrink: 0,
-                borderRadius: 1,
+                borderRadius: 1.25,
                 bgcolor: 'rgba(255,255,255,0.06)',
                 color: 'primary.main',
                 overflow: 'hidden',
                 position: 'relative',
+                boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.1)',
                 '&:hover': { bgcolor: 'rgba(79,179,255,0.14)' },
+                '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 },
               }}
             >
               {!asset.missing ? (
@@ -395,35 +489,60 @@ export function SelectedAssetDetail({
           </span>
         </Tooltip>
 
-        <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
-            <Tooltip title={asset.fileName}>
-              <Typography fontWeight={700} variant="body2" noWrap sx={{ minWidth: 0 }}>{asset.fileName}</Typography>
-            </Tooltip>
-            <Typography variant="caption" color="text.secondary" noWrap>{status}</Typography>
+        <Box
+          sx={{
+            minWidth: 0,
+            flex: 1,
+            display: 'grid',
+            gridTemplateColumns: { xs: 'minmax(0, 1fr)', xl: 'minmax(0, 1.1fr) minmax(220px, 0.9fr)' },
+            gap: { xs: 1, xl: 1.5 },
+          }}
+        >
+          <Stack spacing={0.75} sx={{ minWidth: 0 }}>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+              <Tooltip title={asset.fileName}>
+                <Typography component="h2" fontWeight={700} variant="h2" noWrap sx={{ minWidth: 0, fontSize: { xs: '1rem', sm: '1.1rem' }, lineHeight: 1.25 }}>
+                  {asset.fileName}
+                </Typography>
+              </Tooltip>
+              <Box sx={{ flexShrink: 0, border: 1, borderColor: 'divider', borderRadius: 99, px: 1, py: 0.2, bgcolor: 'rgba(255,255,255,0.035)' }}>
+                <Typography variant="caption" fontWeight={600} noWrap>{status}</Typography>
+              </Box>
+            </Stack>
+            <Typography variant="caption" color="text.secondary" noWrap title={pathContext}>{pathContext}</Typography>
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(4, minmax(0, 1fr))' }, gap: 0.75, mt: 0.4 }}>
+              {summaryValues.map(([label, value]) => (
+                <Box key={label} sx={{ minWidth: 0 }}>
+                  <Typography component="div" variant="caption" color="text.secondary" noWrap>{label}</Typography>
+                  <Typography variant="body2" fontWeight={500} noWrap title={value}>{value}</Typography>
+                </Box>
+              ))}
+            </Box>
+            {metadataValues.length ? (
+              <Typography variant="caption" color="text.secondary" display="block" noWrap title={metadataValues.join(', ')}>
+                Metadata · {metadataValues.join(', ')}
+              </Typography>
+            ) : null}
           </Stack>
-          <Typography variant="caption" color="text.secondary" display="block" noWrap title={pathContext}>{pathContext}</Typography>
-          <Stack direction="row" flexWrap="wrap" columnGap={1.25} rowGap={0.25} sx={{ mt: 0.4 }}>
-            <Typography variant="caption" color="text.secondary">Profile · {assignedProfile || 'Unavailable'}</Typography>
-            <Typography variant="caption" color="text.secondary">Subtitles · {subtitleValue}</Typography>
-            <Typography variant="caption" color="text.secondary">Duration · {formatDurationSummary(duration)}</Typography>
-            <Typography variant="caption" color="text.secondary">Modified · {modifiedLabel || 'Unavailable'}</Typography>
-          </Stack>
-          <Grid container columnSpacing={1.5} rowSpacing={0.15} sx={{ mt: 0.15 }}>
-            <DetailValue label="Container" value={container} />
-            <DetailValue label="Size" value={sizeLabel} />
-            <DetailValue label="Video" value={videoCodec} />
-            <DetailValue label="Resolution" value={resolution} />
-            <DetailValue label="Audio" value={audioSummary} />
-          </Grid>
-          {metadataValues.length ? (
-            <Typography variant="caption" color="text.secondary" display="block" noWrap title={metadataValues.join(', ')}>
-              Metadata · {metadataValues.join(', ')}
-            </Typography>
-          ) : null}
+
+          <Box
+            sx={{
+              minWidth: 0,
+              borderLeft: { xl: 1 },
+              borderTop: { xs: 1, xl: 0 },
+              borderColor: 'divider',
+              pl: { xl: 1.5 },
+              pt: { xs: 1, xl: 0 },
+            }}
+          >
+            <Typography variant="caption" fontWeight={700} color="text.secondary">Technical information</Typography>
+            <Grid container columnSpacing={1.25} rowSpacing={0.5} sx={{ mt: 0.3 }}>
+              {technicalValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
+            </Grid>
+          </Box>
         </Box>
 
-        <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Stack direction="row" spacing={0.5} alignItems="center" justifyContent={{ xs: 'flex-start', xl: 'center' }} flexWrap="wrap" useFlexGap sx={{ flexShrink: 0 }}>
           {canAssignProfile ? <Button size="small" variant="outlined" onClick={onAssignProfile}>Assign Profile</Button> : null}
           {canTestEncode ? <Button size="small" variant="contained" color="secondary" onClick={onTestEncode} disabled={testEncodeDisabled}>Test Encode</Button> : null}
           <Tooltip title="More asset actions">
