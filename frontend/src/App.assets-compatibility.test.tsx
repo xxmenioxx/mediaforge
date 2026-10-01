@@ -3,7 +3,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { LegacyAnalysisRoute, LegacyAssetsRoute } from './App';
+import { AssetsRoute, LegacyAnalysisRoute, LegacyAssetsRoute } from './App';
 
 afterEach(cleanup);
 
@@ -20,6 +20,18 @@ function renderLegacy(path: string) {
         <Route path="/analysis" element={<LegacyAnalysisRoute />} />
         <Route path="/scanner" element={<LegacyAnalysisRoute />} />
         <Route path="/assets" element={<LocationProbe />} />
+        <Route path="/reports/*" element={<LocationProbe />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+function renderAssetsRoute(path: string) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route path="/assets" element={<AssetsRoute />} />
+        <Route path="/reports/*" element={<LocationProbe />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -30,10 +42,18 @@ describe('legacy Assets compatibility routes', () => {
     ['/assets/unprocessed?query=show', '/assets?query=show&location=raw'],
     ['/assets/converted?validation=passed', '/assets?validation=passed&location=library&provenance=converted'],
     ['/assets/archive?location=raw', '/assets?location=library'],
-    ['/assets/reports?location=raw', '/assets?location=library&evidence=reports'],
+    ['/assets/reports?location=raw', '/reports'],
   ])('maps %s without dropping safe query context', (path, expected) => {
     renderLegacy(path);
     expect(screen.getByTestId('location').textContent).toBe(expected);
+  });
+
+  it.each([
+    '/assets?evidence=reports',
+    '/assets?location=library&tab=reports',
+  ])('moves legacy report query state to the Reports route: %s', (path) => {
+    renderAssetsRoute(path);
+    expect(screen.getByTestId('location').textContent).toBe('/reports');
   });
 
   it('renders an explicit compatibility state for an unmappable legacy route', () => {

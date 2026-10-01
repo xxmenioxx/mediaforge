@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Asset, AssetGroup, Library, ScanResult } from '../api/types';
-import { AssetsSummaryStrip, LibraryTreePanel, SelectedAssetDetail } from './AssetsWorkspace';
-import { buildLibraryTree } from './assetsWorkspaceModel';
+import type { Asset, AssetGroup, AssetSourceGroup, Library, ScanResult } from '../api/types';
+import { AssetsHierarchyPanel, AssetsSummaryStrip, SelectedAssetDetail } from './AssetsWorkspace';
+import { buildLibraryTree, buildRawHierarchy } from './assetsWorkspaceModel';
 
 afterEach(cleanup);
 
@@ -80,22 +80,139 @@ describe('Assets workspace presentation', () => {
     expect(screen.getByLabelText('Needs Review: 4').textContent).toBe('4');
   });
 
-  it('derives a nested Library hierarchy and filters by the selected path', async () => {
+  it('composes RAW and configured Library roots in one accessible tree while retaining separate projections', async () => {
     const user = userEvent.setup();
     const group = makeGroup();
     const tree = buildLibraryTree([group], [makeLibrary()]);
     expect(tree[0].label).toBe('Anime');
     expect(tree[0].children[0].label).toBe('Series');
     expect(tree[0].children[0].children[0].label).toBe('Season 01');
+    const sourceGroups = [{
+      id: 8,
+      name: 'RAW Anime',
+      relativePath: 'anime',
+      sourcePath: '/raw/anime',
+      logicalGroups: [{ id: '/raw/anime/Attack', name: 'Attack', assetPaths: [] }],
+    }] as unknown as AssetSourceGroup[];
+    expect(buildRawHierarchy(sourceGroups)[0].selection).toEqual({ kind: 'source', sourceGroupId: 8 });
 
-    const onSelect = vi.fn();
-    render(<LibraryTreePanel groups={[group]} libraries={[makeLibrary()]} selection={{ libraryId: null, path: '' }} onSelect={onSelect} />);
-    await user.click(screen.getByRole('treeitem', { name: 'Anime' }));
-    await user.click(screen.getByRole('button', { name: 'Expand Anime' }));
-    await user.click(screen.getByRole('treeitem', { name: 'Series' }));
+    const onSelectRaw = vi.fn();
+    const onSelectLibrary = vi.fn();
+    const libraries = [makeLibrary(), { ...makeLibrary(), id: 2, name: 'Movies', destinationPath: '/library/Movies', type: 'movies' }];
+    render(<AssetsHierarchyPanel
+      sourceGroups={sourceGroups}
+      groups={[group]}
+      libraries={libraries}
+      location="raw"
+      rawSelection={{ kind: 'source', sourceGroupId: 8 }}
+      librarySelection={{ libraryId: null, path: '' }}
+      onSelectRaw={onSelectRaw}
+      onSelectLibrary={onSelectLibrary}
+    />);
+    const hierarchy = screen.getByRole('tree', { name: 'Assets hierarchy' });
+    const topLevelItems = within(hierarchy).getAllByRole('treeitem').filter((item) => item.getAttribute('aria-level') === '1');
+    expect(topLevelItems[0].getAttribute('aria-label')).toBe('RAW source inventory');
+    expect(topLevelItems.slice(1).map((item) => item.textContent?.trim())).toEqual(['Anime', 'Movies']);
+    expect(within(hierarchy).queryByRole('treeitem', { name: 'Converted' })).toBeNull();
+    expect(within(hierarchy).queryByRole('treeitem', { name: 'Archive' })).toBeNull();
+    expect(within(hierarchy).queryByRole('treeitem', { name: 'Reports' })).toBeNull();
+    expect(within(hierarchy).getAllByRole('treeitem').find((item) => item.getAttribute('aria-level') === '2')?.getAttribute('aria-selected')).toBe('true');
 
-    expect(onSelect).toHaveBeenLastCalledWith({ libraryId: 1, path: '/library/Anime/Series' });
+    (topLevelItems[1] as HTMLElement).focus();
+    await user.keyboard('{ArrowRight}');
+    expect(topLevelItems[1].getAttribute('aria-expanded')).toBe('true');
+    const seriesNode = within(hierarchy).getByRole('treeitem', { name: 'Series' });
+    await user.keyboard('{ArrowDown}');
+    expect(document.activeElement).toBe(seriesNode);
+    await user.keyboard('{ArrowUp}');
+    expect(document.activeElement).toBe(topLevelItems[1]);
+    await user.keyboard('{Enter}');
+    expect(onSelectLibrary).toHaveBeenCalledWith({ libraryId: 1, path: '' });
+    await user.keyboard(' ');
+    expect(onSelectLibrary).toHaveBeenLastCalledWith({ libraryId: 1, path: '' });
+    await user.click(topLevelItems[0]);
+    expect(onSelectRaw).toHaveBeenCalledWith({ kind: 'all' });
+
     expect(screen.queryByRole('img')).toBeNull();
+  });
+
+  it('moves ArrowLeft from a nested Library child to its immediate parent', async () => {
+    const user = userEvent.setup();
+    render(<AssetsHierarchyPanel
+      sourceGroups={[]}
+      groups={[makeGroup()]}
+      libraries={[makeLibrary()]}
+      location="library"
+      rawSelection={null}
+      librarySelection={{ libraryId: 1, path: '' }}
+      onSelectRaw={vi.fn()}
+      onSelectLibrary={vi.fn()}
+    />);
+
+    const libraryRoot = screen.getByRole('treeitem', { name: 'Anime' });
+    libraryRoot.focus();
+    await user.keyboard('{ArrowRight}');
+    const seriesNode = screen.getByRole('treeitem', { name: 'Series' });
+    seriesNode.focus();
+    await user.keyboard('{ArrowLeft}');
+
+    expect(document.activeElement).toBe(libraryRoot);
+  });
+
+  it('moves ArrowLeft through RAW path parents and collapses an expanded node first', async () => {
+    const user = userEvent.setup();
+    const sourceGroups = [{
+      id: 8,
+      name: 'RAW Anime',
+      relativePath: 'anime',
+      sourcePath: '/raw/anime',
+      logicalGroups: [{
+        id: '/raw/anime/Attack',
+        name: 'Attack',
+        assetPaths: [{
+          id: 'extras-path',
+          name: 'extras',
+          path: '/raw/anime/Attack/extras',
+          relativePath: 'extras',
+          displayPath: 'extras',
+          isLogicalGroupRoot: false,
+          fileCount: 1,
+          assetCount: 1,
+          sizeBytes: 1,
+          totalSizeBytes: 1,
+          assets: [],
+        }],
+      }],
+    }] as unknown as AssetSourceGroup[];
+    render(<AssetsHierarchyPanel
+      sourceGroups={sourceGroups}
+      groups={[]}
+      libraries={[]}
+      location="raw"
+      rawSelection={{ kind: 'all' }}
+      librarySelection={{ libraryId: null, path: '' }}
+      onSelectRaw={vi.fn()}
+      onSelectLibrary={vi.fn()}
+    />);
+
+    const sourceNode = screen.getByRole('treeitem', { name: 'RAW Anime' });
+    sourceNode.focus();
+    await user.keyboard('{ArrowRight}');
+    const logicalGroupNode = screen.getByRole('treeitem', { name: 'Attack' });
+    logicalGroupNode.focus();
+    await user.keyboard('{ArrowRight}');
+    const pathNode = screen.getByRole('treeitem', { name: 'extras' });
+
+    pathNode.focus();
+    await user.keyboard('{ArrowLeft}');
+    expect(document.activeElement).toBe(logicalGroupNode);
+
+    await user.keyboard('{ArrowLeft}');
+    expect(logicalGroupNode.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(logicalGroupNode);
+
+    await user.keyboard('{ArrowLeft}');
+    expect(document.activeElement).toBe(sourceNode);
   });
 
   it('shows compact technical details with one integrated preview Play control', async () => {
@@ -129,7 +246,8 @@ describe('Assets workspace presentation', () => {
     expect(screen.getByText('Container · MATROSKA')).toBeTruthy();
     expect(screen.getByText('Resolution · 1920 × 1080')).toBeTruthy();
     expect(screen.getByText('Audio · aac 2ch ja')).toBeTruthy();
-    expect(screen.getByText('Subtitles · 2 tracks · ja, en')).toBeTruthy();
+    expect(screen.getByText('Subtitles')).toBeTruthy();
+    expect(screen.getByText('2 tracks · ja, en')).toBeTruthy();
     expect(screen.getAllByRole('button', { name: /Play preview of Episode 01.mkv/ })).toHaveLength(1);
     expect((screen.getByRole('img', { name: 'Episode 01.mkv preview' }) as HTMLImageElement).getAttribute('src')).toContain('/api/assets/preview?path=');
     expect(screen.queryByRole('button', { name: /View.*Play|Play.*View/ })).toBeNull();

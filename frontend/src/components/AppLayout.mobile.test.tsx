@@ -34,7 +34,7 @@ describe('mobile navigation compatibility', () => {
     expect(screen.queryByRole('button', { name: 'Close navigation' })).toBeNull();
   });
 
-  it('keeps Reports and Logs reachable and marks the current destination', async () => {
+  it('keeps the separate Reports destination and Logs reachable', async () => {
     const user = userEvent.setup();
     render(
       <MemoryRouter initialEntries={['/assets']}>
@@ -51,12 +51,42 @@ describe('mobile navigation compatibility', () => {
     const reportsLinks = screen.getAllByRole('link', { name: 'Reports' });
     const logsLinks = screen.getAllByRole('link', { name: 'Logs' });
     expect(assetsLinks[0].classList.contains('active')).toBe(true);
+    expect(reportsLinks[0].classList.contains('active')).toBe(false);
     expect(reportsLinks.length).toBeGreaterThan(0);
     expect(logsLinks.length).toBeGreaterThan(0);
 
     await user.click(reportsLinks[0]);
-    expect(screen.getByTestId('location').textContent).toBe('/assets?location=library&evidence=reports');
+    expect(screen.getByTestId('location').textContent).toBe('/reports');
     expect(screen.queryByRole('button', { name: 'Close navigation' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Open navigation' }));
+    const activeLinks = screen.getAllByRole('link').filter((link) => link.classList.contains('active'));
+    expect(activeLinks.map((link) => link.textContent?.trim())).toEqual(['Reports']);
+  });
+
+  it.each([
+    ['/assets', 'Assets'],
+    ['/assets?location=raw', 'Assets'],
+    ['/assets?location=library', 'Assets'],
+    ['/assets?location=raw&evidence=reports', 'Assets'],
+    ['/reports', 'Reports'],
+    ['/reports/history', 'Reports'],
+  ])('marks only %s primary destination active', async (path, activeDestination) => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route element={<AppLayout />}>
+            <Route path="*" element={<LocationProbe />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Open navigation' }));
+    const activeLinks = screen.getAllByRole('link').filter((link) => link.classList.contains('active'));
+    expect(activeLinks).toHaveLength(1);
+    expect(activeLinks[0].textContent?.trim()).toBe(activeDestination);
   });
 });
 

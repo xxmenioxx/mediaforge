@@ -116,6 +116,24 @@ function LocationSearch() {
   return <output data-testid="location-search">{useLocation().search}</output>;
 }
 
+function assetsTree() {
+  return screen.getByRole('tree', { name: 'Assets hierarchy' });
+}
+
+function treeItem(name: string, level?: number) {
+  const item = within(assetsTree()).getAllByRole('treeitem').find((candidate) => candidate.textContent?.includes(name)
+    && (level === undefined || candidate.getAttribute('aria-level') === String(level)));
+  if (!item) throw new Error(`Missing Assets tree item ${name}${level ? ` at level ${level}` : ''}`);
+  return item;
+}
+
+function treeExpander(name: string, level?: number) {
+  const button = within(assetsTree()).getAllByRole('button', { name: `Expand ${name}` }).find((candidate) => level === undefined
+    || candidate.closest('[role="treeitem"]')?.getAttribute('aria-level') === String(level));
+  if (!button) throw new Error(`Missing Assets tree expander ${name}${level ? ` at level ${level}` : ''}`);
+  return button;
+}
+
 function renderAssetsPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 }
@@ -252,10 +270,9 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(screen.getByRole('menuitem', { name: 'Queue asset' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Mark for review' })).toBeTruthy();
     await user.keyboard('{Escape}');
-    const rawNavigation = screen.getByRole('navigation', { name: 'RAW source hierarchy' });
-    const rawTree = within(rawNavigation).getByRole('tree', { name: 'RAW sources' });
-    expect(within(rawTree).getByRole('treeitem', { name: 'extras' })).toBeTruthy();
-    await user.click(within(rawTree).getByRole('treeitem', { name: 'extras' }));
+    assetsTree();
+    expect(treeItem('extras', 4)).toBeTruthy();
+    await user.click(treeItem('extras', 4));
     expect(screen.getAllByRole('button', { name: 'Configure' }).length).toBeGreaterThan(0);
   });
 
@@ -592,8 +609,8 @@ describe('Unprocessed Assets hierarchy', () => {
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    const rawTree = screen.getByRole('tree', { name: 'RAW sources' });
-    await user.click(within(rawTree).getByRole('treeitem', { name: 'extras' }));
+    assetsTree();
+    await user.click(treeItem('extras', 4));
     const pathActions = screen.getByRole('table', { name: 'Actions for /media/raw/movies/Akira/extras' });
     await user.click(within(pathActions).getByRole('button', { name: 'Configure' }));
     expect(await screen.findByRole('heading', { name: 'Configure' })).toBeTruthy();
@@ -1258,12 +1275,12 @@ describe('Unprocessed Assets hierarchy', () => {
     const user = userEvent.setup();
     render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
 
-    await user.click(await screen.findByRole('tab', { name: /Library/ }));
+    await screen.findByRole('treeitem', { name: 'Series' });
+    await user.click(treeItem('Series', 1));
     await user.click(await screen.findByRole('combobox', { name: 'Provenance' }));
     await user.click(await screen.findByRole('option', { name: /Converted/ }));
-    const libraryTree = await screen.findByRole('tree', { name: 'Library folders' });
-    await user.click(within(libraryTree).getByRole('button', { name: 'Expand Series' }));
-    await user.click(within(libraryTree).getByRole('treeitem', { name: 'Akira' }));
+    await user.click(treeExpander('Series', 1));
+    await user.click(treeItem('Akira', 2));
     const convertedRow = await screen.findByText('Converted Episode.mkv');
     await user.click(convertedRow.closest('tr')!);
     const convertedDetails = await screen.findByTestId('selected-asset-detail');
@@ -1471,8 +1488,8 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(screen.getByText('1 title selected · 2 assets · 2.00 KB')).toBeTruthy();
 
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
-    const rawTree = screen.getByRole('tree', { name: 'RAW sources' });
-    await user.click(within(rawTree).getByRole('treeitem', { name: 'extras' }));
+    assetsTree();
+    await user.click(treeItem('extras', 4));
     const rawTable = screen.getByRole('table', { name: 'RAW assets' });
     expect(await within(rawTable).findByText('Missing.mkv')).toBeTruthy();
     expect((within(rawTable).getByRole('checkbox', { name: 'Select asset Missing.mkv' }) as HTMLInputElement).disabled).toBe(true);
@@ -1706,13 +1723,12 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(screen.getByRole('combobox', { name: 'Original' }));
     expect(screen.queryByRole('option', { name: 'Archived' })).toBeNull();
     await user.keyboard('{Escape}');
-    const libraryNavigation = await screen.findByRole('navigation', { name: 'Library tree' });
-    await screen.findByRole('treeitem', { name: 'Anime' });
-    await user.click(within(libraryNavigation).getByRole('treeitem', { name: 'Anime' }));
-    await user.click(within(libraryNavigation).getByRole('button', { name: 'Expand Anime' }));
-    await user.click(within(libraryNavigation).getByRole('treeitem', { name: 'anime' }));
-    await user.click(within(libraryNavigation).getByRole('button', { name: 'Expand anime' }));
-    await user.click(within(libraryNavigation).getByRole('treeitem', { name: 'Akira' }));
+    assetsTree();
+    await user.click(treeItem('Anime', 1));
+    await user.click(treeExpander('Anime', 1));
+    await user.click(treeItem('anime'));
+    await user.click(treeExpander('anime'));
+    await user.click(treeItem('Akira'));
     await user.click(screen.getByRole('button', { name: 'More actions for /media/library/anime/Akira' }));
     await user.click(screen.getByRole('menuitem', { name: 'Path configuration and more actions' }));
     expect(screen.getAllByRole('button', { name: 'Move path' })).toHaveLength(1);
