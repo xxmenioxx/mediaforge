@@ -22,7 +22,7 @@ import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import AutorenewOutlinedIcon from '@mui/icons-material/AutorenewOutlined';
 import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
 import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined';
-import { useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, ScanResult } from '../api/types';
 import { buildLibraryTree, buildRawHierarchy, formatDurationSummary, type LibraryTreeNode, type LibraryTreeSelection, type RawHierarchyNode, type RawHierarchySelection } from './assetsWorkspaceModel';
@@ -116,54 +116,151 @@ export function WorkspaceBreadcrumbs({ segments, label }: { segments: string[]; 
   );
 }
 
-export function LibraryTreePanel({ groups, libraries, selection, onSelect }: {
+type AssetsHierarchyNode =
+  | { kind: 'raw'; id: string; label: string; selection: RawHierarchySelection; children: AssetsHierarchyNode[]; sourceRoot?: boolean }
+  | { kind: 'library'; id: string; label: string; selection: LibraryTreeSelection; children: AssetsHierarchyNode[] };
+
+function rawTreeNodes(nodes: RawHierarchyNode[]): AssetsHierarchyNode[] {
+  return nodes.map((node) => ({
+    kind: 'raw',
+    id: node.id,
+    label: node.label,
+    selection: node.selection,
+    children: rawTreeNodes(node.children),
+  }));
+}
+
+function libraryTreeNodes(nodes: LibraryTreeNode[]): AssetsHierarchyNode[] {
+  return nodes.map((node) => ({
+    kind: 'library',
+    id: node.id,
+    label: node.label,
+    selection: { libraryId: node.libraryId, path: node.path },
+    children: libraryTreeNodes(node.children),
+  }));
+}
+
+function hierarchySelectionMatches(node: AssetsHierarchyNode, raw: RawHierarchySelection | null, library: LibraryTreeSelection) {
+  if (node.kind === 'raw') {
+    if (!raw || node.selection.kind !== raw.kind) return false;
+    if (node.selection.kind === 'all' && raw.kind === 'all') return true;
+    if (node.selection.kind === 'source' && raw.kind === 'source') return node.selection.sourceGroupId === raw.sourceGroupId;
+    if (node.selection.kind === 'logical' && raw.kind === 'logical') return node.selection.sourceGroupId === raw.sourceGroupId && node.selection.logicalGroupId === raw.logicalGroupId;
+    return node.selection.kind === 'path' && raw.kind === 'path'
+      && node.selection.sourceGroupId === raw.sourceGroupId
+      && node.selection.logicalGroupId === raw.logicalGroupId
+      && node.selection.pathId === raw.pathId;
+  }
+  return library.libraryId !== null && node.selection.libraryId === library.libraryId && node.selection.path === library.path;
+}
+
+function selectedHierarchyAncestors(nodes: AssetsHierarchyNode[], selected: (node: AssetsHierarchyNode) => boolean, parents: string[] = []): string[] {
+  for (const node of nodes) {
+    if (selected(node)) return parents;
+    const path = selectedHierarchyAncestors(node.children, selected, [...parents, node.id]);
+    if (path.length) return path;
+  }
+  return [];
+}
+
+/** One presentation tree over the existing, separate RAW and Library projections. */
+export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location, rawSelection, librarySelection, onSelectRaw, onSelectLibrary }: {
+  sourceGroups: AssetSourceGroup[];
   groups: AssetGroup[];
   libraries: Library[];
-  selection: LibraryTreeSelection;
-  onSelect: (selection: LibraryTreeSelection) => void;
+  location: 'raw' | 'library';
+  rawSelection: RawHierarchySelection | null;
+  librarySelection: LibraryTreeSelection;
+  onSelectRaw: (selection: RawHierarchySelection) => void;
+  onSelectLibrary: (selection: LibraryTreeSelection) => void;
 }) {
-  const nodes = buildLibraryTree(groups, libraries);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const toggleExpanded = (id: string, next?: boolean) => setExpanded((current) => {
-    const updated = new Set(current);
-    if (next ?? !updated.has(id)) updated.add(id);
-    else updated.delete(id);
-    return updated;
-  });
+  const nodes = useMemo<AssetsHierarchyNode[]>(() => [{
+    kind: 'raw',
+    id: 'assets-raw-root',
+    label: 'RAW',
+    selection: { kind: 'all' },
+    children: rawTreeNodes(buildRawHierarchy(sourceGroups)),
+    sourceRoot: true,
+  }, ...libraryTreeNodes(buildLibraryTree(groups, libraries))], [sourceGroups, groups, libraries]);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['assets-raw-root']));
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const selectedAncestors = useMemo(() => selectedHierarchyAncestors(nodes, (node) => location === 'raw'
+    ? node.kind === 'raw' && hierarchySelectionMatches(node, rawSelection, librarySelection)
+    : node.kind === 'library' && hierarchySelectionMatches(node, rawSelection, librarySelection)), [nodes, location, rawSelection, librarySelection]);
+  const expandedItems = useMemo(() => new Set([...expanded, ...selectedAncestors].filter((id) => !collapsed.has(id))), [expanded, selectedAncestors, collapsed]);
+  const toggleExpanded = (id: string, next?: boolean) => {
+    const shouldExpand = next ?? !expandedItems.has(id);
+    setExpanded((current) => {
+      const updated = new Set(current);
+      if (shouldExpand) updated.add(id);
+      else updated.delete(id);
+      return updated;
+    });
+    setCollapsed((current) => {
+      const updated = new Set(current);
+      if (shouldExpand) updated.delete(id);
+      else updated.add(id);
+      return updated;
+    });
+  };
 
-  const renderNode = (node: LibraryTreeNode, level: number) => {
+  const renderNode = (node: AssetsHierarchyNode, level: number): ReactNode => {
+    const isRawRoot = node.kind === 'raw' && node.sourceRoot === true;
     const hasChildren = node.children.length > 0;
-    const isExpanded = expanded.has(node.id);
-    const isSelected = selection.libraryId === node.libraryId && selection.path === node.path;
+    const isExpanded = expandedItems.has(node.id);
+    const isSelected = (location === 'raw' && node.kind === 'raw' && hierarchySelectionMatches(node, rawSelection, librarySelection))
+      || (location === 'library' && node.kind === 'library' && hierarchySelectionMatches(node, rawSelection, librarySelection));
+    const selectNode = () => {
+      setExpanded((current) => new Set([...current, ...selectedAncestors]));
+      setCollapsed(new Set());
+      if (node.kind === 'raw') onSelectRaw(node.selection);
+      else onSelectLibrary(node.selection);
+    };
     return (
       <Box component="li" key={node.id} role="none" sx={{ listStyle: 'none' }}>
         <ListItemButton
           component="div"
           role="treeitem"
           aria-level={level}
+          aria-label={isRawRoot ? 'RAW source inventory' : node.label}
           aria-selected={isSelected}
           aria-expanded={hasChildren ? isExpanded : undefined}
           tabIndex={0}
-          onClick={() => onSelect({ libraryId: node.libraryId, path: node.path })}
+          onClick={selectNode}
           onKeyDown={(event) => {
+            const treeItems = Array.from(event.currentTarget.closest('[role="tree"]')?.querySelectorAll<HTMLElement>('[role="treeitem"]') ?? []);
+            const currentIndex = treeItems.indexOf(event.currentTarget);
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
-              onSelect({ libraryId: node.libraryId, path: node.path });
+              selectNode();
             } else if (event.key === 'ArrowRight' && hasChildren) {
               event.preventDefault();
-              toggleExpanded(node.id, true);
-            } else if (event.key === 'ArrowLeft' && hasChildren) {
+              if (!isExpanded) toggleExpanded(node.id, true);
+              else event.currentTarget.parentElement?.querySelector<HTMLElement>('[role="group"] [role="treeitem"]')?.focus();
+            } else if (event.key === 'ArrowLeft') {
+              if (hasChildren && isExpanded) {
+                event.preventDefault();
+                toggleExpanded(node.id, false);
+              } else {
+                event.preventDefault();
+                event.currentTarget.parentElement?.parentElement?.closest<HTMLElement>('[role="treeitem"]')?.focus();
+              }
+            } else if (event.key === 'ArrowDown' && treeItems[currentIndex + 1]) {
               event.preventDefault();
-              toggleExpanded(node.id, false);
+              treeItems[currentIndex + 1].focus();
+            } else if (event.key === 'ArrowUp' && treeItems[currentIndex - 1]) {
+              event.preventDefault();
+              treeItems[currentIndex - 1].focus();
             }
           }}
           sx={{
-            minHeight: 36,
+            minHeight: isRawRoot ? 40 : 36,
             borderRadius: 1,
             borderLeft: '2px solid transparent',
             py: 0.3,
             pl: Math.min(1 + (level - 1) * 1.35, 6),
             pr: 0.75,
+            fontWeight: isRawRoot ? 700 : 400,
             '&[aria-selected="true"]': { bgcolor: 'rgba(101, 86, 255, 0.16)', color: 'primary.main', borderLeftColor: 'primary.main' },
             '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
           }}
@@ -181,7 +278,9 @@ export function LibraryTreePanel({ groups, libraries, selection, onSelect }: {
           ) : <Box sx={{ width: 24, flexShrink: 0 }} />}
           <ListItemText
             primary={node.label}
-            primaryTypographyProps={{ variant: 'body2', noWrap: true, title: node.label }}
+            secondary={isRawRoot ? 'Source inventory' : undefined}
+            primaryTypographyProps={{ variant: 'body2', noWrap: true, title: node.label, fontWeight: isRawRoot ? 700 : undefined }}
+            secondaryTypographyProps={{ variant: 'caption', noWrap: true }}
             sx={{ my: 0 }}
           />
         </ListItemButton>
@@ -199,7 +298,7 @@ export function LibraryTreePanel({ groups, libraries, selection, onSelect }: {
   return (
     <Box
       component="nav"
-      aria-label="Library tree"
+      aria-label="Assets hierarchy"
       sx={{
         width: { xs: '100%', lg: '27%' },
         maxWidth: { lg: 350 },
@@ -214,158 +313,16 @@ export function LibraryTreePanel({ groups, libraries, selection, onSelect }: {
       }}
     >
       <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ px: 0.5, pb: 0.75 }}>
-        <Typography variant="subtitle2" fontWeight={700}>Library</Typography>
-        <Typography variant="caption" color="text.secondary">{nodes.length} {nodes.length === 1 ? 'library' : 'libraries'}</Typography>
+        <Typography variant="subtitle2" fontWeight={700}>Assets hierarchy</Typography>
+        <Typography variant="caption" color="text.secondary">{nodes.length} roots</Typography>
       </Stack>
-      <List role="tree" aria-label="Library folders" dense disablePadding>
-        <ListItemButton
-          component="div"
-          role="treeitem"
-          aria-level={1}
-          aria-selected={selection.libraryId === null}
-          tabIndex={0}
-          onClick={() => onSelect({ libraryId: null, path: '' })}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              onSelect({ libraryId: null, path: '' });
-            }
-          }}
-          sx={{ minHeight: 36, borderRadius: 1, borderLeft: '2px solid transparent', py: 0.3, px: 1, '&[aria-selected="true"]': { bgcolor: 'rgba(101, 86, 255, 0.16)', color: 'primary.main', borderLeftColor: 'primary.main' }, '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 } }}
-        >
-          <ListItemText primary="All Library assets" primaryTypographyProps={{ variant: 'body2', noWrap: true }} sx={{ my: 0 }} />
-        </ListItemButton>
+      <List role="tree" aria-label="Assets hierarchy" dense disablePadding>
         {nodes.map((node) => renderNode(node, 1))}
-        {!nodes.length ? <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.25, py: 1 }}>No Library paths available.</Typography> : null}
-      </List>
-    </Box>
-  );
-}
-
-export function RawHierarchyPanel({ sourceGroups, selection, onSelect }: {
-  sourceGroups: AssetSourceGroup[];
-  selection: RawHierarchySelection;
-  onSelect: (selection: RawHierarchySelection) => void;
-}) {
-  const nodes = buildRawHierarchy(sourceGroups);
-  const [expanded, setExpanded] = useState<Set<string>>(() => {
-    if (selection.kind === 'all') return new Set();
-    const initial = new Set([`source-${selection.sourceGroupId}`]);
-    if (selection.kind === 'path') initial.add(`source-${selection.sourceGroupId}-logical-${selection.logicalGroupId}`);
-    return initial;
-  });
-  const toggleExpanded = (id: string, next?: boolean) => setExpanded((current) => {
-    const updated = new Set(current);
-    if (next ?? !updated.has(id)) updated.add(id);
-    else updated.delete(id);
-    return updated;
-  });
-  const isSelected = (candidate: RawHierarchySelection) => candidate.kind === selection.kind
-    && (candidate.kind === 'all' || (selection.kind !== 'all'
-      && candidate.sourceGroupId === selection.sourceGroupId
-      && ('logicalGroupId' in candidate ? candidate.logicalGroupId === ('logicalGroupId' in selection ? selection.logicalGroupId : undefined) : true)
-      && ('pathId' in candidate ? candidate.pathId === ('pathId' in selection ? selection.pathId : undefined) : true)));
-  const renderNode = (node: RawHierarchyNode, level: number) => {
-    const hasChildren = node.children.length > 0;
-    const isExpanded = expanded.has(node.id);
-    return (
-      <Box component="li" key={node.id} role="none" sx={{ listStyle: 'none' }}>
-        <ListItemButton
-          component="div"
-          role="treeitem"
-          aria-level={level}
-          aria-selected={isSelected(node.selection)}
-          aria-expanded={hasChildren ? isExpanded : undefined}
-          tabIndex={0}
-          onClick={() => onSelect(node.selection)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              onSelect(node.selection);
-            } else if (event.key === 'ArrowRight' && hasChildren) {
-              event.preventDefault();
-              toggleExpanded(node.id, true);
-            } else if (event.key === 'ArrowLeft' && hasChildren) {
-              event.preventDefault();
-              toggleExpanded(node.id, false);
-            }
-          }}
-          sx={{
-            minHeight: 36,
-            borderRadius: 1,
-            borderLeft: '2px solid transparent',
-            py: 0.3,
-            pl: Math.min(1 + (level - 1) * 1.35, 6),
-            pr: 0.75,
-            '&[aria-selected="true"]': { bgcolor: 'rgba(101, 86, 255, 0.16)', color: 'primary.main', borderLeftColor: 'primary.main' },
-            '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
-          }}
-        >
-          {hasChildren ? (
-            <IconButton
-              size="small"
-              tabIndex={-1}
-              aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${node.label}`}
-              onClick={(event) => { event.stopPropagation(); toggleExpanded(node.id); }}
-              sx={{ mr: 0.5, p: 0.25 }}
-            >
-              <ExpandMoreIcon fontSize="small" sx={{ transform: isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 120ms ease' }} />
-            </IconButton>
-          ) : <Box sx={{ width: 24, flexShrink: 0 }} />}
-          <ListItemText primary={node.label} primaryTypographyProps={{ variant: 'body2', noWrap: true, title: node.label }} sx={{ my: 0 }} />
-        </ListItemButton>
-        {hasChildren ? (
-          <Collapse in={isExpanded} timeout="auto" unmountOnExit>
-            <List component="ul" role="group" disablePadding sx={{ py: 0.25 }}>
-              {node.children.map((child) => renderNode(child, level + 1))}
-            </List>
-          </Collapse>
+        {location === 'library' && librarySelection.libraryId === null ? (
+          <Typography component="li" role="none" variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.25, py: 0.75 }}>
+            Showing all Library assets
+          </Typography>
         ) : null}
-      </Box>
-    );
-  };
-
-  return (
-    <Box
-      component="nav"
-      aria-label="RAW source hierarchy"
-      sx={{
-        width: { xs: '100%', lg: '27%' },
-        maxWidth: { lg: 350 },
-        flex: { xs: '1 1 auto', lg: '0 0 27%' },
-        minWidth: 0,
-        alignSelf: 'stretch',
-        border: 1,
-        borderColor: 'divider',
-        borderRadius: 1.5,
-        bgcolor: 'background.paper',
-        p: 1,
-      }}
-    >
-      <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ px: 0.5, pb: 0.75 }}>
-        <Typography variant="subtitle2" fontWeight={700}>RAW source groups</Typography>
-        <Typography variant="caption" color="text.secondary">{nodes.length} {nodes.length === 1 ? 'group' : 'groups'}</Typography>
-      </Stack>
-      <List role="tree" aria-label="RAW sources" dense disablePadding>
-        <ListItemButton
-          component="div"
-          role="treeitem"
-          aria-level={1}
-          aria-selected={selection.kind === 'all'}
-          tabIndex={0}
-          onClick={() => onSelect({ kind: 'all' })}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              onSelect({ kind: 'all' });
-            }
-          }}
-          sx={{ minHeight: 36, borderRadius: 1, borderLeft: '2px solid transparent', py: 0.3, px: 1, '&[aria-selected="true"]': { bgcolor: 'rgba(101, 86, 255, 0.16)', color: 'primary.main', borderLeftColor: 'primary.main' }, '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 } }}
-        >
-          <ListItemText primary="All RAW assets" primaryTypographyProps={{ variant: 'body2', noWrap: true }} sx={{ my: 0 }} />
-        </ListItemButton>
-        {nodes.map((node) => renderNode(node, 1))}
-        {!nodes.length ? <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.25, py: 1 }}>No RAW source groups available.</Typography> : null}
       </List>
     </Box>
   );

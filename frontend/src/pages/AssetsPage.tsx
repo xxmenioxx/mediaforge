@@ -65,7 +65,7 @@ import { FrameCadenceControls } from '../components/FrameCadenceControls';
 import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
-import { AssetsSummaryStrip, LibraryTreePanel, RawHierarchyPanel, SelectedAssetDetail, WorkspaceBreadcrumbs } from '../components/AssetsWorkspace';
+import { AssetsHierarchyPanel, AssetsSummaryStrip, SelectedAssetDetail, WorkspaceBreadcrumbs } from '../components/AssetsWorkspace';
 import { assetPathWithin, formatDurationSummary, type LibraryTreeSelection, type RawHierarchySelection } from '../components/assetsWorkspaceModel';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
@@ -98,6 +98,50 @@ import {
 
 const VIDEO_PROFILE_OVERRIDE_ONLY = -1;
 const VIDEO_PROFILE_AUDIO_ONLY = -2;
+
+function rawSelectionFromContext(sourceGroups: AssetSourceGroup[], query: string, legacyAssetPath: string, sourceGroupParam: string | null, logicalGroupParam: string | null, pathParam: string | null, rawScopeParam: string | null): RawHierarchySelection {
+  if (rawScopeParam === 'all') return { kind: 'all' };
+  const requestedSourceGroupId = sourceGroupParam ? Number(sourceGroupParam) : null;
+  const sourceGroup = requestedSourceGroupId === null ? undefined : sourceGroups.find((candidate) => candidate.id === requestedSourceGroupId);
+  const requestedLogicalGroup = logicalGroupParam
+    ? sourceGroups.flatMap((candidate) => candidate.logicalGroups.map((logicalGroup) => ({ candidate, logicalGroup })))
+      .find(({ candidate, logicalGroup }) => (!sourceGroup || candidate.id === sourceGroup.id) && logicalGroup.id === logicalGroupParam)
+    : undefined;
+  const selectionSourceGroup = sourceGroup ?? requestedLogicalGroup?.candidate;
+  if (selectionSourceGroup) {
+    const logicalGroup = requestedLogicalGroup?.candidate.id === selectionSourceGroup.id
+      ? requestedLogicalGroup.logicalGroup
+      : undefined;
+    const path = pathParam && logicalGroup
+      ? logicalGroup.assetPaths.find((candidate) => candidate.id === pathParam || normalizePath(candidate.path) === normalizePath(pathParam))
+      : undefined;
+    if (path && logicalGroup) return { kind: 'path', sourceGroupId: selectionSourceGroup.id, logicalGroupId: logicalGroup.id, pathId: path.id };
+    if (logicalGroup) return { kind: 'logical', sourceGroupId: selectionSourceGroup.id, logicalGroupId: logicalGroup.id };
+    return { kind: 'source', sourceGroupId: selectionSourceGroup.id };
+  }
+
+  if (legacyAssetPath) {
+    const linked = sourceGroups.flatMap((candidate) => candidate.logicalGroups.flatMap((logicalGroup) => logicalGroup.assetPaths.map((path) => ({ candidate, logicalGroup, path }))))
+      .find(({ path }) => path.assets.some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)));
+    if (linked) return { kind: 'path', sourceGroupId: linked.candidate.id, logicalGroupId: linked.logicalGroup.id, pathId: linked.path.id };
+  }
+
+  const cleanQuery = query.trim().toLowerCase();
+  const firstLogical = sourceGroups
+    .map((candidate) => ({ candidate, logicalGroup: candidate.logicalGroups.find((item) => sourceLogicalGroupMatches(item, cleanQuery)) }))
+    .find((item) => item.logicalGroup)?.logicalGroup;
+  if (firstLogical) {
+    const candidate = sourceGroups.find((source) => source.logicalGroups.some((item) => item.id === firstLogical.id));
+    if (candidate) return { kind: 'logical', sourceGroupId: candidate.id, logicalGroupId: firstLogical.id };
+  }
+  return { kind: 'all' };
+}
+
+function librarySelectionFromContext(libraries: Library[], groups: AssetGroup[], libraryIdParam: string | null, libraryPathParam: string | null): LibraryTreeSelection {
+  const id = libraryIdParam ? Number(libraryIdParam) : null;
+  if (id === null || !Number.isInteger(id) || (!libraries.some((library) => library.id === id) && !groups.some((group) => group.libraryId === id))) return { libraryId: null, path: '' };
+  return { libraryId: id, path: libraryPathParam ?? '' };
+}
 
 export function AssetsPage() {
   const [queuePreflightCandidate, setQueuePreflightCandidate] = useState<QueueBatchPreflightResponse | null>(null);
@@ -156,7 +200,7 @@ export function AssetsPage() {
     if (value !== (searchParams.get('search') ?? searchParams.get('asset') ?? '')) next.delete('asset');
     setSearchParams(next);
   };
-  const switchLocation = (location: 'raw' | 'library') => {
+  const switchLocation = (location: 'raw' | 'library', selection?: RawHierarchySelection | LibraryTreeSelection) => {
     const next = new URLSearchParams(searchParams);
     const commonSearch = next.get('search') ?? next.get('asset') ?? '';
     next.set('location', location);
@@ -164,14 +208,29 @@ export function AssetsPage() {
     next.delete('asset');
     if (commonSearch) next.set('search', commonSearch);
     if (location === 'raw') {
-      for (const key of ['provenance', 'mediaArea', 'validation', 'original', 'workflow', 'attention', 'evidence']) next.delete(key);
+      for (const key of ['sourceGroup', 'logicalGroup', 'path', 'rawScope']) next.delete(key);
+      for (const key of ['provenance', 'mediaArea', 'validation', 'original', 'workflow', 'attention', 'evidence', 'libraryId', 'libraryPath']) next.delete(key);
       setLibraryDecision('');
       setValidationFilter('');
       setWorkflowFilter('');
       setAttentionFilter('');
       setMediaArea('');
+      const rawSelection = selection && 'kind' in selection ? selection : null;
+      if (rawSelection?.kind === 'all') next.set('rawScope', 'all');
+      if (rawSelection && rawSelection.kind !== 'all') next.set('sourceGroup', String(rawSelection.sourceGroupId));
+      if (rawSelection && (rawSelection.kind === 'logical' || rawSelection.kind === 'path')) next.set('logicalGroup', rawSelection.logicalGroupId);
+      if (rawSelection?.kind === 'path') {
+        const path = sourceGroups.flatMap((group) => group.logicalGroups.flatMap((logicalGroup) => logicalGroup.assetPaths))
+          .find((candidate) => candidate.id === rawSelection.pathId);
+        next.set('path', path?.path ?? rawSelection.pathId);
+      }
     } else {
-      for (const key of ['sourceGroup', 'logicalGroup', 'path']) next.delete(key);
+      for (const key of ['sourceGroup', 'logicalGroup', 'path', 'rawScope']) next.delete(key);
+      const librarySelection = selection && !('kind' in selection) ? selection : null;
+      if (librarySelection?.libraryId !== null && librarySelection?.libraryId !== undefined) next.set('libraryId', String(librarySelection.libraryId));
+      else next.delete('libraryId');
+      if (librarySelection?.path) next.set('libraryPath', librarySelection.path);
+      else next.delete('libraryPath');
     }
     setAdvancedOpen(false);
     setSearchParams(next);
@@ -213,6 +272,27 @@ export function AssetsPage() {
   const legacyAssetPath = searchParams.get('asset') ?? '';
   const libraryGroups = safeArray(assets.data?.libraryGroups);
   const canonicalLibraryGroups = libraryGroups.length ? libraryGroups : safeArray(assets.data?.convertedGroups);
+  const sourceGroupParam = searchParams.get('sourceGroup');
+  const logicalGroupParam = searchParams.get('logicalGroup');
+  const rawPathParam = searchParams.get('path');
+  const rawScopeParam = searchParams.get('rawScope');
+  const libraryIdParam = searchParams.get('libraryId');
+  const libraryPathParam = searchParams.get('libraryPath');
+  const rawSelection = useMemo(() => rawSelectionFromContext(
+    sourceGroups,
+    assetQuery,
+    legacyAssetPath,
+    sourceGroupParam,
+    logicalGroupParam,
+    rawPathParam,
+    rawScopeParam,
+  ), [sourceGroups, assetQuery, legacyAssetPath, sourceGroupParam, logicalGroupParam, rawPathParam, rawScopeParam]);
+  const libraryTreeSelection = useMemo(() => librarySelectionFromContext(
+    libraries.data ?? [],
+    canonicalLibraryGroups,
+    libraryIdParam,
+    libraryPathParam,
+  ), [libraries.data, canonicalLibraryGroups, libraryIdParam, libraryPathParam]);
   const statusGroups = safeArray(
     tab === 'library' ? canonicalLibraryGroups : assets.data?.rawGroups ?? assets.data?.unprocessedGroups,
   );
@@ -237,46 +317,27 @@ export function AssetsPage() {
     ?? safeArray(jobs.data).filter((job) => job.status === 'queued' || job.status === 'running').length;
   const needsReviewSummary = summaryCounts?.needsReview
     ?? [...safeArray(assets.data?.unprocessed), ...safeArray(assets.data?.library)].filter((asset) => asset.review?.requiresReview).length;
+  const hierarchyPanel = (
+    <AssetsHierarchyPanel
+      sourceGroups={sourceGroups}
+      groups={canonicalLibraryGroups}
+      libraries={libraries.data ?? []}
+      location={tab}
+      rawSelection={rawSelection}
+      librarySelection={libraryTreeSelection}
+      onSelectRaw={(selection) => switchLocation('raw', selection)}
+      onSelectLibrary={(selection) => switchLocation('library', selection)}
+    />
+  );
 
   return (
     <>
       <Box component="header" sx={{ px: { xs: 2, md: 4 }, pt: { xs: 1.5, md: 2 }, pb: { xs: 1.5, md: 2 } }}>
-        <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={{ xs: 1, sm: 2 }} sx={{ mb: 1.5 }}>
+        <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 1.5 }}>
           <Stack direction="row" alignItems="baseline" spacing={1}>
             <Typography component="h1" variant="h1" sx={{ fontSize: { xs: '1.35rem', sm: '1.55rem' }, lineHeight: 1.2 }}>Assets</Typography>
             <Typography variant="caption" color="text.secondary">{tab === 'raw' ? 'Source inventory' : 'Library inventory'}</Typography>
           </Stack>
-          <Tabs
-            value={tab}
-            onChange={(_, value: 'raw' | 'library') => switchLocation(value)}
-            aria-label="Asset inventory context"
-            sx={{
-              minHeight: 40,
-              width: { xs: '100%', sm: 'auto' },
-              border: 1,
-              borderColor: 'divider',
-              borderRadius: 1.25,
-              bgcolor: 'rgba(255,255,255,0.025)',
-              p: 0.4,
-              '& .MuiTabs-flexContainer': { gap: 0.35 },
-              '& .MuiTabs-indicator': { display: 'none' },
-              '& .MuiTab-root': {
-                minHeight: 36,
-                minWidth: { xs: 80, sm: 96 },
-                flex: { xs: 1, sm: 'initial' },
-                px: 2,
-                borderRadius: 1,
-                color: 'text.secondary',
-                fontWeight: 600,
-                textTransform: 'none',
-                '&.Mui-selected': { color: 'common.white', bgcolor: 'rgba(101, 86, 255, 0.22)', boxShadow: 'inset 0 0 0 1px rgba(139, 129, 255, 0.28)' },
-                '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
-              },
-            }}
-          >
-            <Tab label="RAW" value="raw" />
-            <Tab label="Library" value="library" />
-          </Tabs>
         </Stack>
         <AssetsSummaryStrip
           total={totalAssetsSummary}
@@ -409,6 +470,8 @@ export function AssetsPage() {
 					runningSnapshotPaths={runningSnapshotPaths}
 					query={assetQuery}
 					legacyAssetPath={legacyAssetPath}
+					selection={rawSelection}
+					hierarchyPanel={hierarchyPanel}
 				/>
 			</AssetsErrorBoundary>
           ) : (
@@ -426,6 +489,8 @@ export function AssetsPage() {
                 runningSnapshotPaths={runningSnapshotPaths}
                 mode={tab === 'library' && libraryDecision === 'converted' ? 'converted' : tab}
                 query={assetQuery}
+                libraryTreeSelection={libraryTreeSelection}
+                hierarchyPanel={hierarchyPanel}
                 emptyLabel={
                   'No Library asset groups match the persisted filters.'
                 }
@@ -702,6 +767,8 @@ type AssetTableProps = {
   runningSnapshotPaths: Set<string>;
   mode: 'unprocessed' | 'library' | 'converted';
   query: string;
+  libraryTreeSelection: LibraryTreeSelection;
+  hierarchyPanel: ReactNode;
   emptyLabel: string;
 };
 
@@ -791,10 +858,11 @@ function LibraryAssetTable({
   runningSnapshotPaths,
   mode,
   query,
+  libraryTreeSelection: treeSelection,
+  hierarchyPanel,
   emptyLabel,
 }: AssetTableProps) {
-  const [treeSelection, setTreeSelection] = useState<LibraryTreeSelection>({ libraryId: null, path: '' });
-  const filterIdentity = `${mode}\u0000${query}`;
+  const filterIdentity = `${mode}\u0000${query}\u0000${treeSelection.libraryId ?? ''}\u0000${treeSelection.path}`;
   const [selectedAssetSelection, setSelectedAssetSelection] = useState({ filterIdentity, path: '' });
   const selectedAssetPath = selectedAssetSelection.filterIdentity === filterIdentity ? selectedAssetSelection.path : '';
   const setSelectedAssetPath = (path: string) => setSelectedAssetSelection({ filterIdentity, path });
@@ -840,15 +908,12 @@ function LibraryAssetTable({
     ? visibleGroups.find((group) => normalizePath(group.path) === normalizePath(treeSelection.path))
     : undefined;
   const selectedLibrary = libraries.find((library) => library.id === treeSelection.libraryId);
+  const selectedLibraryName = selectedLibrary?.name ?? groups.find((group) => group.libraryId === treeSelection.libraryId)?.libraryName;
   const selectedPathParts = treeSelection.path.replace(/\\/g, '/').split('/').filter(Boolean);
   const libraryRootPartCount = selectedLibrary?.destinationPath.replace(/\\/g, '/').split('/').filter(Boolean).length ?? 0;
   const libraryBreadcrumbs = treeSelection.libraryId === null && !treeSelection.path
     ? ['Assets', 'Library', 'All Library assets']
-    : ['Assets', selectedLibrary?.name ?? 'Library', ...selectedPathParts.slice(libraryRootPartCount)];
-
-  if (!safeArray(groups).length) {
-    return <CardContent><Alert severity="info">{emptyLabel}</Alert></CardContent>;
-  }
+    : ['Assets', selectedLibraryName ?? 'Library', ...selectedPathParts.slice(libraryRootPartCount)];
 
   const selectedAssetPathContext = selectedAsset && selectedGroup
     ? `${selectedAsset.libraryName || selectedGroup.libraryName}${selectedAsset.relativePath ? ` · ${selectedAsset.relativePath}` : ''}`
@@ -868,22 +933,13 @@ function LibraryAssetTable({
   return (
     <Box sx={{ bgcolor: 'background.default', p: { xs: 1, sm: 1.5 } }}>
       <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 1, lg: 1.5 }} alignItems="stretch" sx={{ minWidth: 0 }}>
-        <LibraryTreePanel
-          groups={groups}
-          libraries={libraries}
-          selection={treeSelection}
-          onSelect={(selection) => {
-            setTreeSelection(selection);
-            setPage(0);
-            setSelectedAssetPath('');
-          }}
-        />
+        {hierarchyPanel}
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ px: 0.5, pb: 1, minWidth: 0 }}>
             <Box sx={{ minWidth: 0 }}>
               <WorkspaceBreadcrumbs segments={libraryBreadcrumbs} label="Library location" />
               <Typography variant="h2" sx={{ fontSize: '1rem', lineHeight: 1.3 }} noWrap>
-                {selectedPathGroup ? cleanPathLabel(selectedPathGroup.path) : treeSelection.path || treeSelection.libraryId !== null ? cleanPathLabel(treeSelection.path) || libraries.find((library) => library.id === treeSelection.libraryId)?.name || 'Library' : 'All Library assets'}
+                {selectedPathGroup ? cleanPathLabel(selectedPathGroup.path) : treeSelection.path || treeSelection.libraryId !== null ? cleanPathLabel(treeSelection.path) || selectedLibraryName || 'Library' : 'All Library assets'}
               </Typography>
               <Typography variant="caption" color="text.secondary">
                 {visibleAssets.length.toLocaleString()} {visibleAssets.length === 1 ? 'asset' : 'assets'}
@@ -1043,7 +1099,7 @@ type AssetCollection = {
   sizeBytes: number;
 };
 
-function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query, legacyAssetPath }: {
+function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query, legacyAssetPath, selection, hierarchyPanel }: {
   sourceGroups: AssetSourceGroup[];
   libraries: Library[];
   profiles: Profile[];
@@ -1055,9 +1111,12 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
   runningSnapshotPaths: Set<string>;
   query: string;
   legacyAssetPath: string;
+  selection: RawHierarchySelection;
+  hierarchyPanel: ReactNode;
 }) {
-  const [selectionState, setSelectionState] = useState<RawHierarchySelection | null>(null);
-  const [selectedAssetIds, setSelectedAssetIds] = useState<Set<number>>(() => new Set());
+  const selectionIdentity = `${query}\u0000${selection.kind}\u0000${selection.kind === 'all' ? '' : selection.sourceGroupId}\u0000${selection.kind === 'logical' || selection.kind === 'path' ? selection.logicalGroupId : ''}\u0000${selection.kind === 'path' ? selection.pathId : ''}`;
+  const [selectedAssetIdsState, setSelectedAssetIdsState] = useState({ identity: selectionIdentity, ids: new Set<number>() });
+  const selectedAssetIds = selectedAssetIdsState.identity === selectionIdentity ? selectedAssetIdsState.ids : new Set<number>();
   const [selectedAssetPathState, setSelectedAssetPathState] = useState({ identity: '', path: '' });
   const [pageState, setPageState] = useState({ identity: '', page: 0 });
   const [rowsPerPage, setRowsPerPage] = useState(25);
@@ -1071,16 +1130,6 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
     ...sourceGroup,
     logicalGroups: safeArray(sourceGroup.logicalGroups).filter((logicalGroup) => sourceLogicalGroupMatches(logicalGroup, cleanQuery)),
   })).filter((sourceGroup) => sourceGroup.logicalGroups.length > 0), [sourceGroups, cleanQuery]);
-  const deepLinkSelection = useMemo(() => legacyAssetPath
-    ? sourceGroups.flatMap((sourceGroup) => safeArray(sourceGroup.logicalGroups).flatMap((logicalGroup) => safeArray(logicalGroup.assetPaths).map((path) => ({ sourceGroup, logicalGroup, path }))))
-      .find(({ path }) => safeArray(path.assets).some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)))
-    : undefined, [legacyAssetPath, sourceGroups]);
-  const firstLogicalGroup = filteredSourceGroups[0]?.logicalGroups[0];
-  const selection = selectionState ?? (deepLinkSelection
-    ? { kind: 'path' as const, sourceGroupId: deepLinkSelection.sourceGroup.id, logicalGroupId: deepLinkSelection.logicalGroup.id, pathId: deepLinkSelection.path.id }
-    : firstLogicalGroup
-      ? { kind: 'logical' as const, sourceGroupId: filteredSourceGroups[0].id, logicalGroupId: firstLogicalGroup.id }
-      : { kind: 'all' as const });
   const selectionKind = selection.kind;
   const selectionSourceGroupId = selection.kind === 'all' ? null : selection.sourceGroupId;
   const selectionLogicalGroupId = selection.kind === 'logical' || selection.kind === 'path' ? selection.logicalGroupId : '';
@@ -1164,28 +1213,23 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
       ...(logicalGroup ? [logicalGroup.name] : []),
       ...(selectedPath ? [selectedPath.isLogicalGroupRoot ? 'Root' : selectedPath.displayPath || selectedPath.name] : []),
     ];
-  const setTreeSelection = (next: RawHierarchySelection) => {
-    setSelectionState(next);
-    setSelectedAssetIds(new Set());
-    setSelectedAssetPathState({ identity: '', path: '' });
-    setPageState({ identity: '', page: 0 });
-  };
   const setSelectedAssetPath = (path: string) => setSelectedAssetPathState({ identity: contextIdentity, path });
   const setPage = (nextPage: number) => setPageState({ identity: contextIdentity, page: nextPage });
   const scopedSelectedAssets = selectedSelectableAssetsForLogicalGroups(contextLogicalGroups, selectedAssetIds);
-  const updateSelectedAssets = (assetIds: number[], selected: boolean) => setSelectedAssetIds((current) => {
+  const updateSelectedAssets = (assetIds: number[], selected: boolean) => {
+    const current = selectedAssetIdsState.identity === selectionIdentity ? selectedAssetIdsState.ids : new Set<number>();
     const next = new Set(current);
     for (const assetId of assetIds) {
       if (selected) next.add(assetId);
       else next.delete(assetId);
     }
-    return next;
-  });
+    setSelectedAssetIdsState({ identity: selectionIdentity, ids: next });
+  };
 
   return (
     <Box sx={{ bgcolor: 'background.default', p: { xs: 1, sm: 1.5 } }}>
       <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 1, lg: 1.5 }} alignItems="stretch" sx={{ minWidth: 0 }}>
-        <RawHierarchyPanel key={filteredSourceGroups.map((group) => group.id).join(':')} sourceGroups={filteredSourceGroups} selection={selection} onSelect={setTreeSelection} />
+        {hierarchyPanel}
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <WorkspaceBreadcrumbs segments={rawBreadcrumbs} label="RAW source location" />
           {sourceGroup ? (
@@ -1232,7 +1276,7 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
               libraries={libraries}
               categories={assetCategories}
               queueJobs={queueJobs}
-              onClear={() => setSelectedAssetIds(new Set())}
+              onClear={() => setSelectedAssetIdsState({ identity: selectionIdentity, ids: new Set() })}
             />
           ) : null}
           {selectedPathGroup ? (

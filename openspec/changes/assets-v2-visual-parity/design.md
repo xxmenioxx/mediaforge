@@ -1,6 +1,6 @@
 ## Context
 
-See `proposal.md` for motivation and `specs/assets-v2-visual-parity/spec.md` for the observable contract. `AssetsPage` owns the URL-backed RAW/Library context and reads the existing inventory summaries. `AssetsWorkspace` contains the summary, hierarchy, and selected-detail presentation. RAW hierarchy nodes already derive from canonical `sourceGroups`; Library nodes derive from existing Library groups. Deeper snapshots are queried for the selected asset. Reports currently renders from the same persisted asset-inventory response, but its sidebar link and active state use an `evidence=reports` query under `/assets`; the router has no `/reports` page.
+See `proposal.md` for motivation and `specs/assets-v2-visual-parity/spec.md` for the observable contract. `AssetsPage` owns URL-backed tree selection and reads the existing inventory summaries. `AssetsWorkspace` composes the separate RAW and configured Library projections into one navigable Assets hierarchy, alongside the shared summary and selected-detail presentation. RAW hierarchy nodes derive from canonical `sourceGroups`; Library roots and descendants derive from configured libraries and existing Library groups. Deeper snapshots are queried for the selected asset. Reports uses its own `/reports` route and primary navigation state.
 
 ## Goals / Non-Goals
 
@@ -8,6 +8,7 @@ See `proposal.md` for motivation and `specs/assets-v2-visual-parity/spec.md` for
 
 - Refine the existing presentation components to match the approved mockup's composition at responsive desktop and narrow widths.
 - Keep RAW and Library as separate inventory models with a shared visual language.
+- Present RAW and configured Library roots as siblings in one accessible Assets hierarchy; selecting a root or descendant selects the corresponding location and canonical context.
 - Make selected RAW hierarchy and its filtered list context easy to read.
 - Give Reports a pathname-based primary destination and reuse its existing report data and actions.
 - Keep inventory work bounded to existing summaries and selected-asset detail.
@@ -15,20 +16,20 @@ See `proposal.md` for motivation and `specs/assets-v2-visual-parity/spec.md` for
 **Non-Goals:**
 
 - Changing APIs, inventory projections, grouping identity, lifecycle semantics, Queue planning, or action eligibility.
-- Adding report calculations, media probes, filesystem scans, dependencies, or a new hierarchy model.
+- Adding report calculations, media probes, filesystem scans, dependencies, or a parallel inventory/domain hierarchy model.
 - Redesigning unrelated application navigation surfaces or other product pages.
 
 ## Decisions
 
-1. **Refine the existing Assets composition.** Keep the title and RAW/Library selector together, render the four existing canonical summary counts as compact cards, then place the search and current inventory beneath them in a bounded workspace surface. Use theme surfaces, borders, spacing, typography, and restrained accents so the layout scales without screenshot-specific coordinates. Replacing the current low divided summary strip with cards makes the values legible while keeping the header compact.
+1. **Refine the existing Assets composition.** Keep the Assets title and current inventory label above the four existing canonical summary cards, then place search, one Assets hierarchy, and the current content surface in a bounded workspace. The hierarchy is the only RAW/Library context selector; do not render a second mode toggle. Use theme surfaces, borders, spacing, typography, and restrained accents so the layout scales without screenshot-specific coordinates.
 
-2. **Preserve separate hierarchy semantics and share their presentation rules.** Continue to project RAW from source groups and Library from Library groups. Improve each tree's panel, indentation, selected/expanded affordance, and long-name handling; derive RAW context text from the selected source group, logical group, and path already in memory. Keep context selection local to each mounted workspace and keep Library's six scan columns, RAW's source-oriented rows, and both selected-detail actions on their existing owners. A single domain tree would erase RAW source identity, while duplicated workspace implementations would drift visually.
+2. **Compose one presentation tree over separate hierarchy projections.** Keep `buildRawHierarchy` sourced from canonical source groups and `buildLibraryTree` sourced from configured Library roots and Library groups. Render one RAW source root followed by each configured Library root as siblings; use configured names directly and do not add a synthetic generic Library root. A presentation-only discriminated node keeps source-group/logical-group/path identity separate from Library ID/path identity. Tree selection updates the URL-backed `location` and appropriate context keys; crossing contexts removes incompatible selection and filters while preserving common search. Derive RAW breadcrumbs from selected canonical nodes. Keep Library's six scan columns, RAW's source-oriented rows, and both selected-detail actions on their existing owners.
 
 3. **Recompose selected detail without changing its data boundary.** Keep the existing preview URL and one integrated Play control, selected snapshot query, canonical row summaries, and action callbacks. Arrange the preview, filename/context, status/profile/subtitle/timing, technical details, and actions into aligned groups that collapse vertically at narrow widths. Do not add per-row requests or inline Asset Info.
 
 4. **Make Reports a pathname-owned route.** Add `/reports` to the application router and point the Reports navigation item there. Determine primary active state from the pathname so Assets remains active for either inventory location and Reports is active only on the Reports route. Reuse the existing inventory query key, report panel, and missing-record mutation flows on the new page. Redirect the supported legacy `evidence=reports` and `tab=reports` URLs to `/reports`; this keeps old links usable without presenting Reports as an Assets context.
 
-5. **Use focused presentation and route regressions.** Extend the existing Assets workspace tests for selector semantics, hierarchy filtering, table columns, detail actions, and bounded selected-only queries. Add route and navigation tests for RAW, Library, legacy report links, `/reports`, and mutually exclusive active states. Keep tests tied to observable roles, labels, URL state, and the absence of per-row work rather than screenshot pixel values.
+5. **Use focused presentation and route regressions.** Extend Assets workspace tests for one tree with simultaneous RAW and configured Library roots, tree-driven context/query cleanup, accessible selection and keyboard navigation, hierarchy filtering, table columns, detail actions, and bounded selected-only queries. Add route and navigation tests for RAW, Library, legacy report links, `/reports`, and mutually exclusive active states. Keep tests tied to observable roles, labels, URL state, and the absence of per-row work rather than screenshot pixel values.
 
 ## Risks / Trade-offs
 

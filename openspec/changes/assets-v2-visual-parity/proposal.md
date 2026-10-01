@@ -4,7 +4,8 @@ The merged Assets V2 workspace preserves RAW and Library behavior, but its summa
 
 ## What Changes
 
-- Refine the Assets header, RAW/Library selector, canonical summary cards, hierarchy panels, scan-first tables, and selected-asset detail to match the approved mockup's composition and visual hierarchy.
+- Refine the Assets header, canonical summary cards, one unified Assets hierarchy, scan-first tables, and selected-asset detail to match the approved mockup's composition and visual hierarchy.
+- Show RAW and every configured Library root as sibling roots in one accessible tree; tree selection chooses the active inventory context, with no separate RAW/Library toggle.
 - Make RAW source, title, and path context clear while retaining its existing hierarchy, inventory, and action owners.
 - Keep a shared visual language across RAW and Library while preserving their distinct hierarchy semantics and current workflows.
 - Give Reports a separate `/reports` route and main-navigation active state; keep it out of Assets inventory contexts.
