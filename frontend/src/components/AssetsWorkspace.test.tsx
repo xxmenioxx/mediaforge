@@ -128,10 +128,91 @@ describe('Assets workspace presentation', () => {
     expect(document.activeElement).toBe(topLevelItems[1]);
     await user.keyboard('{Enter}');
     expect(onSelectLibrary).toHaveBeenCalledWith({ libraryId: 1, path: '' });
+    await user.keyboard(' ');
+    expect(onSelectLibrary).toHaveBeenLastCalledWith({ libraryId: 1, path: '' });
     await user.click(topLevelItems[0]);
     expect(onSelectRaw).toHaveBeenCalledWith({ kind: 'all' });
 
     expect(screen.queryByRole('img')).toBeNull();
+  });
+
+  it('moves ArrowLeft from a nested Library child to its immediate parent', async () => {
+    const user = userEvent.setup();
+    render(<AssetsHierarchyPanel
+      sourceGroups={[]}
+      groups={[makeGroup()]}
+      libraries={[makeLibrary()]}
+      location="library"
+      rawSelection={null}
+      librarySelection={{ libraryId: 1, path: '' }}
+      onSelectRaw={vi.fn()}
+      onSelectLibrary={vi.fn()}
+    />);
+
+    const libraryRoot = screen.getByRole('treeitem', { name: 'Anime' });
+    libraryRoot.focus();
+    await user.keyboard('{ArrowRight}');
+    const seriesNode = screen.getByRole('treeitem', { name: 'Series' });
+    seriesNode.focus();
+    await user.keyboard('{ArrowLeft}');
+
+    expect(document.activeElement).toBe(libraryRoot);
+  });
+
+  it('moves ArrowLeft through RAW path parents and collapses an expanded node first', async () => {
+    const user = userEvent.setup();
+    const sourceGroups = [{
+      id: 8,
+      name: 'RAW Anime',
+      relativePath: 'anime',
+      sourcePath: '/raw/anime',
+      logicalGroups: [{
+        id: '/raw/anime/Attack',
+        name: 'Attack',
+        assetPaths: [{
+          id: 'extras-path',
+          name: 'extras',
+          path: '/raw/anime/Attack/extras',
+          relativePath: 'extras',
+          displayPath: 'extras',
+          isLogicalGroupRoot: false,
+          fileCount: 1,
+          assetCount: 1,
+          sizeBytes: 1,
+          totalSizeBytes: 1,
+          assets: [],
+        }],
+      }],
+    }] as unknown as AssetSourceGroup[];
+    render(<AssetsHierarchyPanel
+      sourceGroups={sourceGroups}
+      groups={[]}
+      libraries={[]}
+      location="raw"
+      rawSelection={{ kind: 'all' }}
+      librarySelection={{ libraryId: null, path: '' }}
+      onSelectRaw={vi.fn()}
+      onSelectLibrary={vi.fn()}
+    />);
+
+    const sourceNode = screen.getByRole('treeitem', { name: 'RAW Anime' });
+    sourceNode.focus();
+    await user.keyboard('{ArrowRight}');
+    const logicalGroupNode = screen.getByRole('treeitem', { name: 'Attack' });
+    logicalGroupNode.focus();
+    await user.keyboard('{ArrowRight}');
+    const pathNode = screen.getByRole('treeitem', { name: 'extras' });
+
+    pathNode.focus();
+    await user.keyboard('{ArrowLeft}');
+    expect(document.activeElement).toBe(logicalGroupNode);
+
+    await user.keyboard('{ArrowLeft}');
+    expect(logicalGroupNode.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(logicalGroupNode);
+
+    await user.keyboard('{ArrowLeft}');
+    expect(document.activeElement).toBe(sourceNode);
   });
 
   it('shows compact technical details with one integrated preview Play control', async () => {

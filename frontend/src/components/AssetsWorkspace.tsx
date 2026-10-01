@@ -22,7 +22,7 @@ import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import AutorenewOutlinedIcon from '@mui/icons-material/AutorenewOutlined';
 import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
 import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, ScanResult } from '../api/types';
 import { buildLibraryTree, buildRawHierarchy, formatDurationSummary, type LibraryTreeNode, type LibraryTreeSelection, type RawHierarchyNode, type RawHierarchySelection } from './assetsWorkspaceModel';
@@ -184,6 +184,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
   }, ...libraryTreeNodes(buildLibraryTree(groups, libraries))], [sourceGroups, groups, libraries]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['assets-raw-root']));
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const treeItemRefs = useRef(new Map<string, HTMLElement>());
   const selectedAncestors = useMemo(() => selectedHierarchyAncestors(nodes, (node) => location === 'raw'
     ? node.kind === 'raw' && hierarchySelectionMatches(node, rawSelection, librarySelection)
     : node.kind === 'library' && hierarchySelectionMatches(node, rawSelection, librarySelection)), [nodes, location, rawSelection, librarySelection]);
@@ -204,7 +205,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
     });
   };
 
-  const renderNode = (node: AssetsHierarchyNode, level: number): ReactNode => {
+  const renderNode = (node: AssetsHierarchyNode, level: number, parentNodeId?: string): ReactNode => {
     const isRawRoot = node.kind === 'raw' && node.sourceRoot === true;
     const hasChildren = node.children.length > 0;
     const isExpanded = expandedItems.has(node.id);
@@ -220,6 +221,10 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
       <Box component="li" key={node.id} role="none" sx={{ listStyle: 'none' }}>
         <ListItemButton
           component="div"
+          ref={(element) => {
+            if (element) treeItemRefs.current.set(node.id, element);
+            else treeItemRefs.current.delete(node.id);
+          }}
           role="treeitem"
           aria-level={level}
           aria-label={isRawRoot ? 'RAW source inventory' : node.label}
@@ -238,12 +243,11 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
               if (!isExpanded) toggleExpanded(node.id, true);
               else event.currentTarget.parentElement?.querySelector<HTMLElement>('[role="group"] [role="treeitem"]')?.focus();
             } else if (event.key === 'ArrowLeft') {
+              event.preventDefault();
               if (hasChildren && isExpanded) {
-                event.preventDefault();
                 toggleExpanded(node.id, false);
-              } else {
-                event.preventDefault();
-                event.currentTarget.parentElement?.parentElement?.closest<HTMLElement>('[role="treeitem"]')?.focus();
+              } else if (parentNodeId) {
+                treeItemRefs.current.get(parentNodeId)?.focus();
               }
             } else if (event.key === 'ArrowDown' && treeItems[currentIndex + 1]) {
               event.preventDefault();
@@ -287,7 +291,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
         {hasChildren ? (
           <Collapse in={isExpanded} timeout="auto" unmountOnExit>
             <List component="ul" role="group" disablePadding sx={{ py: 0.25 }}>
-              {node.children.map((child) => renderNode(child, level + 1))}
+              {node.children.map((child) => renderNode(child, level + 1, node.id))}
             </List>
           </Collapse>
         ) : null}
