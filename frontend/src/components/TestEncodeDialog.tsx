@@ -31,9 +31,10 @@ type Props = {
   libraries: Library[];
   defaultLibraryId?: number;
   request: Omit<TestEncodeInput, 'sourcePath' | 'libraryId' | 'startMode' | 'startSeconds' | 'durationSeconds'>;
+  sampleRange?: { startSeconds: number; durationSeconds: number };
 };
 
-export function TestEncodeDialog({ open, onClose, sourcePath, libraries, defaultLibraryId = 0, request }: Props) {
+export function TestEncodeDialog({ open, onClose, sourcePath, libraries, defaultLibraryId = 0, request, sampleRange }: Props) {
   const queryClient = useQueryClient();
   const [libraryId, setLibraryId] = useState(defaultLibraryId || libraries[0]?.id || 0);
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings, enabled: open });
@@ -42,10 +43,11 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
     ? policy.defaultStartMode
     : 'representative';
   const [startModeOverride, setStartModeOverride] = useState<TestEncodeInput['startMode']>();
-  const startMode = startModeOverride ?? configuredStartMode;
+  const startMode = sampleRange ? 'custom' : startModeOverride ?? configuredStartMode;
   const [startSeconds, setStartSeconds] = useState(0);
   const [durationSecondsOverride, setDurationSecondsOverride] = useState<number>();
-  const durationSeconds = durationSecondsOverride ?? (typeof policy?.defaultDurationSeconds === 'number' ? policy.defaultDurationSeconds : 20);
+  const effectiveStartSeconds = sampleRange?.startSeconds ?? startSeconds;
+  const durationSeconds = sampleRange?.durationSeconds ?? durationSecondsOverride ?? (typeof policy?.defaultDurationSeconds === 'number' ? policy.defaultDurationSeconds : 20);
   const [details, setDetails] = useState<TestEncode | null>(null);
   const [detailsTab, setDetailsTab] = useState(0);
   const [qualificationWindowFocus, setQualificationWindowFocus] = useState('');
@@ -67,7 +69,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
       sourcePath,
       libraryId: selectedLibraryId,
       startMode,
-      startSeconds: startMode === 'custom' ? startSeconds : undefined,
+      startSeconds: startMode === 'custom' ? effectiveStartSeconds : undefined,
       durationSeconds,
     }),
     onSuccess: invalidate,
@@ -112,14 +114,22 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
               <TextField select size="small" label="Destination library" value={selectedLibraryId || ''} onChange={(event) => setLibraryId(Number(event.target.value))} fullWidth>
                 {libraries.map((library) => <MenuItem key={library.id} value={library.id}>{library.name}</MenuItem>)}
               </TextField>
-              <TextField select size="small" label="Sample position" value={startMode} onChange={(event) => setStartModeOverride(event.target.value as TestEncodeInput['startMode'])} fullWidth>
-                <MenuItem value="representative">Representative</MenuItem>
-                <MenuItem value="beginning">Beginning</MenuItem>
-                <MenuItem value="middle">Middle</MenuItem>
-                <MenuItem value="custom">Custom</MenuItem>
-              </TextField>
-              {startMode === 'custom' ? <TextField size="small" type="number" label="Start seconds" value={startSeconds} inputProps={{ min: 0, step: 1 }} onChange={(event) => setStartSeconds(Math.max(0, Number(event.target.value) || 0))} fullWidth /> : null}
-              <TextField size="small" type="number" label="Duration" value={durationSeconds} inputProps={{ min: 5, max: 120 }} onChange={(event) => setDurationSecondsOverride(Math.min(120, Math.max(5, Number(event.target.value) || 20)))} fullWidth />
+              {sampleRange ? (
+                <Alert severity="info" sx={{ flex: 1 }}>
+                  LAB sample · {effectiveStartSeconds}s + {durationSeconds}s. Edit the range in the LAB header.
+                </Alert>
+              ) : (
+                <>
+                  <TextField select size="small" label="Sample position" value={startMode} onChange={(event) => setStartModeOverride(event.target.value as TestEncodeInput['startMode'])} fullWidth>
+                    <MenuItem value="representative">Representative</MenuItem>
+                    <MenuItem value="beginning">Beginning</MenuItem>
+                    <MenuItem value="middle">Middle</MenuItem>
+                    <MenuItem value="custom">Custom</MenuItem>
+                  </TextField>
+                  {startMode === 'custom' ? <TextField size="small" type="number" label="Start seconds" value={startSeconds} inputProps={{ min: 0, step: 1 }} onChange={(event) => setStartSeconds(Math.max(0, Number(event.target.value) || 0))} fullWidth /> : null}
+                  <TextField size="small" type="number" label="Duration" value={durationSeconds} inputProps={{ min: 5, max: 120 }} onChange={(event) => setDurationSecondsOverride(Math.min(120, Math.max(5, Number(event.target.value) || 20)))} fullWidth />
+                </>
+              )}
             </Stack>
             <Button variant="contained" disabled={!selectedLibraryId || create.isPending} onClick={() => create.mutate()}>
               {create.isPending ? 'Preparing…' : 'Generate New Test Encode'}

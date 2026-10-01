@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import type { Library, ProfileQualification, TestEncode } from '../api/types';
 import { TestEncodeDialog } from './TestEncodeDialog';
@@ -39,7 +39,12 @@ const qualification: ProfileQualification = {
   worstRuleKeys: ['metric.worst_window'], createdAt: '2026-09-29T00:00:00Z',
 };
 
-function renderDialog(configurationSource: 'effective_asset' | 'lab_draft' = 'effective_asset', defaultLibraryId = 2, libraries = testLibraries) {
+function renderDialog(
+  configurationSource: 'effective_asset' | 'lab_draft' = 'effective_asset',
+  defaultLibraryId = 2,
+  libraries = testLibraries,
+  sampleRange?: { startSeconds: number; durationSeconds: number },
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
@@ -49,6 +54,7 @@ function renderDialog(configurationSource: 'effective_asset' | 'lab_draft' = 'ef
         sourcePath="/raw/show/episode.mkv"
         libraries={libraries}
         defaultLibraryId={defaultLibraryId}
+        sampleRange={sampleRange}
         request={configurationSource === 'lab_draft'
           ? { configurationSource, labProfile: { name: 'Unsaved', videoCodec: 'x265' } as never, labAudioProfile: { filters: 'anull' }, labTrackOverride: { keepAudioStreams: [1] } }
           : { configurationSource, profileId: 9, resolveAssignments: true }}
@@ -58,6 +64,8 @@ function renderDialog(configurationSource: 'effective_asset' | 'lab_draft' = 'ef
 }
 
 describe('TestEncodeDialog', () => {
+  afterEach(cleanup);
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.settings).mockResolvedValue([]);
@@ -85,6 +93,21 @@ describe('TestEncodeDialog', () => {
     })));
   });
 
+  it('uses the single LAB header range without repeating range controls in the run dialog', async () => {
+    const user = userEvent.setup();
+    renderDialog('lab_draft', 2, testLibraries, { startSeconds: 600, durationSeconds: 20 });
+
+    expect(screen.getByText(/lab sample · 600s \+ 20s/i)).toBeTruthy();
+    expect(screen.queryByRole('combobox', { name: /sample position/i })).toBeNull();
+    expect(screen.queryByRole('spinbutton', { name: /duration/i })).toBeNull();
+    await user.click(screen.getByRole('button', { name: /generate new test encode/i }));
+    await waitFor(() => expect(api.createTestEncode).toHaveBeenCalledWith(expect.objectContaining({
+      startMode: 'custom',
+      startSeconds: 600,
+      durationSeconds: 20,
+    })));
+  });
+
   it('labels unsaved Lab configuration and exposes lifecycle actions for prior tests', async () => {
     vi.mocked(api.testEncodes).mockResolvedValue([readyTest]);
     const user = userEvent.setup();
@@ -99,6 +122,15 @@ describe('TestEncodeDialog', () => {
     await user.click(screen.getByRole('tab', { name: /validation/i }));
     expect(screen.getByDisplayValue(/"videoTracks": 1/i)).toBeTruthy();
     expect(screen.getByDisplayValue('[]')).toBeTruthy();
+  });
+
+  it('preserves cancellation for a retained run that is still generating', async () => {
+    vi.mocked(api.testEncodes).mockResolvedValue([{ ...readyTest, status: 'generating', phase: 'encoding', progress: 42 }]);
+    const user = userEvent.setup();
+    renderDialog('lab_draft');
+
+    await user.click(await screen.findByRole('button', { name: /^cancel$/i }));
+    await waitFor(() => expect(api.cancelTestEncode).toHaveBeenCalledWith(readyTest.id, expect.anything()));
   });
 
   it('keeps requested and effective configurations in a dedicated section', async () => {
