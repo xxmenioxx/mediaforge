@@ -23,6 +23,7 @@ vi.mock('../api/client', async (importOriginal) => {
       profilesAdmin: vi.fn(),
       settings: vi.fn(),
       libraries: vi.fn(),
+      testEncodes: vi.fn().mockResolvedValue([]),
       runtimeState: vi.fn(),
       workerNodes: vi.fn(),
       latestSnapshot: vi.fn(),
@@ -123,6 +124,10 @@ function renderLab() {
 }
 
 async function openSampleEstimate() {
+  const profileTools = screen.getByRole('button', { name: 'Preview, profile review, and analysis tools' });
+  if (profileTools.getAttribute('aria-expanded') !== 'true') {
+    await userEvent.click(profileTools);
+  }
   await userEvent.click(
     await screen.findByRole(
       'tab',
