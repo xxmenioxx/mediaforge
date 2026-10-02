@@ -4,7 +4,6 @@ import {
   Backdrop,
   Box,
   Button,
-  ButtonGroup,
   Card,
   CardContent,
   Checkbox,
@@ -38,7 +37,9 @@ import GraphicEqIcon from '@mui/icons-material/GraphicEq';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SaveIcon from '@mui/icons-material/Save';
 import TuneIcon from '@mui/icons-material/Tune';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import ScienceIcon from '@mui/icons-material/Science';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -108,9 +109,6 @@ import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { TrackProfileResolutionPreview } from '../components/TrackProfileResolutionPreview';
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
-import { LabV2Header } from '../components/LabV2Header';
-import { parseStartSeconds } from '../utils/labV2Time';
-import { LabTestEncodeComparison } from '../components/LabTestEncodeComparison';
 import { PageHeader } from '../components/PageHeader';
 import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
 import { FrameStructureControls } from '../components/FrameStructureControls';
@@ -208,6 +206,8 @@ type LabRecommendationReport = {
   tracks: string[];
   general: string[];
 };
+
+type RecommendationSectionState = Record<LabSection, boolean>;
 
 type LabProfileAssignment = {
   targetType: 'asset' | 'path';
@@ -983,6 +983,7 @@ export function ProfileLabPage() {
   const [recommendationReport, setRecommendationReport] = useState<LabRecommendationReport | null>(null);
   const [recommendationSuggestion, setRecommendationSuggestion] = useState<ProfileSuggestion | null>(null);
   const [recommendationOpen, setRecommendationOpen] = useState(false);
+  const [recommendationApplied, setRecommendationApplied] = useState<RecommendationSectionState>({ video: false, audio: false, tracks: false });
   const [recommendationSelected, setRecommendationSelected] = useState<string[]>([]);
   const [storedProfileSampleEstimateOperation, setStoredProfileSampleEstimateOperation] =
     useState<StoredProfileSampleEstimateOperation | null>(
@@ -992,26 +993,10 @@ export function ProfileLabPage() {
   const [audioSaveReviewOpen, setAudioSaveReviewOpen] = useState(false);
   const [trackSaveReviewOpen, setTrackSaveReviewOpen] = useState(false);
   const [testEncodeOpen, setTestEncodeOpen] = useState(false);
-  const [profileToolsOpen, setProfileToolsOpen] = useState(false);
-  const [selectedLabTestEncode, setSelectedLabTestEncode] = useState<{ sourcePath: string | null; id: number | null }>({ sourcePath: null, id: null });
   const [pendingTrackProfileSave, setPendingTrackProfileSave] = useState<TrackProfile | null>(null);
   const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
   const previewsRef = useRef<HTMLDivElement | null>(null);
   const selectedAsset = labAssets.find((asset) => asset.path === assetPath) ?? null;
-  const testEncodesQuery = useQuery({
-    queryKey: ['testEncodes', selectedAsset?.path],
-    queryFn: () => api.testEncodes(selectedAsset?.path),
-    enabled: Boolean(selectedAsset?.path),
-    refetchInterval: (query) => query.state.data?.some((item) => item.status === 'waiting' || item.status === 'generating') ? 1500 : false,
-  });
-  const labTestEncodes = testEncodesQuery.data ?? [];
-  const selectedLabTestEncodeId = selectedLabTestEncode.sourcePath === selectedAsset?.path ? selectedLabTestEncode.id : null;
-  const labSelectedTestEncode = labTestEncodes.find((item) => item.id === selectedLabTestEncodeId)
-    ?? (selectedLabTestEncodeId === null ? labTestEncodes.find((item) => item.status === 'ready' && item.outputExists) : undefined);
-  const labTestStartSeconds = parseStartSeconds(start);
-  const labSampleRange = labTestStartSeconds !== null && Number.isFinite(seconds) && seconds >= 5
-    ? { startSeconds: Math.floor(labTestStartSeconds), durationSeconds: Math.max(5, Math.min(60, Math.floor(seconds))) }
-    : undefined;
   const selectedGroupPath = useMemo(() => {
     const groups = [
       ...(assets.data?.unprocessedGroups ?? []), ...(assets.data?.libraryGroups ?? []),
@@ -1140,16 +1125,6 @@ export function ProfileLabPage() {
       seconds,
       previewNormalization,
     );
-  const selectedRunMatchesLabReference = Boolean(
-    labSelectedTestEncode &&
-    labSelectedTestEncode.sourcePath === assetPath &&
-    labTestStartSeconds === labSelectedTestEncode.startSeconds &&
-    Math.floor(seconds) === labSelectedTestEncode.durationSeconds &&
-    referencePreviewCacheSignature === currentReferenceRequestSignature,
-  );
-  const retainedLabReferenceUrl = selectedRunMatchesLabReference && processedReferencePreviewRequestId
-    ? api.compatibleAssetPreviewUrl(processedReferencePreviewRequestId)
-    : undefined;
 
   const currentVideoRequestSignature =
     labVideoRequestSignature(
@@ -1462,6 +1437,7 @@ export function ProfileLabPage() {
       if (requestedPath !== assetPath || suggestion.scan?.path !== requestedPath) return;
       setRecommendationSuggestion(suggestion);
       setRecommendationReport(previewRecommendationReport(suggestion));
+      setRecommendationApplied({ video: false, audio: false, tracks: false });
       setRecommendationSelected([
         ...(suggestion.findings ?? []).filter((finding) => !finding.id.startsWith('motion-') && finding.actionable && finding.defaultSelected).map((finding) => finding.id),
         ...(suggestion.restorationPlan?.recommendations ?? []).filter(isActionableRestorationRecommendation).map((item) => restorationRecommendationSelectionID(item.id)),
@@ -2271,6 +2247,7 @@ export function ProfileLabPage() {
       tracks: trackReasons,
       general: suggestion.insights.recommendations,
     });
+    setRecommendationApplied((current) => ({ ...current, [section]: true }));
   }
 
   function applyLabVideoFindings(findings: AdvisorFinding[], restorationPlan?: RestorationRecommendationPlan) {
@@ -2322,6 +2299,7 @@ export function ProfileLabPage() {
       }
       return synchronizeLabAuthoritativeContract(next);
     });
+    setRecommendationApplied((current) => ({ ...current, video: true }));
   }
 
   function applyRecommendationSelection(suggestion: ProfileSuggestion, applyAll: boolean) {
@@ -2850,6 +2828,10 @@ export function ProfileLabPage() {
     scrollToPreviews();
   }
 
+  function changePreviewColorDomain(next: 'preserve' | 'normalize_bt709') {
+    setPreviewNormalization(next);
+  }
+
   function measureProfileSamples() {
     if (!assetPath || startProfileSampleEstimate.isPending || sampleEstimateActive) return;
     startProfileSampleEstimate.mutate({
@@ -3076,7 +3058,11 @@ export function ProfileLabPage() {
 
   return (
     <>
-      <PageHeader title="LAB" eyebrow="Test Encode comparison" />
+      <PageHeader title="Profile Lab" eyebrow="A/B Preview">
+        <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 900 }}>
+          Compare original samples against video and audio profile drafts, then save asset-specific profiles for repeatable series, anime, or source families.
+        </Typography>
+      </PageHeader>
       {preflightCandidateId ? <Alert severity={preflightContext.data?.revision === preflightRevision && preflightContext.data?.resolved ? 'info' : 'warning'}>
         {preflightContext.data?.revision === preflightRevision && candidateAsset?.plan
           ? `Loaded an isolated LAB draft for ${candidateAsset.mediaPath} from Batch Preflight revision ${preflightRevision}. LAB edits do not update the candidate or asset configuration; use Edit in Preflight to apply choices, then resolve again.`
@@ -3170,86 +3156,153 @@ export function ProfileLabPage() {
         </Card>
       </Backdrop>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
-        <LabV2Header
-          asset={selectedAsset}
-          snapshot={selectedAssetSnapshot}
-          assetPicker={(
-            <AssetAutocomplete
-              assets={labAssets}
-              value={selectedAsset}
-              onChange={(asset) => {
-                if (!savedTrackProfileKey) setTrackConversionDraft({});
-                setAssetPath(asset?.path ?? '');
-                persistLabAssetPath(asset?.path ?? '');
-                setAudioPreviewStreamIndex(asset?.conversion?.enhancedAudioSourceStreamIndex ?? null);
-                resetProcessedPreviews();
-                setRecommendationReport(null);
-                setRecommendationSuggestion(null);
-                setRecommendationOpen(false);
-              }}
-            />
-          )}
-          scope={activeProfileScope}
-          onScopeChange={(scope) => {
-            if (labSection === 'video') setVideoDraft((current) => ({ ...current, scope }));
-            else if (labSection === 'audio') setAudioDraft((current) => ({ ...current, scope }));
-            else setTrackDraft((current) => ({ ...current, scope }));
-          }}
-          start={start}
-          seconds={seconds}
-          rangeValid={previewStartValid && Boolean(labSampleRange)}
-          onStartChange={setStart}
-          onSecondsChange={(value) => setSeconds(Math.min(60, value))}
-          runDisabled={!selectedAsset || !libraries.data?.length || !labSampleRange}
-          onRun={() => {
-            setSelectedLabTestEncode({ sourcePath: selectedAsset?.path ?? null, id: null });
-            setTestEncodeOpen(true);
-          }}
-          onOpenAssetInfo={() => {
-            if (selectedAsset) window.location.href = `/assets?asset=${encodeURIComponent(selectedAsset.path)}`;
-          }}
-          onRestoreProfile={savedVideoProfileId ? () => selectVideoProfile(savedVideoProfileId) : undefined}
-          onOpenProfileDetails={() => setProfileToolsOpen(true)}
-        />
-        <Card variant="outlined" sx={{ mb: 1.5, bgcolor: 'background.paper' }}>
-          <CardContent sx={{ py: 0.5, '&:last-child': { pb: 0.5 } }}>
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75}>
-              <Button
+        <Card sx={{ mb: 2 }}>
+          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Grid container spacing={1.5} alignItems="flex-start">
+              <Grid size={{ xs: 12, lg: 5 }}>
+                <AssetAutocomplete
+                  assets={labAssets}
+                  value={selectedAsset}
+                  onChange={(asset) => {
+                    if (!savedTrackProfileKey) {
+                      setTrackConversionDraft({});
+                    }
+                    setAssetPath(asset?.path ?? '');
+                    persistLabAssetPath(asset?.path ?? '');
+                    setAudioPreviewStreamIndex(asset?.conversion?.enhancedAudioSourceStreamIndex ?? null);
+                    resetProcessedPreviews();
+                    setRecommendationReport(null);
+                    setRecommendationSuggestion(null);
+                    setRecommendationApplied({ video: false, audio: false, tracks: false });
+                    setRecommendationOpen(false);
+                  }}
+                />
+              </Grid>
+              <Grid size={{ xs: 6, sm: 3, lg: 1.25 }}>
+                <TextField
+                  label="Start"
+                  size="small"
+                  value={start}
+                  onChange={(event) => {
+                    setStart(event.target.value);
+                  }}
+                  placeholder="HH:MM:SS"
+                  error={!previewStartValid}
+                  helperText={!previewStartValid ? 'Use non-negative seconds or HH:MM:SS.' : ' '}
+                  fullWidth
+                />
+              </Grid>
+              <Grid size={{ xs: 3, sm: 2, lg: 0.75 }}>
+                <TextField
+                  label="Seconds"
+                  size="small"
+                  value={seconds}
+                  type="number"
+                  inputProps={{ min: 5, max: 60 }}
+                  onChange={(event) => {
+                    setSeconds(Math.min(60, Number(event.target.value)));
+                  }}
+                  onBlur={() => setSeconds((current) => Math.max(5, Math.min(60, current || 5)))}
+                  fullWidth
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 5, lg: 3 }}>
+                <Stack direction="row" spacing={0.75}>
+                  <Button
+                    startIcon={<AutoFixHighIcon />}
+                    variant="outlined"
+                    size="small"
+                    disabled={!assetPath || autoRecommendation.isPending || trackSnapshot.isPending}
+                    onClick={() => autoRecommendation.mutate(assetPath)}
+                    fullWidth
+                    sx={{ minHeight: 40 }}
+                  >
+                    {autoRecommendation.isPending ? 'Processing…' : 'Process Asset'}
+                  </Button>
+                  <Button
+                    variant="text"
+                    size="small"
+                    disabled={!assetPath || trackSnapshot.isPending || autoRecommendation.isPending}
+                    onClick={() => scanTrackAsset(true)}
+                    sx={{ whiteSpace: 'nowrap' }}
+                  >
+                    {trackSnapshot.isPending ? 'Scanning…' : 'Re-scan'}
+                  </Button>
+                  {recommendationReport ? (
+                    <Button size="small" variant="text" onClick={() => setRecommendationOpen(true)} sx={{ minWidth: 'auto', px: 1 }}>
+                      {Object.values(recommendationApplied).some(Boolean) ? 'Applied' : 'View'}
+                    </Button>
+                  ) : null}
+                </Stack>
+              </Grid>
+              <Grid size={{ xs: 12, sm: 7, lg: 2 }}>
+                <Button
+                  startIcon={<ScienceIcon />}
+                  variant="contained"
+                  size="small"
+                  disabled={!selectedAsset || !libraries.data?.length}
+                  onClick={() => setTestEncodeOpen(true)}
+                  fullWidth
+                  sx={{ minHeight: 40 }}
+                >
+                  Test Encode
+                </Button>
+              </Grid>
+            </Grid>
+            {selectedAssetSnapshot ? (
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75} alignItems={{ xs: 'flex-start', sm: 'center' }} sx={{ mt: 1 }}>
+                <Chip size="small" color="success" variant="outlined" label="Snapshot available" />
+                <Typography variant="caption" color="text.secondary">
+                  Last scan: {formatLabScanDate(selectedAssetSnapshot.updatedAt || selectedAssetSnapshot.createdAt)} · {selectedAssetSnapshot.videoCodec || 'unknown codec'} · {selectedAssetSnapshot.width}×{selectedAssetSnapshot.height} · {selectedAssetSnapshot.audioTracks} audio · {selectedAssetSnapshot.subtitleTracks} subtitles
+                </Typography>
+              </Stack>
+            ) : null}
+            {trackSnapshot.isError ? (
+              <Alert severity="warning" sx={{ mt: 1 }}>
+                The last asset scan could not be loaded. Use Re-scan to analyze it again.
+              </Alert>
+            ) : null}
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ xs: 'stretch', md: 'center' }} sx={{ mt: 1.5 }}>
+              <TextField
+                label="Profile applies to"
                 size="small"
-                aria-expanded={profileToolsOpen}
-                aria-controls="lab-profile-tools"
-                onClick={() => setProfileToolsOpen((open) => !open)}
-                sx={{ justifyContent: 'space-between', flex: 1 }}
+                value={activeProfileScope}
+                onChange={(event) => {
+                  const scope = event.target.value as 'asset' | 'path';
+                  if (labSection === 'video') setVideoDraft((current) => ({ ...current, scope }));
+                  else if (labSection === 'audio') setAudioDraft((current) => ({ ...current, scope }));
+                  else setTrackDraft((current) => ({ ...current, scope }));
+                }}
+                select
+                sx={{ width: { xs: '100%', md: 230 } }}
               >
-                Preview, profile review, and analysis tools
-                <ExpandMoreIcon sx={{ transform: profileToolsOpen ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }} />
-              </Button>
-              <Button
+                <MenuItem value="asset">Asset</MenuItem>
+                <MenuItem value="path">Path</MenuItem>
+              </TextField>
+              <TextField
+                label="Preview color domain"
                 size="small"
-                variant="outlined"
-                disabled={!assetPath || autoRecommendation.isPending || trackSnapshot.isPending}
-                onClick={() => { if (assetPath) autoRecommendation.mutate(assetPath); }}
+                value={previewNormalization}
+                onChange={(event) => changePreviewColorDomain(event.target.value as 'preserve' | 'normalize_bt709')}
+                select
+                sx={{ width: { xs: '100%', md: 280 } }}
               >
-                {autoRecommendation.isPending ? 'Processing…' : 'Process Asset'}
-              </Button>
+                <MenuItem value="normalize_bt709">Canonical BT.709 · recommended</MenuItem>
+                <MenuItem value="preserve">Preserve source characteristics</MenuItem>
+              </TextField>
+              <Typography variant="body2" color="text.secondary">
+                {previewNormalization === 'normalize_bt709'
+                  ? 'A and B receive the same mathematical color conversion before encoding. This affects LAB previews only; it is not saved into the final profile.'
+                  : 'A and B retain the declared source color domain where their encoders support it. Browser rendering may still differ by codec or platform.'}
+              </Typography>
             </Stack>
-            <Collapse in={profileToolsOpen}>
-              <Box id="lab-profile-tools" sx={{ pt: 1 }}>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} sx={{ mb: 1.5 }}>
-          <Typography variant="body2" color="text.secondary">Preview color domain</Typography>
-          <ButtonGroup size="small" aria-label="Preview color domain">
-            <Button
-              aria-pressed={previewNormalization === 'preserve'}
-              variant={previewNormalization === 'preserve' ? 'contained' : 'outlined'}
-              onClick={() => setPreviewNormalization('preserve')}
-            >Preserve source</Button>
-            <Button
-              aria-pressed={previewNormalization === 'normalize_bt709'}
-              variant={previewNormalization === 'normalize_bt709' ? 'contained' : 'outlined'}
-              onClick={() => setPreviewNormalization('normalize_bt709')}
-            >Normalize BT.709</Button>
-          </ButtonGroup>
-        </Stack>
+            {autoRecommendation.isError ? (
+              <Alert severity="error" sx={{ mt: 1.5 }}>
+                Auto recommendation failed: {autoRecommendation.error instanceof Error ? autoRecommendation.error.message : 'unknown error'}
+              </Alert>
+            ) : null}
+          </CardContent>
+        </Card>
         <Card sx={{ mb: 2 }}>
           <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
             <Stack spacing={1.25}>
@@ -3723,14 +3776,6 @@ export function ProfileLabPage() {
             </Stack>
         </Box>
 
-              </Box>
-            </Collapse>
-          </CardContent>
-        </Card>
-        <Grid container spacing={1.5} alignItems="flex-start">
-          <Grid size={{ xs: 12, lg: 5, xl: 4 }}>
-            <Box component="section" aria-label="Test parameters" sx={{ minWidth: 0 }}>
-              <Typography variant="h3" sx={{ mb: 1 }}>Test parameters</Typography>
         <Card sx={{ mb: 2 }}>
           <CardContent sx={{ py: 0, '&:last-child': { pb: 0 } }}>
             <Tabs value={labSection} onChange={(_, value) => setLabSection(value)} variant="scrollable" scrollButtons="auto">
@@ -5157,32 +5202,15 @@ export function ProfileLabPage() {
             </Card>
           ) : null}
         </Stack>
-            </Box>
-          </Grid>
-          <Grid size={{ xs: 12, lg: 7, xl: 8 }}>
-            <LabTestEncodeComparison
-              asset={selectedAsset}
-              snapshot={selectedAssetSnapshot}
-              tests={labTestEncodes}
-              selectedTest={labSelectedTestEncode ?? null}
-              retainedReferenceUrl={retainedLabReferenceUrl}
-              loading={testEncodesQuery.isLoading}
-              error={testEncodesQuery.isError ? (testEncodesQuery.error instanceof Error ? testEncodesQuery.error.message : 'Test Encode history could not be loaded.') : undefined}
-              onSelectTest={(id) => setSelectedLabTestEncode({ sourcePath: selectedAsset?.path ?? null, id })}
-              onManageTests={() => setTestEncodeOpen(true)}
-            />
-          </Grid>
-        </Grid>
       </Box>
       {selectedAsset ? (
-      <TestEncodeDialog
-        open={testEncodeOpen}
-        onClose={() => setTestEncodeOpen(false)}
-        sourcePath={selectedAsset.path}
-        libraries={libraries.data ?? []}
-        defaultLibraryId={selectedAsset.libraryId || libraries.data?.[0]?.id || 0}
-        sampleRange={labSampleRange}
-        request={{
+        <TestEncodeDialog
+          open={testEncodeOpen}
+          onClose={() => setTestEncodeOpen(false)}
+          sourcePath={selectedAsset.path}
+          libraries={libraries.data ?? []}
+          defaultLibraryId={selectedAsset.libraryId || libraries.data?.[0]?.id || 0}
+          request={{
             configurationSource: 'lab_draft',
             labProfile: videoDraft,
             labAudioProfile: labAudioProfileForTestEncode(
@@ -5219,6 +5247,13 @@ function LabTechnicalSnapshot({ scan }: { scan?: ScanResult }) {
       <RestorationEvidencePanel analysis={scan.restorationAnalysis} />
     </Stack>
   );
+}
+
+function formatLabScanDate(value?: string) {
+  if (!value) return 'unknown date';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
 }
 
 function LabWarningsAndGuidance({
