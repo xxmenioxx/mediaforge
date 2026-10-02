@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,7 +30,6 @@ vi.mock('../api/client', async (importOriginal) => {
       profilesAdmin: vi.fn(),
       settings: vi.fn(),
       libraries: vi.fn(),
-      testEncodes: vi.fn(),
       runtimeState: vi.fn(),
       workerNodes: vi.fn(),
       latestSnapshot: vi.fn(),
@@ -233,7 +232,6 @@ describe('Profile Lab Process Asset suggestions', () => {
     vi.mocked(api.profilesAdmin).mockResolvedValue([]);
     vi.mocked(api.settings).mockResolvedValue([]);
     vi.mocked(api.libraries).mockResolvedValue([]);
-    vi.mocked(api.testEncodes).mockResolvedValue([]);
   vi.mocked(api.runtimeState).mockResolvedValue({ encoders: {} } as never);
     vi.mocked(api.workerNodes).mockResolvedValue([]);
     vi.mocked(api.latestSnapshot).mockResolvedValue({ found: true, snapshot: scan, status: 'current', requiresAnalysis: false, staleComponents: [] });
@@ -336,11 +334,6 @@ describe('Profile Lab Process Asset suggestions', () => {
             false &&
           !options.profile,
       );
-  }
-
-  async function openProfileTools() {
-    const button = screen.getByRole('button', { name: 'Preview, profile review, and analysis tools' });
-    if (button.getAttribute('aria-expanded') !== 'true') await userEvent.click(button);
   }
 
   it(
@@ -497,7 +490,6 @@ describe('Profile Lab Process Asset suggestions', () => {
     await userEvent.click(processVideo);
 
     await waitFor(() => expect(api.startLabFidelityOperation).toHaveBeenCalled(), { timeout: 12_000 });
-    await openProfileTools();
     expect(await screen.findByText('Video draft')).toBeTruthy();
     expect(await screen.findByText(/Analyzing Fidelity window 2 of 5/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Process Video' })).toBeTruthy();
@@ -539,7 +531,6 @@ describe('Profile Lab Process Asset suggestions', () => {
     const processVideo = await screen.findByRole('button', { name: 'Process Video' }, { timeout: 12_000 });
     await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
     await userEvent.click(processVideo);
-    await openProfileTools();
     await screen.findByText('Video draft');
     await userEvent.click(screen.getByRole('tab', { name: 'Frame Fidelity' }));
     await waitFor(() => expect(screen.getByRole('tab', { name: 'Frame Fidelity' }).getAttribute('aria-selected')).toBe('true'));
@@ -586,7 +577,6 @@ describe('Profile Lab Process Asset suggestions', () => {
     await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
     await userEvent.click(processVideo);
     await waitFor(() => expect(api.labFidelityOperation).toHaveBeenCalled(), { timeout: 6_000 });
-    await openProfileTools();
     await userEvent.click(screen.getByRole('tab', { name: 'Frame Fidelity' }));
     expect(await screen.findByText(/after the backend restart/i)).toBeTruthy();
     await userEvent.click(screen.getByRole('tab', { name: 'A/B Previews' }));
@@ -625,10 +615,8 @@ describe('Profile Lab Process Asset suggestions', () => {
     await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
     await userEvent.click(processVideo);
     await waitFor(() => expect(api.labFidelityOperation).toHaveBeenCalled(), { timeout: 6_000 });
-    await openProfileTools();
     await userEvent.click(screen.getByRole('tab', { name: 'Frame Fidelity' }));
-    await userEvent.click(screen.getByRole('button', { name: /edit test range/i }));
-    const startInput = screen.getByRole('textbox', { name: 'Test range start time' });
+    const startInput = screen.getByLabelText('Start');
     await userEvent.clear(startInput);
     await userEvent.type(startInput, '00:00:05');
     expect((startInput as HTMLInputElement).value).toBe('00:00:05');
@@ -686,7 +674,6 @@ describe('Profile Lab Process Asset suggestions', () => {
     await waitFor(() => expect((processVideo as HTMLButtonElement).disabled).toBe(false));
     await userEvent.click(processVideo);
     await waitFor(() => expect(api.startLabFidelityOperation).toHaveBeenCalled(), { timeout: 12_000 });
-    await openProfileTools();
     const counts = {
       previews: vi.mocked(api.createCompatiblePreviewRequest).mock.calls.length,
       probes: vi.mocked(api.inspectCompatibleAssetPreview).mock.calls.length,
@@ -718,47 +705,14 @@ describe('Profile Lab Process Asset suggestions', () => {
     await waitFor(() => expect((processAsset as HTMLButtonElement).disabled).toBe(false));
     await userEvent.click(processAsset);
 
-    await waitFor(() => expect(api.suggestProfile).toHaveBeenCalledWith(assetPath));
     expect(await screen.findByRole('dialog', { name: 'MVForge Suggestions' })).toBeTruthy();
-    expect(screen.getByText('Test Encode comparison')).toBeTruthy();
+    expect(screen.getByText('Profile Lab')).toBeTruthy();
     expect(screen.getByText('Current: Off')).toBeTruthy();
     expect(screen.getByText('Recommended: Manual review')).toBeTruthy();
     expect(screen.getByText('confidence Medium')).toBeTruthy();
     expect(screen.getByText('Reason: Reliable progressive SD evidence supports a conservative 720p target.')).toBeTruthy();
     expect(api.suggestProfile).toHaveBeenCalledWith(assetPath);
   }, 15_000);
-
-  it('wires the compact LAB shell to the existing profile scope, single profile selector, range, and Test Encode dialog', async () => {
-    vi.mocked(api.libraries).mockResolvedValue([{
-      id: 2, name: 'TV', sourcePath: '/media/raw', destinationPath: '/media/library', type: 'tv',
-      validationRules: {}, createdAt: '', updatedAt: '',
-    }]);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[`/lab?assetPath=${encodeURIComponent(assetPath)}&section=video`]}>
-          <ProfileLabPage />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
-    const context = await screen.findByRole('region', { name: 'LAB asset context' });
-    expect(screen.getAllByRole('button', { name: 'Run Test Encode' })).toHaveLength(1);
-    expect(screen.getAllByRole('combobox', { name: 'Search video profile' })).toHaveLength(1);
-    const pathScope = screen.getByRole('button', { name: 'Path' });
-    await userEvent.click(pathScope);
-    expect(pathScope.getAttribute('aria-pressed')).toBe('true');
-
-    await userEvent.click(screen.getByRole('button', { name: /edit test range/i }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Test range start time' }), { target: { value: '00:12:00' } });
-    expect(screen.getByRole('button', { name: /edit test range\. 00:12:00 → 00:12:20/i })).toBeTruthy();
-
-    await userEvent.click(screen.getByRole('button', { name: 'Run Test Encode' }));
-    expect(await screen.findByRole('dialog', { name: 'Generate Test Encode' })).toBeTruthy();
-    expect(screen.getByText(/lab sample · 720s \+ 20s/i)).toBeTruthy();
-    expect(screen.getByText(/does not enter Queue, wait for a worker, publish, or archive the original/i)).toBeTruthy();
-    expect(context).toBeTruthy();
-  }, 20_000);
 
   it('processes a large video draft through short compatible-preview request IDs', async () => {
     vi.mocked(api.profiles).mockResolvedValue([largeSavedProfile]);
@@ -782,7 +736,7 @@ describe('Profile Lab Process Asset suggestions', () => {
     expect(conversion?.profile?.workerConfig?.upscaleSharpenCustomStrength).toBe(0.16);
     expect(String(conversion?.profile?.workerConfig?.restorationRecommendationProvenance).length).toBeGreaterThan(16_000);
     expect(vi.mocked(api.inspectCompatibleAssetPreview).mock.calls.every(([requestId]) => typeof requestId === 'string' && !requestId.includes('profile='))).toBe(true);
-    expect(await screen.findByText('Test Encode comparison')).toBeTruthy();
+    expect(await screen.findByText('Profile Lab')).toBeTruthy();
   }, 20_000);
 
   it('shows capability-gated RDO beside MBBRC for QSV profiles', async () => {

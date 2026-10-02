@@ -16,7 +16,6 @@ vi.mock('../api/client', async (importOriginal) => {
       profilesAdmin: vi.fn(),
       settings: vi.fn(),
       libraries: vi.fn(),
-      testEncodes: vi.fn().mockResolvedValue([]),
       runtimeState: vi.fn(),
       workerNodes: vi.fn(),
       latestSnapshot: vi.fn(),
