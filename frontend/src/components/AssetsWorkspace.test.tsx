@@ -1,10 +1,19 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, ScanResult } from '../api/types';
-import { AssetsHierarchyPanel, AssetsSummaryStrip, SelectedAssetDetail } from './AssetsWorkspace';
+import {
+  ASSETS_HIERARCHY_DEFAULT_WIDTH,
+  ASSETS_HIERARCHY_MAX_WIDTH,
+  ASSETS_HIERARCHY_MIN_WIDTH,
+  ASSETS_HIERARCHY_WIDTH_STORAGE_KEY,
+  AssetsHierarchyPanel,
+  AssetsSummaryStrip,
+  SelectedAssetArtwork,
+  SelectedAssetDetail,
+} from './AssetsWorkspace';
 import { buildLibraryTree, buildRawHierarchy } from './assetsWorkspaceModel';
 
 afterEach(cleanup);
@@ -215,6 +224,54 @@ describe('Assets workspace presentation', () => {
     expect(document.activeElement).toBe(sourceNode);
   });
 
+  it('resizes the hierarchy with pointer and keyboard controls and persists the chosen width', () => {
+    window.localStorage.removeItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY);
+    const props = {
+      sourceGroups: [] as AssetSourceGroup[],
+      groups: [] as AssetGroup[],
+      libraries: [] as Library[],
+      location: 'library' as const,
+      rawSelection: { kind: 'all' as const },
+      librarySelection: { libraryId: null, path: '' },
+      onSelectRaw: vi.fn(),
+      onSelectLibrary: vi.fn(),
+    };
+    const view = render(<AssetsHierarchyPanel {...props} />);
+    const separator = screen.getByRole('separator', { name: 'Resize Assets hierarchy' });
+    expect(separator.getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_DEFAULT_WIDTH));
+    expect(separator.getAttribute('aria-valuemin')).toBe(String(ASSETS_HIERARCHY_MIN_WIDTH));
+    expect(separator.getAttribute('aria-valuemax')).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
+
+    fireEvent.pointerDown(separator, { button: 0, clientX: 100, pointerId: 1 });
+    fireEvent.pointerMove(separator, { clientX: 164, pointerId: 1 });
+    fireEvent.pointerUp(separator, { clientX: 164, pointerId: 1 });
+    expect(separator.getAttribute('aria-valuenow')).toBe('364');
+    expect(window.localStorage.getItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY)).toBe('364');
+
+    fireEvent.keyDown(separator, { key: 'End' });
+    expect(separator.getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
+    expect(window.localStorage.getItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY)).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
+    view.unmount();
+    render(<AssetsHierarchyPanel {...props} />);
+    expect(screen.getByRole('separator', { name: 'Resize Assets hierarchy' }).getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
+  });
+
+  it('uses Jellyfin artwork first, falls back to MVForge artwork, then to a generic placeholder', () => {
+    render(<SelectedAssetArtwork fileName="Episode 01.mkv" jellyfinArtworkUrl="/jellyfin.jpg" mvforgeArtworkUrl="/mvforge.jpg" />);
+
+    const jellyfinArtwork = screen.getByRole('img', { name: 'Episode 01.mkv artwork' });
+    expect(jellyfinArtwork.getAttribute('src')).toBe('/jellyfin.jpg');
+    expect(jellyfinArtwork.getAttribute('data-artwork-source')).toBe('jellyfin');
+
+    fireEvent.error(jellyfinArtwork);
+    const mvforgeArtwork = screen.getByRole('img', { name: 'Episode 01.mkv artwork' });
+    expect(mvforgeArtwork.getAttribute('src')).toBe('/mvforge.jpg');
+    expect(mvforgeArtwork.getAttribute('data-artwork-source')).toBe('mvforge');
+
+    fireEvent.error(mvforgeArtwork);
+    expect(screen.getByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
+  });
+
   it('shows compact technical details with one integrated preview Play control', async () => {
     const user = userEvent.setup();
     const play = vi.fn();
@@ -246,10 +303,16 @@ describe('Assets workspace presentation', () => {
     expect(screen.getByText('Container · MATROSKA')).toBeTruthy();
     expect(screen.getByText('Resolution · 1920 × 1080')).toBeTruthy();
     expect(screen.getByText('Audio · aac 2ch ja')).toBeTruthy();
-    expect(screen.getByText('Subtitles')).toBeTruthy();
+    expect(screen.getByText('Subtítulos')).toBeTruthy();
     expect(screen.getByText('2 tracks · ja, en')).toBeTruthy();
+    expect(screen.getByText('Estado')).toBeTruthy();
+    expect(screen.getByText('Perfil')).toBeTruthy();
+    expect(screen.getByText('Duración')).toBeTruthy();
+    expect(screen.getByText('Modificado')).toBeTruthy();
     expect(screen.getAllByRole('button', { name: /Play preview of Episode 01.mkv/ })).toHaveLength(1);
-    expect((screen.getByRole('img', { name: 'Episode 01.mkv preview' }) as HTMLImageElement).getAttribute('src')).toContain('/api/assets/preview?path=');
+    expect(screen.getByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'Episode 01.mkv artwork' })).toBeNull();
+    expect(screen.getAllByText('23m 40s')).toHaveLength(2);
     expect(screen.queryByRole('button', { name: /View.*Play|Play.*View/ })).toBeNull();
 
     await user.click(screen.getByRole('button', { name: /Play preview of Episode 01.mkv/ }));
@@ -260,6 +323,36 @@ describe('Assets workspace presentation', () => {
     expect(assign).toHaveBeenCalledOnce();
     expect(testEncode).toHaveBeenCalledOnce();
     expect(more).toHaveBeenCalledOnce();
+  });
+
+  it('collapses and expands the selected asset workspace from its labeled keyboard control', async () => {
+    const user = userEvent.setup();
+    render(
+      <SelectedAssetDetail
+        asset={makeAsset()}
+        pathContext="Anime · Series/Season 01"
+        status="Ready"
+        assignedProfile="HEVC Main"
+        snapshot={scan}
+        snapshotLoading={false}
+        subtitlesSummary="2 tracks · ja, en"
+        modifiedLabel="Sep 30, 2026"
+        sizeLabel="1.5 MB"
+        onPlayPreview={vi.fn()}
+        onAssignProfile={vi.fn()}
+        onTestEncode={vi.fn()}
+        onMore={vi.fn()}
+        canAssignProfile
+        canTestEncode
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Collapse selected asset workspace' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Play preview/ })).toBeNull());
+    const expand = screen.getByRole('button', { name: 'Expand selected asset workspace' });
+    expand.focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.getByRole('button', { name: /Play preview/ })).toBeTruthy());
   });
 
   it('omits empty descriptive metadata and renders canonical tags when present', () => {

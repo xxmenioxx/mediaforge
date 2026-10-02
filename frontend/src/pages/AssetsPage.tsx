@@ -66,6 +66,7 @@ import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { AssetsHierarchyPanel, AssetsSummaryStrip, SelectedAssetDetail, WorkspaceBreadcrumbs } from '../components/AssetsWorkspace';
+import { AssetsInventoryTable } from '../components/AssetsInventoryTable';
 import { assetPathWithin, formatDurationSummary, type LibraryTreeSelection, type RawHierarchySelection } from '../components/assetsWorkspaceModel';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
@@ -968,20 +969,7 @@ function LibraryAssetTable({
           ) : null}
 
           {visibleAssets.length ? (
-            <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', border: 1, borderColor: 'divider', borderRadius: 1.25, bgcolor: 'background.paper' }}>
-              <Table size="small" aria-label="Library assets" sx={{ width: '100%', minWidth: { xs: 640, sm: 700 }, tableLayout: 'fixed', '& th': { color: 'text.secondary', fontSize: '0.72rem', fontWeight: 700, bgcolor: 'rgba(255,255,255,0.025)', borderColor: 'divider' }, '& td': { borderColor: 'rgba(148, 163, 184, 0.12)' }, '& td, & th': { py: 0.8 } }}>
-                <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ width: '37%' }}>Name</TableCell>
-                    <TableCell sx={{ width: '13%' }}>Status</TableCell>
-                    <TableCell sx={{ width: '17%' }}>Profile</TableCell>
-                  <TableCell sx={{ width: '12%' }}>Subtitles</TableCell>
-                  <TableCell sx={{ width: '8%' }}>Duration</TableCell>
-                  <TableCell sx={{ width: '13%' }}>Modified</TableCell>
-                  <TableCell padding="checkbox" sx={{ width: 42 }} />
-                  </TableRow>
-                </TableHead>
-                <TableBody>
+            <AssetsInventoryTable mode="library">
                   {pageRows.map(({ asset, group }) => {
                     const assignments = profileAssignments.data?.filter((assignment) => assignment.targetType === 'path' && normalizePath(assignment.targetPath) === normalizePath(group.path)) ?? [];
                     const videoAssignment = assignments.find((assignment) => assignment.mediaType === 'video');
@@ -1025,9 +1013,7 @@ function LibraryAssetTable({
                       />
                     );
                   })}
-                </TableBody>
-              </Table>
-            </Box>
+            </AssetsInventoryTable>
           ) : (
             <Alert severity="info" sx={{ mt: 1 }}>{emptyLabel}</Alert>
           )}
@@ -1299,21 +1285,7 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
             </Table>
           ) : null}
           {visibleAssets.length ? (
-            <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', border: 1, borderColor: 'divider', borderRadius: 1.25, bgcolor: 'background.paper' }}>
-              <Table size="small" aria-label="RAW assets" sx={{ width: '100%', minWidth: { xs: 720, sm: 760 }, tableLayout: 'fixed', '& th': { color: 'text.secondary', fontSize: '0.72rem', fontWeight: 700, bgcolor: 'rgba(255,255,255,0.025)', borderColor: 'divider' }, '& td': { borderColor: 'rgba(148, 163, 184, 0.12)' }, '& td, & th': { py: 0.8 } }}>
-                <TableHead>
-                  <TableRow>
-                    <TableCell padding="checkbox" sx={{ width: 42 }} />
-                    <TableCell sx={{ width: '35%' }}>Name</TableCell>
-                    <TableCell sx={{ width: '14%' }}>Status</TableCell>
-                    <TableCell sx={{ width: '17%' }}>Profile</TableCell>
-                    <TableCell sx={{ width: '12%' }}>Subtitles</TableCell>
-                    <TableCell sx={{ width: '9%' }}>Duration</TableCell>
-                    <TableCell sx={{ width: '13%' }}>Modified</TableCell>
-                    <TableCell padding="checkbox" sx={{ width: 42 }} />
-                  </TableRow>
-                </TableHead>
-                <TableBody>
+            <AssetsInventoryTable mode="raw" selectable>
                   {pageRows.map(({ asset, path }) => {
                     const effective = asset.id ? effectiveConfigurations.data?.configurations[String(asset.id)] : undefined;
                     const track = trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey);
@@ -1350,9 +1322,7 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
                       />
                     );
                   })}
-                </TableBody>
-              </Table>
-            </Box>
+            </AssetsInventoryTable>
           ) : (
             <Alert severity="info" sx={{ mt: 1 }}>{sourceGroups.length ? 'No RAW assets match this context or search.' : 'No RAW Source Groups found.'}</Alert>
           )}
@@ -3787,7 +3757,7 @@ function AssetRow({
   const canGenerateTestEncode = testEncodeEligibleAsset(asset, mode);
   const labCapability = assetInfoCapability(asset, 'lab');
   const renameCapability = assetInfoCapability(asset, 'rename');
-  const rowColumnCount = compactLibrary ? bulkSelectionEnabled ? 8 : 7 : compactUnprocessed ? 5 : isConverted
+  const rowColumnCount = compactLibrary ? compactRaw ? (bulkSelectionEnabled ? 11 : 10) : 12 : compactUnprocessed ? 5 : isConverted
     ? bulkSelectionEnabled ? 8 : 7
     : isAccepted ? 5 : 10;
   const associatedJob = associatedJobForCurrentPublication(asset, queueJobs);
@@ -3812,6 +3782,21 @@ function AssetRow({
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isPublishedAsIs || isAccepted;
   const renameLocked = hasOpenJob || createJob.isPending || isPublishedAsIs || isAccepted;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
+  const cachedAdvisor = confidenceEnabled
+    ? advisor.data ?? queryClient.getQueryData<AdvisorResponse>(['advisor', 'asset-row', asset.path, effectiveProfileId])
+    : undefined;
+  const advisorLabel = cachedAdvisor && Number.isFinite(cachedAdvisor.score)
+    ? String(cachedAdvisor.score)
+    : confidenceEnabled ? 'Not evaluated' : 'Unavailable';
+  const technical = asset.technical;
+  const technicalResolution = technical?.width && technical.height
+    ? `${technical.width} × ${technical.height}`
+    : 'Unavailable';
+  const technicalBitrate = technical ? formatMediaBitrate(technical.bitrate) : 'Unavailable';
+  const technicalRange = technical ? technical.hdr ? 'HDR' : 'SDR' : 'Unavailable';
+  const rawSourceCodec = [asset.extension.replace(/^\./, '').toUpperCase(), technical?.videoCodec]
+    .filter(Boolean)
+    .join(' · ') || 'Unavailable';
   const openWorkspacePreview = useCallback(() => {
     setPreviewMode('compatible');
     setShowPreviewDialog(true);
@@ -4763,40 +4748,39 @@ async function generateExternalSubtitle(
           <TableCell sx={{ minWidth: 0 }}>
             <Tooltip title={asset.fileName}>
               <Typography variant="body2" fontWeight={600} noWrap sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {assetTitle(asset)}
+                {asset.fileName}
               </Typography>
             </Tooltip>
-            {compactRaw ? <Typography variant="caption" color="text.secondary" noWrap title={asset.groupPath || asset.relativePath}>{asset.groupPath || asset.relativePath}</Typography> : null}
+          </TableCell>
+          <TableCell>
+            <Tooltip title={cachedAdvisor?.summary ?? advisorLabel}>
+              <Typography variant="body2" noWrap aria-label={cachedAdvisor ? `Advisor score ${cachedAdvisor.score}` : `Advisor ${advisorLabel.toLowerCase()}`}>
+                {advisorLabel}
+              </Typography>
+            </Tooltip>
           </TableCell>
           <TableCell>
             <Typography variant="body2" noWrap title={pipelineState.label}>{pipelineState.label}</Typography>
             {isBlockedByReview ? <Typography variant="caption" color="warning.main" noWrap>Needs review</Typography> : null}
           </TableCell>
-          <TableCell>
-            <Typography variant="body2" noWrap title={profiles.find((profile) => profile.id === effectiveProfileId)?.name ?? ''}>
-              {selectedProfileId === VIDEO_PROFILE_OVERRIDE_ONLY
-                ? 'Overrides only'
-                : selectedProfileId === VIDEO_PROFILE_AUDIO_ONLY
-                  ? 'Audio only'
-                  : profiles.find((profile) => profile.id === effectiveProfileId)?.name ?? (effectiveProfileId ? 'Unavailable' : 'Inherited')}
-            </Typography>
-          </TableCell>
-          <TableCell>
-            <Typography variant="body2" noWrap>
-              {selected
-                ? storedSnapshot.isLoading
-                  ? 'Loading…'
-                  : storedSnapshot.data?.snapshot
-                    ? `${storedSnapshot.data.snapshot.subtitleStreams.length} ${storedSnapshot.data.snapshot.subtitleStreams.length === 1 ? 'track' : 'tracks'}`
-                    : 'Unavailable'
-                : '—'}
-            </Typography>
-          </TableCell>
-          <TableCell>
-            <Typography variant="body2" noWrap>
-              {formatDurationSummary(storedSnapshot.data?.snapshot?.duration ?? asset.technical?.duration)}
-            </Typography>
-          </TableCell>
+          {compactRaw ? (
+            <>
+              <TableCell><Typography variant="body2" noWrap title={rawSourceCodec}>{rawSourceCodec}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap>{technicalResolution}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap>{formatDurationSummary(technical?.duration)}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap>{technicalBitrate}</Typography></TableCell>
+            </>
+          ) : (
+            <>
+              <TableCell><Typography variant="body2" noWrap>{technical?.videoCodec || 'Unavailable'}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap>{technicalResolution}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap title={technical?.encoder || 'Unavailable'}>{technical?.encoder || 'Unavailable'}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap>{formatDurationSummary(technical?.duration)}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap>{technicalBitrate}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap>{technicalRange}</Typography></TableCell>
+            </>
+          )}
+          <TableCell><Typography variant="body2" noWrap>{formatBytes(asset.sizeBytes)}</Typography></TableCell>
           <TableCell>
             <Typography variant="body2" noWrap title={asset.modifiedAt}>{formatDate(asset.modifiedAt)}</Typography>
           </TableCell>

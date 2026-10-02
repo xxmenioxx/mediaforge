@@ -42,7 +42,7 @@ function asset(id: number, fileName: string, tags: string[] = []): Asset {
     review: { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' },
     metadata: { categories: tags.length ? ['Anime'] : [], tags, updatedAt: '' },
     conversion: {},
-    technical: { videoCodec: 'hevc', width: 1920, height: 1080, duration: 1420, bitrate: 4_000_000, hdr: false },
+    technical: { videoCodec: 'hevc', encoder: 'hevc_videotoolbox', width: 1920, height: 1080, duration: 1420, bitrate: 4_000_000, hdr: false },
   };
 }
 
@@ -121,8 +121,7 @@ function treeExpander(name: string, level?: number) {
   return button;
 }
 
-function renderLibraryPage() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderLibraryPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   const view = render(
     <MemoryRouter initialEntries={['/assets?location=library&search=Episode']}>
       <QueryClientProvider client={queryClient}>
@@ -216,14 +215,15 @@ describe('Library Assets workspace', () => {
     vi.mocked(api.jellyfinOutcomes).mockResolvedValue([]);
   });
 
-  it('renders the six scan columns, compact counts, and a path-filtered accessible hierarchy', async () => {
+  it('renders Library technical columns, compact counts, and a path-filtered accessible hierarchy', async () => {
     const user = userEvent.setup();
     renderLibraryPage();
 
-    expect(await screen.findByRole('columnheader', { name: 'Name' })).toBeTruthy();
-    for (const name of ['Status', 'Profile', 'Subtitles', 'Duration', 'Modified']) {
+    expect(await screen.findByRole('columnheader', { name: 'Asset' })).toBeTruthy();
+    for (const name of ['Advisor', 'Status', 'Codec', 'Resolution', 'Encoder', 'Duration', 'Bitrate', 'HDR/SDR', 'Size', 'Modified', 'Actions']) {
       expect(screen.getByRole('columnheader', { name })).toBeTruthy();
     }
+    expect(screen.getAllByText('Not evaluated')).toHaveLength(2);
     expect(screen.getByLabelText('Total Assets: 2').textContent).toBe('2');
     expect(screen.getByLabelText('Processing: 1').textContent).toBe('1');
     expect(screen.getByLabelText('Completed: 3').textContent).toBe('3');
@@ -232,7 +232,10 @@ describe('Library Assets workspace', () => {
     expect(treeItem('Anime', 1).getAttribute('aria-selected')).toBe('false');
     expect(screen.queryByRole('tab', { name: 'RAW' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Library' })).toBeNull();
-    expect(screen.getByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv').getAttribute('aria-label')).toBe('A Very Long Episode Filename That Should Stay Inside Its Column.mkv');
+    const firstRow = screen.getByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv').closest('tr');
+    expect(firstRow).toBeTruthy();
+    expect(within(firstRow!).queryByText(/Series\/Season 01/)).toBeNull();
+    expect(within(firstRow!).queryByText('/media/library/anime/Series/Season 01')).toBeNull();
     expect(api.latestSnapshot).not.toHaveBeenCalled();
 
     await user.click(treeItem('Anime', 1));
@@ -257,19 +260,19 @@ describe('Library Assets workspace', () => {
     await user.click(row.closest('tr')!);
 
     const details = await screen.findByTestId('selected-asset-detail');
-    expect(within(details).getByText('Profile')).toBeTruthy();
+    expect(within(details).getByText('Perfil')).toBeTruthy();
     expect(within(details).getByText('Library HEVC')).toBeTruthy();
-    expect(within(details).getByText('Subtitles')).toBeTruthy();
+    expect(within(details).getByText('Subtítulos')).toBeTruthy();
     expect(within(details).getByText(/2 tracks/)).toBeTruthy();
     expect(within(details).getByText('Video · hevc')).toBeTruthy();
     expect(within(details).getByText('Resolution · 1920 × 1080')).toBeTruthy();
     expect(within(details).getByText(/Audio · aac 2ch ja/)).toBeTruthy();
     expect(within(details).getByText('Metadata · Anime, TV')).toBeTruthy();
-    expect((within(details).getByRole('img') as HTMLImageElement).getAttribute('src')).toContain('/api/assets/preview?path=');
+    expect(within(details).getByRole('img', { name: /MVForge artwork placeholder/ }).getAttribute('data-artwork-source')).toBe('placeholder');
     const selectedRow = row.closest('tr')!;
     expect(within(selectedRow).getByText('Unverified')).toBeTruthy();
-    expect(within(selectedRow).getByText('Library HEVC')).toBeTruthy();
-    expect(within(selectedRow).getByText('2 tracks')).toBeTruthy();
+    expect(within(selectedRow).getByText('hevc')).toBeTruthy();
+    expect(within(selectedRow).getByText('hevc_videotoolbox')).toBeTruthy();
     expect(within(selectedRow).getByText('23m 40s')).toBeTruthy();
     expect(within(selectedRow).getByText(/Sep 30, 2026/)).toBeTruthy();
     await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledTimes(1));
@@ -302,7 +305,7 @@ describe('Library Assets workspace', () => {
     const user = userEvent.setup();
     renderLibraryPage();
 
-    await screen.findByRole('columnheader', { name: 'Name' });
+    await screen.findByRole('columnheader', { name: 'Asset' });
     await user.click(treeItem('Anime', 1));
     await user.click(treeExpander('Anime', 1));
     await user.click(treeItem('Series', 2));
@@ -311,8 +314,31 @@ describe('Library Assets workspace', () => {
 
     expect(await screen.findByRole('button', { name: 'Advisor' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Queue' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Advisor' }).closest('table')).not.toBe(screen.getByRole('table', { name: 'Library assets' }));
     await user.click(screen.getByRole('button', { name: `More actions for ${path}` }));
     expect(await screen.findByRole('menuitem', { name: 'Path configuration and more actions' })).toBeTruthy();
+  });
+
+  it('shows a cached canonical Advisor score without evaluating rows and keeps row overflow asset-scoped', async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const firstPath = `${path}/A Very Long Episode Filename That Should Stay Inside Its Column.mkv`;
+    queryClient.setQueryData(['advisor', 'asset-row', firstPath, 1], { score: 87, summary: 'Cached canonical Advisor result.' });
+    const evaluateAdvisor = vi.spyOn(api, 'evaluateAdvisor').mockResolvedValue({ score: 90 } as never);
+    renderLibraryPage(queryClient);
+
+    const table = await screen.findByRole('table', { name: 'Library assets' });
+    const cachedRow = screen.getByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv').closest('tr');
+    expect(cachedRow).toBeTruthy();
+    expect(within(cachedRow!).getByText('87')).toBeTruthy();
+    expect(within(table).getAllByText('Not evaluated')).toHaveLength(1);
+    expect(evaluateAdvisor).not.toHaveBeenCalled();
+
+    await user.click(within(cachedRow!).getByRole('button', { name: 'More actions for A Very Long Episode Filename That Should Stay Inside Its Column.mkv' }));
+    expect(await screen.findByRole('menuitem', { name: 'Asset Info' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Configure' })).toBeNull();
+    expect(evaluateAdvisor).not.toHaveBeenCalled();
+    evaluateAdvisor.mockRestore();
   });
 });
 
@@ -435,15 +461,19 @@ describe('RAW Assets workspace', () => {
     const pathActions = screen.getByRole('table', { name: /Actions for .*extras/ });
     expect(within(pathActions).getByRole('button', { name: 'Configure' })).toBeTruthy();
 
-    expect(within(rawTable).getByRole('columnheader', { name: 'Name' })).toBeTruthy();
-    expect(within(rawTable).getByRole('columnheader', { name: 'Status' })).toBeTruthy();
+    for (const name of ['Asset', 'Advisor', 'Status', 'Source / Codec', 'Resolution', 'Duration', 'Bitrate', 'Size', 'Modified', 'Actions']) {
+      expect(within(rawTable).getByRole('columnheader', { name })).toBeTruthy();
+    }
     expect(within(rawTable).queryByRole('img')).toBeNull();
+    const rawAssetRow = within(rawTable).getByText('Trailer.mkv').closest('tr');
+    expect(rawAssetRow).toBeTruthy();
+    expect(within(rawAssetRow!).queryByText(/Attack on Titan|extras/)).toBeNull();
     const details = screen.getByTestId('selected-asset-detail');
     expect(within(details).getByRole('button', { name: /Play preview/ })).toBeTruthy();
     expect(within(details).getAllByRole('button', { name: /Play preview/ })).toHaveLength(1);
     expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
     expect(within(details).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
-    expect(within(details).getByText('Profile')).toBeTruthy();
+    expect(within(details).getByText('Perfil')).toBeTruthy();
     expect(within(details).getByText('Inherited')).toBeTruthy();
     await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledTimes(2));
     expect(api.latestSnapshot).toHaveBeenLastCalledWith('/media/raw/anime/Attack on Titan/extras/Trailer.mkv');

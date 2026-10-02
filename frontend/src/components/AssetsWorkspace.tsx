@@ -22,10 +22,38 @@ import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import AutorenewOutlinedIcon from '@mui/icons-material/AutorenewOutlined';
 import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
 import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined';
+import MovieOutlinedIcon from '@mui/icons-material/MovieOutlined';
 import { useMemo, useRef, useState, type ReactNode } from 'react';
-import { api } from '../api/client';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, ScanResult } from '../api/types';
 import { buildLibraryTree, buildRawHierarchy, formatDurationSummary, type LibraryTreeNode, type LibraryTreeSelection, type RawHierarchyNode, type RawHierarchySelection } from './assetsWorkspaceModel';
+
+export const ASSETS_HIERARCHY_WIDTH_STORAGE_KEY = 'mvforge.assets.hierarchyWidth';
+export const ASSETS_HIERARCHY_MIN_WIDTH = 220;
+export const ASSETS_HIERARCHY_DEFAULT_WIDTH = 300;
+export const ASSETS_HIERARCHY_MAX_WIDTH = 420;
+
+function clampHierarchyWidth(width: number) {
+  return Math.min(ASSETS_HIERARCHY_MAX_WIDTH, Math.max(ASSETS_HIERARCHY_MIN_WIDTH, Math.round(width)));
+}
+
+function readStoredHierarchyWidth() {
+  if (typeof window === 'undefined') return ASSETS_HIERARCHY_DEFAULT_WIDTH;
+  try {
+    const stored = Number(window.localStorage.getItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY));
+    return Number.isFinite(stored) && stored > 0 ? clampHierarchyWidth(stored) : ASSETS_HIERARCHY_DEFAULT_WIDTH;
+  } catch {
+    return ASSETS_HIERARCHY_DEFAULT_WIDTH;
+  }
+}
+
+function persistHierarchyWidth(width: number) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY, String(width));
+  } catch {
+    // The tree remains resizable for the current session when storage is unavailable.
+  }
+}
 
 export function AssetsSummaryStrip({ total, processing, completed, needsReview }: {
   total: number;
@@ -184,6 +212,8 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
   }, ...libraryTreeNodes(buildLibraryTree(groups, libraries))], [sourceGroups, groups, libraries]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['assets-raw-root']));
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [hierarchyWidth, setHierarchyWidth] = useState(readStoredHierarchyWidth);
+  const resizeGesture = useRef<{ startX: number; startWidth: number } | null>(null);
   const treeItemRefs = useRef(new Map<string, HTMLElement>());
   const selectedAncestors = useMemo(() => selectedHierarchyAncestors(nodes, (node) => location === 'raw'
     ? node.kind === 'raw' && hierarchySelectionMatches(node, rawSelection, librarySelection)
@@ -299,15 +329,33 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
     );
   };
 
+  const resizeTo = (width: number, save: boolean) => {
+    const nextWidth = clampHierarchyWidth(width);
+    setHierarchyWidth(nextWidth);
+    if (save) persistHierarchyWidth(nextWidth);
+  };
+
   return (
     <Box
+      data-testid="assets-hierarchy-layout"
+      sx={{
+        display: 'flex',
+        alignItems: 'stretch',
+        width: { xs: '100%', lg: `${hierarchyWidth + 8}px` },
+        minWidth: 0,
+        maxWidth: '100%',
+        flex: { xs: '1 1 auto', lg: `0 0 ${hierarchyWidth + 8}px` },
+      }}
+    >
+    <Box
       component="nav"
+      id="assets-hierarchy-navigation"
       aria-label="Assets hierarchy"
       sx={{
-        width: { xs: '100%', lg: '27%' },
-        maxWidth: { lg: 350 },
-        flex: { xs: '1 1 auto', lg: '0 0 27%' },
-        minWidth: 0,
+        width: { xs: '100%', lg: `${hierarchyWidth}px` },
+        minWidth: { xs: 0, lg: `${ASSETS_HIERARCHY_MIN_WIDTH}px` },
+        maxWidth: { lg: `${ASSETS_HIERARCHY_MAX_WIDTH}px` },
+        flex: { xs: '1 1 auto', lg: `0 0 ${hierarchyWidth}px` },
         alignSelf: 'stretch',
         border: 1,
         borderColor: 'divider',
@@ -322,12 +370,123 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
       </Stack>
       <List role="tree" aria-label="Assets hierarchy" dense disablePadding>
         {nodes.map((node) => renderNode(node, 1))}
-        {location === 'library' && librarySelection.libraryId === null ? (
+      {location === 'library' && librarySelection.libraryId === null ? (
           <Typography component="li" role="none" variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.25, py: 0.75 }}>
             Showing all Library assets
           </Typography>
-        ) : null}
+      ) : null}
       </List>
+    </Box>
+    <Box
+      component="div"
+      role="separator"
+      aria-label="Resize Assets hierarchy"
+      aria-controls="assets-hierarchy-navigation"
+      aria-orientation="vertical"
+      aria-valuemin={ASSETS_HIERARCHY_MIN_WIDTH}
+      aria-valuemax={ASSETS_HIERARCHY_MAX_WIDTH}
+      aria-valuenow={hierarchyWidth}
+      aria-valuetext={`${hierarchyWidth} pixels`}
+      tabIndex={0}
+      data-testid="assets-hierarchy-resizer"
+      onKeyDown={(event) => {
+        const nextWidth = event.key === 'ArrowLeft'
+          ? hierarchyWidth - 16
+          : event.key === 'ArrowRight'
+            ? hierarchyWidth + 16
+            : event.key === 'Home'
+              ? ASSETS_HIERARCHY_MIN_WIDTH
+              : event.key === 'End'
+                ? ASSETS_HIERARCHY_MAX_WIDTH
+                : null;
+        if (nextWidth === null) return;
+        event.preventDefault();
+        resizeTo(nextWidth, true);
+      }}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        resizeGesture.current = { startX: event.clientX, startWidth: hierarchyWidth };
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        const gesture = resizeGesture.current;
+        if (gesture) resizeTo(gesture.startWidth + event.clientX - gesture.startX, false);
+      }}
+      onPointerUp={(event) => {
+        const gesture = resizeGesture.current;
+        if (!gesture) return;
+        resizeTo(gesture.startWidth + event.clientX - gesture.startX, true);
+        resizeGesture.current = null;
+      }}
+      onPointerCancel={(event) => {
+        const gesture = resizeGesture.current;
+        if (!gesture) return;
+        resizeTo(gesture.startWidth + event.clientX - gesture.startX, true);
+        resizeGesture.current = null;
+      }}
+      sx={{
+        display: { xs: 'none', lg: 'block' },
+        width: 8,
+        flex: '0 0 8px',
+        cursor: 'col-resize',
+        touchAction: 'none',
+        userSelect: 'none',
+        borderRadius: 99,
+        '&::after': { content: '""', display: 'block', width: 2, height: '100%', mx: 'auto', bgcolor: 'divider' },
+        '&:hover::after, &:focus-visible::after': { bgcolor: 'primary.main' },
+        '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
+      }}
+    />
+    </Box>
+  );
+}
+
+export function SelectedAssetArtwork({ fileName, jellyfinArtworkUrl, mvforgeArtworkUrl }: {
+  fileName: string;
+  jellyfinArtworkUrl?: string | null;
+  mvforgeArtworkUrl?: string | null;
+}) {
+  const sources = [
+    jellyfinArtworkUrl ? { kind: 'jellyfin', url: jellyfinArtworkUrl } : null,
+    mvforgeArtworkUrl ? { kind: 'mvforge', url: mvforgeArtworkUrl } : null,
+  ].filter((source): source is { kind: 'jellyfin' | 'mvforge'; url: string } => source !== null);
+  const sourceIdentity = sources.map(({ kind, url }) => `${kind}:${url}`).join('|');
+  const [imageState, setImageState] = useState({ identity: sourceIdentity, index: 0 });
+  const sourceIndex = imageState.identity === sourceIdentity ? imageState.index : 0;
+  const source = sources[sourceIndex];
+
+  return (
+    <Box sx={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
+      {source ? (
+        <Box
+          component="img"
+          src={source.url}
+          alt={`${fileName} artwork`}
+          data-artwork-source={source.kind}
+          onError={() => setImageState({ identity: sourceIdentity, index: sourceIndex + 1 })}
+          sx={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      ) : (
+        <Box
+          role="img"
+          aria-label={`MVForge artwork placeholder for ${fileName}`}
+          data-artwork-source="placeholder"
+          sx={{
+            width: '100%',
+            height: '100%',
+            display: 'grid',
+            placeItems: 'center',
+            color: 'text.secondary',
+            background: 'linear-gradient(135deg, rgba(35, 48, 77, 0.95), rgba(8, 19, 35, 0.98) 62%, rgba(57, 38, 94, 0.85))',
+          }}
+        >
+          <Stack spacing={0.4} alignItems="center">
+            <MovieOutlinedIcon sx={{ fontSize: 42, opacity: 0.75 }} />
+            <Typography variant="caption">Artwork unavailable</Typography>
+          </Stack>
+        </Box>
+      )}
     </Box>
   );
 }
@@ -349,6 +508,8 @@ export function SelectedAssetDetail({
   canAssignProfile,
   canTestEncode,
   testEncodeDisabled = false,
+  jellyfinArtworkUrl,
+  mvforgeArtworkUrl,
 }: {
   asset: Asset;
   pathContext: string;
@@ -366,7 +527,10 @@ export function SelectedAssetDetail({
   canAssignProfile: boolean;
   canTestEncode: boolean;
   testEncodeDisabled?: boolean;
+  jellyfinArtworkUrl?: string | null;
+  mvforgeArtworkUrl?: string | null;
 }) {
+  const [expanded, setExpanded] = useState(true);
   const audioSummary = snapshot
     ? snapshot.audioStreams.slice(0, 2).map((stream) => [stream.codec, stream.channels ? `${stream.channels}ch` : '', stream.language].filter(Boolean).join(' ')).join(' · ') || 'None found'
     : 'Unavailable';
@@ -384,10 +548,11 @@ export function SelectedAssetDetail({
   const subtitleCount = snapshot?.subtitleStreams.length;
   const subtitleValue = snapshotLoading ? 'Loading…' : subtitlesSummary || (subtitleCount === undefined ? 'Unavailable' : `${subtitleCount} ${subtitleCount === 1 ? 'track' : 'tracks'}`);
   const summaryValues = [
-    ['Profile', assignedProfile || 'Unavailable'],
-    ['Subtitles', subtitleValue],
-    ['Duration', formatDurationSummary(duration)],
-    ['Modified', modifiedLabel || 'Unavailable'],
+    ['Estado', status || 'Unavailable'],
+    ['Perfil', assignedProfile || 'Unavailable'],
+    ['Subtítulos', subtitleValue],
+    ['Duración', formatDurationSummary(duration)],
+    ['Modificado', modifiedLabel || 'Unavailable'],
   ];
   const technicalValues = [
     ['Container', container],
@@ -412,6 +577,22 @@ export function SelectedAssetDetail({
         boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
       }}
     >
+      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mb: expanded ? 1 : 0 }}>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography component="h2" variant="subtitle2" fontWeight={700}>Selected Asset Workspace</Typography>
+          {!expanded ? <Typography variant="caption" color="text.secondary" noWrap>{asset.fileName}</Typography> : null}
+        </Box>
+        <IconButton
+          size="small"
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} selected asset workspace`}
+          aria-expanded={expanded}
+          aria-controls="selected-asset-workspace-content"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 120ms ease' }} />
+        </IconButton>
+      </Stack>
+      <Collapse in={expanded} id="selected-asset-workspace-content" unmountOnExit>
       <Stack direction={{ xs: 'column', xl: 'row' }} spacing={{ xs: 1.25, xl: 1.5 }} alignItems={{ xs: 'stretch', xl: 'center' }}>
         <Tooltip title={`Play preview of ${asset.fileName}`}>
           <span>
@@ -434,18 +615,18 @@ export function SelectedAssetDetail({
                 '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 },
               }}
             >
-              {!asset.missing ? (
-                <Box
-                  component="img"
-                  src={api.assetPreviewUrl(asset.path)}
-                  alt={`${asset.fileName} preview`}
-                  loading="lazy"
-                  sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-                />
-              ) : null}
-              <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', bgcolor: 'rgba(0,0,0,0.28)' }}>
+              <SelectedAssetArtwork fileName={asset.fileName} jellyfinArtworkUrl={jellyfinArtworkUrl} mvforgeArtworkUrl={mvforgeArtworkUrl} />
+              <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', bgcolor: 'rgba(0,0,0,0.2)' }}>
                 <PlayCircleOutlineIcon fontSize="large" />
               </Box>
+              <Typography
+                component="span"
+                variant="caption"
+                fontWeight={700}
+                sx={{ position: 'absolute', right: 0.75, bottom: 0.75, px: 0.65, py: 0.15, borderRadius: 0.5, bgcolor: 'rgba(0,0,0,0.78)', color: 'common.white' }}
+              >
+                {formatDurationSummary(duration)}
+              </Typography>
             </ButtonBase>
           </span>
         </Tooltip>
@@ -513,6 +694,7 @@ export function SelectedAssetDetail({
           </Tooltip>
         </Stack>
       </Stack>
+      </Collapse>
     </Box>
   );
 }
