@@ -569,6 +569,7 @@ export function SelectedAssetDetail({
     ['Video', videoSummary],
     ['Encoder', encoder],
     ['Duration', formatDurationSummary(duration)],
+    ['Bitrate', asset.technical?.bitrate ? `${(asset.technical.bitrate / 1_000_000).toFixed(2)} Mbps` : 'Unavailable'],
     ['Range', range],
     ['Size', sizeLabel || 'Unavailable'],
     ['Modified', modifiedLabel || 'Unavailable'],
@@ -589,7 +590,7 @@ export function SelectedAssetDetail({
         bottom: 0,
         zIndex: 2,
         flexShrink: 0,
-        minHeight: expanded ? { xs: 110, sm: 154 } : 42,
+        minHeight: expanded ? undefined : 42,
       }}
     >
       {!expanded ? (
@@ -617,10 +618,10 @@ export function SelectedAssetDetail({
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: { xs: '92px minmax(0, 1fr)', sm: '164px minmax(0, 1fr)', lg: '190px minmax(0, 1fr) 132px' },
+              gridTemplateColumns: { xs: '92px minmax(0, 1fr)', sm: '164px minmax(0, 1fr)', lg: '190px minmax(0, 1fr)' },
               alignItems: 'center',
               columnGap: { xs: 0.85, sm: 1.15, lg: 1.5 },
-              rowGap: 0.75,
+              rowGap: 0.8,
               minWidth: 0,
               position: 'relative',
               pr: { xs: 2.5, sm: 3, lg: 2.5 },
@@ -666,52 +667,60 @@ export function SelectedAssetDetail({
               </span>
             </Tooltip>
 
-            <Stack data-testid="selected-asset-identity" spacing={0.45} sx={{ minWidth: 0, gridColumn: { xs: '2', lg: '2' }, alignSelf: 'center', py: 0.2 }}>
-              <Tooltip title={asset.fileName}>
-                <Typography component="h2" fontWeight={700} noWrap sx={{ minWidth: 0, fontSize: { xs: '0.74rem', sm: '0.8rem' }, lineHeight: 1.2, color: '#e5edf8' }}>
-                  {asset.fileName}
+            <Box data-testid="selected-asset-information" sx={{ gridColumn: '2', display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'minmax(0, 1fr) auto' }, alignItems: 'center', columnGap: { xs: 0.8, lg: 1.1 }, rowGap: { xs: 0.9, sm: 1.05 }, minWidth: 0 }}>
+              <Stack data-testid="selected-asset-identity" spacing={0.4} sx={{ minWidth: 0, alignSelf: 'center' }}>
+                <Tooltip title={asset.fileName}>
+                  <Typography component="h2" fontWeight={700} noWrap sx={{ minWidth: 0, fontSize: { xs: '0.82rem', sm: '0.9rem' }, lineHeight: 1.2, color: '#e5edf8' }}>
+                    {asset.fileName}
+                  </Typography>
+                </Tooltip>
+                <Typography data-testid="selected-asset-path-context" variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', fontSize: { xs: '0.66rem', sm: '0.71rem' }, color: '#91a1b6' }}>
+                  {pathContext}
                 </Typography>
-              </Tooltip>
-              <Typography data-testid="selected-asset-path-context" variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', mt: 0.25, fontSize: '0.62rem', color: '#91a1b6' }}>
-                {pathContext}
-              </Typography>
-              <Stack direction="row" spacing={1.25} useFlexGap flexWrap="wrap" data-testid="selected-asset-quick-facts">
-                <DetailValue label="Category / Library" value={categoryLabel || 'Unavailable'} inline />
-                <DetailValue label="Container" value={containerLabel || 'Unavailable'} inline />
               </Stack>
-              <Box data-testid="selected-asset-state-context" sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(4, minmax(0, 1fr))' }, gap: { xs: 0.45, sm: 0.7 }, minWidth: 0 }}>
-                <Box title={`Estado: ${statusLabel}`} sx={{ minWidth: 0 }}>
-                  <Typography component="div" variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.56rem', lineHeight: 1.1, color: '#71849b' }}>Estado</Typography>
-                  <Chip label={statusLabel || 'Unavailable'} color={statusColor} size="small" variant="outlined" sx={{ mt: 0.15, height: 18, maxWidth: '100%', fontSize: '0.61rem', '& .MuiChip-label': { px: 0.65, overflow: 'hidden', textOverflow: 'ellipsis' } }} />
+
+              <Stack
+                role="group"
+                aria-label="Selected asset actions"
+                direction="row"
+                spacing={0.55}
+                alignItems="center"
+                justifyContent={{ xs: 'flex-start', lg: 'flex-end' }}
+                useFlexGap
+                flexWrap="wrap"
+                sx={{ gridColumn: { xs: '1', lg: '2' }, gridRow: { xs: '2', lg: '1' }, minWidth: 0 }}
+              >
+                <Chip data-testid="selected-asset-status" label={statusLabel || 'Unavailable'} aria-label={`Estado: ${statusLabel || 'Unavailable'}`} color={statusColor} size="small" variant="outlined" sx={{ height: 20, maxWidth: '100%', fontSize: '0.65rem', '& .MuiChip-label': { px: 0.7, overflow: 'hidden', textOverflow: 'ellipsis' } }} />
+                <Button size="small" variant="contained" onClick={onAssignProfile} disabled={!canAssignProfile} sx={{ minHeight: 28, px: 1, borderRadius: '6px', textTransform: 'none', fontSize: '0.68rem', whiteSpace: 'nowrap' }}>
+                  Assign Profile
+                </Button>
+                <Button size="small" variant="outlined" onClick={onTestEncode} disabled={!canTestEncode} sx={{ minHeight: 28, px: 1, borderRadius: '6px', textTransform: 'none', fontSize: '0.68rem', whiteSpace: 'nowrap' }}>
+                  Test Encode
+                </Button>
+                <Tooltip title="More actions">
+                  <IconButton size="small" onClick={(event) => onMore(event.currentTarget)} aria-label={`More actions for ${asset.fileName}`} sx={{ width: 28, height: 28, border: 1, borderColor: '#33465c', borderRadius: '6px', color: '#aebbd0', '&:hover': { bgcolor: '#1b2a3c', borderColor: '#526b89' } }}>
+                    <MoreVertIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+
+              <Box sx={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'minmax(0, 1fr) minmax(0, 1fr)' }, alignItems: 'center', columnGap: { xs: 0.9, sm: 1.35 }, rowGap: 0.7, minWidth: 0 }}>
+                <Box data-testid="selected-asset-quick-facts" sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', alignItems: 'center', columnGap: { xs: 0.65, sm: 0.9 }, rowGap: 0.55, minWidth: 0 }}>
+                  <DetailValue label="Category / Library" value={categoryLabel || 'Unavailable'} inline />
+                  <DetailValue label="Container" value={containerLabel || 'Unavailable'} inline />
                 </Box>
-                {contextValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
+                <Box data-testid="selected-asset-state-context" sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' }, gap: { xs: 0.6, sm: 0.9 }, minWidth: 0 }}>
+                  {contextValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
+                </Box>
               </Box>
-              <Box data-testid="selected-asset-technical" sx={{ mt: 0.75, px: { xs: 0.65, sm: 0.85 }, py: 0.55, border: 1, borderColor: '#243347', borderRadius: '4px', backgroundColor: '#0d1724' }}>
-                <Typography variant="caption" sx={{ display: 'block', mb: 0.35, color: '#aebbd0', fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.035em' }}>MEDIA</Typography>
-                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', xl: 'repeat(6, minmax(0, 1fr))' }, columnGap: { xs: 0.7, sm: 1.1 }, rowGap: 0.45 }}>
+
+              <Box data-testid="selected-asset-technical" sx={{ gridColumn: '1 / -1', px: { xs: 0.7, sm: 0.9 }, py: { xs: 0.55, sm: 0.65 }, border: 1, borderColor: '#26384d', borderRadius: '5px', backgroundColor: '#0d1724', minWidth: 0 }}>
+                <Typography variant="caption" sx={{ display: 'block', mb: 0.45, color: '#aebbd0', fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.035em' }}>MEDIA</Typography>
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' }, columnGap: { xs: 0.75, sm: 1.1 }, rowGap: { xs: 0.65, sm: 0.8 }, minWidth: 0 }}>
                   {mediaValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} inline />)}
                 </Box>
               </Box>
-            </Stack>
-            <Stack
-              role="group"
-              aria-label="Selected asset actions"
-              direction={{ xs: 'row', lg: 'column' }}
-              spacing={0.55}
-              alignItems={{ xs: 'center', lg: 'stretch' }}
-              justifyContent={{ xs: 'flex-end', lg: 'center' }}
-              sx={{ gridColumn: { xs: '1 / -1', lg: '3' }, minWidth: 0, flexWrap: 'wrap', pr: { xs: 2, lg: 0 } }}
-            >
-              <Button size="small" variant="contained" onClick={onAssignProfile} disabled={!canAssignProfile} sx={{ minHeight: 28, px: 1, borderRadius: '6px', textTransform: 'none', fontSize: '0.67rem', whiteSpace: 'nowrap' }}>
-                Assign Profile
-              </Button>
-              <Button size="small" variant="outlined" onClick={onTestEncode} disabled={!canTestEncode} sx={{ minHeight: 28, px: 1, borderRadius: '6px', textTransform: 'none', fontSize: '0.67rem', whiteSpace: 'nowrap' }}>
-                Test Encode
-              </Button>
-              <Button size="small" variant="text" startIcon={<MoreVertIcon />} onClick={(event) => onMore(event.currentTarget)} aria-label={`More actions for ${asset.fileName}`} sx={{ minHeight: 28, minWidth: 0, px: 0.75, borderRadius: '6px', textTransform: 'none', fontSize: '0.67rem', color: '#aebbd0', whiteSpace: 'nowrap' }}>
-                More
-              </Button>
-            </Stack>
+            </Box>
             <IconButton
               size="small"
               aria-label={`Collapse selected asset details for ${asset.fileName}`}
@@ -732,8 +741,8 @@ export function SelectedAssetDetail({
 function DetailValue({ label, value, inline = false }: { label: string; value: string; inline?: boolean }) {
   return (
     <Box sx={{ minWidth: 0, display: inline ? 'flex' : 'block', alignItems: 'baseline', gap: inline ? 0.55 : 0 }} title={`${label}: ${value}`}>
-      <Typography component="div" variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.56rem', lineHeight: 1.1, color: '#71849b', flexShrink: 0 }}>{label}</Typography>
-      <Typography variant="body2" fontWeight={500} noWrap sx={{ maxWidth: '100%', color: '#d1d9e5', fontSize: '0.63rem', lineHeight: 1.2 }}>{value}</Typography>
+      <Typography component="div" variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.64rem', lineHeight: 1.15, color: '#8395aa', flexShrink: 0 }}>{label}</Typography>
+      <Typography variant="body2" fontWeight={500} noWrap sx={{ minWidth: 0, maxWidth: '100%', color: '#d8e0ea', fontSize: '0.7rem', lineHeight: 1.25 }}>{value}</Typography>
     </Box>
   );
 }
