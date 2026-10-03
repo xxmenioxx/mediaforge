@@ -50,7 +50,7 @@ export function AssetsInventoryTable({ mode, selectable = false, children }: {
   const minWidth = columns.reduce((total, column) => total + column.width, selectionWidth);
 
   return (
-    <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', border: 1, borderColor: 'rgba(39, 75, 108, 0.68)', borderRadius: 1, bgcolor: '#071727' }}>
+    <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', border: 1, borderColor: '#15304a', borderRadius: '6px', bgcolor: '#04101d' }}>
       <Table
         size="small"
         aria-label={mode === 'raw' ? 'RAW assets' : 'Library assets'}
@@ -59,10 +59,15 @@ export function AssetsInventoryTable({ mode, selectable = false, children }: {
           minWidth,
           tableLayout: 'fixed',
           borderCollapse: 'separate',
-          borderSpacing: 0,
-          '& th': { color: '#93aac1', fontSize: '0.67rem', fontWeight: 700, bgcolor: '#0b1d30', borderColor: 'rgba(39, 75, 108, 0.48)', whiteSpace: 'nowrap', letterSpacing: '0.01em' },
-          '& td': { borderColor: 'rgba(39, 75, 108, 0.34)', color: '#d5e0ec' },
-          '& td, & th': { py: 0.66, px: 0.8 },
+          borderSpacing: '0 3px',
+          '& th': { height: 34, color: '#59718b', fontSize: '0.64rem', fontWeight: 600, bgcolor: '#091a2c', borderColor: 'rgba(21, 48, 74, 0.62)', whiteSpace: 'nowrap', letterSpacing: '0.015em' },
+          '& td': { borderColor: 'rgba(21, 48, 74, 0.58)', color: '#9cb0c8' },
+          '& td, & th': { py: 0.62, px: 0.8 },
+          '& tbody td': { height: 40 },
+          '& tbody tr:not(.Mui-selected) > td': { bgcolor: '#091a2c', borderTop: '1px solid rgba(21, 48, 74, 0.62)', borderBottom: '1px solid rgba(21, 48, 74, 0.62)' },
+          '& tbody tr:not(.Mui-selected):hover > td': { bgcolor: '#112a44' },
+          '& tbody tr > td:first-of-type': { borderTopLeftRadius: '5px', borderBottomLeftRadius: '5px' },
+          '& tbody tr > td:last-of-type': { borderTopRightRadius: '5px', borderBottomRightRadius: '5px' },
         }}
       >
         <TableHead>

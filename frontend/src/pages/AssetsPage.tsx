@@ -39,6 +39,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import ManageSearchIcon from '@mui/icons-material/ManageSearch';
 import PlayCircleIcon from '@mui/icons-material/PlayCircle';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
@@ -1044,6 +1045,7 @@ function LibraryAssetTable({
               asset={selectedAsset}
               pathContext={selectedAssetPathContext}
               status={selectedPipeline?.label ?? statusLabel(selectedAsset.status)}
+              statusColor={selectedPipeline?.color ?? statusColor(selectedAsset.status)}
               assignedProfile={selectedAssetProfile}
               snapshot={selectedSnapshotData}
               snapshotLoading={selectedSnapshot.isLoading}
@@ -1340,6 +1342,7 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
               asset={selectedAsset}
               pathContext={`${selectedEntry.sourceGroup.name} · ${selectedEntry.logicalGroup.name} · ${selectedEntry.path.isLogicalGroupRoot ? 'Root' : selectedEntry.path.displayPath || selectedEntry.path.name}`}
               status={selectedPipeline?.label ?? statusLabel(selectedAsset.status)}
+              statusColor={selectedPipeline?.color ?? statusColor(selectedAsset.status)}
               assignedProfile={selectedProfileName}
               snapshot={selectedSnapshotData}
               snapshotLoading={selectedSnapshot.isLoading}
@@ -1691,10 +1694,39 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 	const closeQueueDialog = () => { setQueuePlan(null); setQueueCommitResult(null); setQueueAssetIds([]); };
 
 	return <>
-		<Box sx={{ mt: 1.25, p: 1, border: 1, borderColor: 'primary.main', borderRadius: 1, bgcolor: 'action.selected', position: 'sticky', top: 8, zIndex: 2 }}>
-			<Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between" spacing={1}>
-				<Typography variant="body2">{countLabel(fullySelectedGroups.length, 'title')} selected · {countLabel(selectedAssets.length, 'asset')} · {formatBytes(selectedSize)}</Typography>
-				<Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Button size="small" variant="contained" startIcon={<PlaylistAddIcon />} onClick={() => prepareQueue.mutate({ assetIds: selectedAssets.map((asset) => asset.id as number), remaining: false })} disabled={prepareQueue.isPending || allSelectedAssetsHaveOpenJobs}>{prepareQueue.isPending ? 'Resolving…' : 'Queue selected'}</Button><Button size="small" variant="outlined" startIcon={<PlaylistAddIcon />} onClick={() => prepareQueue.mutate({ assetIds: remainingAssetIds, remaining: true })} disabled={prepareQueue.isPending || !remainingAssetIds.length}>{prepareQueue.isPending ? 'Resolving…' : 'Queue Remaining'}</Button><Button size="small" variant="outlined" startIcon={<EditIcon />} disabled={!fullySelectedGroups.length || selectedGroupHasOpenJob} onClick={() => { setConfigurationFields(new Set()); setConfigureOpen(true); }}>Configure selected</Button><Button size="small" onClick={onClear}>Clear</Button></Stack>
+		<Box sx={{
+			mt: 1,
+			px: 0.85,
+			py: 0.65,
+			border: 1,
+			borderColor: '#15304a',
+			borderRadius: '6px',
+			bgcolor: '#091a2c',
+			position: 'sticky',
+			top: 8,
+			zIndex: 2,
+			'& .MuiButton-root': {
+				minHeight: 28,
+				px: 1,
+				borderRadius: '5px',
+				fontSize: '0.64rem',
+				fontWeight: 600,
+				lineHeight: 1,
+				textTransform: 'none',
+				boxShadow: 'none',
+				'& .MuiButton-startIcon': { mr: 0.4 },
+				'& .MuiButton-startIcon svg': { fontSize: 14 },
+				'&.Mui-disabled': { color: '#63758a', borderColor: 'rgba(21, 48, 74, 0.56)', bgcolor: 'rgba(12, 32, 53, 0.38)', boxShadow: 'none' },
+			},
+			'& .MuiButton-contained': { bgcolor: '#31238f', border: '1px solid rgba(108, 76, 246, 0.62)', color: '#e7e0ff' },
+			'& .MuiButton-contained:hover': { bgcolor: '#3a2aa0', boxShadow: 'none' },
+			'& .MuiButton-outlined': { bgcolor: '#0c2035', borderColor: '#1f4467', color: '#9cb0c8' },
+			'& .MuiButton-outlined:hover': { bgcolor: '#112a44', borderColor: '#2b5a81', color: '#e7eef8' },
+			'& .MuiButton-text:last-child': { minWidth: 0, px: 0.7, color: '#59718b', '&:hover': { bgcolor: 'transparent', color: '#9cb0c8' } },
+		}}>
+			<Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between" spacing={0.65}>
+				<Typography variant="body2" sx={{ color: '#7890a8', fontSize: '0.67rem', fontWeight: 500 }}>{countLabel(fullySelectedGroups.length, 'title')} selected · {countLabel(selectedAssets.length, 'asset')} · {formatBytes(selectedSize)}</Typography>
+				<Stack direction="row" spacing={0.45} flexWrap="wrap" useFlexGap><Button size="small" variant="contained" startIcon={<PlayArrowIcon sx={{ color: '#b9adff' }} />} onClick={() => prepareQueue.mutate({ assetIds: selectedAssets.map((asset) => asset.id as number), remaining: false })} disabled={prepareQueue.isPending || allSelectedAssetsHaveOpenJobs}>{prepareQueue.isPending ? 'Resolving…' : 'Queue selected'}</Button><Button size="small" variant="outlined" startIcon={<PlayArrowIcon />} onClick={() => prepareQueue.mutate({ assetIds: remainingAssetIds, remaining: true })} disabled={prepareQueue.isPending || !remainingAssetIds.length}>{prepareQueue.isPending ? 'Resolving…' : 'Queue Remaining'}</Button><Button size="small" variant="outlined" startIcon={<EditIcon />} disabled={!fullySelectedGroups.length || selectedGroupHasOpenJob} onClick={() => { setConfigurationFields(new Set()); setConfigureOpen(true); }}>Configure selected</Button><Button size="small" variant="text" onClick={onClear}>Clear</Button></Stack>
 			</Stack>
 			{selectedAssetsWithOpenJobs.length ? <Alert severity="info" sx={{ mt: 1 }}>{countLabel(selectedAssetsWithOpenJobs.length, 'asset')} already locked by an active Queue job. Read-only details remain available.</Alert> : null}
 			{prepareQueue.isError ? <Alert severity="warning" sx={{ mt: 1 }}>{prepareQueue.error instanceof Error ? prepareQueue.error.message : 'Could not resolve the selected assets.'}</Alert> : null}
@@ -2566,7 +2598,7 @@ function AssetGroupRow({
         primaryActions={(
           <>
             {mode !== 'converted' ? (
-              <Button size="small" variant="outlined" startIcon={<ManageSearchIcon />} onClick={() => setPathSnapshotsOpen(true)} disabled={groupAssets.every((asset) => asset.missing)} sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } }}>
+              <Button size="small" variant="outlined" startIcon={<RefreshIcon sx={{ color: '#8ca7ff' }} />} onClick={() => setPathSnapshotsOpen(true)} disabled={groupAssets.every((asset) => asset.missing)} sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 14 } }}>
                 Scan
               </Button>
             ) : null}
@@ -2586,7 +2618,7 @@ function AssetGroupRow({
               <Button
                 size="small"
                 variant="contained"
-                startIcon={<PlaylistAddIcon />}
+                startIcon={<PlayArrowIcon sx={{ color: '#8d7aff' }} />}
                 onClick={queuePath}
                 disabled={profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending || (!effectiveProfileId && !selectedAudioProfileKey && !selectedTrackProfileKey) || !selectedLibraryId || !groupAssets.length || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
                 sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } }}
@@ -2615,7 +2647,7 @@ function AssetGroupRow({
             {mode === 'unprocessed' && !isReadOnlyGroup ? (
               <Tooltip title="Publish these originals as-is to the configured Library">
                 <span>
-                  <Button size="small" variant="outlined" startIcon={<DriveFileMoveIcon />} onClick={publishPathAsIs} disabled={!canPublishPathAsIs} sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } }}>
+                  <Button size="small" variant="outlined" onClick={publishPathAsIs} disabled={!canPublishPathAsIs} sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 14 } }}>
                     Move to library
                   </Button>
                 </span>
@@ -2632,7 +2664,7 @@ function AssetGroupRow({
           return (
             <>
               {selectedPaths.length ? (
-                <Button size="small" color="error" variant="contained" startIcon={<DeleteForeverIcon />} onClick={() => { close(); runBulkAssetAction(selectedPaths); }} disabled={bulkAssetAction.isPending} sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', whiteSpace: 'nowrap', bgcolor: '#4b1826', color: '#ff92a3', border: 1, borderColor: '#982841', boxShadow: 'none', '&:hover': { bgcolor: 'rgba(255, 78, 106, 0.2)', boxShadow: 'none' }, '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 14 } }}>
+                <Button size="small" color="error" variant="contained" onClick={() => { close(); runBulkAssetAction(selectedPaths); }} disabled={bulkAssetAction.isPending} sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', whiteSpace: 'nowrap', bgcolor: '#4b1826', color: '#ff92a3', border: 1, borderColor: '#982841', boxShadow: 'none', '&:hover': { bgcolor: 'rgba(255, 78, 106, 0.2)', boxShadow: 'none' }, '& svg': { fontSize: 14 } }}>
                   {isPublishedAsIsGroup ? 'Return selected' : 'Delete selected'}
                 </Button>
               ) : null}
@@ -3880,6 +3912,15 @@ function AssetRow({
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isPublishedAsIs || isAccepted;
   const renameLocked = hasOpenJob || createJob.isPending || isPublishedAsIs || isAccepted;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
+  const pipelineTone = pipelineState.label.toLowerCase().includes('queue') || pipelineState.color === 'warning'
+    ? { background: '#41320d', color: '#ffc43d' }
+    : pipelineState.color === 'success'
+      ? { background: '#063b35', color: '#00d99b' }
+      : pipelineState.color === 'primary'
+        ? { background: '#142d67', color: '#55a0ff' }
+        : pipelineState.color === 'error'
+          ? { background: '#4b1826', color: '#ff92a3' }
+          : { background: '#0c2035', color: '#9cb0c8' };
   const cachedAdvisor = confidenceEnabled
     ? advisor.data ?? queryClient.getQueryData<AdvisorResponse>(['advisor', 'asset-row', asset.path, effectiveProfileId])
     : undefined;
@@ -4833,11 +4874,11 @@ async function generateExternalSubtitle(
           sx={{
             cursor: 'pointer',
             transition: 'background-color 120ms ease, box-shadow 120ms ease',
-            '& > td': { borderTop: '1px solid rgba(39, 75, 108, 0.34)', borderBottomColor: 'rgba(39, 75, 108, 0.42)' },
-            '&:hover > td': { backgroundColor: 'rgba(19, 46, 73, 0.64)' },
-            '&.Mui-selected, &.Mui-selected:hover': { background: 'linear-gradient(90deg, rgba(72, 49, 140, 0.54), rgba(26, 70, 105, 0.62))' },
-            '&.Mui-selected > td': { backgroundColor: 'transparent', borderTopColor: 'rgba(138, 105, 255, 0.5)', borderBottomColor: 'rgba(89, 176, 255, 0.34)' },
-            '&.Mui-selected > td:first-of-type': { boxShadow: 'inset 2px 0 0 #8265ff' },
+            '& > td': { borderTop: '1px solid rgba(21, 48, 74, 0.62)', borderBottomColor: 'rgba(21, 48, 74, 0.62)' },
+            '&:hover > td': { backgroundColor: '#112a44' },
+            '&.Mui-selected, &.Mui-selected:hover': { background: 'linear-gradient(90deg, rgba(48, 55, 169, 0.72), rgba(31, 43, 115, 0.5))' },
+            '&.Mui-selected > td': { backgroundColor: 'transparent', borderTopColor: 'rgba(108, 76, 246, 0.56)', borderBottomColor: 'rgba(31, 68, 103, 0.8)' },
+            '&.Mui-selected > td:first-of-type': { boxShadow: 'inset 2px 0 0 #6c4cf6' },
             '&:focus-visible': { outline: '2px solid #8265ff', outlineOffset: -2 },
           }}
         >
@@ -4858,7 +4899,7 @@ async function generateExternalSubtitle(
             <Tooltip title={asset.fileName}>
               <Stack direction="row" alignItems="center" spacing={0.65} sx={{ minWidth: 0 }}>
                 <InsertDriveFileOutlinedIcon sx={{ fontSize: 15, flexShrink: 0, color: selected ? '#b8a7ff' : '#8fb3d0' }} />
-                <Typography variant="body2" fontWeight={600} noWrap sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '0.76rem' }}>
+                <Typography variant="body2" fontWeight={600} noWrap sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '0.74rem', color: selected ? '#e7eef8' : '#9cb0c8' }}>
                   {asset.fileName}
                 </Typography>
               </Stack>
@@ -4868,26 +4909,40 @@ async function generateExternalSubtitle(
             {cachedAdvisor && Number.isFinite(cachedAdvisor.score) ? (
               <Tooltip title={cachedAdvisor.summary || `Advisor score ${cachedAdvisor.score}`}>
                 <Stack spacing={0.28} alignItems="flex-start" sx={{ width: 36 }} aria-label={`Advisor score ${cachedAdvisor.score}`}>
-                  <Typography component="span" sx={{ fontSize: '0.73rem', lineHeight: 1, fontWeight: 700, color: selected ? '#c9bbff' : '#b7a7ff', fontVariantNumeric: 'tabular-nums' }}>
+                  <Typography component="span" sx={{ fontSize: '0.68rem', lineHeight: 1, fontWeight: 700, color: selected ? '#c9bbff' : '#b9adff', fontVariantNumeric: 'tabular-nums' }}>
                     {cachedAdvisor.score}
                   </Typography>
-                  <Box aria-hidden="true" data-testid="advisor-score-indicator" sx={{ width: 35, height: 2, borderRadius: 2, bgcolor: 'rgba(122, 103, 196, 0.26)', overflow: 'hidden' }}>
-                    <Box sx={{ width: `${Math.max(0, Math.min(100, cachedAdvisor.score))}%`, height: '100%', background: 'linear-gradient(90deg, #8b62ff, #35c3f5)' }} />
+                  <Box aria-hidden="true" data-testid="advisor-score-indicator" sx={{ width: 35, height: 2, borderRadius: 2, bgcolor: '#15304a', overflow: 'hidden' }}>
+                    <Box sx={{ width: `${Math.max(0, Math.min(100, cachedAdvisor.score))}%`, height: '100%', background: 'linear-gradient(90deg, #6c4cf6, #27b8ff)' }} />
                   </Box>
                 </Stack>
               </Tooltip>
             ) : advisor.isError ? (
-              <Typography variant="caption" aria-label="Advisor unavailable" noWrap sx={{ fontSize: '0.65rem', color: 'text.disabled' }}>Unavailable</Typography>
+              <Typography variant="caption" aria-label="Advisor unavailable" noWrap sx={{ fontSize: '0.61rem', color: '#59718b' }}>Unavailable</Typography>
             ) : !confidenceEnabled ? (
-              <Typography variant="caption" aria-label="Advisor off" noWrap sx={{ fontSize: '0.65rem', color: 'text.disabled' }}>Off</Typography>
+              <Typography variant="caption" aria-label="Advisor off" noWrap sx={{ fontSize: '0.61rem', color: '#59718b' }}>Off</Typography>
             ) : (
-              <Typography variant="caption" color="text.secondary" noWrap aria-label="Advisor not evaluated" sx={{ fontSize: '0.65rem' }}>
+              <Typography variant="caption" noWrap aria-label="Advisor not evaluated" sx={{ fontSize: '0.61rem', color: '#59718b' }}>
                 Not evaluated
               </Typography>
             )}
           </TableCell>
           <TableCell>
-            <Typography variant="body2" noWrap title={pipelineState.label}>{pipelineState.label}</Typography>
+            <Typography component="span" variant="caption" noWrap title={pipelineState.label} sx={{
+              display: 'inline-flex',
+              maxWidth: '100%',
+              alignItems: 'center',
+              gap: 0.45,
+              px: 0.7,
+              py: 0.14,
+              borderRadius: '999px',
+              bgcolor: pipelineTone.background,
+              color: pipelineTone.color,
+              fontSize: '0.62rem',
+              fontWeight: 600,
+              lineHeight: 1.35,
+              '&::before': { content: '""', width: 4, height: 4, flexShrink: 0, borderRadius: '50%', bgcolor: 'currentColor', boxShadow: '0 0 6px currentColor' },
+            }}>{pipelineState.label}</Typography>
             {isBlockedByReview ? <Typography variant="caption" color="warning.main" noWrap>Needs review</Typography> : null}
           </TableCell>
           {compactRaw ? (
@@ -4913,7 +4968,7 @@ async function generateExternalSubtitle(
           </TableCell>
           <TableCell padding="checkbox" align="right" onClick={(event) => event.stopPropagation()}>
             <Tooltip title="More asset actions">
-              <IconButton size="small" aria-label={`More actions for ${asset.fileName}`} onClick={(event) => setAssetMenuAnchor(event.currentTarget)}>
+              <IconButton size="small" aria-label={`More actions for ${asset.fileName}`} onClick={(event) => setAssetMenuAnchor(event.currentTarget)} sx={{ width: 26, height: 26, p: 0.25, color: '#59718b', '&:hover': { bgcolor: '#112a44', color: '#e7eef8' } }}>
                 <MoreVertIcon fontSize="small" />
               </IconButton>
             </Tooltip>

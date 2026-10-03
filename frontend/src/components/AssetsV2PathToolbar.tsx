@@ -27,31 +27,68 @@ export function AssetsV2PathToolbar({
         minHeight: 44,
         mb: 0.7,
         px: { xs: 0.85, sm: 1.25 },
-        py: 0.55,
+        py: 0.45,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 1,
         border: 1,
         borderColor: '#15304a',
-        borderRadius: 1,
-        bgcolor: '#091a2c',
+        borderRadius: '6px',
+        bgcolor: '#071727',
+        '& .MuiButton-root': {
+          minHeight: 28,
+          height: 28,
+          px: 0.9,
+          borderRadius: '5px',
+          borderColor: '#15304a',
+          bgcolor: '#0c2035',
+          color: '#9cb0c8',
+          fontSize: '0.64rem',
+          fontWeight: 600,
+          lineHeight: 1,
+          textTransform: 'none',
+          whiteSpace: 'nowrap',
+          boxShadow: 'none',
+          '&:hover': { borderColor: '#1f4467', bgcolor: '#112a44', color: '#e7eef8', boxShadow: 'none' },
+          '&.Mui-disabled': { borderColor: 'rgba(21, 48, 74, 0.55)', bgcolor: 'rgba(12, 32, 53, 0.46)', color: '#526981' },
+          '& .MuiButton-startIcon': { mr: 0.4 },
+          '& .MuiButton-startIcon svg': { fontSize: 14 },
+        },
+        '& .MuiButton-contained': { border: '1px solid #1f4467', bgcolor: '#0c2035', color: '#c0c9e8' },
+        '& .MuiButton-contained:hover': { bgcolor: '#112a44' },
+        '& [data-testid="assets-path-destructive-actions"] .MuiButton-colorError.MuiButton-contained': {
+          borderColor: '#982841',
+          bgcolor: '#4b1826',
+          color: '#ff92a3',
+          '&:hover': { borderColor: '#b63750', bgcolor: 'rgba(255, 78, 106, 0.2)', color: '#ffb1bd' },
+        },
+        '& [data-testid="assets-path-destructive-actions"] .MuiButton-colorError:not(.MuiButton-contained)': {
+          borderColor: 'transparent',
+          bgcolor: 'transparent',
+          color: '#ff778d',
+          '&:hover': { borderColor: 'rgba(152, 40, 65, 0.5)', bgcolor: 'rgba(75, 24, 38, 0.44)', color: '#ff92a3' },
+        },
       }}
     >
       <Box sx={{ minWidth: 120, flex: '1 1 220px', overflow: 'hidden' }}>{breadcrumbs}</Box>
-      <Stack direction="row" alignItems="center" justifyContent="flex-end" spacing={0.45} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
+      <Stack direction="row" alignItems="center" justifyContent="flex-end" spacing={0.4} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
         {primaryActions}
-        {pathOperations}
+        {pathOperations ? (
+          <Box data-testid="assets-path-operations" sx={{ display: 'flex', alignItems: 'center', minWidth: 0, '& .MuiButton-startIcon': { display: 'none' } }}>
+            {pathOperations}
+          </Box>
+        ) : null}
         {destructiveActions ? (
           <>
-            <Divider orientation="vertical" flexItem sx={{ mx: 0.35, height: 24, alignSelf: 'center', borderColor: '#1f4467' }} />
-            <Stack direction="row" alignItems="center" spacing={0.35} flexWrap="wrap" useFlexGap aria-label="Destructive path actions" data-testid="assets-path-destructive-actions">
+            <Divider orientation="vertical" flexItem sx={{ mx: 0.25, height: 19, alignSelf: 'center', borderColor: '#1f4467' }} />
+            <Stack direction="row" alignItems="center" spacing={0.4} flexWrap="wrap" useFlexGap aria-label="Destructive path actions" data-testid="assets-path-destructive-actions">
               {destructiveActions(() => undefined)}
             </Stack>
           </>
         ) : null}
         {selectedCount > 0 ? (
-          <Typography variant="caption" aria-label={`${selectedCount} selected`} sx={{ px: 0.5, color: '#59718b', fontSize: '0.64rem', whiteSpace: 'nowrap' }}>
+          <Typography variant="caption" aria-label={`${selectedCount} selected`} sx={{ pl: 0.45, pr: 0.15, color: '#59718b', fontSize: '0.58rem', lineHeight: 1.2, whiteSpace: 'nowrap' }}>
             {selectedCount} selected
           </Typography>
         ) : null}

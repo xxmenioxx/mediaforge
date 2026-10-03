@@ -497,6 +497,7 @@ export function SelectedAssetDetail({
   asset,
   pathContext,
   status,
+  statusColor = 'default',
   assignedProfile,
   snapshot,
   snapshotLoading,
@@ -514,6 +515,7 @@ export function SelectedAssetDetail({
   asset: Asset;
   pathContext: string;
   status: string;
+  statusColor?: 'default' | 'primary' | 'success' | 'warning' | 'error';
   assignedProfile: string;
   snapshot?: ScanResult | null;
   snapshotLoading: boolean;
@@ -544,6 +546,15 @@ export function SelectedAssetDetail({
       : 'Unavailable';
   const subtitleCount = snapshot?.subtitleStreams.length;
   const subtitleValue = snapshotLoading ? 'Loading…' : subtitlesSummary || (subtitleCount === undefined ? 'Unavailable' : `${subtitleCount} ${subtitleCount === 1 ? 'track' : 'tracks'}`);
+  const statusTone = status.toLowerCase().includes('queue') || statusColor === 'warning'
+    ? { background: '#41320d', color: '#ffc43d' }
+    : statusColor === 'success'
+      ? { background: '#063b35', color: '#00d99b' }
+      : statusColor === 'primary'
+        ? { background: '#142d67', color: '#55a0ff' }
+        : statusColor === 'error'
+          ? { background: '#4b1826', color: '#ff92a3' }
+          : { background: '#0c2035', color: '#9cb0c8' };
   const statusValues = [
     ['Estado', status || 'Unavailable'],
     ['Perfil', assignedProfile || 'Unavailable'],
@@ -570,18 +581,20 @@ export function SelectedAssetDetail({
       aria-label={`Details for ${asset.fileName}`}
       data-testid="selected-asset-detail"
       sx={{
-        mt: 0.55,
-        p: { xs: 0.7, sm: 0.85 },
-        border: 1,
-        borderColor: 'rgba(39, 75, 108, 0.72)',
-        borderRadius: 1,
-        background: 'linear-gradient(115deg, rgba(8, 25, 43, 0.98), rgba(8, 20, 35, 0.98))',
-        boxShadow: '0 -4px 18px rgba(0, 0, 0, 0.22)',
+        mt: 0,
+        px: { xs: 0.6, sm: 0.7 },
+        py: { xs: 0.5, sm: 0.55 },
+        border: 0,
+        borderTop: 1,
+        borderColor: '#1f4467',
+        borderRadius: 0,
+        background: '#061321',
+        boxShadow: 'none',
         position: 'sticky',
         bottom: 0,
         zIndex: 2,
         flexShrink: 0,
-        minHeight: 188,
+        minHeight: 172,
       }}
     >
       {!expanded ? (
@@ -609,14 +622,14 @@ export function SelectedAssetDetail({
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: {
+            gridTemplateColumns: {
             xs: '92px minmax(0, 1fr)',
             sm: '150px minmax(0, 1.2fr) minmax(210px, 1fr)',
-            lg: 'minmax(205px, 0.98fr) minmax(225px, 1.15fr) minmax(225px, 1.08fr) minmax(205px, 0.95fr)',
+            lg: '194px minmax(280px, 1.45fr) minmax(230px, 1fr) minmax(205px, 0.9fr)',
           },
           alignItems: 'stretch',
-          columnGap: { xs: 0.85, sm: 1, lg: 1.15 },
-          rowGap: 0.65,
+          columnGap: { xs: 0.75, sm: 0.85, lg: 1 },
+          rowGap: 0.45,
           minWidth: 0,
           position: 'relative',
           pr: { xs: 0, sm: 0.2 },
@@ -631,23 +644,24 @@ export function SelectedAssetDetail({
               aria-label={`Play preview of ${asset.fileName}`}
               sx={{
                 width: '100%',
-                maxWidth: { xs: 92, sm: 150, lg: 276 },
-                aspectRatio: '16 / 9',
+                maxWidth: { xs: 92, sm: 150, lg: 194 },
+                aspectRatio: '4 / 3',
                 height: 'auto',
+                alignSelf: 'center',
                 flexShrink: 0,
-                borderRadius: 0.8,
-                bgcolor: 'rgba(14, 35, 57, 0.95)',
+                borderRadius: '5px',
+                bgcolor: '#04101d',
                 color: '#e6f2ff',
                 overflow: 'hidden',
                 position: 'relative',
-                boxShadow: 'inset 0 0 0 1px rgba(85, 135, 177, 0.26)',
-                '&:hover': { bgcolor: 'rgba(79,179,255,0.14)' },
+                boxShadow: 'inset 0 0 0 1px #15304a',
+                '&:hover': { bgcolor: '#0c2035' },
                 '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 },
               }}
             >
               <SelectedAssetArtwork fileName={asset.fileName} />
               <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', bgcolor: 'rgba(0,0,0,0.2)' }}>
-                <PlayCircleOutlineIcon sx={{ fontSize: { xs: 24, sm: 30 }, filter: 'drop-shadow(0 2px 8px rgba(0,0,0,.7))' }} />
+                <PlayCircleOutlineIcon sx={{ fontSize: { xs: 26, sm: 36 }, filter: 'drop-shadow(0 2px 8px rgba(0,0,0,.7))' }} />
               </Box>
               <Typography
                 component="span"
@@ -663,14 +677,14 @@ export function SelectedAssetDetail({
 
         <Box data-testid="selected-asset-identity" sx={{ minWidth: 0, gridColumn: { xs: '2', sm: '2', lg: 'auto' }, alignSelf: 'center', py: { lg: 0.25 } }}>
           <Tooltip title={asset.fileName}>
-            <Typography component="h2" fontWeight={700} noWrap sx={{ minWidth: 0, fontSize: { xs: '0.76rem', sm: '0.82rem' }, lineHeight: 1.2, color: '#f0f6ff' }}>
+          <Typography component="h2" fontWeight={700} noWrap sx={{ minWidth: 0, fontSize: { xs: '0.75rem', sm: '0.8rem' }, lineHeight: 1.2, color: '#e7eef8' }}>
               {asset.fileName}
             </Typography>
           </Tooltip>
-          <Typography variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', mt: 0.2, fontSize: '0.63rem', color: '#91a9c0' }}>
+          <Typography variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', mt: 0.18, fontSize: '0.61rem', color: '#9cb0c8' }}>
             {pathContext}
           </Typography>
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', lg: 'repeat(2, minmax(0, 1fr))' }, columnGap: 0.8, rowGap: 0.48, mt: 0.85 }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', lg: 'repeat(3, minmax(0, 1fr))' }, columnGap: 0.6, rowGap: 0.32, mt: 0.65 }}>
             {quickFacts.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
           </Box>
         </Box>
@@ -683,29 +697,29 @@ export function SelectedAssetDetail({
             gridRow: { sm: '1 / span 2', lg: 'auto' },
             borderLeft: { sm: 1, lg: 1 },
             borderTop: { xs: 1, sm: 0 },
-            borderColor: 'rgba(39, 75, 108, 0.72)',
+            borderColor: '#15304a',
             pl: { xs: 0, sm: 1 },
             pt: { xs: 0.55, sm: 0 },
             alignSelf: 'center',
           }}
         >
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(2, minmax(0, 1fr))' }, columnGap: 0.8, rowGap: 0.42 }}>
-            {statusValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(2, minmax(0, 1fr))' }, columnGap: 0.7, rowGap: 0.34 }}>
+            {statusValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} statusTone={label === 'Estado' ? statusTone : undefined} />)}
           </Box>
         </Box>
 
-        <Box data-testid="selected-asset-technical" sx={{ minWidth: 0, gridColumn: { xs: '1 / -1', sm: '1 / -1', lg: 'auto' }, borderLeft: { lg: 1 }, borderTop: { xs: 1, sm: 1, lg: 0 }, borderColor: 'rgba(39, 75, 108, 0.72)', pl: { xs: 0, lg: 1 }, pt: { xs: 0.55, sm: 0.55, lg: 0 }, alignSelf: 'center' }}>
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.035em', mb: 0.35 }}>
+        <Box data-testid="selected-asset-technical" sx={{ minWidth: 0, gridColumn: { xs: '1 / -1', sm: '1 / -1', lg: 'auto' }, borderLeft: { lg: 1 }, borderTop: { xs: 1, sm: 1, lg: 0 }, borderColor: '#15304a', pl: { xs: 0, lg: 0.85 }, pt: { xs: 0.45, sm: 0.45, lg: 0 }, alignSelf: 'center' }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.6rem', color: '#9cb0c8', fontWeight: 600, letterSpacing: '0.025em', mb: 0.3 }}>
             Información técnica
           </Typography>
-          <Stack spacing={0.25}>
+          <Stack spacing={0.2}>
             {technicalValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} inline />)}
           </Stack>
-          <Stack direction="row" spacing={0.35} alignItems="center" sx={{ mt: 0.7, pr: { xs: 0, lg: 3 } }}>
-            {canAssignProfile ? <Button size="small" variant="outlined" onClick={onAssignProfile} sx={{ minHeight: 26, px: 0.7, fontSize: '0.62rem', whiteSpace: 'nowrap', borderColor: 'rgba(115, 140, 178, .55)' }}>Assign Profile</Button> : null}
-            {canTestEncode ? <Button size="small" variant="contained" color="secondary" onClick={onTestEncode} disabled={testEncodeDisabled} sx={{ minHeight: 26, px: 0.7, fontSize: '0.62rem', whiteSpace: 'nowrap', boxShadow: 'none' }}>Test Encode</Button> : null}
+          <Stack direction="row" spacing={0.35} alignItems="center" sx={{ mt: 0.55, pr: { xs: 0, lg: 2.7 }, '& .MuiButton-root': { minHeight: 27, px: 0.75, borderRadius: '5px', borderColor: '#1f4467', bgcolor: '#0c2035', color: '#9cb0c8', fontSize: '0.61rem', fontWeight: 600, lineHeight: 1, textTransform: 'none', whiteSpace: 'nowrap', boxShadow: 'none', '&:hover': { borderColor: '#2b5a81', bgcolor: '#112a44', color: '#e7eef8', boxShadow: 'none' }, '&.Mui-disabled': { borderColor: 'rgba(21, 48, 74, 0.56)', bgcolor: 'rgba(12, 32, 53, 0.38)', color: '#526981' } } }}>
+            {canAssignProfile ? <Button size="small" variant="outlined" onClick={onAssignProfile}>Assign Profile</Button> : null}
+            {canTestEncode ? <Button size="small" variant="outlined" onClick={onTestEncode} disabled={testEncodeDisabled}>Test Encode</Button> : null}
             <Tooltip title="More asset actions">
-              <IconButton size="small" aria-label={`More actions for ${asset.fileName}`} onClick={(event) => onMore(event.currentTarget)} sx={{ color: '#adc5de' }}>
+              <IconButton size="small" aria-label={`More actions for ${asset.fileName}`} onClick={(event) => onMore(event.currentTarget)} sx={{ width: 27, height: 27, p: 0.35, border: '1px solid #15304a', borderRadius: '5px', bgcolor: '#0c2035', color: '#9cb0c8', '&:hover': { borderColor: '#1f4467', bgcolor: '#112a44', color: '#e7eef8' } }}>
                 <MoreVertIcon fontSize="small" />
               </IconButton>
             </Tooltip>
@@ -718,7 +732,7 @@ export function SelectedAssetDetail({
         aria-expanded
         aria-controls="selected-asset-workspace-content"
         onClick={() => setExpanded(false)}
-        sx={{ position: 'absolute', top: 2, right: 2, width: 23, height: 23, color: '#91a9c0' }}
+        sx={{ position: 'absolute', top: 1, right: 1, width: 22, height: 22, p: 0.1, borderRadius: '4px', color: '#59718b', '&:hover': { bgcolor: '#112a44', color: '#9cb0c8' } }}
       >
         <ExpandMoreIcon sx={{ transform: 'rotate(180deg)', fontSize: 18 }} />
       </IconButton>
@@ -728,11 +742,25 @@ export function SelectedAssetDetail({
   );
 }
 
-function DetailValue({ label, value, inline = false }: { label: string; value: string; inline?: boolean }) {
+function DetailValue({ label, value, inline = false, statusTone }: { label: string; value: string; inline?: boolean; statusTone?: { background: string; color: string } }) {
   return (
     <Box sx={{ minWidth: 0, display: inline ? 'flex' : 'block', alignItems: 'baseline', gap: inline ? 0.55 : 0 }} title={`${label}: ${value}`}>
-      <Typography component="div" variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.59rem', lineHeight: 1.1, flexShrink: 0 }}>{label}</Typography>
-      <Typography variant="body2" fontWeight={500} noWrap sx={{ fontSize: '0.66rem', lineHeight: 1.2, color: '#dce8f4' }}>{value}</Typography>
+      <Typography component="div" variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.57rem', lineHeight: 1.1, color: '#59718b', flexShrink: 0 }}>{label}</Typography>
+      <Typography variant="body2" fontWeight={500} noWrap sx={{
+        display: statusTone ? 'inline-flex' : undefined,
+        alignItems: statusTone ? 'center' : undefined,
+        gap: statusTone ? 0.4 : undefined,
+        width: statusTone ? 'fit-content' : undefined,
+        maxWidth: '100%',
+        px: statusTone ? 0.6 : 0,
+        py: statusTone ? 0.08 : 0,
+        borderRadius: statusTone ? '999px' : 0,
+        bgcolor: statusTone?.background,
+        color: statusTone?.color ?? '#9cb0c8',
+        fontSize: statusTone ? '0.6rem' : '0.64rem',
+        lineHeight: 1.25,
+        '&::before': statusTone ? { content: '""', width: 4, height: 4, flexShrink: 0, borderRadius: '50%', bgcolor: 'currentColor', boxShadow: '0 0 5px currentColor' } : undefined,
+      }}>{value}</Typography>
     </Box>
   );
 }
