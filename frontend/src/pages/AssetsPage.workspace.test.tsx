@@ -327,9 +327,9 @@ describe('Library Assets workspace', () => {
     expect(media.getByText('Range')).toBeTruthy();
     expect(media.getByText('Size')).toBeTruthy();
     expect(media.getByText('Modified')).toBeTruthy();
-    expect(within(details).getByText('Estado')).toBeTruthy();
-    expect(within(details).getByText('Perfil')).toBeTruthy();
-    expect(within(details).getByText('Subtítulos')).toBeTruthy();
+    expect(within(details).getByText('Status')).toBeTruthy();
+    expect(within(details).getByText('Profile')).toBeTruthy();
+    expect(within(details).getByText('Subtitles')).toBeTruthy();
     expect(within(details).getByText('Audio')).toBeTruthy();
     expect(within(details).getByText('Category / Library')).toBeTruthy();
     expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
@@ -555,6 +555,15 @@ describe('Library Assets workspace', () => {
       expect(within(menu).getByRole('menuitem', { name }).getAttribute('aria-disabled')).toBe('true');
     }
     expect(within(menu).getByRole('separator')).toBeTruthy();
+    await user.keyboard('{Escape}');
+    await user.click(row);
+    const details = await screen.findByTestId('selected-asset-detail');
+    const assignButton = within(details).getByRole('button', { name: 'Assign Profile' }) as HTMLButtonElement;
+    const testEncodeButton = within(details).getByRole('button', { name: 'Test Encode' }) as HTMLButtonElement;
+    expect(assignButton.disabled).toBe(true);
+    expect(testEncodeButton.disabled).toBe(true);
+    expect(within(details).getByLabelText(/current Library lifecycle/)).toBeTruthy();
+    expect(within(details).getByLabelText(/current lifecycle/)).toBeTruthy();
   });
 });
 

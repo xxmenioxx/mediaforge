@@ -26,7 +26,6 @@ import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import AutorenewOutlinedIcon from '@mui/icons-material/AutorenewOutlined';
 import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
 import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined';
-import MovieOutlinedIcon from '@mui/icons-material/MovieOutlined';
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, ScanResult } from '../api/types';
@@ -361,11 +360,11 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
       sx={{
         display: 'flex',
         alignItems: 'stretch',
-        width: { xs: '100%', lg: `${hierarchyWidth + 8}px` },
+        width: { xs: '100%', md: `${hierarchyWidth + 8}px` },
         minWidth: 0,
         maxWidth: '100%',
-        height: { xs: 'auto', lg: '100%' },
-        flex: { xs: '0 0 auto', lg: `0 0 ${hierarchyWidth + 8}px` },
+        height: { xs: 'auto', md: '100%' },
+        flex: { xs: '0 0 auto', md: `0 0 ${hierarchyWidth + 8}px` },
       }}
     >
     <Box
@@ -373,13 +372,13 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
       id="assets-hierarchy-navigation"
       aria-label="Asset Library"
       sx={{
-        width: { xs: '100%', lg: `${hierarchyWidth}px` },
-        minWidth: { xs: 0, lg: `${ASSETS_HIERARCHY_MIN_WIDTH}px` },
-        maxWidth: { lg: `${ASSETS_HIERARCHY_MAX_WIDTH}px` },
-        flex: { xs: '1 1 auto', lg: `0 0 ${hierarchyWidth}px` },
+        width: { xs: '100%', md: `${hierarchyWidth}px` },
+        minWidth: { xs: 0, md: `${ASSETS_HIERARCHY_MIN_WIDTH}px` },
+        maxWidth: { md: `${ASSETS_HIERARCHY_MAX_WIDTH}px` },
+        flex: { xs: '1 1 auto', md: `0 0 ${hierarchyWidth}px` },
         alignSelf: 'stretch',
-        height: { xs: 'auto', lg: '100%' },
-        maxHeight: { xs: 180, lg: 'none' },
+        height: { xs: 'auto', md: '100%' },
+        maxHeight: { xs: 180, md: 'none' },
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
@@ -400,7 +399,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
           </IconButton>
         </Tooltip>
       </Stack>
-      <List role="tree" aria-label="Asset Library" dense disablePadding sx={{ flex: 1, minHeight: 0, overflowY: { xs: 'auto', lg: 'auto' } }}>
+      <List role="tree" aria-label="Asset Library" dense disablePadding sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {nodes.map((node) => renderNode(node, 1))}
       </List>
     </Box>
@@ -453,7 +452,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
         resizeGesture.current = null;
       }}
       sx={{
-        display: { xs: 'none', lg: 'block' },
+        display: { xs: 'none', md: 'block' },
         width: 8,
         flex: '0 0 8px',
         cursor: 'col-resize',
@@ -485,10 +484,12 @@ export function SelectedAssetArtwork({ fileName }: { fileName: string }) {
           background: 'linear-gradient(135deg, rgba(35, 48, 77, 0.95), rgba(8, 19, 35, 0.98) 62%, rgba(57, 38, 94, 0.85))',
         }}
       >
-        <Stack spacing={0.4} alignItems="center">
-          <MovieOutlinedIcon sx={{ fontSize: 42, opacity: 0.75 }} />
-          <Typography variant="caption">Artwork unavailable</Typography>
-        </Stack>
+        <Typography
+          variant="caption"
+          sx={{ position: 'absolute', left: 0.7, bottom: 0.65, px: 0.6, py: 0.25, borderRadius: 0.5, bgcolor: 'rgba(5, 13, 24, 0.72)', color: '#9aa9bb', fontSize: '0.58rem' }}
+        >
+          Artwork unavailable
+        </Typography>
       </Box>
     </Box>
   );
@@ -506,6 +507,8 @@ export function SelectedAssetDetail({
   assignedProfileLabel,
   modifiedLabel,
   sizeLabel,
+  assignProfileUnavailableReason,
+  testEncodeUnavailableReason,
   onPlayPreview,
   onAssignProfile,
   onTestEncode,
@@ -524,6 +527,8 @@ export function SelectedAssetDetail({
   assignedProfileLabel: string;
   modifiedLabel: string;
   sizeLabel: string;
+  assignProfileUnavailableReason?: string;
+  testEncodeUnavailableReason?: string;
   onPlayPreview: () => void;
   onAssignProfile: () => void;
   onTestEncode: () => void;
@@ -534,13 +539,15 @@ export function SelectedAssetDetail({
   const [expanded, setExpanded] = useState(true);
   const duration = snapshot?.duration ?? asset.technical?.duration;
   const videoCodec = snapshot?.videoCodec || asset.technical?.videoCodec;
-  const width = snapshot?.width || asset.technical?.width;
-  const height = snapshot?.height || asset.technical?.height;
-  const videoSummary = [videoCodec, width && height ? `${width} × ${height}` : undefined].filter(Boolean).join(' · ') || 'Unavailable';
+  const width = snapshot?.width ?? asset.technical?.width;
+  const height = snapshot?.height ?? asset.technical?.height;
+  const resolutionSummary = width !== undefined && width !== null && height !== undefined && height !== null
+    ? `${width} × ${height}`
+    : 'Unavailable';
+  const videoSummary = [videoCodec, resolutionSummary !== 'Unavailable' ? resolutionSummary : undefined].filter(Boolean).join(' · ') || 'Unavailable';
   const encoder = asset.technical?.encoder || 'Unavailable';
-  const range = snapshot?.hdr === undefined && asset.technical?.hdr === undefined
-    ? 'Unavailable'
-    : (snapshot?.hdr ?? asset.technical?.hdr) ? 'HDR' : 'SDR';
+  const hdr = snapshot?.hdr ?? asset.technical?.hdr;
+  const range = typeof hdr === 'boolean' ? hdr ? 'HDR' : 'SDR' : 'Unavailable';
   const audioStreams = snapshot?.audioStreams ?? [];
   const audioCodecs = [...new Set(audioStreams.map((stream) => {
     const layout = stream.channelLayout || (stream.channels ? `${stream.channels} ch` : '');
@@ -561,19 +568,28 @@ export function SelectedAssetDetail({
         ? `${snapshot.subtitleStreams.length} embedded tracks`
         : '0 embedded tracks';
   const contextValues = [
-    ['Perfil', assignedProfileLabel],
-    ['Subtítulos', subtitleSummary],
-    ['Audio', audioSummary],
+    ['Status', statusLabel || 'Unavailable'],
+    ['Profile', assignedProfileLabel],
+    ['Subtitles', subtitleSummary],
+    ['Duration', formatDurationSummary(duration)],
+    ['Modified', modifiedLabel || 'Unavailable'],
   ];
   const mediaValues = [
     ['Video', videoSummary],
     ['Encoder', encoder],
+    ['Audio', audioSummary],
     ['Duration', formatDurationSummary(duration)],
-    ['Bitrate', asset.technical?.bitrate ? `${(asset.technical.bitrate / 1_000_000).toFixed(2)} Mbps` : 'Unavailable'],
+    ['Bitrate', asset.technical?.bitrate !== undefined && asset.technical.bitrate !== null ? `${(asset.technical.bitrate / 1_000_000).toFixed(2)} Mbps` : 'Unavailable'],
     ['Range', range],
     ['Size', sizeLabel || 'Unavailable'],
     ['Modified', modifiedLabel || 'Unavailable'],
   ];
+  const assignProfileFallbackReason = statusLabel === 'Published'
+    ? 'Profile assignment is unavailable for assets with a Published lifecycle state.'
+    : 'Unavailable under this asset’s current lifecycle or capability.';
+  const testEncodeFallbackReason = statusLabel === 'Published'
+    ? 'Test Encode is unavailable for assets with a Published lifecycle state.'
+    : 'Unavailable under this asset’s current lifecycle or capability.';
 
   return (
     <Box
@@ -581,11 +597,11 @@ export function SelectedAssetDetail({
       aria-label={`Details for ${asset.fileName}`}
       data-testid="selected-asset-detail"
       sx={{
-        px: { xs: 0.75, sm: 1 },
-        py: { xs: 0.65, sm: 0.75 },
+        px: { xs: 0.65, sm: 0.9 },
+        py: { xs: 0.45, sm: 0.55 },
         borderTop: 1,
-        borderColor: '#26384d',
-        background: 'linear-gradient(105deg, #101b29 0%, #111e2d 100%)',
+        borderColor: 'rgba(67, 92, 123, 0.42)',
+        background: 'linear-gradient(105deg, #111b28 0%, #101c2a 100%)',
         position: 'sticky',
         bottom: 0,
         zIndex: 2,
@@ -618,13 +634,13 @@ export function SelectedAssetDetail({
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: { xs: '92px minmax(0, 1fr)', sm: '164px minmax(0, 1fr)', lg: '190px minmax(0, 1fr)' },
+              gridTemplateColumns: { xs: '104px minmax(0, 1fr)', sm: '178px minmax(0, 1fr)', md: '190px minmax(0, 1fr)' },
               alignItems: 'center',
-              columnGap: { xs: 0.85, sm: 1.15, lg: 1.5 },
-              rowGap: 0.8,
+              columnGap: { xs: 0.85, sm: 1.15, md: 1.35 },
+              rowGap: 0.55,
               minWidth: 0,
               position: 'relative',
-              pr: { xs: 2.5, sm: 3, lg: 2.5 },
+              pr: { xs: 2.5, sm: 3, md: 2.5 },
             }}
           >
             <Tooltip title={`Play preview of ${asset.fileName}`}>
@@ -636,7 +652,7 @@ export function SelectedAssetDetail({
                   aria-label={`Play preview of ${asset.fileName}`}
                   sx={{
                     width: '100%',
-                    maxWidth: { xs: 92, sm: 164, lg: 190 },
+                    maxWidth: { xs: 104, sm: 178, md: 190 },
                     aspectRatio: '4 / 3',
                     height: 'auto',
                     alignSelf: 'center',
@@ -667,14 +683,14 @@ export function SelectedAssetDetail({
               </span>
             </Tooltip>
 
-            <Box data-testid="selected-asset-information" sx={{ gridColumn: '2', display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'minmax(0, 1fr) auto' }, alignItems: 'center', columnGap: { xs: 0.8, lg: 1.1 }, rowGap: { xs: 0.9, sm: 1.05 }, minWidth: 0 }}>
-              <Stack data-testid="selected-asset-identity" spacing={0.4} sx={{ minWidth: 0, alignSelf: 'center' }}>
+            <Box data-testid="selected-asset-information" sx={{ gridColumn: '2', display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'minmax(0, 1fr) auto' }, alignItems: 'center', columnGap: { xs: 0.8, md: 1.1 }, rowGap: { xs: 0.55, sm: 0.7 }, minWidth: 0 }}>
+              <Stack data-testid="selected-asset-identity" spacing={0.25} sx={{ minWidth: 0, alignSelf: 'center' }}>
                 <Tooltip title={asset.fileName}>
-                  <Typography component="h2" fontWeight={700} noWrap sx={{ minWidth: 0, fontSize: { xs: '0.82rem', sm: '0.9rem' }, lineHeight: 1.2, color: '#e5edf8' }}>
+                  <Typography component="h2" fontWeight={700} noWrap sx={{ minWidth: 0, fontSize: { xs: '0.82rem', sm: '0.87rem' }, lineHeight: 1.2, color: '#e5edf8' }}>
                     {asset.fileName}
                   </Typography>
                 </Tooltip>
-                <Typography data-testid="selected-asset-path-context" variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', fontSize: { xs: '0.66rem', sm: '0.71rem' }, color: '#91a1b6' }}>
+                <Typography data-testid="selected-asset-path-context" variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', fontSize: { xs: '0.64rem', sm: '0.67rem' }, color: '#91a1b6' }}>
                   {pathContext}
                 </Typography>
               </Stack>
@@ -685,41 +701,56 @@ export function SelectedAssetDetail({
                 direction="row"
                 spacing={0.55}
                 alignItems="center"
-                justifyContent={{ xs: 'flex-start', lg: 'flex-end' }}
+                justifyContent={{ xs: 'flex-start', md: 'flex-end' }}
                 useFlexGap
                 flexWrap="wrap"
-                sx={{ gridColumn: { xs: '1', lg: '2' }, gridRow: { xs: '2', lg: '1' }, minWidth: 0 }}
+                sx={{ gridColumn: { xs: '1', md: '2' }, gridRow: { xs: '2', md: '1' }, minWidth: 0 }}
               >
-                <Chip data-testid="selected-asset-status" label={statusLabel || 'Unavailable'} aria-label={`Estado: ${statusLabel || 'Unavailable'}`} color={statusColor} size="small" variant="outlined" sx={{ height: 20, maxWidth: '100%', fontSize: '0.65rem', '& .MuiChip-label': { px: 0.7, overflow: 'hidden', textOverflow: 'ellipsis' } }} />
-                <Button size="small" variant="contained" onClick={onAssignProfile} disabled={!canAssignProfile} sx={{ minHeight: 28, px: 1, borderRadius: '6px', textTransform: 'none', fontSize: '0.68rem', whiteSpace: 'nowrap' }}>
-                  Assign Profile
-                </Button>
-                <Button size="small" variant="outlined" onClick={onTestEncode} disabled={!canTestEncode} sx={{ minHeight: 28, px: 1, borderRadius: '6px', textTransform: 'none', fontSize: '0.68rem', whiteSpace: 'nowrap' }}>
-                  Test Encode
-                </Button>
+                <Tooltip title={canAssignProfile ? '' : assignProfileUnavailableReason || assignProfileFallbackReason} describeChild>
+                  <span tabIndex={canAssignProfile ? undefined : 0} aria-label={canAssignProfile ? undefined : assignProfileUnavailableReason || assignProfileFallbackReason}>
+                    <Button size="small" variant="contained" onClick={onAssignProfile} disabled={!canAssignProfile} sx={{ minHeight: 26, px: 0.9, borderRadius: '5px', textTransform: 'none', fontSize: '0.66rem', whiteSpace: 'nowrap', '&.Mui-disabled': { bgcolor: 'rgba(82, 104, 129, 0.14)', color: '#71849b' } }}>
+                      Assign Profile
+                    </Button>
+                  </span>
+                </Tooltip>
+                <Tooltip title={canTestEncode ? '' : testEncodeUnavailableReason || testEncodeFallbackReason} describeChild>
+                  <span tabIndex={canTestEncode ? undefined : 0} aria-label={canTestEncode ? undefined : testEncodeUnavailableReason || testEncodeFallbackReason}>
+                    <Button size="small" variant="outlined" onClick={onTestEncode} disabled={!canTestEncode} sx={{ minHeight: 26, px: 0.9, borderRadius: '5px', textTransform: 'none', fontSize: '0.66rem', whiteSpace: 'nowrap', '&.Mui-disabled': { borderColor: 'rgba(82, 104, 129, 0.28)', color: '#71849b' } }}>
+                      Test Encode
+                    </Button>
+                  </span>
+                </Tooltip>
                 <Tooltip title="More actions">
-                  <IconButton size="small" onClick={(event) => onMore(event.currentTarget)} aria-label={`More actions for ${asset.fileName}`} sx={{ width: 28, height: 28, border: 1, borderColor: '#33465c', borderRadius: '6px', color: '#aebbd0', '&:hover': { bgcolor: '#1b2a3c', borderColor: '#526b89' } }}>
+                  <IconButton size="small" onClick={(event) => onMore(event.currentTarget)} aria-label={`More actions for ${asset.fileName}`} sx={{ width: 26, height: 26, border: 1, borderColor: '#33465c', borderRadius: '5px', color: '#aebbd0', '&:hover': { bgcolor: '#1b2a3c', borderColor: '#526b89' } }}>
                     <MoreVertIcon fontSize="small" />
                   </IconButton>
                 </Tooltip>
               </Stack>
 
-              <Box sx={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'minmax(0, 1fr) minmax(0, 1fr)' }, alignItems: 'center', columnGap: { xs: 0.9, sm: 1.35 }, rowGap: 0.7, minWidth: 0 }}>
-                <Box data-testid="selected-asset-quick-facts" sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', alignItems: 'center', columnGap: { xs: 0.65, sm: 0.9 }, rowGap: 0.55, minWidth: 0 }}>
+              <Box sx={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', alignItems: 'center', columnGap: 0.9, rowGap: 0.55, minWidth: 0 }}>
+                <Box data-testid="selected-asset-quick-facts" sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(5, minmax(0, 1fr))' }, alignItems: 'center', columnGap: { xs: 0.65, md: 0.8 }, rowGap: 0.4, minWidth: 0 }}>
                   <DetailValue label="Category / Library" value={categoryLabel || 'Unavailable'} inline />
                   <DetailValue label="Container" value={containerLabel || 'Unavailable'} inline />
+                  <DetailValue label="Size" value={sizeLabel || 'Unavailable'} inline />
+                  <DetailValue label="Resolution" value={resolutionSummary} inline />
+                  <DetailValue label="Codec" value={videoCodec || 'Unavailable'} inline />
                 </Box>
-                <Box data-testid="selected-asset-state-context" sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' }, gap: { xs: 0.6, sm: 0.9 }, minWidth: 0 }}>
-                  {contextValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
+                <Box data-testid="selected-asset-state-context" sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(3, minmax(0, 1fr))', lg: 'repeat(5, minmax(0, 1fr))' }, gap: { xs: 0.5, sm: 0.75 }, minWidth: 0, alignItems: 'center' }}>
+                  {contextValues.map(([label, value]) => label === 'Status' ? (
+                    <Box key={label} title={`${label}: ${value}`}>
+                      <Typography component="div" variant="caption" color="text.secondary" sx={{ fontSize: '0.6rem', lineHeight: 1.15, color: '#8395aa' }}>{label}</Typography>
+                      <Chip data-testid="selected-asset-status" label={value} aria-label={`Status: ${value}`} color={statusColor} size="small" variant="outlined" sx={{ mt: 0.1, height: 18, maxWidth: '100%', fontSize: '0.61rem', '& .MuiChip-label': { px: 0.55, overflow: 'hidden', textOverflow: 'ellipsis' } }} />
+                    </Box>
+                  ) : <DetailValue key={label} label={label} value={value} />)}
                 </Box>
               </Box>
 
-              <Box data-testid="selected-asset-technical" sx={{ gridColumn: '1 / -1', px: { xs: 0.7, sm: 0.9 }, py: { xs: 0.55, sm: 0.65 }, border: 1, borderColor: '#26384d', borderRadius: '5px', backgroundColor: '#0d1724', minWidth: 0 }}>
-                <Typography variant="caption" sx={{ display: 'block', mb: 0.45, color: '#aebbd0', fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.035em' }}>MEDIA</Typography>
-                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' }, columnGap: { xs: 0.75, sm: 1.1 }, rowGap: { xs: 0.65, sm: 0.8 }, minWidth: 0 }}>
+              <Box data-testid="selected-asset-technical" sx={{ gridColumn: '1 / -1', px: { xs: 0.55, sm: 0.75 }, py: { xs: 0.35, sm: 0.45 }, border: 1, borderColor: 'rgba(67, 92, 123, 0.35)', borderRadius: '5px', backgroundColor: 'rgba(7, 19, 32, 0.56)', minWidth: 0 }}>
+                <Typography variant="caption" sx={{ display: 'block', mb: 0.3, color: '#aebbd0', fontSize: '0.59rem', fontWeight: 700, letterSpacing: '0.035em' }}>MEDIA</Typography>
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', md: 'repeat(4, minmax(0, 1fr))' }, columnGap: { xs: 0.65, sm: 0.9 }, rowGap: { xs: 0.45, sm: 0.55 }, minWidth: 0 }}>
                   {mediaValues.map(([label, value]) => (
                     <Box key={label} sx={{ minWidth: 0, gridColumn: label === 'Modified' ? { lg: 'span 2', xl: 'span 1' } : undefined }}>
-                      <DetailValue label={label} value={value} inline />
+                      <DetailValue label={label} value={value} />
                     </Box>
                   ))}
                 </Box>

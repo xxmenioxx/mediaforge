@@ -16,7 +16,7 @@ type InventoryColumn = {
 };
 
 const libraryColumns: InventoryColumn[] = [
-  { label: 'Asset', width: 210 },
+  { label: 'Asset', width: 280 },
   { label: 'Advisor', width: 105 },
   { label: 'Status', width: 125 },
   { label: 'Codec', width: 88 },
@@ -31,7 +31,7 @@ const libraryColumns: InventoryColumn[] = [
 ];
 
 const rawColumns: InventoryColumn[] = [
-  { label: 'Asset', width: 220 },
+  { label: 'Asset', width: 280 },
   { label: 'Advisor', width: 105 },
   { label: 'Status', width: 130 },
   { label: 'Source / Codec', width: 170 },
@@ -67,11 +67,11 @@ export function AssetsInventoryTable({ mode, selectable = false, selectAll, chil
           minWidth,
           tableLayout: 'fixed',
           borderCollapse: 'separate',
-          borderSpacing: '0 3px',
+          borderSpacing: '0 4px',
           '& th': { height: 34, color: '#59718b', fontSize: '0.64rem', fontWeight: 600, bgcolor: '#091a2c', borderColor: 'rgba(21, 48, 74, 0.62)', whiteSpace: 'nowrap', letterSpacing: '0.015em' },
           '& td': { borderColor: 'rgba(21, 48, 74, 0.58)', color: '#9cb0c8' },
           '& td, & th': { py: 0.62, px: 0.8 },
-          '& tbody td': { height: 40 },
+          '& tbody td': { height: 42 },
           '& tbody tr:not(.Mui-selected) > td': { bgcolor: '#091a2c', borderTop: '1px solid rgba(21, 48, 74, 0.62)', borderBottom: '1px solid rgba(21, 48, 74, 0.62)' },
           '& tbody tr:not(.Mui-selected):hover > td': { bgcolor: '#112a44' },
           '& tbody tr > td:first-of-type': { borderTopLeftRadius: '5px', borderBottomLeftRadius: '5px' },

@@ -992,7 +992,7 @@ function LibraryAssetTable({
 
   return (
     <Box data-testid="assets-mode-workspace" sx={{ bgcolor: 'background.default', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
-      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 0.75, lg: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
+      <Stack direction={{ xs: 'column', md: 'row' }} spacing={{ xs: 0.75, md: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
         {hierarchyPanel}
         <Box data-testid="assets-content-column" sx={{ flex: 1, minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <Box data-testid="assets-summary-in-workspace" sx={{ mb: 1.1, flexShrink: 0 }}>{summaryStrip}</Box>
@@ -1120,6 +1120,8 @@ function LibraryAssetTable({
               onMore={(anchor) => selectedWorkspaceActions?.openMore(anchor)}
               canAssignProfile={selectedWorkspaceActions?.canAssignProfile ?? false}
               canTestEncode={selectedWorkspaceActions?.canTestEncode ?? false}
+              assignProfileUnavailableReason={selectedWorkspaceActions?.assignProfileUnavailableReason}
+              testEncodeUnavailableReason={selectedWorkspaceActions?.testEncodeUnavailableReason}
             />
           ) : null}
         </Box>
@@ -1135,6 +1137,8 @@ type AssetWorkspaceActions = {
   openMore: (anchor: HTMLElement) => void;
   canAssignProfile: boolean;
   canTestEncode: boolean;
+  assignProfileUnavailableReason: string;
+  testEncodeUnavailableReason: string;
 };
 
 function assetGroupLifecycleFlags(group: AssetGroup, groupAssets = safeArray(group.assets)) {
@@ -1302,7 +1306,7 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
 
   return (
     <Box data-testid="assets-mode-workspace" sx={{ bgcolor: 'background.default', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
-      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 0.75, lg: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
+      <Stack direction={{ xs: 'column', md: 'row' }} spacing={{ xs: 0.75, md: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
         {hierarchyPanel}
         <Box data-testid="assets-content-column" sx={{ flex: 1, minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <Box data-testid="assets-summary-in-workspace" sx={{ mb: 1.1, flexShrink: 0 }}>{summaryStrip}</Box>
@@ -1450,6 +1454,8 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
               onMore={(anchor) => selectedWorkspaceActions?.openMore(anchor)}
               canAssignProfile={selectedWorkspaceActions?.canAssignProfile ?? false}
               canTestEncode={selectedWorkspaceActions?.canTestEncode ?? false}
+              assignProfileUnavailableReason={selectedWorkspaceActions?.assignProfileUnavailableReason}
+              testEncodeUnavailableReason={selectedWorkspaceActions?.testEncodeUnavailableReason}
             />
           ) : null}
         </Box>
@@ -2645,7 +2651,19 @@ function AssetGroupRow({
 
   const migrationControls = (isLibraryGroup || isConvertedGroup) ? (
     <Stack direction="row" spacing={0.45} alignItems="center" flexWrap="wrap" useFlexGap>
-      <Box sx={{ width: { xs: 132, sm: 156 } }}>
+      <Box
+        data-testid="destination-library-control"
+        sx={{
+          width: { xs: 132, sm: 156 },
+          '& .MuiInputBase-root': { height: 32, fontSize: '0.67rem', borderRadius: '5px' },
+          '& .MuiOutlinedInput-input': { py: 0.45, px: 0.8 },
+          '& .MuiInputLabel-root': { fontSize: '0.67rem', transform: 'translate(12px, 8px) scale(1)' },
+          '& .MuiInputLabel-root.MuiInputLabel-shrink': { transform: 'translate(12px, -7px) scale(0.75)' },
+          '& .MuiAutocomplete-endAdornment': { right: 2 },
+          '& .MuiAutocomplete-popupIndicator': { p: 0.25 },
+          '& .MuiAutocomplete-popupIndicator svg': { fontSize: 16 },
+        }}
+      >
         <LibraryAutocomplete
           libraries={libraries.filter((library) => library.id !== group.libraryId)}
           value={migrationLibraryId}
@@ -4036,6 +4054,22 @@ function AssetRow({
   const openWorkspaceMore = useCallback((anchor: HTMLElement) => setAssetMenuAnchor(anchor), []);
   const canAssignProfile = !hidePreConversionActions && (!isConverted || isLibraryReplacement) && !rowLocked && !updateProfileAssignment.isPending;
   const canTestEncode = !hidePreConversionActions && canGenerateTestEncode && labCapability.allowed && !showTestEncodeDialog;
+  const assignProfileUnavailableReason = canAssignProfile
+    ? ''
+    : hidePreConversionActions || (isConverted && !isLibraryReplacement)
+      ? 'Profile assignment is unavailable for this asset in its current Library lifecycle.'
+      : rowLocked
+        ? 'Profile assignment is unavailable while this asset has active work or a protected lifecycle state.'
+        : 'Profile assignment is already in progress.';
+  const testEncodeUnavailableReason = canTestEncode
+    ? ''
+    : hidePreConversionActions || !canGenerateTestEncode
+      ? 'Test Encode is unavailable for this asset in its current lifecycle.'
+      : !labCapability.allowed
+        ? `Test Encode unavailable: ${assetActionReasonMessage(labCapability, 'The current Lab capability does not allow Test Encode for this asset.')}`
+        : showTestEncodeDialog
+          ? 'Test Encode is already open for this asset.'
+          : 'Test Encode is temporarily unavailable for this asset.';
   const workspaceActions = useMemo<AssetWorkspaceActions>(() => ({
     playPreview: openWorkspacePreview,
     assignProfile: openWorkspaceAssignProfile,
@@ -4043,7 +4077,9 @@ function AssetRow({
     openMore: openWorkspaceMore,
     canAssignProfile,
     canTestEncode,
-  }), [canAssignProfile, canTestEncode, openWorkspaceAssignProfile, openWorkspaceMore, openWorkspacePreview, openWorkspaceTestEncode]);
+    assignProfileUnavailableReason,
+    testEncodeUnavailableReason,
+  }), [assignProfileUnavailableReason, canAssignProfile, canTestEncode, openWorkspaceAssignProfile, openWorkspaceMore, openWorkspacePreview, openWorkspaceTestEncode, testEncodeUnavailableReason]);
   useEffect(() => {
     if (!onRegisterWorkspaceActions) return;
     if (compactLibrary && selected) onRegisterWorkspaceActions(asset.path, workspaceActions);

@@ -97,6 +97,8 @@ function selectedAssetDetailProps(overrides: Partial<ComponentProps<typeof Selec
     assignedProfileLabel: 'Anime Main V2',
     modifiedLabel: 'Sep 30, 2026',
     sizeLabel: '1.5 MB',
+    assignProfileUnavailableReason: 'Profile assignment is unavailable for this asset in its current Library lifecycle.',
+    testEncodeUnavailableReason: 'Test Encode is unavailable for this asset in its current lifecycle.',
     onPlayPreview: vi.fn(),
     onAssignProfile: vi.fn(),
     onTestEncode: vi.fn(),
@@ -341,18 +343,27 @@ describe('Assets workspace presentation', () => {
     expect(quickFacts.getByText('Anime')).toBeTruthy();
     expect(quickFacts.getByText('matroska')).toBeTruthy();
     const context = within(screen.getByTestId('selected-asset-state-context'));
-    expect(context.getByText('Perfil')).toBeTruthy();
+    expect(context.getByText('Status')).toBeTruthy();
+    expect(context.getByText('Library')).toBeTruthy();
+    expect(context.getByText('Profile')).toBeTruthy();
     expect(context.getByText('Anime Main V2')).toBeTruthy();
-    expect(context.getByText('Subtítulos')).toBeTruthy();
+    expect(context.getByText('Subtitles')).toBeTruthy();
     expect(context.getByText('2 embedded tracks')).toBeTruthy();
-    expect(context.getByText('Audio')).toBeTruthy();
-    expect(context.getByText('aac 2 ch')).toBeTruthy();
-    expect(within(information).getByTestId('selected-asset-status').getAttribute('aria-label')).toBe('Estado: Library');
+    expect(context.getByText('Duration')).toBeTruthy();
+    expect(context.getByText('Modified')).toBeTruthy();
+    expect(within(information).getByTestId('selected-asset-status').getAttribute('aria-label')).toBe('Status: Library');
+    expect(quickFacts.getByText('Size')).toBeTruthy();
+    expect(quickFacts.getByText('Resolution')).toBeTruthy();
+    expect(quickFacts.getByText('Codec')).toBeTruthy();
+    expect(quickFacts.getByText('1920 × 1080')).toBeTruthy();
+    expect(quickFacts.getByText('hevc')).toBeTruthy();
     expect(media.getByText('MEDIA')).toBeTruthy();
     expect(media.getByText('Video')).toBeTruthy();
     expect(media.getByText('hevc · 1920 × 1080')).toBeTruthy();
     expect(within(details).getAllByText('hevc · 1920 × 1080')).toHaveLength(1);
     expect(media.getByText('Encoder')).toBeTruthy();
+    expect(media.getByText('Audio')).toBeTruthy();
+    expect(media.getByText('aac 2 ch')).toBeTruthy();
     expect(media.getByText('Unavailable')).toBeTruthy();
     expect(media.getByText('Duration')).toBeTruthy();
     expect(media.getByText('Bitrate')).toBeTruthy();
@@ -362,12 +373,12 @@ describe('Assets workspace presentation', () => {
     expect(media.getByText('Size')).toBeTruthy();
     expect(media.getByText('1.5 MB')).toBeTruthy();
     expect(media.getByText('Modified')).toBeTruthy();
-    expect(within(details).queryByText('1920 × 1080', { exact: true })).toBeNull();
+    expect(within(details).getByText('1920 × 1080', { exact: true })).toBeTruthy();
     expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
     expect(within(details).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
     const moreButton = within(details).getByRole('button', { name: 'More actions for Episode 01.mkv' });
     expect(within(details).queryByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
-    expect(within(details).getAllByText('23m 40s')).toHaveLength(2);
+    expect(within(details).getAllByText('23m 40s')).toHaveLength(3);
 
     await user.click(screen.getByRole('button', { name: 'Play preview of Episode 01.mkv' }));
     await user.click(within(details).getByRole('button', { name: 'Assign Profile' }));
@@ -414,11 +425,32 @@ describe('Assets workspace presentation', () => {
     expect(facts.getAllByText('Unavailable')).toHaveLength(2);
     const context = within(screen.getByTestId('selected-asset-state-context'));
     expect(context.getByText('Inherited')).toBeTruthy();
-    expect(context.getAllByText('Unavailable')).toHaveLength(2);
+    expect(context.getAllByText('Unavailable')).toHaveLength(1);
     const media = within(screen.getByTestId('selected-asset-technical'));
-    expect(media.getByText('Unavailable')).toBeTruthy();
+    expect(media.getByText('Range').parentElement?.getAttribute('title')).toBe('Range: SDR');
     expect(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'Assign Profile' }).hasAttribute('disabled')).toBe(true);
     expect(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'Test Encode' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByLabelText('Profile assignment is unavailable for this asset in its current Library lifecycle.').getAttribute('tabindex')).toBe('0');
+    expect(screen.getByLabelText('Test Encode is unavailable for this asset in its current lifecycle.').getAttribute('tabindex')).toBe('0');
+  });
+
+  it('preserves known zero technical values and keeps unknown HDR state unavailable', () => {
+    render(<SelectedAssetDetail {...selectedAssetDetailProps({
+      asset: makeAsset({ technical: { videoCodec: '', width: 0, height: 0, duration: 0, bitrate: 0, hdr: undefined as unknown as boolean } }),
+      snapshot: null,
+      snapshotLoading: false,
+      categoryLabel: 'Unavailable',
+      containerLabel: 'Unavailable',
+      modifiedLabel: 'Unavailable',
+      sizeLabel: '0 B',
+    })} />);
+
+    const facts = within(screen.getByTestId('selected-asset-quick-facts'));
+    const media = within(screen.getByTestId('selected-asset-technical'));
+    expect(facts.getByText('0 × 0')).toBeTruthy();
+    expect(media.getByText('0.00 Mbps')).toBeTruthy();
+    expect(media.getByText('Range').parentElement?.getAttribute('title')).toBe('Range: Unavailable');
+    expect(media.queryByText('SDR')).toBeNull();
   });
 
 });
