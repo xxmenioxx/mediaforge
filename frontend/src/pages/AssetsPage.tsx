@@ -252,6 +252,7 @@ export function AssetsPage() {
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const runtimeState = useQuery({ queryKey: ['runtime-state'], queryFn: api.runtimeState });
   const snapshotOperations = useQuery({
     queryKey: ['snapshotOperations'],
     queryFn: () => api.snapshotOperations(''),
@@ -387,6 +388,9 @@ export function AssetsPage() {
       librarySelection={libraryTreeSelection}
       onSelectRaw={(selection) => switchLocation('raw', selection)}
       onSelectLibrary={(selection) => switchLocation('library', selection)}
+      storageSnapshot={runtimeState.data}
+      storageLoading={runtimeState.isLoading}
+      storageError={runtimeState.isError}
     />
   );
 
@@ -2084,10 +2088,6 @@ export function AssetCollectionRows({
   const queuePaths = useMutation({
     mutationFn: async () => {
       if (!selectedGroups.length) throw new Error('Select at least one path.');
-      const blockedLifecycle = selectedGroups.filter((group) => !pathCanQueue(group, mode));
-      if (blockedLifecycle.length) throw new Error(`These paths cannot be queued from ${mode}: ${blockedLifecycle.map(pathLabelForCollection).join(', ')}`);
-      const missingDestination = selectedGroups.filter((group) => !effectivePathDestination(group, destinations, mode));
-      if (missingDestination.length) throw new Error(`Select Destination for: ${missingDestination.map(pathLabelForCollection).join(', ')}`);
 		const selectedAssets = selectedGroups.flatMap((group) => safeArray(group.assets));
 		if (selectedAssets.some((asset) => typeof asset.id !== 'number' || asset.id <= 0)) {
 			throw new Error('Every asset in the selected paths needs a persisted identity before Batch Preflight. Refresh Assets and try again.');
@@ -2409,28 +2409,44 @@ function AssetGroupRow({
 }) {
   const queryClient = useQueryClient();
   const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
-	const pathScopeConfiguration = useQuery({
-		queryKey: ['assetScopeConfigurations', 'path', normalizePath(group.path)],
-		queryFn: async () => (await api.assetScopeConfigurations()).find((item) => item.scopeType === 'path' && normalizePath(item.scopeKey) === normalizePath(group.path)) ?? null,
-  });
   const [expanded, setExpanded] = useState(false);
   const [pathActionsAnchor, setPathActionsAnchor] = useState<HTMLElement | null>(null);
   const pathVideoProfiles = profiles.filter((profile) => profile.scope === 'path');
   const pathAudioProfiles = audioProfiles.filter((profile) => profile.scope === 'path');
   const pathTrackProfiles = trackProfiles.filter((profile) => profile.scope === 'path');
-	const firstPathVideoProfileId = pathVideoProfiles[0]?.id ?? 0;
-  const [selectedProfileId, setSelectedProfileId] = useState<number>(pathVideoProfiles[0]?.id ?? 0);
+  const [selectedProfileId, setSelectedProfileId] = useState<number>(0);
   const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>('');
   const pathTrackAssignments = getTrackProfilePathAssignments(settings);
   const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState<string>(pathTrackAssignments[normalizePath(group.path)] ?? '');
   const [selectedAssetPaths, setSelectedAssetPaths] = useState<string[]>([]);
   const groupAssets = safeArray(group.assets);
+  const pathConfigurationAssetIds = Array.from(new Set(groupAssets.filter((asset) => !asset.missing && typeof asset.id === 'number' && asset.id > 0).map((asset) => asset.id as number)));
+  const pathEffectiveConfigurations = useQuery({
+    queryKey: ['effectiveAssetConfiguration', 'path-toolbar', normalizePath(group.path), pathConfigurationAssetIds],
+    queryFn: () => api.effectiveAssetConfigurations(pathConfigurationAssetIds),
+    enabled: v2ToolbarOnly && pathConfigurationAssetIds.length > 0,
+  });
+  const effectiveConfigurationsByPath = useMemo(() => new Map(
+    Object.values(pathEffectiveConfigurations.data?.configurations ?? {}).map((configuration) => [normalizePath(configuration.assetPath), configuration]),
+  ), [pathEffectiveConfigurations.data]);
   const pathMetadata = group.pathMetadata ?? { categories: [], tags: [], updatedAt: '' };
   const inheritedPathCategory = firstCategory(pathMetadata.categories);
   const groupReview = group.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
-	const configuredPathDestination = pathScopeConfiguration.data?.destinationSelection === 'value'
-		? pathScopeConfiguration.data.destinationLibraryId ?? 0
-		: (mode === 'library' ? group.libraryId : 0);
+	const effectiveDestinationIds = Array.from(new Set(groupAssets.filter((asset) => !asset.missing).map((asset) => {
+		const destination = effectiveConfigurationsByPath.get(normalizePath(asset.path))?.destination;
+		return destination?.selection === 'value' ? destination.destinationLibraryId ?? 0 : 0;
+	}).filter((id) => id > 0)));
+	const availablePathAssetCount = groupAssets.filter((asset) => !asset.missing).length;
+	const pathHasCanonicalDestinations = availablePathAssetCount > 0 && groupAssets.filter((asset) => !asset.missing).every((asset) => {
+		const destination = effectiveConfigurationsByPath.get(normalizePath(asset.path))?.destination;
+		return destination?.selection === 'value' && (destination.destinationLibraryId ?? 0) > 0;
+	});
+	const configuredPathDestination = mode === 'library'
+		? group.libraryId ?? 0
+		: pathEffectiveConfigurations.data && effectiveDestinationIds.length === 1 &&
+			groupAssets.filter((asset) => !asset.missing).every((asset) => effectiveConfigurationsByPath.get(normalizePath(asset.path))?.destination.selection === 'value')
+			? effectiveDestinationIds[0]
+			: 0;
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(configuredPathDestination);
   const [migrationLibraryId, setMigrationLibraryId] = useState<number>(0);
   const [renamePathOpen, setRenamePathOpen] = useState(false);
@@ -2443,14 +2459,17 @@ function AssetGroupRow({
     response?: AdvisorResponse;
     error?: string;
   }>>([]);
-  const effectiveProfileId =
-  selectedProfileId < 0
-    ? 0
-    : selectedProfileId || pathVideoProfiles[0]?.id || 0;
+  const effectiveProfileId = v2ToolbarOnly
+    ? (groupAssets.map((asset) => effectiveConfigurationsByPath.get(normalizePath(asset.path))?.video)
+      .find((video) => video?.selection === 'profile' && (video.videoProfileId ?? 0) > 0)?.videoProfileId ?? 0)
+    : selectedProfileId > 0 ? selectedProfileId : 0;
   const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
   const lifecycleSummary = group.lifecycleSummary;
   const { isMixedGroup, isConvertedGroup, isPublishedAsIsGroup, isAcceptedGroup } = assetGroupLifecycleFlags(group, groupAssets);
   const isLibraryGroup = mode === 'library' || group.status === 'unverified' || group.status === 'accepted' || group.status === 'library' || group.status === 'published_as_is';
+  const pathQueueDestinationUnavailable = v2ToolbarOnly && !isLibraryGroup
+    ? !pathHasCanonicalDestinations
+    : !selectedLibraryId;
   const isReadOnlyGroup = isMixedGroup || isConvertedGroup || isPublishedAsIsGroup || isAcceptedGroup;
   const showConfidenceColumn = mode !== 'converted';
   const bulkSelectableAssets = mode === 'library'
@@ -2494,7 +2513,7 @@ function AssetGroupRow({
   );
   setSelectedAudioProfileKey(audio?.selection === 'profile' ? audio.profileKey ?? '' : '');
    setSelectedTrackProfileKey(tracks?.selection === 'profile' ? tracks.profileKey ?? '' : '');
-	}, [profileAssignments.data, group.path, firstPathVideoProfileId]);
+	}, [profileAssignments.data, group.path]);
   const updateMetadata = useMutation({
     mutationFn: api.updateAssetMetadata,
     onSuccess: async () => {
@@ -2507,7 +2526,7 @@ function AssetGroupRow({
   }, [inheritedPathCategory]);
   useEffect(() => {
     setSelectedLibraryId(configuredPathDestination);
-  }, [configuredPathDestination, group.path]);
+  }, [configuredPathDestination, group.path, pathEffectiveConfigurations.data]);
   const migratePath = useMutation({
     mutationFn: api.migrateAssetPath,
     onSuccess: async () => {
@@ -2536,12 +2555,29 @@ function AssetGroupRow({
   const runPathAdvisor = useMutation({
     mutationFn: async () => {
       const candidates = groupAssets.filter((asset) => !asset.missing);
+      const effectiveConfigurations = v2ToolbarOnly && pathConfigurationAssetIds.length
+        ? new Map(Object.values((await api.effectiveAssetConfigurations(pathConfigurationAssetIds)).configurations)
+          .map((configuration) => [normalizePath(configuration.assetPath), configuration]))
+        : undefined;
       setPathAdvisorResults([]);
       for (const asset of candidates) {
         setPathAdvisorCurrent(asset.path);
+        const effectiveVideo = effectiveConfigurations
+          ? effectiveConfigurations.get(normalizePath(asset.path))?.video
+          : undefined;
+        const profileId = effectiveConfigurations
+          ? effectiveVideo?.selection === 'profile' ? effectiveVideo.videoProfileId ?? 0 : 0
+          : effectiveProfileId;
+        if (profileId <= 0) {
+          setPathAdvisorResults((current) => [...current, {
+            asset,
+            error: 'Advisor needs an effective video profile for this asset. Configure a profile before evaluating.',
+          }]);
+          continue;
+        }
         try {
-          const response = await api.evaluateAdvisor({ mediaPath: asset.path, profileId: effectiveProfileId });
-          queryClient.setQueryData(['advisor', 'asset-row', asset.path, effectiveProfileId], response);
+          const response = await api.evaluateAdvisor({ mediaPath: asset.path, profileId });
+          queryClient.setQueryData(['advisor', 'asset-row', asset.path, profileId], response);
           setPathAdvisorResults((current) => [...current, { asset, response }]);
         } catch (error) {
           setPathAdvisorResults((current) => [...current, {
@@ -2555,35 +2591,47 @@ function AssetGroupRow({
   });
   const queueGroup = useMutation({
     mutationFn: async () => {
-      const trackProfile = trackProfiles.find((profile) => profile.key === selectedTrackProfileKey);
-      const hasSelectedOperation = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(trackProfile);
-      const queueProfileId = effectiveProfileId || (hasSelectedOperation ? pathVideoProfiles[0]?.id ?? profiles[0]?.id ?? 0 : 0);
-      const copyVideo = selectedProfileId < 0;
-      if (!queueProfileId || !selectedLibraryId) {
-          throw new Error('A video profile and destination library are required to queue this folder.');
-      }
-
       const batchId = createBatchId(group);
       const batchName = groupDisplayPath(group);
-      const batchJobs: QueueJobInput[] = groupAssets.map(
-      (asset) => {
-        const assignment = profileAssignments.data?.find((candidate) => candidate.targetType === 'asset' && candidate.mediaType === 'tracks' && normalizePath(candidate.targetPath) === normalizePath(asset.path));
-        const effectiveTrack = assignment?.selection === 'disabled' ? undefined : assignment?.selection === 'profile' ? trackProfiles.find((profile) => profile.key === assignment.profileKey) : trackProfile;
+      const queueAssets = groupAssets.filter((asset) => !asset.missing);
+      const freshEffectiveConfigurations = v2ToolbarOnly && queueAssets.length
+        ? new Map(Object.values((await api.effectiveAssetConfigurations(queueAssets.map((asset) => asset.id).filter((id): id is number => typeof id === 'number' && id > 0))).configurations)
+          .map((configuration) => [normalizePath(configuration.assetPath), configuration]))
+        : undefined;
+      if (v2ToolbarOnly && !freshEffectiveConfigurations) {
+        throw new Error('Effective path configuration is unavailable. Refresh Assets and try again.');
+      }
+      const batchJobs: QueueJobInput[] = queueAssets.map((asset) => {
+        const effective = freshEffectiveConfigurations
+          ? freshEffectiveConfigurations.get(normalizePath(asset.path))
+          : undefined;
+        if (v2ToolbarOnly && !effective) {
+          throw new Error(`Effective configuration is unavailable for ${asset.fileName}. Refresh Assets and try again.`);
+        }
+        const destinationLibraryId = isLibraryGroup
+          ? asset.libraryId
+          : effective?.destination.selection === 'value'
+            ? effective.destination.destinationLibraryId ?? 0
+            : v2ToolbarOnly ? 0 : selectedLibraryId;
+        if (destinationLibraryId <= 0) {
+          throw new Error(`No effective destination library is configured for ${asset.fileName}. Configure a destination before Queue / Preflight.`);
+        }
+        const video = effective?.video;
+        const audio = effective?.audio;
+        const tracks = effective?.tracks;
         return {
         mediaPath: asset.path,
         publishMode: isLibraryGroup
           ? 'replace_library_asset'
           : 'standard',
 
-        libraryId: isLibraryGroup
-          ? asset.libraryId
-          : selectedLibraryId,
+        libraryId: destinationLibraryId,
 
-        profileId: queueProfileId,
-        audioProfileKey: selectedAudioProfileKey,
-        trackProfileKey: effectiveTrack?.key ?? '',
+        profileId: video?.selection === 'profile' ? video.videoProfileId ?? 0 : v2ToolbarOnly ? 0 : effectiveProfileId,
+        audioProfileKey: audio?.selection === 'profile' ? audio.profileKey ?? '' : v2ToolbarOnly ? '' : selectedAudioProfileKey,
+        trackProfileKey: tracks?.selection === 'profile' ? tracks.profileKey ?? '' : v2ToolbarOnly ? '' : selectedTrackProfileKey,
         resolveProfileAssignments: true,
-        processingMode: copyVideo
+        processingMode: video?.selection === 'audio_only' || video?.selection === 'disabled' || (!v2ToolbarOnly && selectedProfileId < 0)
           ? 'audio_only'
           : 'full_encode',
         priority: 5,
@@ -2595,6 +2643,7 @@ function AssetGroupRow({
       };
       },
     );
+    if (!batchJobs.length) throw new Error('This path has no available assets to queue.');
 
     return api.createQueueBatchPreflight({
       batchId,
@@ -2637,9 +2686,6 @@ function AssetGroupRow({
     },
   });
   function toggleExpanded() {
-    if (!selectedProfileId && pathVideoProfiles[0]) {
-      setSelectedProfileId(pathVideoProfiles[0].id);
-    }
     setExpanded((current) => !current);
   }
 
@@ -2768,7 +2814,7 @@ function AssetGroupRow({
                 variant="outlined"
                 startIcon={<InfoOutlinedIcon />}
                 onClick={startPathAdvisor}
-                disabled={!isConfidenceEnabled || effectiveProfileId <= 0 || groupAssets.every((asset) => asset.missing) || runPathAdvisor.isPending}
+                disabled={!isConfidenceEnabled || effectiveProfileId <= 0 || (v2ToolbarOnly && (pathEffectiveConfigurations.isLoading || pathEffectiveConfigurations.isError)) || groupAssets.every((asset) => asset.missing) || runPathAdvisor.isPending}
                 sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } }}
               >
                 Advisor
@@ -2780,7 +2826,7 @@ function AssetGroupRow({
                 variant="contained"
                 startIcon={<PlayArrowIcon sx={{ color: '#8d7aff' }} />}
                 onClick={queuePath}
-                disabled={profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending || (!effectiveProfileId && !selectedAudioProfileKey && !selectedTrackProfileKey) || !selectedLibraryId || !groupAssets.length || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
+                disabled={profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending || (v2ToolbarOnly && (pathEffectiveConfigurations.isLoading || pathEffectiveConfigurations.isError)) || pathQueueDestinationUnavailable || !groupAssets.length || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
                 sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } }}
               >
                 Queue / Preflight
@@ -2835,6 +2881,19 @@ function AssetGroupRow({
           );
         } : undefined}
       />
+      <Stack spacing={0.45} sx={{ px: 0.5, pb: 0.35 }} aria-live="polite" data-testid="assets-v2-path-feedback">
+        {queueGroup.isPending ? <Alert severity="info" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.72rem' } }}>Preparing Queue / Preflight for this path…</Alert> : null}
+        {queueGroup.isSuccess ? <Alert severity="success" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.72rem' } }}>Preflight is ready. Review and confirm the candidate in Queue.</Alert> : null}
+        {queueGroup.isError ? <Alert severity="error" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.72rem' } }}>{queueGroup.error instanceof Error ? queueGroup.error.message : 'Queue / Preflight failed.'}</Alert> : null}
+        {publishAsIs.isPending ? <Alert severity="info" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.72rem' } }}>Moving originals to the Library…</Alert> : null}
+        {publishAsIs.isSuccess ? <Alert severity="success" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.72rem' } }}>{publishAsIs.data.message || `${publishAsIs.data.assetsPublished} asset(s) published as-is.`}</Alert> : null}
+        {publishAsIs.isError ? <Alert severity="error" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.72rem' } }}>{publishAsIs.error instanceof Error ? publishAsIs.error.message : 'Publish as-is failed.'}</Alert> : null}
+        {migratePath.isPending ? <Alert severity="info" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.72rem' } }}>Migrating this path…</Alert> : null}
+        {migratePath.isSuccess ? <Alert severity="success" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.72rem' } }}>{migratePath.data.assetsMoved} asset(s) moved to the destination Library.</Alert> : null}
+        {migratePath.isError ? <Alert severity="error" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.72rem' } }}>{migratePath.error instanceof Error ? migratePath.error.message : 'Path migration failed.'}</Alert> : null}
+        {bulkAssetAction.isPending ? <Alert severity="info" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.72rem' } }}>Applying the selected path action…</Alert> : null}
+        {bulkAssetAction.isSuccess ? <Alert severity={bulkAssetAction.data.failures.length ? 'warning' : 'success'} sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.72rem' } }}>{bulkAssetAction.data.completed} asset(s) completed.{bulkAssetAction.data.failures.length ? ` ${bulkAssetAction.data.failures.length} failed: ${bulkAssetAction.data.failures.join(' · ')}` : ''}</Alert> : null}
+      </Stack>
       <PathSnapshotsDialog
         open={pathSnapshotsOpen}
         group={group}
@@ -3664,6 +3723,9 @@ function AssetRow({
   const effectiveTrackProfileKey = selectedTrackProfileKey === '__inherit__' ? pathTrackProfile?.key ?? '' : selectedTrackProfileKey;
   const selectedTrackProfile = trackProfiles.find((profile) => profile.key === effectiveTrackProfileKey);
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(groupLibraryId);
+  useEffect(() => {
+    setSelectedLibraryId(groupLibraryId);
+  }, [asset.path, groupLibraryId]);
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
   type AssetInfoSection = 'overview' | 'analysis' | 'tracks' | 'execution' | 'publication' | 'validation' | 'original' | 'evidence' | 'history' | 'integration' | 'advisor' | 'conversion' | 'test-encode';
   const [snapshotTab, setSnapshotTab] = useState<AssetInfoSection>('overview');
@@ -4130,23 +4192,12 @@ function AssetRow({
   }), [assignProfileUnavailableReason, canAssignProfile, canTestEncode, openWorkspaceAssignProfile, openWorkspaceMore, openWorkspacePreview, openWorkspaceTestEncode, testEncodeUnavailableReason]);
   useEffect(() => {
     if (!onRegisterWorkspaceActions) return;
-    if (compactLibrary && selected) onRegisterWorkspaceActions(asset.path, workspaceActions);
+    if (compactAssetsRow && selected) onRegisterWorkspaceActions(asset.path, workspaceActions);
     else onRegisterWorkspaceActions(asset.path, null);
     return () => onRegisterWorkspaceActions(asset.path, null);
-  }, [asset.path, compactLibrary, onRegisterWorkspaceActions, selected, workspaceActions]);
-  const isOverrideOnly =
-    selectedProfileId === VIDEO_PROFILE_OVERRIDE_ONLY;
-
+  }, [asset.path, compactAssetsRow, onRegisterWorkspaceActions, selected, workspaceActions]);
   const isAudioOnly =
     selectedProfileId === VIDEO_PROFILE_AUDIO_ONLY;
-
-  const canQueueWithSelection =
-    effectiveProfileId > 0 ||
-    (isOverrideOnly && assetHasConversionOverride(conversionDraft)) ||
-    isAudioOnly ||
-    Boolean(effectiveAudioProfileKey) ||
-    Boolean(selectedTrackProfile) ||
-    hasTrackSelectionOverride(conversionDraft);
 
   useEffect(() => {
     if (!profileAssignments.data) return;
@@ -4943,7 +4994,8 @@ async function generateExternalSubtitle(
       effectiveProfileId > 0
         ? effectiveProfileId
         : 0;
-    if (!selectedLibraryId || !canQueueWithSelection) {
+    if (!selectedLibraryId) {
+      setAssetEditQueueMessage('Queue is unavailable because this asset has no effective destination library. Configure a destination before queueing.');
       return;
     }
     if (isLibraryReplacement && !window.confirm('Convert this Library asset and replace it only after validation? The current file will be moved to Originals Archive.')) {
@@ -5347,29 +5399,33 @@ async function generateExternalSubtitle(
                 </span>
               </Tooltip>
             ) : isLibraryReplacement ? null : (
-              <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Queue asset'}>
-                <IconButton
-                  color="primary"
-                  onClick={queueAsset}
-                  disabled={!assetInfoCapability(asset, 'queue').allowed || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !canQueueWithSelection || !selectedLibraryId || isBlockedByReview || hasOpenJob}
-                  aria-label={`Queue ${asset.fileName}`}
-                  sx={actionIconSx}
-                >
-                  <PlaylistAddIcon />
-                </IconButton>
+              <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : !selectedLibraryId ? 'Queue unavailable: no effective destination library is configured.' : !assetInfoCapability(asset, 'queue').allowed ? assetActionReasonMessage(assetInfoCapability(asset, 'queue'), 'Queue is unavailable for this asset.') : 'Queue asset'}>
+                <span>
+                  <IconButton
+                    color="primary"
+                    onClick={queueAsset}
+                    disabled={!assetInfoCapability(asset, 'queue').allowed || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !selectedLibraryId || isBlockedByReview || hasOpenJob}
+                    aria-label={`Queue ${asset.fileName}`}
+                    sx={actionIconSx}
+                  >
+                    <PlaylistAddIcon />
+                  </IconButton>
+                </span>
               </Tooltip>
             )}
             {isLibraryReplacement && !isPublishedAsIs ? (
-              <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Convert and safely replace this library asset'}>
-                <IconButton
-                  color="warning"
-                  onClick={queueAsset}
-                  disabled={!assetInfoCapability(asset, 'reconvert').allowed || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !canQueueWithSelection || isBlockedByReview || hasOpenJob}
-                  aria-label={`Replace ${asset.fileName}`}
-                  sx={actionIconSx}
-                >
-                  <PlaylistAddIcon />
-                </IconButton>
+              <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : !assetInfoCapability(asset, 'reconvert').allowed ? assetActionReasonMessage(assetInfoCapability(asset, 'reconvert'), 'Replacement is unavailable for this asset.') : 'Convert and safely replace this library asset'}>
+                <span>
+                  <IconButton
+                    color="warning"
+                    onClick={queueAsset}
+                    disabled={!assetInfoCapability(asset, 'reconvert').allowed || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || isBlockedByReview || hasOpenJob}
+                    aria-label={`Replace ${asset.fileName}`}
+                    sx={actionIconSx}
+                  >
+                    <PlaylistAddIcon />
+                  </IconButton>
+                </span>
               </Tooltip>
             ) : null}
             {asset.status === 'unverified' ? (
@@ -5477,6 +5533,7 @@ async function generateExternalSubtitle(
         <MenuItem
           onClick={() => { setAssetMenuAnchor(null); queueAsset(); }}
           disabled={!assetInfoCapability(asset, isLibraryReplacement ? 'reconvert' : 'queue').allowed || rowLocked || isBlockedByReview || hasOpenJob || !selectedLibraryId || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending}
+          title={!selectedLibraryId ? 'Queue is unavailable because no effective destination library is configured.' : hasOpenJob ? 'Queue is unavailable while this asset has active work.' : isBlockedByReview ? 'Resolve the review block before Queue.' : undefined}
         >
           {isLibraryReplacement ? 'Queue replacement' : 'Queue asset'}
         </MenuItem>
@@ -8858,12 +8915,6 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (typeof value.videoToolboxPowerEfficiency === 'boolean') clean.videoToolboxPowerEfficiency = value.videoToolboxPowerEfficiency;
   if (value.hardwareQualityPreset?.trim()) clean.hardwareQualityPreset = value.hardwareQualityPreset.trim();
   return clean;
-}
-
-function hasTrackSelectionOverride(value: AssetConversionOverrideState) {
-  return Array.isArray(value.keepVideoStreams) ||
-    Array.isArray(value.keepAudioStreams) ||
-    Array.isArray(value.keepSubtitleStreams);
 }
 
 function reconciliationJobIdFromReview(review: Asset['review']) {

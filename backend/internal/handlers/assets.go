@@ -1599,39 +1599,72 @@ func (h AssetHandler) ReturnPublishedAsIs(c *gin.Context) {
 			_ = moveFile(completed[index].to, completed[index].from)
 		}
 	}
-	assetOverrideMutationMu.Lock()
-	for _, move := range moves {
-		if err := moveFile(move.from, move.to); err != nil {
-			assetOverrideMutationMu.Unlock()
-			rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "return to Raw failed and rollback was attempted: " + err.Error()})
-			return
-		}
-		completed = append(completed, move)
-	}
+	mutationStatus, mutationError := func() (int, string) {
+		// Queue creation, scans, and maintenance share this lock. Recheck the
+		// publication lifecycle and active work while holding it, immediately
+		// before the move, so a stale client cannot race a newly claimed asset.
+		assetMutationMu.Lock()
+		defer assetMutationMu.Unlock()
 
-	returnedAt := time.Now()
-	err = h.db.Transaction(func(tx *gorm.DB) error {
-		publication.ReturnedAt = &returnedAt
-		if err := tx.Save(&publication).Error; err != nil {
-			return err
+		var activePublication models.DirectPublication
+		if err := h.db.Where("id = ? AND published_path = ? AND returned_at IS NULL", publication.ID, path).First(&activePublication).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return http.StatusConflict, "Publish as-is is no longer active; return was blocked"
+			}
+			return http.StatusInternalServerError, "recheck Publish as-is lifecycle: " + err.Error()
 		}
-		if err := tx.Where("path = ?", path).Delete(&models.AssetRecord{}).Error; err != nil {
-			return err
+		if filepath.Clean(activePublication.SourcePath) != restorePath {
+			return http.StatusConflict, "the original Raw destination changed; return was blocked"
 		}
-		if err := tx.Model(&models.ScanResult{}).Where("path = ?", path).
-			Updates(map[string]any{"path": restorePath, "file_name": filepath.Base(restorePath)}).Error; err != nil {
-			return err
+		if synchronousScanActive(path) || snapshotOperationActive(path) {
+			return http.StatusConflict, "asset has an active scan and cannot be returned to Raw"
 		}
-		return returnDirectPublicationOverrides(tx, path, restorePath)
-	})
-	if err != nil {
-		assetOverrideMutationMu.Unlock()
-		rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "asset was moved but registration failed and rollback was attempted: " + err.Error()})
+		if active, err := activeAssetMaintenance(h.db, path); err != nil {
+			return http.StatusInternalServerError, "check active asset maintenance: " + err.Error()
+		} else if active {
+			return http.StatusConflict, "asset has an active maintenance operation and cannot be returned to Raw"
+		}
+		if active, err := (QueueHandler{db: h.db}).assetHasOpenJob(path, 0); err != nil {
+			return http.StatusInternalServerError, "check active Queue work: " + err.Error()
+		} else if active {
+			return http.StatusConflict, "asset has an active Queue job and cannot be returned to Raw"
+		}
+
+		assetOverrideMutationMu.Lock()
+		defer assetOverrideMutationMu.Unlock()
+		for _, move := range moves {
+			if err := moveFile(move.from, move.to); err != nil {
+				rollback()
+				return http.StatusInternalServerError, "return to Raw failed and rollback was attempted: " + err.Error()
+			}
+			completed = append(completed, move)
+		}
+
+		returnedAt := time.Now()
+		activePublication.ReturnedAt = &returnedAt
+		if err := h.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Save(&activePublication).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("path = ?", path).Delete(&models.AssetRecord{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&models.ScanResult{}).Where("path = ?", path).
+				Updates(map[string]any{"path": restorePath, "file_name": filepath.Base(restorePath)}).Error; err != nil {
+				return err
+			}
+			return returnDirectPublicationOverrides(tx, path, restorePath)
+		}); err != nil {
+			rollback()
+			return http.StatusInternalServerError, "asset was moved but registration failed and rollback was attempted: " + err.Error()
+		}
+		publication = activePublication
+		return 0, ""
+	}()
+	if mutationError != "" {
+		c.JSON(mutationStatus, gin.H{"error": mutationError})
 		return
 	}
-	assetOverrideMutationMu.Unlock()
 	var library models.Library
 	if err := h.db.First(&library, publication.LibraryID).Error; err == nil && pathIsInside(filepath.Dir(path), library.DestinationPath) {
 		if err := (PublisherHandler{db: h.db}).cleanupEmptyOriginalDirs(filepath.Dir(path), library.DestinationPath); err != nil {

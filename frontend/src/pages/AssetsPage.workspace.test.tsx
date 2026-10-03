@@ -14,6 +14,7 @@ vi.mock('../api/client', async (importOriginal) => {
       ...actual.api,
       queueJobs: vi.fn(), assets: vi.fn(), profiles: vi.fn(), libraries: vi.fn(), settings: vi.fn(), snapshotOperations: vi.fn(),
       profileAssignments: vi.fn(), assetScopeConfigurations: vi.fn(), latestSnapshot: vi.fn(), testEncodes: vi.fn(), jellyfinOutcomes: vi.fn(), effectiveAssetConfigurations: vi.fn(), deleteConvertedAsset: vi.fn(),
+      runtimeState: vi.fn(), createQueueJob: vi.fn(), createQueueBatchPreflight: vi.fn(),
     },
   };
 });
@@ -78,6 +79,33 @@ function rawWorkspaceInventory(): AssetInventory {
     rawGroups: [], unprocessedGroups: [],
     counts: { raw: 2, library: 1, processing: 0, needsReview: 0, validationReview: 0, publicationBlocked: 0, converted: 0, originalsArchived: 0, missing: 0, historicalPaths: 0 },
   } as unknown as AssetInventory;
+}
+
+let rawDestinationLibraryId = 1;
+
+function effectiveConfigurationsForIds(assetIds: number[]) {
+  const libraryTargets: Asset[] = [
+    asset(1, 'A Very Long Episode Filename That Should Stay Inside Its Column.mkv'),
+    asset(2, 'Episode 02.mkv'),
+  ];
+  const assetsById = new Map([...(rawWorkspaceInventory().raw ?? []), ...libraryTargets].map((entry) => [entry.id, entry]));
+  const rawDest = rawDestinationLibraryId > 0
+    ? { selection: 'value', destinationLibraryId: rawDestinationLibraryId }
+    : { selection: 'inherit', destinationLibraryId: 0 };
+  return {
+    configurations: Object.fromEntries(assetIds.map((id) => {
+      const target = assetsById.get(id);
+      return [String(id), {
+        assetPath: target?.path ?? `/asset/${id}`,
+        video: { selection: 'profile', videoProfileId: 1 },
+        audio: { selection: 'inherit' },
+        tracks: { selection: 'inherit' },
+        category: { selection: 'inherit' },
+        destination: target?.status === 'unprocessed' ? rawDest : { selection: 'value', destinationLibraryId: 1 },
+      }];
+    })),
+    missingAssetIds: [],
+  };
 }
 
 function persistedSnapshot(assetPath: string): ScanResult {
@@ -223,12 +251,16 @@ describe('Library Assets workspace', () => {
     vi.mocked(api.profiles).mockResolvedValue([profile] as never);
     vi.mocked(api.libraries).mockResolvedValue([library]);
     vi.mocked(api.settings).mockResolvedValue([]);
+    vi.mocked(api.runtimeState).mockResolvedValue({ disks: { raw: { type: 'local', totalBytes: 1000, availableBytes: 400 } } } as never);
     vi.mocked(api.snapshotOperations).mockResolvedValue({ operations: [] });
     vi.mocked(api.profileAssignments).mockResolvedValue([pathAssignment]);
     vi.mocked(api.assetScopeConfigurations).mockResolvedValue([]);
     vi.mocked(api.latestSnapshot).mockImplementation(async (assetPath) => ({ found: true, snapshot: persistedSnapshot(assetPath), status: 'current', requiresAnalysis: false, staleComponents: [] }));
     vi.mocked(api.testEncodes).mockResolvedValue([]);
     vi.mocked(api.jellyfinOutcomes).mockResolvedValue([]);
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => effectiveConfigurationsForIds(assetIds) as never);
+    vi.mocked(api.createQueueJob).mockResolvedValue({ id: 99 } as never);
+    vi.mocked(api.createQueueBatchPreflight).mockResolvedValue({ id: 'candidate-1' } as never);
   });
 
   it('renders Library technical columns, compact counts, and a path-filtered accessible hierarchy', async () => {
@@ -243,6 +275,7 @@ describe('Library Assets workspace', () => {
     expect(topbar.nextElementSibling).toBe(pageBody);
     expect(within(topbar).getByRole('heading', { name: 'Assets' })).toBeTruthy();
     expect(within(topbar).getByRole('textbox', { name: 'Search assets, series, movies' })).toBeTruthy();
+    expect(screen.getByTestId('assets-storage-footer')).toBeTruthy();
     expect(topbar.contains(screen.getByRole('navigation', { name: 'Asset Library' }))).toBe(false);
     const hierarchyTitle = within(screen.getByRole('navigation', { name: 'Asset Library' })).getByText('Asset Library');
     expect(hierarchyTitle).toBeTruthy();
@@ -320,19 +353,20 @@ describe('Library Assets workspace', () => {
     expect(within(details).getByTestId('selected-asset-path-context').textContent).toBe('Series/Season 01');
     const media = within(within(details).getByTestId('selected-asset-technical'));
     expect(media.getByText('Video')).toBeTruthy();
-    expect(media.getByText('hevc · 1920 × 1080')).toBeTruthy();
-    expect(media.getByText('Encoder')).toBeTruthy();
-    expect(media.getByText('Duration')).toBeTruthy();
-    expect(media.getByText('Bitrate')).toBeTruthy();
-    expect(media.getByText('Range')).toBeTruthy();
-    expect(media.getByText('Size')).toBeTruthy();
-    expect(media.getByText('Modified')).toBeTruthy();
+    expect(media.getByText('hevc')).toBeTruthy();
+    expect(media.getByText('Technical information')).toBeTruthy();
+    expect(within(details).getAllByText('1920 × 1080')).toHaveLength(2);
+    expect(media.queryByText('Encoder')).toBeNull();
+    expect(media.queryByText('Bitrate')).toBeNull();
+    expect(media.queryByText('Range')).toBeNull();
+    expect(within(details).getByText('Duration')).toBeTruthy();
+    expect(within(details).getByText('Modified')).toBeTruthy();
     expect(media.getByText('Audio')).toBeTruthy();
     expect(within(details).getByTestId('selected-asset-status').getAttribute('aria-label')).toContain('Status:');
     expect(within(details).getByText('Profile')).toBeTruthy();
     expect(within(details).getByText('Subtitles')).toBeTruthy();
     expect(within(details).getByText('Audio')).toBeTruthy();
-    expect(within(details).getByText('Category / Library')).toBeTruthy();
+    expect(within(screen.getByTestId('selected-asset-quick-facts')).getByLabelText('Category / Library: Anime')).toBeTruthy();
     expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
     expect(within(details).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
     expect(within(details).getByRole('button', { name: /More actions/ })).toBeTruthy();
@@ -571,24 +605,22 @@ describe('Library Assets workspace', () => {
 describe('RAW Assets workspace', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    rawDestinationLibraryId = 1;
     vi.mocked(api.queueJobs).mockResolvedValue([]);
     vi.mocked(api.assets).mockResolvedValue(rawWorkspaceInventory());
     vi.mocked(api.profiles).mockResolvedValue([profile] as never);
     vi.mocked(api.libraries).mockResolvedValue([library]);
     vi.mocked(api.settings).mockResolvedValue([]);
+    vi.mocked(api.runtimeState).mockResolvedValue({ disks: { raw: { type: 'local', totalBytes: 1000, availableBytes: 400 } } } as never);
     vi.mocked(api.snapshotOperations).mockResolvedValue({ operations: [] });
     vi.mocked(api.profileAssignments).mockResolvedValue([pathAssignment]);
     vi.mocked(api.assetScopeConfigurations).mockResolvedValue([]);
     vi.mocked(api.latestSnapshot).mockImplementation(async (assetPath) => ({ found: true, snapshot: persistedSnapshot(assetPath), status: 'current', requiresAnalysis: false, staleComponents: [] }));
     vi.mocked(api.testEncodes).mockResolvedValue([]);
     vi.mocked(api.jellyfinOutcomes).mockResolvedValue([]);
-    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => ({
-      configurations: Object.fromEntries(assetIds.map((id) => [String(id), {
-        assetPath: `/asset/${id}`, video: { selection: 'inherit' }, audio: { selection: 'inherit' },
-        tracks: { selection: 'inherit' }, category: { selection: 'inherit' }, destination: { selection: 'inherit' },
-      }])),
-      missingAssetIds: [],
-    }));
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => effectiveConfigurationsForIds(assetIds) as never);
+    vi.mocked(api.createQueueJob).mockResolvedValue({ id: 99 } as never);
+    vi.mocked(api.createQueueBatchPreflight).mockResolvedValue({ id: 'candidate-1' } as never);
   });
 
   it('selects only visible RAW assets through the shared header checkbox', async () => {
@@ -691,6 +723,7 @@ describe('RAW Assets workspace', () => {
     const extras = treeItem('extras', 4);
     await user.click(extras);
     expect(extras.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByTestId('assets-storage-footer')).toBeTruthy();
     const rawQuery = new URLSearchParams(screen.getByTestId('asset-query').textContent ?? '');
     expect(rawQuery.get('location')).toBe('raw');
     expect(rawQuery.get('sourceGroup')).toBe('7');
@@ -721,7 +754,7 @@ describe('RAW Assets workspace', () => {
     expect(rawList.contains(details)).toBe(false);
     expect(within(details).getByRole('button', { name: /Play preview/ })).toBeTruthy();
     expect(within(details).getAllByRole('button', { name: /Play preview/ })).toHaveLength(1);
-    expect(within(details).getByTestId('selected-asset-technical').textContent).toContain('MEDIA');
+    expect(within(details).getByTestId('selected-asset-technical').textContent).toContain('Technical information');
     expect(within(details).getByTestId('selected-asset-technical').textContent).toContain('hevc');
     expect(within(details).getByTestId('selected-asset-technical').textContent).toContain('1920 × 1080');
     expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
@@ -750,5 +783,96 @@ describe('RAW Assets workspace', () => {
     for (const key of ['sourceGroup', 'logicalGroup', 'path']) expect(rawRootQuery.has(key)).toBe(false);
     expect(treeItem('RAW', 1).getAttribute('aria-selected')).toBe('true');
     expect(api.assets).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes Play, Assign Profile, Test Encode, and More from RAW selected detail to the selected asset', async () => {
+    const user = userEvent.setup();
+    renderRawPage('/assets?location=raw&sourceGroup=7&logicalGroup=%2Fmedia%2Fraw%2Fanime%2FAttack%20on%20Titan');
+
+    const details = await screen.findByTestId('selected-asset-detail');
+    expect(within(details).getByTestId('selected-asset-identity').textContent).toContain('S01E01.mkv');
+    await user.click(within(details).getByRole('button', { name: 'Play preview of S01E01.mkv' }));
+    expect(await screen.findByRole('dialog', { name: 'Asset Preview' })).toBeTruthy();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Asset Preview' })).toBeNull());
+
+    await user.click(within(details).getByRole('button', { name: 'Assign Profile' }));
+    expect(await screen.findByRole('dialog', { name: /Assign Profile/ })).toBeTruthy();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Assign Profile/ })).toBeNull());
+
+    await user.click(within(details).getByRole('button', { name: 'Test Encode' }));
+    expect(await screen.findByRole('dialog', { name: 'Generate Test Encode' })).toBeTruthy();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Generate Test Encode' })).toBeNull());
+
+    await user.click(within(details).getByRole('button', { name: 'More actions for S01E01.mkv' }));
+    expect(await screen.findByRole('menuitem', { name: 'Asset Info' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Queue asset' })).toBeTruthy();
+  });
+
+  it('reacts to an inherited destination update without opening Asset Info or remounting the RAW row', async () => {
+    const user = userEvent.setup();
+    rawDestinationLibraryId = 0;
+    const { queryClient } = renderRawPage('/assets?location=raw&sourceGroup=7&logicalGroup=%2Fmedia%2Fraw%2Fanime%2FAttack%20on%20Titan');
+    const table = await screen.findByRole('table', { name: 'RAW assets' });
+    const row = within(table).getByText('S01E01.mkv').closest('tr')!;
+    await user.click(within(row).getByRole('button', { name: 'More actions for S01E01.mkv' }));
+    expect((screen.getByRole('menuitem', { name: 'Queue asset' }) as HTMLLIElement).getAttribute('aria-disabled')).toBe('true');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: /Asset Info/ })).toBeNull();
+
+    rawDestinationLibraryId = 1;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['effectiveAssetConfiguration'] });
+    });
+    await waitFor(() => expect(within(table).getByText('S01E01.mkv').closest('tr')).toBe(row));
+    await user.click(within(row).getByRole('button', { name: 'More actions for S01E01.mkv' }));
+    expect((screen.getByRole('menuitem', { name: 'Queue asset' }) as HTMLLIElement).getAttribute('aria-disabled')).not.toBe('true');
+  });
+
+  it('submits a backend-resolved Custom Queue from a compact RAW row', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => ({
+      configurations: Object.fromEntries(assetIds.map((id) => [String(id), {
+        assetPath: `/media/raw/anime/Attack on Titan/S01E01.mkv`,
+        video: { selection: 'value', profileData: { videoCodec: 'libx265', crf: 21 } },
+        audio: { selection: 'value', profileData: { codec: 'aac' } },
+        tracks: { selection: 'value', profileData: { keepDefaultAudio: true } },
+        category: { selection: 'inherit' },
+        destination: { selection: 'value', destinationLibraryId: 1 },
+      }])),
+      missingAssetIds: [],
+    }) as never);
+    renderRawPage('/assets?location=raw&sourceGroup=7&logicalGroup=%2Fmedia%2Fraw%2Fanime%2FAttack%20on%20Titan');
+
+    const table = await screen.findByRole('table', { name: 'RAW assets' });
+    const row = within(table).getByText('S01E01.mkv').closest('tr')!;
+    await user.click(within(row).getByRole('button', { name: 'More actions for S01E01.mkv' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Queue asset' }));
+    await waitFor(() => expect(api.createQueueJob).toHaveBeenCalledOnce());
+    expect(api.createQueueJob).toHaveBeenCalledWith(expect.objectContaining({
+      mediaPath: '/media/raw/anime/Attack on Titan/S01E01.mkv',
+      libraryId: 1,
+      profileId: 0,
+      resolveProfileAssignments: true,
+    }));
+  });
+
+  it('shows Queue / Preflight failures in the visible V2 path toolbar area', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.createQueueBatchPreflight).mockRejectedValue(new Error('effective custom configuration rejected'));
+    renderRawPage();
+
+    const title = await screen.findByRole('treeitem', { name: 'Attack on Titan' });
+    await user.click(rawTreeItem('Anime'));
+    await user.click(title);
+    title.focus();
+    await user.keyboard('{ArrowRight}');
+    await user.click(treeItem('extras', 4));
+
+    const toolbar = await screen.findByTestId('assets-path-toolbar');
+    await user.click(within(toolbar).getByRole('button', { name: 'Queue / Preflight' }));
+    expect((await screen.findByTestId('assets-v2-path-feedback')).textContent).toContain('effective custom configuration rejected');
   });
 });
