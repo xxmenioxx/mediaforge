@@ -28,6 +28,7 @@ describe('mobile navigation compatibility', () => {
 
     const mobileHeader = screen.getByRole('banner');
     expect(within(mobileHeader).getByRole('img', { name: 'MVForge logo' })).toBeTruthy();
+    expect(within(mobileHeader).getByTestId('mvforge-logo-symbol')).toBeTruthy();
     expect(within(mobileHeader).getByText('MVForge')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Open navigation' }));
     const assetsLinks = screen.getAllByRole('link', { name: 'Assets' });
@@ -109,6 +110,7 @@ describe('desktop navigation rail', () => {
     const rail = screen.getByRole('complementary');
     expect(within(rail).getByRole('img', { name: 'MVForge logo' })).toBeTruthy();
     expect(within(rail).getByTestId('mvforge-brand-mark')).toBeTruthy();
+    expect(within(rail).getByTestId('mvforge-logo-symbol')).toBeTruthy();
     expect(within(rail).queryByText('Assets')).toBeNull();
     await user.hover(rail);
     expect(within(rail).getByText('Assets')).toBeTruthy();

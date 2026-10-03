@@ -1,19 +1,19 @@
 ## Why
 
-Issue #208 completes the shared Assets V2 RAW/Library workspace. This final visual-fidelity pass re-audits the latest local reference files and updates layout, hierarchy presentation, controls, row density, sidebar branding, and selected-asset context without changing existing domain behavior.
+Issue #208 completes the shared Assets V2 RAW/Library workspace. This final correction pass uses the current authenticated Figma frame at node 2:1874 and corrects Library Safe Delete selection, header selection semantics, path-action icon visibility, branding, and the selected-asset context without changing domain behavior.
 
 ## What Changes
 
-- Use the current `docs/design-reference/assets-v2/figma-make/` and `docs/design-reference/assets-v2/asstesv2.png` visual references. In this checkout the selected-asset PNG has the existing `asstesv2.png` spelling.
+- Use the current authenticated Assets V2 Figma frame (node 2:1874) as the visual authority. The approved `docs/design-reference/assets-v2/assetsv2.png` is not present in this checkout; the differently spelled `asstesv2.png` is stale and MUST NOT be treated as equivalent.
 - Place a full-width Assets/Search row above the two-column workspace. Put Asset Library at left and summary, breadcrumb/path actions, inventory controls, independently scrolling rows, and sticky selected detail at right.
 - Present the two hierarchy sections as RAW and Libraries, with configured destination Library roots under Libraries; preserve canonical context IDs. Set resize bounds to 220px–390px with a 262px default and local persistence.
 - Keep summary counts canonical, existing filters in a compact Filter popover, and Sort disabled while safe sorting is unsupported.
-- Keep the shared RAW/Library table schemas, filename-only cells, thin row separators, selected/hover treatments, score-only Advisor indicator, and existing row-action menu.
+- Keep the shared RAW/Library table schemas, filename-only cells, subtle vertical row separation, selected/hover treatments, score-only Advisor indicator, and existing row-action menu. Add accessible header selection over visible eligible rows, with Library Safe Delete checkboxes gated by existing lifecycle capabilities.
 - Recompose breadcrumb and supported path actions into one bar while reusing current callbacks, dialogs, capability checks, confirmations, and lifecycle-safe destructive behavior.
-- Keep selected-asset context below the independently scrolling list, using the current reference's landscape/identity/status/technical-actions grouping and accessible collapse/reopen behavior.
+- Keep selected-asset context below the independently scrolling list. Match the current 4:3 artwork, filename/path identity, and compact MEDIA strip (Video, Encoder, Duration, Range, Size, Modified); keep Play integrated into artwork and keep row overflow as the asset-action owner.
 - Keep generic artwork until an actual supported artwork URL reaches the selected-detail caller. Record unsupported design actions as follow-ups instead of fabricating them.
 - Move Legacy Analysis Decisions from normal browsing into Assets Settings without changing saved records.
-- Refine the existing MVForge sidebar mark and icon spacing within React + MUI, preserving navigation behavior.
+- Use the current purple rounded-square MVForge tile with its white outlined Play glyph; preserve desktop hover and mobile drawer behavior. The current frame has no pin/unpin affordance.
 
 ## Capabilities
 

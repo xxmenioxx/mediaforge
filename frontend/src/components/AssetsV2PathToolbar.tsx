@@ -75,7 +75,7 @@ export function AssetsV2PathToolbar({
       <Stack direction="row" alignItems="center" justifyContent="flex-end" spacing={0.4} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
         {primaryActions}
         {pathOperations ? (
-          <Box data-testid="assets-path-operations" sx={{ display: 'flex', alignItems: 'center', minWidth: 0, '& .MuiButton-startIcon': { display: 'none' } }}>
+          <Box data-testid="assets-path-operations" sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
             {pathOperations}
           </Box>
         ) : null}

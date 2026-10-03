@@ -29,6 +29,7 @@ import AssessmentOutlinedIcon from '@mui/icons-material/AssessmentOutlined';
 import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import MenuIcon from '@mui/icons-material/Menu';
 import CloseIcon from '@mui/icons-material/Close';
+import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import packageJson from '../../package.json';
@@ -103,16 +104,13 @@ function BrandMark({ size = 32 }: { size?: number }) {
         flex: `0 0 ${size}px`,
         display: 'grid',
         placeItems: 'center',
+        borderRadius: '5px',
+        bgcolor: '#6c4cf6',
+        color: '#fff',
+        boxShadow: '0 2px 8px rgba(108, 76, 246, 0.22)',
       }}
     >
-      <Box component="span" aria-hidden="true" sx={{
-        display: 'block',
-        width: size * 0.84,
-        height: size,
-        clipPath: 'polygon(0 0, 100% 50%, 0 100%, 0 66%, 42% 50%, 0 34%)',
-        background: 'linear-gradient(145deg, #14dec0, #5054ff 58%, #8b4df8)',
-        filter: 'drop-shadow(0 0 9px rgba(108, 76, 246, 0.38))',
-      }} />
+      <PlayArrowOutlinedIcon data-testid="mvforge-logo-symbol" sx={{ fontSize: size * 0.7, color: 'inherit' }} />
     </Box>
   );
 }

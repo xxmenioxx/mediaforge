@@ -1,6 +1,6 @@
 ## Purpose
 
-Defines one accessible Assets workspace for browsing RAW sources and configured Libraries while preserving canonical inventory, Advisor, Queue, profile, and lifecycle behavior. The current local Assets V2 Figma Make export is the visual authority; the current selected-asset composition reference is `docs/design-reference/assets-v2/asstesv2.png` (its checked-out filename contains the existing typo).
+Defines one accessible Assets workspace for browsing RAW sources and configured Libraries while preserving canonical inventory, Advisor, Queue, profile, and lifecycle behavior. The current authenticated Figma frame at node 2:1874 is the visual authority. The approved local composition path is `docs/design-reference/assets-v2/assetsv2.png`; it is absent from this checkout, and the stale `asstesv2.png` file is not interchangeable.
 
 ## ADDED Requirements
 
@@ -70,7 +70,7 @@ Provenance, media area, validation, original, workflow, and attention filters MU
 
 ### Requirement: Library and RAW inventories share a compact, filename-only table
 
-The Library inventory MUST display these columns in order: Asset, Advisor, Status, Codec, Resolution, Encoder, Duration, Bitrate, HDR/SDR, Size, Modified, Actions. The RAW inventory MUST display: Asset, Advisor, Status, Source / Codec, Resolution, Duration, Bitrate, Size, Modified, Actions. The Asset cell MUST contain the filename only; selected hierarchy and breadcrumb context provide the path. Rows MUST use compact bordered surfaces with subtle hover and selected states, thin row separators, and no artificial vertical gaps. Inventory data MUST come from the existing shared inventory and persisted summaries.
+The Library inventory MUST display these columns in order: Asset, Advisor, Status, Codec, Resolution, Encoder, Duration, Bitrate, HDR/SDR, Size, Modified, Actions. The RAW inventory MUST display: Asset, Advisor, Status, Source / Codec, Resolution, Duration, Bitrate, Size, Modified, Actions. The Asset cell MUST contain the filename only; selected hierarchy and breadcrumb context provide the path. Rows MUST use compact bordered surfaces with subtle hover and selected states, thin borders, and intentional subtle vertical separation (approximately 3px). Inventory data MUST come from the existing shared inventory and persisted summaries.
 
 #### Scenario: Render Library columns
 - **WHEN** a configured Library is selected
@@ -87,6 +87,22 @@ The Library inventory MUST display these columns in order: Asset, Advisor, Statu
 #### Scenario: Show missing summaries honestly
 - **WHEN** an inventory summary is absent
 - **THEN** its cell communicates the unavailable value without row-specific probing or fetching
+
+### Requirement: Inventory selection stays visible-page scoped and capability-gated
+
+When bulk selection is available, the table header MUST expose an accessible checkbox with checked, indeterminate, and disabled states. Select-all MUST operate only on visible eligible rows on the current page. RAW selection MUST preserve its existing nonmissing identified-asset rules. Library row checkboxes MUST be enabled only for assets eligible for the existing lifecycle-safe delete/return operation according to canonical provenance and `AssetInfo` action capabilities. Clicking a row MAY open its selected detail; it MUST NOT change bulk selection. Clicking a checkbox MUST change bulk selection without changing the active detail. The path toolbar selected count MUST represent checkbox-selected rows only, and its existing Safe Delete action MUST receive only those selected eligible assets.
+
+#### Scenario: Select eligible Library assets
+- **WHEN** Library inventory rows include mixed eligible and ineligible lifecycle capabilities
+- **THEN** only eligible rows can be selected, and header select-all selects the visible eligible subset
+
+#### Scenario: Keep active detail separate from bulk selection
+- **WHEN** a user opens a Library asset detail without checking its row
+- **THEN** the selected count remains zero; checking the row changes the count without replacing the active detail
+
+#### Scenario: Safely delete selected assets
+- **WHEN** the user chooses Delete selected
+- **THEN** only checkbox-selected eligible targets are passed to the existing lifecycle-safe operation
 
 ### Requirement: Advisor uses canonical cached evidence and an explicit visual state
 
@@ -144,11 +160,11 @@ Each compact Library or RAW row MUST expose supported asset operations through o
 
 ### Requirement: Selected Asset context remains attached below the scrolling inventory
 
-When an asset is selected, a collapsible detail context MUST remain below the table and attached to the bottom of the Assets workspace while rows scroll. It MUST remain outside the inventory scroll region and MUST NOT become a modal or persistent right panel. The expanded desktop composition MUST be compact and horizontal: landscape preview with centered Play overlay and duration badge; identity/context with filename, series/collection/season/path, and compact category/Library, container, size, resolution, and codec facts; a separate Estado/Perfil/Subtítulos/Duración/Modificado group; and an Información técnica group for video codec, resolution, audio, and supported Assign Profile, Test Encode, and overflow actions. Do not show a dedicated workspace title, Quick facts/Status headings, or a redundant prominent status badge. Artwork MUST NOT dominate the panel height. Narrow layouts MUST reflow all content without page-level overflow. Collapse MUST leave a compact reopen affordance.
+When an asset is selected, a collapsible detail context MUST remain below the table and attached to the bottom of the Assets workspace while rows scroll. It MUST remain outside the inventory scroll region and MUST NOT become a modal or persistent right panel. The expanded desktop composition MUST match the current 4:3 artwork preview with centered Play overlay and duration badge at left; filename and caller-provided path/series context to its right; and one compact MEDIA strip containing Video (codec and resolution together), Encoder, Duration, Range, Size, and Modified. The panel MUST NOT add unprovided series metadata, a duplicated codec/resolution quick-facts group, a separate status/subtitle/audio block, or Assign Profile/Test Encode/overflow buttons. Play MUST remain integrated into the artwork, and row overflow remains the owner for asset actions. The panel MUST remain compact, use a subtle collapse control, and leave a compact accessible reopen affordance. Narrow layouts MUST reflow without page-level overflow.
 
 #### Scenario: Show selected asset context
 - **WHEN** the user selects a RAW or Library asset
-- **THEN** its collapsible context appears outside the inventory scroll region with the available identity, status, technical data, and eligible actions
+- **THEN** its collapsible context appears outside the inventory scroll region with filename/path context and available compact MEDIA facts
 
 #### Scenario: Keep context visible while rows scroll
 - **WHEN** a long inventory list scrolls
@@ -184,7 +200,7 @@ The main Assets browsing workspace MUST NOT render Legacy Analysis Decisions. Ex
 
 ### Requirement: Sidebar branding and navigation retain the current shell
 
-The global navigation MUST use the current Figma's compact MVForge gradient triangle mark and restrained icon/spacing treatment while preserving existing routes, sections, responsive navigation, and active-state behavior. The mark MAY be rendered in CSS because the current reference defines it as a gradient geometric mark rather than a supplied logo file. The implementation MUST NOT copy the Figma Make framework or dependencies.
+The global navigation MUST use the current Figma's purple rounded-square MVForge tile with a white outlined Play glyph while preserving existing routes, sections, responsive navigation, and active-state behavior. It MUST NOT use the stale CSS-generated gradient triangle. The current frame has no pin/unpin affordance; desktop hover expansion and the mobile drawer remain the current navigation behavior. The implementation MUST NOT copy the Figma Make framework or dependencies.
 
 #### Scenario: Navigate from the branded shell
 - **WHEN** the Assets route is opened from desktop or mobile navigation

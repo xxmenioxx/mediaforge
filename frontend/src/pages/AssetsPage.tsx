@@ -876,6 +876,7 @@ function LibraryAssetTable({
   const [selectedAssetSelection, setSelectedAssetSelection] = useState({ filterIdentity, path: '' });
   const selectedAssetPath = selectedAssetSelection.filterIdentity === filterIdentity ? selectedAssetSelection.path : '';
   const setSelectedAssetPath = (path: string) => setSelectedAssetSelection({ filterIdentity, path });
+  const [bulkSelectionState, setBulkSelectionState] = useState({ filterIdentity, ids: new Set<number>() });
   const [pageSelection, setPageSelection] = useState({ filterIdentity, page: 0 });
   const requestedPage = pageSelection.filterIdentity === filterIdentity ? pageSelection.page : 0;
   const setPage = (page: number) => setPageSelection({ filterIdentity, page });
@@ -902,9 +903,36 @@ function LibraryAssetTable({
       })
       .map((asset) => ({ asset, group })));
   }, [visibleGroups]);
+  const selectableAssetIdsByGroup = useMemo(() => new Map(
+    visibleGroups.map((group) => [
+      normalizePath(group.path),
+      new Set(librarySafeBulkSelectableAssets(group).map((asset) => asset.id).filter((id): id is number => id !== undefined)),
+    ]),
+  ), [visibleGroups]);
+  const visibleSelectableAssetIds = useMemo(() => new Set(visibleAssets.flatMap(({ asset, group }) => (
+    asset.id !== undefined && selectableAssetIdsByGroup.get(normalizePath(group.path))?.has(asset.id) ? [asset.id] : []
+  ))), [selectableAssetIdsByGroup, visibleAssets]);
+  const selectedAssetIds = useMemo(() => new Set(
+    bulkSelectionState.filterIdentity === filterIdentity
+      ? Array.from(bulkSelectionState.ids).filter((id) => visibleSelectableAssetIds.has(id))
+      : [],
+  ), [bulkSelectionState, filterIdentity, visibleSelectableAssetIds]);
+  const updateLibraryAssetSelection = (assetIds: number[], selected: boolean) => {
+    const next = new Set(selectedAssetIds);
+    for (const id of assetIds) {
+      if (selected && visibleSelectableAssetIds.has(id)) next.add(id);
+      else next.delete(id);
+    }
+    setBulkSelectionState({ filterIdentity, ids: next });
+  };
   const pageCount = Math.max(1, Math.ceil(visibleAssets.length / rowsPerPage));
   const page = Math.min(requestedPage, pageCount - 1);
   const pageRows = visibleAssets.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+  const selectablePageAssetIds = pageRows.flatMap(({ asset, group }) => (
+    asset.id !== undefined && selectableAssetIdsByGroup.get(normalizePath(group.path))?.has(asset.id) ? [asset.id] : []
+  ));
+  const selectedSelectablePageAssetCount = selectablePageAssetIds.filter((id) => selectedAssetIds.has(id)).length;
+  const allSelectablePageAssetsSelected = selectablePageAssetIds.length > 0 && selectedSelectablePageAssetCount === selectablePageAssetIds.length;
   const selectedEntry = pageRows.find(({ asset }) => asset.path === selectedAssetPath);
   const selectedAsset = selectedEntry?.asset;
   const selectedGroup = selectedEntry?.group;
@@ -917,6 +945,10 @@ function LibraryAssetTable({
   const selectedPathGroup = treeSelection.path
     ? visibleGroups.find((group) => normalizePath(group.path) === normalizePath(treeSelection.path))
     : undefined;
+  const selectedPathAssetIds = selectedPathGroup
+    ? librarySafeBulkSelectableAssets(selectedPathGroup).flatMap((asset) => asset.id === undefined ? [] : [asset.id])
+    : [];
+  const selectedPathBulkCount = selectedPathAssetIds.filter((id) => selectedAssetIds.has(id)).length;
   const selectedLibrary = libraries.find((library) => library.id === treeSelection.libraryId);
   const selectedLibraryName = selectedLibrary?.name ?? groups.find((group) => group.libraryId === treeSelection.libraryId)?.libraryName;
   const selectedPathParts = treeSelection.path.replace(/\\/g, '/').split('/').filter(Boolean);
@@ -925,20 +957,14 @@ function LibraryAssetTable({
     ? ['Assets', 'Libraries', 'All Library assets']
     : ['Assets', 'Libraries', selectedLibraryName ?? 'Library', ...selectedPathParts.slice(libraryRootPartCount)];
 
+  const selectedAssetRelativeParts = selectedAsset ? selectedAsset.relativePath.replace(/\\/g, '/').split('/').filter(Boolean) : [];
+  const selectedAssetParentPath = selectedAssetRelativeParts.at(-1) === selectedAsset?.fileName
+    ? selectedAssetRelativeParts.slice(0, -1).join('/')
+    : selectedAssetRelativeParts.join('/');
   const selectedAssetPathContext = selectedAsset && selectedGroup
-    ? `${selectedAsset.libraryName || selectedGroup.libraryName}${selectedAsset.relativePath ? ` · ${selectedAsset.relativePath}` : ''}`
+    ? [selectedAsset.libraryName || selectedGroup.libraryName, selectedAssetParentPath].filter(Boolean).join(' · ')
     : '';
-  const selectedAssetProfile = selectedAsset && selectedGroup
-    ? assignedProfileLabel(selectedAsset, selectedGroup, profileAssignments.data ?? [], profiles)
-    : 'Unavailable';
-  const selectedJob = selectedAsset ? associatedJobForCurrentPublication(selectedAsset, queueJobs) : undefined;
-  const selectedPipeline = selectedAsset ? assetPipelineState(selectedAsset, selectedJob, false) : undefined;
   const selectedSnapshotData = selectedSnapshot.data?.snapshot ?? null;
-  const selectedSubtitleSummary = selectedSnapshotData
-    ? `${selectedSnapshotData.subtitleStreams.length} ${selectedSnapshotData.subtitleStreams.length === 1 ? 'track' : 'tracks'}${selectedSnapshotData.subtitleStreams.some((stream) => stream.language) ? ` · ${Array.from(new Set(selectedSnapshotData.subtitleStreams.map((stream) => stream.language).filter(Boolean))).slice(0, 3).join(', ')}` : ''}`
-    : 'Unavailable';
-  const selectedCanAssignProfile = Boolean(selectedAsset && !hidePreConversionActionsForAsset(selectedAsset) && !selectedAsset.missing && !assetHasOpenJob(selectedAsset, queueJobs));
-  const selectedCanTestEncode = Boolean(selectedAsset && testEncodeEligibleAsset(selectedAsset, mode) && assetInfoCapability(selectedAsset, 'lab').allowed);
 
   return (
     <Box data-testid="assets-mode-workspace" sx={{ bgcolor: 'background.default', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
@@ -961,7 +987,9 @@ function LibraryAssetTable({
               mode={mode}
               v2ToolbarOnly
               breadcrumbSegments={libraryBreadcrumbs}
-              selectedCount={selectedAsset ? 1 : 0}
+              selectedCount={selectedPathBulkCount}
+              selectedAssetIds={selectedAssetIds}
+              onAssetSelectionChange={updateLibraryAssetSelection}
             />
           ) : (
             <AssetsV2PathToolbar
@@ -977,7 +1005,16 @@ function LibraryAssetTable({
 
           <Box data-testid="assets-list-scroll" role="region" aria-label="Library asset list" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', pb: 1.25 }}>
           {visibleAssets.length ? (
-            <AssetsInventoryTable mode="library">
+            <AssetsInventoryTable
+              mode="library"
+              selectable
+              selectAll={{
+                checked: allSelectablePageAssetsSelected,
+                indeterminate: selectedSelectablePageAssetCount > 0 && !allSelectablePageAssetsSelected,
+                disabled: selectablePageAssetIds.length === 0,
+                onChange: (selected) => updateLibraryAssetSelection(selectablePageAssetIds, selected),
+              }}
+            >
                   {pageRows.map(({ asset, group }) => {
                     const assignments = profileAssignments.data?.filter((assignment) => assignment.targetType === 'path' && normalizePath(assignment.targetPath) === normalizePath(group.path)) ?? [];
                     const videoAssignment = assignments.find((assignment) => assignment.mediaType === 'video');
@@ -1010,10 +1047,10 @@ function LibraryAssetTable({
                         queueJobs={queueJobs}
                         snapshotRunning={runningSnapshotPaths.has(asset.path)}
                         mode={mode}
-                        bulkSelected={false}
-                        bulkSelectionEnabled={false}
-                        bulkSelectionDisabled={asset.missing}
-                        onBulkSelectionChange={() => undefined}
+                        bulkSelected={Boolean(asset.id && selectedAssetIds.has(asset.id))}
+                        bulkSelectionEnabled
+                        bulkSelectionDisabled={asset.id === undefined || !selectableAssetIdsByGroup.get(normalizePath(group.path))?.has(asset.id)}
+                        onBulkSelectionChange={(_, selected) => { if (asset.id !== undefined) updateLibraryAssetSelection([asset.id], selected); }}
                         compactLibrary
                         selected={asset.path === selectedAssetPath}
                         onSelectAsset={() => setSelectedAssetPath(asset.path)}
@@ -1044,21 +1081,10 @@ function LibraryAssetTable({
             <SelectedAssetDetail
               asset={selectedAsset}
               pathContext={selectedAssetPathContext}
-              status={selectedPipeline?.label ?? statusLabel(selectedAsset.status)}
-              statusColor={selectedPipeline?.color ?? statusColor(selectedAsset.status)}
-              assignedProfile={selectedAssetProfile}
               snapshot={selectedSnapshotData}
-              snapshotLoading={selectedSnapshot.isLoading}
-              subtitlesSummary={selectedSubtitleSummary}
               modifiedLabel={formatDate(selectedAsset.modifiedAt)}
               sizeLabel={formatBytes(selectedAsset.sizeBytes)}
               onPlayPreview={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.playPreview()}
-              onAssignProfile={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.assignProfile()}
-              onTestEncode={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.testEncode()}
-              onMore={(anchor) => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.openMore(anchor)}
-              canAssignProfile={selectedCanAssignProfile}
-              canTestEncode={selectedCanTestEncode}
-              testEncodeDisabled={selectedAsset.missing || assetHasOpenJob(selectedAsset, queueJobs)}
             />
           ) : null}
         </Box>
@@ -1074,16 +1100,31 @@ type AssetWorkspaceActions = {
   openMore: (anchor: HTMLElement) => void;
 };
 
-function assignedProfileLabel(asset: Asset, group: AssetGroup, assignments: ProfileAssignment[], profiles: Profile[]) {
-  const assetAssignment = assignments.find((assignment) => assignment.targetType === 'asset' && normalizePath(assignment.targetPath) === normalizePath(asset.path) && assignment.mediaType === 'video');
-  const pathAssignment = assignments.find((assignment) => assignment.targetType === 'path' && normalizePath(assignment.targetPath) === normalizePath(group.path) && assignment.mediaType === 'video');
-  const assignment = assetAssignment ?? pathAssignment;
-  if (!assignment) return 'Inherited';
-  if (assignment.selection === 'disabled') return 'Disabled';
-  if (assignment.selection === 'override_only') return 'Overrides only';
-  if (assignment.selection === 'audio_only') return 'Audio only';
-  const profile = profiles.find((candidate) => candidate.id === assignment.videoProfileId);
-  return profile?.name ?? (assignment.videoProfileId ? 'Unavailable' : 'Inherited');
+function assetGroupLifecycleFlags(group: AssetGroup, groupAssets = safeArray(group.assets)) {
+  const memberProvenances = new Set(groupAssets.map((asset) => asset.lifecycle?.provenance ?? asset.status));
+  const isMixedGroup = memberProvenances.size > 1
+    || group.status === 'mixed'
+    || (group.lifecycleSummary?.lifecycle.length ?? 0) > 1
+    || (group.lifecycleSummary?.validation.length ?? 0) > 1
+    || (group.lifecycleSummary?.publication.length ?? 0) > 1;
+  const isConvertedGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'converted' || asset.status === 'converted');
+  const isPublishedAsIsGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'published_as_is' || asset.publicationMode === 'as_is');
+  const isAcceptedGroup = group.status === 'accepted' || (!isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'imported' || asset.status === 'accepted'));
+  return { isMixedGroup, isConvertedGroup, isPublishedAsIsGroup, isAcceptedGroup };
+}
+
+function librarySafeBulkSelectableAssets(group: AssetGroup) {
+  const lifecycle = assetGroupLifecycleFlags(group);
+  if (lifecycle.isMixedGroup || lifecycle.isAcceptedGroup) return [];
+  const action = lifecycle.isPublishedAsIsGroup
+    ? 'restore'
+    : lifecycle.isConvertedGroup
+      ? 'deleteArchivedOriginal'
+      : undefined;
+  if (!action) return [];
+  return safeArray(group.assets).filter((asset) => (
+    !asset.missing && asset.id !== undefined && assetInfoCapability(asset, action).allowed
+  ));
 }
 
 type AssetCollection = {
@@ -1164,6 +1205,9 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
   const pageCount = Math.max(1, Math.ceil(visibleAssets.length / rowsPerPage));
   const visiblePage = Math.min(page, pageCount - 1);
   const pageRows = visibleAssets.slice(visiblePage * rowsPerPage, visiblePage * rowsPerPage + rowsPerPage);
+  const selectablePageAssetIds = pageRows.flatMap(({ asset }) => !asset.missing && asset.id !== undefined ? [asset.id] : []);
+  const selectedSelectablePageAssetCount = selectablePageAssetIds.filter((id) => selectedAssetIds.has(id)).length;
+  const allSelectablePageAssetsSelected = selectablePageAssetIds.length > 0 && selectedSelectablePageAssetCount === selectablePageAssetIds.length;
   const selectedAssetPath = requestedSelectedAssetPath || pageRows[0]?.asset.path || '';
   const selectedEntry = pageRows.find(({ asset }) => normalizePath(asset.path) === normalizePath(selectedAssetPath));
   const selectedAsset = selectedEntry?.asset;
@@ -1181,17 +1225,7 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
     enabled: pageAssetIds.length > 0,
     staleTime: 15_000,
   });
-  const selectedEffective = selectedAsset?.id ? effectiveConfigurations.data?.configurations[String(selectedAsset.id)] : undefined;
-  const selectedProfileId = selectedEffective?.video.videoProfileId ?? 0;
-  const selectedProfileName = selectedProfileId ? profiles.find((profile) => profile.id === selectedProfileId)?.name ?? 'Unavailable' : 'Inherited';
-  const selectedJob = selectedAsset ? associatedJobForCurrentPublication(selectedAsset, queueJobs) : undefined;
-  const selectedPipeline = selectedAsset ? assetPipelineState(selectedAsset, selectedJob, false) : undefined;
   const selectedSnapshotData = selectedSnapshot.data?.snapshot ?? null;
-  const selectedSubtitleSummary = selectedSnapshotData
-    ? `${selectedSnapshotData.subtitleStreams.length} ${selectedSnapshotData.subtitleStreams.length === 1 ? 'track' : 'tracks'}${selectedSnapshotData.subtitleStreams.some((stream) => stream.language) ? ` · ${Array.from(new Set(selectedSnapshotData.subtitleStreams.map((stream) => stream.language).filter(Boolean))).slice(0, 3).join(', ')}` : ''}`
-    : 'Unavailable';
-  const selectedCanAssignProfile = Boolean(selectedAsset && !hidePreConversionActionsForAsset(selectedAsset) && !selectedAsset.missing && !assetHasOpenJob(selectedAsset, queueJobs));
-  const selectedCanTestEncode = Boolean(selectedAsset && testEncodeEligibleAsset(selectedAsset, 'unprocessed') && assetInfoCapability(selectedAsset, 'lab').allowed);
   const selectedPathGroup = selectedPath ? assetGroupFromTreePath(selectedPath) : undefined;
   const rawBreadcrumbs = selection.kind === 'all'
     ? ['Assets', 'RAW', 'All RAW assets']
@@ -1283,7 +1317,16 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
           </AssetsV2InventoryControls>
           <Box data-testid="assets-list-scroll" role="region" aria-label="RAW asset list" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', pb: 1.25 }}>
           {visibleAssets.length ? (
-            <AssetsInventoryTable mode="raw" selectable>
+            <AssetsInventoryTable
+              mode="raw"
+              selectable
+              selectAll={{
+                checked: allSelectablePageAssetsSelected,
+                indeterminate: selectedSelectablePageAssetCount > 0 && !allSelectablePageAssetsSelected,
+                disabled: selectablePageAssetIds.length === 0,
+                onChange: (selected) => updateSelectedAssets(selectablePageAssetIds, selected),
+              }}
+            >
                   {pageRows.map(({ asset, path }) => {
                     const effective = asset.id ? effectiveConfigurations.data?.configurations[String(asset.id)] : undefined;
                     const track = trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey);
@@ -1341,21 +1384,10 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
             <SelectedAssetDetail
               asset={selectedAsset}
               pathContext={`${selectedEntry.sourceGroup.name} · ${selectedEntry.logicalGroup.name} · ${selectedEntry.path.isLogicalGroupRoot ? 'Root' : selectedEntry.path.displayPath || selectedEntry.path.name}`}
-              status={selectedPipeline?.label ?? statusLabel(selectedAsset.status)}
-              statusColor={selectedPipeline?.color ?? statusColor(selectedAsset.status)}
-              assignedProfile={selectedProfileName}
               snapshot={selectedSnapshotData}
-              snapshotLoading={selectedSnapshot.isLoading}
-              subtitlesSummary={selectedSubtitleSummary}
               modifiedLabel={formatDate(selectedAsset.modifiedAt)}
               sizeLabel={formatBytes(selectedAsset.sizeBytes)}
               onPlayPreview={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.playPreview()}
-              onAssignProfile={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.assignProfile()}
-              onTestEncode={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.testEncode()}
-              onMore={(anchor) => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.openMore(anchor)}
-              canAssignProfile={selectedCanAssignProfile}
-              canTestEncode={selectedCanTestEncode}
-              testEncodeDisabled={selectedAsset.missing || assetHasOpenJob(selectedAsset, queueJobs)}
             />
           ) : null}
         </Box>
@@ -2301,19 +2333,19 @@ function AssetGroupRow({
     : selectedProfileId || pathVideoProfiles[0]?.id || 0;
   const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
   const lifecycleSummary = group.lifecycleSummary;
-  const memberProvenances = new Set(groupAssets.map((asset) => asset.lifecycle?.provenance ?? asset.status));
-  const isMixedGroup = memberProvenances.size > 1 || group.status === 'mixed' || (lifecycleSummary?.lifecycle.length ?? 0) > 1 || (lifecycleSummary?.validation.length ?? 0) > 1 || (lifecycleSummary?.publication.length ?? 0) > 1;
-  const isConvertedGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'converted' || asset.status === 'converted');
-  const isPublishedAsIsGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'published_as_is' || asset.publicationMode === 'as_is');
-  const isAcceptedGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'imported' || asset.status === 'accepted');
+  const { isMixedGroup, isConvertedGroup, isPublishedAsIsGroup, isAcceptedGroup } = assetGroupLifecycleFlags(group, groupAssets);
   const isLibraryGroup = mode === 'library' || group.status === 'unverified' || group.status === 'accepted' || group.status === 'library' || group.status === 'published_as_is';
   const isReadOnlyGroup = isMixedGroup || isConvertedGroup || isPublishedAsIsGroup || isAcceptedGroup;
   const showConfidenceColumn = mode !== 'converted';
-  const bulkSelectableAssets = isReadOnlyGroup && !isAcceptedGroup ? groupAssets.filter((asset) => !asset.missing) : [];
+  const bulkSelectableAssets = mode === 'library'
+    ? librarySafeBulkSelectableAssets(group)
+    : isReadOnlyGroup && !isAcceptedGroup ? groupAssets.filter((asset) => !asset.missing) : [];
   const hasMultipleSelectableAssets = bulkSelectableAssets.length > 1;
-	const hierarchicalSelectableAssets = selectedAssetIds ? groupAssets.filter((asset) => !asset.missing && asset.id) : bulkSelectableAssets;
+	const hierarchicalSelectableAssets = selectedAssetIds
+    ? mode === 'library' ? bulkSelectableAssets : groupAssets.filter((asset) => !asset.missing && asset.id)
+    : bulkSelectableAssets;
 	const allBulkAssetsSelected = hierarchicalSelectableAssets.length > 0 && hierarchicalSelectableAssets.every((asset) => selectedAssetIds ? selectedAssetIds.has(asset.id ?? 0) : selectedAssetPaths.includes(asset.path));
-	const someHierarchicalAssetsSelected = selectedAssetIds ? hierarchicalSelectableAssets.some((asset) => selectedAssetIds.has(asset.id ?? 0)) : selectedAssetPaths.length > 0;
+	const someHierarchicalAssetsSelected = hierarchicalSelectableAssets.some((asset) => selectedAssetIds ? selectedAssetIds.has(asset.id ?? 0) : selectedAssetPaths.includes(asset.path));
   const disabledConfidencePaths = getDisabledConfidencePaths(settings);
   const isConfidenceEnabled = !disabledConfidencePaths.includes(group.path);
   const updateSetting = useMutation({
@@ -3127,7 +3159,7 @@ function AssetGroupRow({
                           mode={mode}
 						  bulkSelected={selectedAssetIds ? selectedAssetIds.has(asset.id ?? 0) : selectedAssetPaths.includes(asset.path)}
 						  bulkSelectionEnabled={Boolean(selectedAssetIds) || (isReadOnlyGroup && hasMultipleSelectableAssets)}
-                          bulkSelectionDisabled={asset.missing || bulkAssetAction.isPending}
+						  bulkSelectionDisabled={asset.missing || bulkAssetAction.isPending || !bulkSelectableAssets.some((candidate) => candidate.path === asset.path)}
 						  onBulkSelectionChange={(path, selected) => selectedAssetIds
 							? onAssetSelectionChange?.([groupAssets.find((candidate) => candidate.path === path)?.id ?? 0], selected)
 							: toggleBulkAsset(path, selected)}

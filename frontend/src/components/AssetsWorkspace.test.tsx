@@ -285,123 +285,91 @@ describe('Assets workspace presentation', () => {
     expect(screen.queryByRole('img', { name: 'Episode 01.mkv artwork' })).toBeNull();
   });
 
-  it('shows compact technical details with one integrated preview Play control', async () => {
+  it('matches the current selected asset composition with concise, non-duplicated media facts', async () => {
     const user = userEvent.setup();
     const play = vi.fn();
-    const assign = vi.fn();
-    const testEncode = vi.fn();
-    const more = vi.fn();
-    const asset = makeAsset();
     render(
       <SelectedAssetDetail
-        asset={asset}
+        asset={makeAsset()}
         pathContext="Anime · Series/Season 01"
-        status="Ready"
-        assignedProfile="HEVC Main"
         snapshot={scan}
-        snapshotLoading={false}
-        subtitlesSummary="2 tracks · ja, en"
         modifiedLabel="Sep 30, 2026"
         sizeLabel="1.5 MB"
         onPlayPreview={play}
-        onAssignProfile={assign}
-        onTestEncode={testEncode}
-        onMore={(anchor) => more(anchor)}
-        canAssignProfile
-        canTestEncode
       />,
     );
 
-    expect(screen.getByText('Video codec')).toBeTruthy();
-    expect(screen.getAllByText('hevc')).toHaveLength(2);
-    expect(screen.getByText('Container')).toBeTruthy();
-    expect(screen.getByText('MATROSKA')).toBeTruthy();
-    expect(screen.getAllByText('Resolution')).toHaveLength(2);
-    expect(screen.getAllByText('1920 × 1080')).toHaveLength(2);
-    expect(screen.getByText('Audio')).toBeTruthy();
-    expect(screen.getByText('aac 2ch ja')).toBeTruthy();
     const details = screen.getByTestId('selected-asset-detail');
-    expect(within(details).queryByRole('heading', { name: 'Selected Asset Workspace' })).toBeNull();
-    expect(within(details).queryByText('Quick facts')).toBeNull();
-    expect(within(details).queryByText('Status / context')).toBeNull();
-    expect(within(details).queryByText('Technical information')).toBeNull();
+    const preview = screen.getByTestId('selected-asset-preview');
+    const identity = screen.getByTestId('selected-asset-identity');
+    const media = within(screen.getByTestId('selected-asset-technical'));
     expect(getComputedStyle(details).position).toBe('sticky');
     expect(getComputedStyle(details).bottom).toBe('0px');
-    expect(screen.getByText('Category / Library')).toBeTruthy();
-    expect(screen.getByTestId('selected-asset-preview')).toBeTruthy();
-    expect(screen.getByTestId('selected-asset-identity').contains(screen.getByText('Episode 01.mkv'))).toBe(true);
-    expect(screen.getByTestId('selected-asset-status').contains(screen.getByText('Estado'))).toBe(true);
-    expect(screen.getByTestId('selected-asset-technical').contains(screen.getByText('Información técnica'))).toBe(true);
-    expect(within(screen.getByTestId('selected-asset-technical')).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
-    expect(within(screen.getByTestId('selected-asset-technical')).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
-    expect(screen.getAllByText('Ready')).toHaveLength(1);
-    expect(screen.getByText('Subtítulos')).toBeTruthy();
-    expect(screen.getByText('2 tracks · ja, en')).toBeTruthy();
-    expect(screen.getByText('Estado')).toBeTruthy();
-    expect(screen.getByText('Perfil')).toBeTruthy();
-    expect(screen.getByText('Duración')).toBeTruthy();
-    expect(screen.getByText('Modificado')).toBeTruthy();
-    expect(screen.getAllByRole('button', { name: /Play preview of Episode 01.mkv/ })).toHaveLength(1);
-    expect(screen.getByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
-    expect(screen.queryByRole('img', { name: 'Episode 01.mkv artwork' })).toBeNull();
-    expect(screen.getAllByText('23m 40s')).toHaveLength(2);
-    expect(screen.queryByRole('button', { name: /View.*Play|Play.*View/ })).toBeNull();
+    expect(getComputedStyle(preview).aspectRatio).toBe('4/3');
+    expect(identity.textContent).toContain('Episode 01.mkv');
+    expect(identity.textContent).toContain('Anime · Series/Season 01');
+    expect(media.getByText('MEDIA')).toBeTruthy();
+    expect(media.getByText('Video')).toBeTruthy();
+    expect(media.getByText('hevc · 1920 × 1080')).toBeTruthy();
+    expect(media.getByText('Encoder')).toBeTruthy();
+    expect(media.getByText('Unavailable')).toBeTruthy();
+    expect(media.getByText('Duration')).toBeTruthy();
+    expect(media.getByText('Range')).toBeTruthy();
+    expect(media.getByText('SDR')).toBeTruthy();
+    expect(media.getByText('Size')).toBeTruthy();
+    expect(media.getByText('1.5 MB')).toBeTruthy();
+    expect(media.getByText('Modified')).toBeTruthy();
+    expect(within(details).queryByText('1920 × 1080', { exact: true })).toBeNull();
+    expect(within(details).queryByText('Category / Library')).toBeNull();
+    expect(within(details).queryByText('Estado')).toBeNull();
+    expect(within(details).queryByText('Audio')).toBeNull();
+    expect(within(details).queryByRole('button', { name: 'Assign Profile' })).toBeNull();
+    expect(within(details).queryByRole('button', { name: 'Test Encode' })).toBeNull();
+    expect(within(details).queryByRole('button', { name: /More actions/ })).toBeNull();
+    expect(within(details).queryByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
+    expect(within(details).getAllByText('23m 40s')).toHaveLength(2);
 
-    await user.click(screen.getByRole('button', { name: /Play preview of Episode 01.mkv/ }));
-    await user.click(screen.getByRole('button', { name: 'Assign Profile' }));
-    await user.click(screen.getByRole('button', { name: 'Test Encode' }));
-    fireEvent.click(screen.getByRole('button', { name: 'More actions for Episode 01.mkv' }));
+    await user.click(screen.getByRole('button', { name: 'Play preview of Episode 01.mkv' }));
     expect(play).toHaveBeenCalledOnce();
-    expect(assign).toHaveBeenCalledOnce();
-    expect(testEncode).toHaveBeenCalledOnce();
-    expect(more).toHaveBeenCalledOnce();
   });
 
-  it('collapses and expands the selected asset workspace from its labeled keyboard control', async () => {
+  it('collapses and expands selected details with an accessible keyboard control', async () => {
     const user = userEvent.setup();
     render(
       <SelectedAssetDetail
         asset={makeAsset()}
         pathContext="Anime · Series/Season 01"
-        status="Ready"
-        assignedProfile="HEVC Main"
         snapshot={scan}
-        snapshotLoading={false}
-        subtitlesSummary="2 tracks · ja, en"
         modifiedLabel="Sep 30, 2026"
         sizeLabel="1.5 MB"
         onPlayPreview={vi.fn()}
-        onAssignProfile={vi.fn()}
-        onTestEncode={vi.fn()}
-        onMore={vi.fn()}
-        canAssignProfile
-        canTestEncode
       />,
     );
 
     const details = screen.getByTestId('selected-asset-detail');
-    await user.click(screen.getByRole('button', { name: 'Collapse selected asset workspace for Episode 01.mkv' }));
+    await user.click(screen.getByRole('button', { name: 'Collapse selected asset details for Episode 01.mkv' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: /Play preview/ })).toBeNull());
     expect(within(details).getByText('Episode 01.mkv')).toBeTruthy();
-    const expand = screen.getByRole('button', { name: 'Expand selected asset workspace for Episode 01.mkv' });
+    const expand = screen.getByRole('button', { name: 'Expand selected asset details for Episode 01.mkv' });
     expand.focus();
     await user.keyboard('{Enter}');
     await waitFor(() => expect(screen.getByRole('button', { name: /Play preview/ })).toBeTruthy());
   });
 
-  it('uses category metadata as a compact quick fact without a separate metadata block', () => {
-    const asset = makeAsset();
-    const base = {
-      asset, pathContext: 'Anime · Series', status: 'Ready', assignedProfile: 'Inherited', snapshot: scan, snapshotLoading: false,
-      subtitlesSummary: '2 tracks', modifiedLabel: 'Sep 30, 2026', sizeLabel: '1.5 MB', onPlayPreview: vi.fn(), onAssignProfile: vi.fn(),
-      onTestEncode: vi.fn(), onMore: vi.fn(), canAssignProfile: true, canTestEncode: true,
-    };
-    const view = render(<SelectedAssetDetail {...base} />);
-    expect(screen.getByText('Category / Library')).toBeTruthy();
-    expect(screen.queryByText(/^Metadata ·/)).toBeNull();
-
-    view.rerender(<SelectedAssetDetail {...base} asset={makeAsset({ metadata: { categories: ['Anime'], tags: ['TV'] , updatedAt: '' } })} />);
-    expect(screen.getByText('Anime')).toBeTruthy();
-    expect(screen.queryByText(/^Metadata ·/)).toBeNull();
+  it('uses only the caller-provided path context instead of fabricating series metadata', () => {
+    render(
+      <SelectedAssetDetail
+        asset={makeAsset({ metadata: { categories: ['Anime'], tags: ['TV'], updatedAt: '' } })}
+        pathContext="Anime · Series/Season 01"
+        snapshot={scan}
+        modifiedLabel="Sep 30, 2026"
+        sizeLabel="1.5 MB"
+        onPlayPreview={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('selected-asset-identity').textContent).toContain('Anime · Series/Season 01');
+    expect(screen.queryByText('Category / Library')).toBeNull();
+    expect(screen.queryByText('Anime', { exact: true })).toBeNull();
   });
+
 });

@@ -13,7 +13,7 @@ vi.mock('../api/client', async (importOriginal) => {
     api: {
       ...actual.api,
       queueJobs: vi.fn(), assets: vi.fn(), profiles: vi.fn(), libraries: vi.fn(), settings: vi.fn(), snapshotOperations: vi.fn(),
-      profileAssignments: vi.fn(), assetScopeConfigurations: vi.fn(), latestSnapshot: vi.fn(), testEncodes: vi.fn(), jellyfinOutcomes: vi.fn(), effectiveAssetConfigurations: vi.fn(),
+      profileAssignments: vi.fn(), assetScopeConfigurations: vi.fn(), latestSnapshot: vi.fn(), testEncodes: vi.fn(), jellyfinOutcomes: vi.fn(), effectiveAssetConfigurations: vi.fn(), deleteConvertedAsset: vi.fn(),
     },
   };
 });
@@ -137,9 +137,9 @@ function rawTreeItem(name: string) {
   return childTreeItem('RAW', name);
 }
 
-function renderLibraryPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+function renderLibraryPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }), initialUrl = '/assets?location=library&search=Episode') {
   const view = render(
-    <MemoryRouter initialEntries={['/assets?location=library&search=Episode']}>
+    <MemoryRouter initialEntries={[initialUrl]}>
       <QueryClientProvider client={queryClient}>
         <AssetsPage />
         <SearchProbe />
@@ -299,12 +299,14 @@ describe('Library Assets workspace', () => {
     expect(screen.getByRole('link', { name: 'Open Assets Settings' }).getAttribute('href')).toBe('/settings?section=assets');
   });
 
-  it('selects an asset, loads persisted detail only for it, and exposes existing actions', async () => {
+  it('opens selected detail separately from Library bulk selection and loads only persisted media evidence', async () => {
     const user = userEvent.setup();
     const { queryClient } = renderLibraryPage();
 
-    const row = await screen.findByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv');
-    await user.click(row.closest('tr')!);
+    const filename = 'A Very Long Episode Filename That Should Stay Inside Its Column.mkv';
+    const rowText = await screen.findByText(filename);
+    const row = rowText.closest('tr')!;
+    await user.click(rowText);
 
     const list = screen.getByRole('region', { name: 'Library asset list' });
     const table = within(list).getByRole('table', { name: 'Library assets' });
@@ -314,49 +316,107 @@ describe('Library Assets workspace', () => {
     expect(list.contains(details)).toBe(false);
     expect(list.contains(screen.getByLabelText('Total Assets: 2'))).toBe(false);
     expect(screen.getByTestId('assets-topbar').contains(screen.getByLabelText('Search assets, series, movies'))).toBe(true);
-    expect(within(details).getByText('Perfil')).toBeTruthy();
-    expect(within(details).getByText('Library HEVC')).toBeTruthy();
-    expect(within(details).getByText('Subtítulos')).toBeTruthy();
-    expect(within(details).getByText(/2 tracks/)).toBeTruthy();
-    expect(within(details).getByText('Video codec')).toBeTruthy();
-    expect(within(details).getAllByText('hevc')).toHaveLength(2);
-    expect(within(details).getAllByText('Resolution')).toHaveLength(2);
-    expect(within(details).getAllByText('1920 × 1080')).toHaveLength(2);
-    expect(within(details).getByText('Audio')).toBeTruthy();
-    expect(within(details).getByText('aac 2ch ja')).toBeTruthy();
-    expect(within(details).getByText('Category / Library')).toBeTruthy();
-    expect(within(details).getByText('Anime')).toBeTruthy();
-    expect(within(details).getByRole('img', { name: /MVForge artwork placeholder/ }).getAttribute('data-artwork-source')).toBe('placeholder');
-    const selectedRow = row.closest('tr')!;
-    expect(within(selectedRow).getByText('Unverified')).toBeTruthy();
-    expect(within(selectedRow).getByText('hevc')).toBeTruthy();
-    expect(within(selectedRow).getByText('hevc_videotoolbox')).toBeTruthy();
-    expect(within(selectedRow).getByText('23m 40s')).toBeTruthy();
-    expect(within(selectedRow).getByText(/Sep 30, 2026/)).toBeTruthy();
+    expect(within(details).getByTestId('selected-asset-identity').textContent).toContain(filename);
+    expect(within(details).getByTestId('selected-asset-path-context').textContent).toBe('Anime · Series/Season 01');
+    const media = within(within(details).getByTestId('selected-asset-technical'));
+    expect(media.getByText('Video')).toBeTruthy();
+    expect(media.getByText('hevc · 1920 × 1080')).toBeTruthy();
+    expect(media.getByText('Encoder')).toBeTruthy();
+    expect(media.getByText('hevc_videotoolbox')).toBeTruthy();
+    expect(media.getByText('Duration')).toBeTruthy();
+    expect(media.getByText('Range')).toBeTruthy();
+    expect(media.getByText('Size')).toBeTruthy();
+    expect(media.getByText('Modified')).toBeTruthy();
+    expect(within(details).queryByText('Perfil')).toBeNull();
+    expect(within(details).queryByText('Subtítulos')).toBeNull();
+    expect(within(details).queryByText('Audio')).toBeNull();
+    expect(within(details).queryByText('Category / Library')).toBeNull();
+    expect(within(details).queryByRole('button', { name: 'Assign Profile' })).toBeNull();
+    expect(within(details).queryByRole('button', { name: 'Test Encode' })).toBeNull();
+    expect((within(row).getByRole('checkbox', { name: `Select asset ${filename}` }) as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByLabelText('1 selected')).toBeNull();
+    expect(within(row).getByText('Unverified')).toBeTruthy();
+    expect(within(row).getByText('hevc')).toBeTruthy();
+    expect(within(row).getByText('hevc_videotoolbox')).toBeTruthy();
+    expect(within(row).getByText('23m 40s')).toBeTruthy();
+    expect(within(row).getByText(/Sep 30, 2026/)).toBeTruthy();
     await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledTimes(1));
-    expect(api.latestSnapshot).toHaveBeenCalledWith(`${path}/A Very Long Episode Filename That Should Stay Inside Its Column.mkv`);
+    expect(api.latestSnapshot).toHaveBeenCalledWith(`${path}/${filename}`);
 
     const assetsCallsBeforeRefresh = vi.mocked(api.assets).mock.calls.length;
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ['assets'] }); });
     await waitFor(() => expect(vi.mocked(api.assets).mock.calls.length).toBeGreaterThan(assetsCallsBeforeRefresh));
-    expect(screen.getByTestId('selected-asset-detail').getAttribute('aria-label')).toContain('A Very Long Episode Filename');
+    expect(screen.getByTestId('selected-asset-detail').getAttribute('aria-label')).toContain(filename);
+    expect(api.latestSnapshot).toHaveBeenCalledTimes(1);
+  });
 
-    await user.click(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'More actions for A Very Long Episode Filename That Should Stay Inside Its Column.mkv' }));
-    expect(await screen.findByRole('menuitem', { name: 'Asset Info' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: 'Queue replacement' })).toBeTruthy();
-    await user.keyboard('{Escape}');
+  it('offers Library Safe Delete checkboxes only for eligible assets and deletes only checkbox-selected targets', async () => {
+    const user = userEvent.setup();
+    const eligiblePath = `${path}/Converted Episode.mkv`;
+    const secondEligiblePath = `${path}/Second Converted Episode.mkv`;
+    const blockedPath = `${path}/Blocked Episode.mkv`;
+    const lifecycle = (allowed: boolean) => ({
+      location: 'library', lifecycle: 'published', provenance: 'converted', validation: 'passed',
+      publication: 'published', original: 'archived',
+      actions: { deleteArchivedOriginal: { allowed, reason: allowed ? '' : 'original_unavailable' } },
+    });
+    const eligible = { ...asset(31, 'Converted Episode.mkv'), status: 'converted', lifecycle: lifecycle(true) } as Asset;
+    const secondEligible = { ...asset(33, 'Second Converted Episode.mkv'), status: 'converted', lifecycle: lifecycle(true) } as Asset;
+    const blocked = { ...asset(32, 'Blocked Episode.mkv'), status: 'converted', lifecycle: lifecycle(false) } as Asset;
+    vi.mocked(api.assets).mockResolvedValue(inventory([eligible, secondEligible, blocked]));
+    vi.mocked(api.deleteConvertedAsset).mockResolvedValue({ message: 'Deleted and restored.' } as never);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderLibraryPage(undefined, `/assets?location=library&libraryId=1&libraryPath=${encodeURIComponent(path)}`);
 
-    const refreshedDetails = screen.getByTestId('selected-asset-detail');
-    expect(within(refreshedDetails).getAllByRole('button', { name: /Play preview/ })).toHaveLength(1);
-    expect(within(refreshedDetails).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
-    expect(within(refreshedDetails).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
-    await user.click(within(refreshedDetails).getByRole('button', { name: 'Assign Profile' }));
-    const assignmentDialog = await screen.findByRole('dialog', { name: /Assign Profile/ });
-    expect(assignmentDialog).toBeTruthy();
-    await user.click(within(assignmentDialog).getByRole('button', { name: 'Done' }));
-    await user.click(await screen.findByRole('button', { name: 'Test Encode' }));
-    expect(await screen.findByRole('dialog', { name: 'Generate Test Encode' })).toBeTruthy();
-    expect(api.testEncodes).toHaveBeenCalledWith(`${path}/A Very Long Episode Filename That Should Stay Inside Its Column.mkv`);
+    const eligibleRowText = await screen.findByText('Converted Episode.mkv');
+    const eligibleRow = eligibleRowText.closest('tr')!;
+    const secondEligibleRow = screen.getByText('Second Converted Episode.mkv').closest('tr')!;
+    const blockedRow = screen.getByText('Blocked Episode.mkv').closest('tr')!;
+    const eligibleCheckbox = within(eligibleRow).getByRole('checkbox', { name: 'Select asset Converted Episode.mkv' });
+    const secondEligibleCheckbox = within(secondEligibleRow).getByRole('checkbox', { name: 'Select asset Second Converted Episode.mkv' });
+    const blockedCheckbox = within(blockedRow).getByRole('checkbox', { name: 'Select asset Blocked Episode.mkv' });
+    const headerCheckbox = screen.getByRole('checkbox', { name: 'Select all visible Library assets' });
+    expect((eligibleCheckbox as HTMLInputElement).disabled).toBe(false);
+    expect((blockedCheckbox as HTMLInputElement).disabled).toBe(true);
+    expect((headerCheckbox as HTMLInputElement).disabled).toBe(false);
+    expect((headerCheckbox as HTMLInputElement).checked).toBe(false);
+
+    await user.click(eligibleRowText);
+    expect(await screen.findByTestId('selected-asset-detail')).toBeTruthy();
+    expect(screen.queryByLabelText('1 selected')).toBeNull();
+    await user.click(eligibleCheckbox);
+    expect((eligibleCheckbox as HTMLInputElement).checked).toBe(true);
+    expect((blockedCheckbox as HTMLInputElement).checked).toBe(false);
+    expect(headerCheckbox.getAttribute('aria-checked')).toBe('mixed');
+    expect(screen.getByLabelText('1 selected')).toBeTruthy();
+    expect(screen.getByTestId('selected-asset-detail').getAttribute('aria-label')).toContain('Converted Episode.mkv');
+
+    await user.click(headerCheckbox);
+    expect((headerCheckbox as HTMLInputElement).checked).toBe(true);
+    expect((secondEligibleCheckbox as HTMLInputElement).checked).toBe(true);
+    expect((blockedCheckbox as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByLabelText('2 selected')).toBeTruthy();
+    await user.click(secondEligibleCheckbox);
+    expect(headerCheckbox.getAttribute('aria-checked')).toBe('mixed');
+    expect(screen.getByLabelText('1 selected')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Delete selected' }));
+    await waitFor(() => expect(api.deleteConvertedAsset).toHaveBeenCalledTimes(1));
+    expect(api.deleteConvertedAsset).toHaveBeenCalledWith(eligiblePath);
+    expect(api.deleteConvertedAsset).not.toHaveBeenCalledWith(secondEligiblePath);
+    expect(api.deleteConvertedAsset).not.toHaveBeenCalledWith(blockedPath);
+    expect(confirm).toHaveBeenCalledOnce();
+    confirm.mockRestore();
+  });
+
+  it('keeps Move path and Rename path icons visible in the Assets V2 toolbar', async () => {
+    renderLibraryPage(undefined, `/assets?location=library&libraryId=1&libraryPath=${encodeURIComponent(path)}`);
+    await screen.findByRole('columnheader', { name: 'Asset' });
+    const toolbar = screen.getByTestId('assets-path-toolbar');
+    for (const name of ['Move path', 'Rename path']) {
+      const button = within(toolbar).getByRole('button', { name });
+      expect(button.querySelector('.MuiButton-startIcon svg')).toBeTruthy();
+    }
   });
 
   it('keeps path Advisor direct and Queue/configuration actions reachable', async () => {
@@ -506,6 +566,18 @@ describe('RAW Assets workspace', () => {
     }));
   });
 
+  it('selects only visible RAW assets through the shared header checkbox', async () => {
+    const user = userEvent.setup();
+    renderRawPage();
+    const table = await screen.findByRole('table', { name: 'RAW assets' });
+    const header = within(table).getByRole('checkbox', { name: 'Select all visible RAW assets' }) as HTMLInputElement;
+    expect(header.disabled).toBe(false);
+    await user.click(header);
+    expect(header.checked).toBe(true);
+    expect((within(table).getByRole('checkbox', { name: 'Select asset S01E01.mkv' }) as HTMLInputElement).checked).toBe(true);
+    expect((within(table).getByRole('checkbox', { name: 'Select asset Trailer.mkv' }) as HTMLInputElement).checked).toBe(true);
+  });
+
   it('uses one accessible Assets tree to switch RAW and Library while preserving common search', async () => {
     const user = userEvent.setup();
     vi.mocked(api.libraries).mockResolvedValue([library, { ...library, id: 2, name: 'Movies', sourcePath: '/media/raw/movies', destinationPath: '/media/library/movies', type: 'movies' }]);
@@ -619,10 +691,10 @@ describe('RAW Assets workspace', () => {
     expect(rawList.contains(details)).toBe(false);
     expect(within(details).getByRole('button', { name: /Play preview/ })).toBeTruthy();
     expect(within(details).getAllByRole('button', { name: /Play preview/ })).toHaveLength(1);
-    expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
-    expect(within(details).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
-    expect(within(details).getByText('Perfil')).toBeTruthy();
-    expect(within(details).getByText('Inherited')).toBeTruthy();
+    expect(within(details).getByTestId('selected-asset-technical').textContent).toContain('MEDIA');
+    expect(within(details).getByTestId('selected-asset-technical').textContent).toContain('hevc · 1920 × 1080');
+    expect(within(details).queryByRole('button', { name: 'Assign Profile' })).toBeNull();
+    expect(within(details).queryByRole('button', { name: 'Test Encode' })).toBeNull();
     await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledTimes(2));
     expect(api.latestSnapshot).toHaveBeenLastCalledWith('/media/raw/anime/Attack on Titan/extras/Trailer.mkv');
 

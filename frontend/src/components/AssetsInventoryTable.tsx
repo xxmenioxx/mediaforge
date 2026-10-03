@@ -1,7 +1,14 @@
-import { Box, Table, TableBody, TableCell, TableHead, TableRow } from '@mui/material';
+import { Box, Checkbox, Table, TableBody, TableCell, TableHead, TableRow } from '@mui/material';
 import type { ReactNode } from 'react';
 
 export type AssetsInventoryMode = 'library' | 'raw';
+
+export type AssetsInventorySelectAll = {
+  checked: boolean;
+  indeterminate: boolean;
+  disabled: boolean;
+  onChange: (selected: boolean) => void;
+};
 
 type InventoryColumn = {
   label: string;
@@ -40,9 +47,10 @@ function assetsInventoryColumns(mode: AssetsInventoryMode) {
   return mode === 'raw' ? rawColumns : libraryColumns;
 }
 
-export function AssetsInventoryTable({ mode, selectable = false, children }: {
+export function AssetsInventoryTable({ mode, selectable = false, selectAll, children }: {
   mode: AssetsInventoryMode;
   selectable?: boolean;
+  selectAll?: AssetsInventorySelectAll;
   children: ReactNode;
 }) {
   const columns = assetsInventoryColumns(mode);
@@ -72,7 +80,21 @@ export function AssetsInventoryTable({ mode, selectable = false, children }: {
       >
         <TableHead>
           <TableRow>
-            {selectable ? <TableCell padding="checkbox" scope="col" aria-label="Select assets" sx={{ width: selectionWidth }} /> : null}
+            {selectable ? (
+              <TableCell padding="checkbox" scope="col" sx={{ width: selectionWidth }}>
+                <Checkbox
+                  size="small"
+                  checked={selectAll?.checked ?? false}
+                  indeterminate={selectAll?.indeterminate ?? false}
+                  disabled={selectAll?.disabled ?? true}
+                  onChange={(event) => selectAll?.onChange(event.target.checked)}
+                  inputProps={{
+                    'aria-label': `Select all visible ${mode === 'raw' ? 'RAW' : 'Library'} assets`,
+                    'aria-checked': selectAll?.indeterminate ? 'mixed' : selectAll?.checked ?? false,
+                  }}
+                />
+              </TableCell>
+            ) : null}
             {columns.map((column) => (
               <TableCell key={column.label} scope="col" sx={{ width: column.width }}>
                 {column.label}
