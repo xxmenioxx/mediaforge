@@ -112,7 +112,7 @@ Path-level actions MUST use a compact Assets V2 toolbar, distinct from both the 
 
 ### Requirement: Selected Asset Workspace remains below the table
 
-Selecting an asset MUST show a collapsible Selected Asset Workspace below the inventory table; it MUST NOT become a persistent right-side panel. On desktop it MUST remain compact horizontally and organize: landscape artwork with centered Play overlay and duration badge at left; filename, series/collection/season/path context, and category/library, container, size, resolution, and codec quick facts in the center; Estado, Perfil, Subtítulos, Duración, and Modificado as status/context; video codec, resolution, and audio summary as technical detail; and primary Assign Profile, Test Encode, and (...) actions where supported. Do not repeat status as both a prominent badge and Estado unless the visual reference clearly benefits from both. At narrow widths, the same information and primary actions MUST reflow without page-level overflow. Secondary actions MAY include Open in Lab, Asset Info, Advisor, Rescan, Rename, and Delete when supported. Preview/play MUST be available through the artwork interaction without a redundant visible Play action elsewhere.
+Selecting an asset MUST show a collapsible Selected Asset Workspace below the inventory table and attached to the bottom of the Assets workspace while inventory rows scroll. It MUST NOT become a persistent right-side panel or disappear below the fold. The expanded panel MUST omit a visible "Selected Asset Workspace" heading and visible group headers such as "Quick facts" or "Status / context". On desktop it MUST use a compact, flat horizontal composition: landscape artwork with centered Play overlay and duration badge at left; filename, series/collection/season/path context, and category/library, container, size, resolution, and codec quick facts in the center; Estado, Perfil, Subtítulos, Duración, and Modificado alongside video codec, resolution, and audio summary; and primary Assign Profile, Test Encode, and (...) actions where supported. Artwork MUST NOT dominate panel height. Do not repeat status as both a prominent badge and Estado unless the visual reference clearly benefits from both. At narrow widths, the same information and primary actions MUST reflow without page-level overflow. Secondary actions MAY include Open in Lab, Asset Info, Advisor, Rescan, Rename, and Delete when supported. Preview/play MUST be available through the artwork interaction without a redundant visible Play action elsewhere.
 
 #### Scenario: Show selected asset detail below the table
 - **WHEN** a user selects a RAW or Library asset
@@ -120,7 +120,11 @@ Selecting an asset MUST show a collapsible Selected Asset Workspace below the in
 
 #### Scenario: Collapse selected asset detail
 - **WHEN** a user collapses the Selected Asset Workspace
-- **THEN** the inventory table remains available and the selected asset can still be reached through the existing selection interaction
+- **THEN** the compact bottom panel remains visible with the filename and an accessible reopen control while the inventory table remains available
+
+#### Scenario: Keep selected detail attached while rows scroll
+- **WHEN** the user scrolls a long Library or RAW inventory
+- **THEN** the selected-asset panel remains visible at the bottom of the workspace, independently of row scrolling
 
 #### Scenario: Play from the selected artwork
 - **WHEN** a user activates the selected asset artwork's Play overlay
@@ -153,3 +157,11 @@ The shared tree, table, path toolbar, overflow menus, and selected detail MUST r
 #### Scenario: Load deeper selected detail
 - **WHEN** a user selects one asset that has deeper persisted detail available
 - **THEN** only that asset's detail is loaded lazily and the rest of the inventory does not receive row-specific requests
+
+### Requirement: The inventory list scrolls independently of page controls
+
+The Assets workspace MUST give inventory rows their own vertical scroll region. Summary cards, page title, filters, path toolbar, pagination, and selected-asset panel MUST remain outside that row-scroll region. The selected-asset panel MUST remain attached to the workspace bottom while the list scrolls, and the Assets route MUST not rely on document-level scrolling for normal inventory browsing.
+
+#### Scenario: Scroll a large inventory
+- **WHEN** the visible inventory contains more rows than fit in the list area
+- **THEN** the rows scroll inside the list region while summary cards, filters, pagination, and selected detail remain fixed in the workspace

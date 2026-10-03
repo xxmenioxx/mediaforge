@@ -5,8 +5,6 @@ import {
   ButtonBase,
   Card,
   Collapse,
-  Divider,
-  Grid,
   IconButton,
   List,
   ListItemButton,
@@ -345,7 +343,8 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
         width: { xs: '100%', lg: `${hierarchyWidth + 8}px` },
         minWidth: 0,
         maxWidth: '100%',
-        flex: { xs: '1 1 auto', lg: `0 0 ${hierarchyWidth + 8}px` },
+        height: { xs: 'auto', lg: '100%' },
+        flex: { xs: '0 0 auto', lg: `0 0 ${hierarchyWidth + 8}px` },
       }}
     >
     <Box
@@ -358,6 +357,11 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
         maxWidth: { lg: `${ASSETS_HIERARCHY_MAX_WIDTH}px` },
         flex: { xs: '1 1 auto', lg: `0 0 ${hierarchyWidth}px` },
         alignSelf: 'stretch',
+        height: { xs: 'auto', lg: '100%' },
+        maxHeight: { xs: 180, lg: 'none' },
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
         border: 1,
         borderColor: 'divider',
         borderRadius: 1.5,
@@ -369,7 +373,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
         <Typography variant="subtitle2" fontWeight={700}>Assets hierarchy</Typography>
         <Typography variant="caption" color="text.secondary">{nodes.length} roots</Typography>
       </Stack>
-      <List role="tree" aria-label="Assets hierarchy" dense disablePadding>
+      <List role="tree" aria-label="Assets hierarchy" dense disablePadding sx={{ flex: 1, minHeight: 0, overflowY: { xs: 'auto', lg: 'auto' } }}>
         {nodes.map((node) => renderNode(node, 1))}
       {location === 'library' && librarySelection.libraryId === null ? (
           <Typography component="li" role="none" variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.25, py: 0.75 }}>
@@ -545,32 +549,55 @@ export function SelectedAssetDetail({
       aria-label={`Details for ${asset.fileName}`}
       data-testid="selected-asset-detail"
       sx={{
-        mt: 1.25,
-        p: { xs: 1, sm: 1.5 },
+        mt: 0.65,
+        p: { xs: 0.75, sm: 1 },
         border: 1,
         borderColor: 'divider',
-        borderRadius: 1.5,
+        borderRadius: 1.1,
         bgcolor: 'background.paper',
-        boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+        boxShadow: '0 -4px 16px rgba(0, 0, 0, 0.16)',
+        position: 'sticky',
+        bottom: 0,
+        zIndex: 2,
+        flexShrink: 0,
       }}
     >
-      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mb: expanded ? 1 : 0 }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography component="h2" variant="subtitle2" fontWeight={700}>Selected Asset Workspace</Typography>
-          {!expanded ? <Typography variant="caption" color="text.secondary" noWrap>{asset.fileName}</Typography> : null}
-        </Box>
-        <IconButton
-          size="small"
-          aria-label={`${expanded ? 'Collapse' : 'Expand'} selected asset workspace`}
-          aria-expanded={expanded}
-          aria-controls="selected-asset-workspace-content"
-          onClick={() => setExpanded((current) => !current)}
-        >
-          <ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 120ms ease' }} />
-        </IconButton>
-      </Stack>
-      <Collapse in={expanded} id="selected-asset-workspace-content" unmountOnExit>
-      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 1.25, lg: 1.5 }} alignItems={{ xs: 'stretch', lg: 'center' }}>
+      {!expanded ? (
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography variant="body2" fontWeight={700} noWrap title={asset.fileName} sx={{ fontSize: '0.8rem' }}>
+              {asset.fileName}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ fontSize: '0.68rem' }}>
+              {pathContext}
+            </Typography>
+          </Box>
+          <IconButton
+            size="small"
+            aria-label={`Expand selected asset workspace for ${asset.fileName}`}
+            aria-expanded={false}
+            aria-controls="selected-asset-workspace-content"
+            onClick={() => setExpanded(true)}
+          >
+            <ExpandMoreIcon sx={{ transform: 'rotate(0deg)' }} />
+          </IconButton>
+        </Stack>
+      ) : (
+        <Collapse in id="selected-asset-workspace-content">
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: {
+            xs: '104px minmax(0, 1fr)',
+            sm: '136px minmax(0, 1.15fr) minmax(0, 1.55fr)',
+            lg: 'minmax(132px, 0.72fr) minmax(0, 1.3fr) minmax(0, 1.65fr) auto',
+          },
+          alignItems: 'center',
+          columnGap: { xs: 0.9, sm: 1, lg: 1.25 },
+          rowGap: 0.8,
+          minWidth: 0,
+        }}
+      >
         <Tooltip title={`Play preview of ${asset.fileName}`}>
           <span>
             <ButtonBase
@@ -578,11 +605,12 @@ export function SelectedAssetDetail({
               disabled={asset.missing}
               aria-label={`Play preview of ${asset.fileName}`}
               sx={{
-                width: { xs: '100%', sm: 240, lg: 220, xl: 260 },
+                width: '100%',
+                maxWidth: { xs: 104, sm: 136, lg: 174 },
                 aspectRatio: '16 / 9',
                 height: 'auto',
                 flexShrink: 0,
-                borderRadius: 1.25,
+                borderRadius: 0.8,
                 bgcolor: 'rgba(255,255,255,0.06)',
                 color: 'primary.main',
                 overflow: 'hidden',
@@ -594,13 +622,13 @@ export function SelectedAssetDetail({
             >
               <SelectedAssetArtwork fileName={asset.fileName} />
               <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', bgcolor: 'rgba(0,0,0,0.2)' }}>
-                <PlayCircleOutlineIcon fontSize="large" />
+                <PlayCircleOutlineIcon sx={{ fontSize: 30 }} />
               </Box>
               <Typography
                 component="span"
                 variant="caption"
                 fontWeight={700}
-                sx={{ position: 'absolute', right: 0.75, bottom: 0.75, px: 0.65, py: 0.15, borderRadius: 0.5, bgcolor: 'rgba(0,0,0,0.78)', color: 'common.white' }}
+                sx={{ position: 'absolute', right: 0.55, bottom: 0.55, px: 0.55, py: 0.1, borderRadius: 0.5, bgcolor: 'rgba(0,0,0,0.78)', color: 'common.white', fontSize: '0.65rem' }}
               >
                 {formatDurationSummary(duration)}
               </Typography>
@@ -608,83 +636,70 @@ export function SelectedAssetDetail({
           </span>
         </Tooltip>
 
-        <Box
-          sx={{
-            minWidth: 0,
-            flex: 1,
-            display: 'grid',
-            gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'minmax(0, 1.2fr) minmax(220px, 0.8fr)' },
-            gap: { xs: 1, lg: 1.25 },
-          }}
-        >
-          <Stack spacing={0.75} sx={{ minWidth: 0 }}>
-            <Box sx={{ minWidth: 0 }}>
-              <Tooltip title={asset.fileName}>
-                <Typography component="h2" fontWeight={700} variant="h2" noWrap sx={{ minWidth: 0, fontSize: { xs: '1rem', sm: '1.1rem' }, lineHeight: 1.25 }}>
-                  {asset.fileName}
-                </Typography>
-              </Tooltip>
-              <Typography variant="caption" color="text.secondary" noWrap title={pathContext}>{pathContext}</Typography>
-            </Box>
-            <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ mt: 0.2 }}>Quick facts</Typography>
-            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' }, gap: 0.6 }}>
-              {quickFacts.map(([label, value]) => (
-                <Box key={label} sx={{ minWidth: 0 }}>
-                  <Typography component="div" variant="caption" color="text.secondary" noWrap>{label}</Typography>
-                  <Typography variant="body2" fontWeight={500} noWrap title={value}>{value}</Typography>
-                </Box>
-              ))}
-            </Box>
-            <Divider sx={{ my: 0.25 }} />
-            <Typography variant="caption" fontWeight={700} color="text.secondary">Status / context</Typography>
-            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' }, gap: 0.6 }}>
-              {statusValues.map(([label, value]) => (
-                <Box key={label} sx={{ minWidth: 0 }}>
-                  <Typography component="div" variant="caption" color="text.secondary" noWrap>{label}</Typography>
-                  <Typography variant="body2" fontWeight={500} noWrap title={value}>{value}</Typography>
-                </Box>
-              ))}
-            </Box>
-          </Stack>
-
-          <Box
-            sx={{
-              minWidth: 0,
-              borderLeft: { lg: 1 },
-              borderTop: { xs: 1, lg: 0 },
-              borderColor: 'divider',
-              pl: { lg: 1.25 },
-              pt: { xs: 1, lg: 0 },
-            }}
-          >
-            <Typography variant="caption" fontWeight={700} color="text.secondary">Technical information</Typography>
-            <Grid container columnSpacing={1.25} rowSpacing={0.5} sx={{ mt: 0.3 }}>
-              {technicalValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
-            </Grid>
+        <Box sx={{ minWidth: 0, gridColumn: { xs: '2', sm: '2' } }}>
+          <Tooltip title={asset.fileName}>
+            <Typography component="h2" fontWeight={700} noWrap sx={{ minWidth: 0, fontSize: { xs: '0.82rem', sm: '0.88rem' }, lineHeight: 1.2 }}>
+              {asset.fileName}
+            </Typography>
+          </Tooltip>
+          <Typography variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', mt: 0.1, fontSize: '0.68rem' }}>
+            {pathContext}
+          </Typography>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', lg: 'repeat(5, minmax(0, 1fr))' }, gapX: 0.8, gapY: 0.35, mt: 0.65 }}>
+            {quickFacts.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
           </Box>
         </Box>
 
-        <Stack direction="row" spacing={0.5} alignItems="center" justifyContent={{ xs: 'flex-start', lg: 'center' }} flexWrap="wrap" useFlexGap sx={{ flexShrink: 0 }}>
-          {canAssignProfile ? <Button size="small" variant="outlined" onClick={onAssignProfile}>Assign Profile</Button> : null}
-          {canTestEncode ? <Button size="small" variant="contained" color="secondary" onClick={onTestEncode} disabled={testEncodeDisabled}>Test Encode</Button> : null}
+        <Box
+          sx={{
+            minWidth: 0,
+            gridColumn: { xs: '1 / -1', sm: '3', lg: 'auto' },
+            gridRow: { sm: '1 / span 2', lg: 'auto' },
+            borderLeft: { sm: 1, lg: 1 },
+            borderTop: { xs: 1, sm: 0 },
+            borderColor: 'divider',
+            pl: { xs: 0, sm: 1 },
+            pt: { xs: 0.65, sm: 0 },
+          }}
+        >
+          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', columnGap: 0.7 }}>
+            {statusValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
+          </Box>
+          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', columnGap: 0.9, borderTop: 1, borderColor: 'divider', mt: 0.6, pt: 0.5 }}>
+            {technicalValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
+          </Box>
+        </Box>
+
+        <Stack direction={{ xs: 'row', sm: 'row', lg: 'column' }} spacing={0.45} alignItems="center" justifyContent={{ xs: 'flex-end', sm: 'flex-end', lg: 'center' }} flexWrap="wrap" useFlexGap sx={{ gridColumn: { xs: '1 / -1', sm: '1 / -1', lg: 'auto' }, gridRow: { sm: '3', lg: 'auto' }, minWidth: 0, flexShrink: 0 }}>
+          {canAssignProfile ? <Button size="small" variant="outlined" onClick={onAssignProfile} sx={{ minHeight: 30, px: 1, fontSize: '0.7rem', whiteSpace: 'nowrap' }}>Assign Profile</Button> : null}
+          {canTestEncode ? <Button size="small" variant="contained" color="secondary" onClick={onTestEncode} disabled={testEncodeDisabled} sx={{ minHeight: 30, px: 1, fontSize: '0.7rem', whiteSpace: 'nowrap' }}>Test Encode</Button> : null}
           <Tooltip title="More asset actions">
             <IconButton size="small" aria-label={`More actions for ${asset.fileName}`} onClick={(event) => onMore(event.currentTarget)}>
               <MoreVertIcon fontSize="small" />
             </IconButton>
           </Tooltip>
+          <IconButton
+            size="small"
+            aria-label={`Collapse selected asset workspace for ${asset.fileName}`}
+            aria-expanded
+            aria-controls="selected-asset-workspace-content"
+            onClick={() => setExpanded(false)}
+          >
+            <ExpandMoreIcon sx={{ transform: 'rotate(180deg)' }} />
+          </IconButton>
         </Stack>
-      </Stack>
-      </Collapse>
+      </Box>
+        </Collapse>
+      )}
     </Box>
   );
 }
 
 function DetailValue({ label, value }: { label: string; value: string }) {
   return (
-    <Grid size={{ xs: 6, sm: 'auto' }}>
-      <Typography variant="caption" color="text.secondary" noWrap title={`${label} · ${value}`}>
-        {label} · {value}
-      </Typography>
-    </Grid>
+    <Box sx={{ minWidth: 0 }} title={`${label}: ${value}`}>
+      <Typography component="div" variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.64rem', lineHeight: 1.1 }}>{label}</Typography>
+      <Typography variant="body2" fontWeight={500} noWrap sx={{ fontSize: '0.72rem', lineHeight: 1.2 }}>{value}</Typography>
+    </Box>
   );
 }

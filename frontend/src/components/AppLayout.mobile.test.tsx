@@ -26,6 +26,9 @@ describe('mobile navigation compatibility', () => {
       </MemoryRouter>,
     );
 
+    const mobileHeader = screen.getByRole('banner');
+    expect(within(mobileHeader).getByRole('img', { name: 'MVForge logo' })).toBeTruthy();
+    expect(within(mobileHeader).getByText('MVForge')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Open navigation' }));
     const assetsLinks = screen.getAllByRole('link', { name: 'Assets' });
     expect(assetsLinks.length).toBeGreaterThan(0);
@@ -104,9 +107,11 @@ describe('desktop navigation rail', () => {
     );
 
     const rail = screen.getByRole('complementary');
+    expect(within(rail).getByRole('img', { name: 'MVForge logo' })).toBeTruthy();
     expect(within(rail).queryByText('Assets')).toBeNull();
     await user.hover(rail);
     expect(within(rail).getByText('Assets')).toBeTruthy();
+    expect(within(rail).getByText('MVForge')).toBeTruthy();
     await user.unhover(rail);
     expect(within(rail).queryByText('Assets')).toBeNull();
   });

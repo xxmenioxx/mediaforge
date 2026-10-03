@@ -334,11 +334,20 @@ export function AssetsPage() {
   );
 
   return (
-    <>
-      <Box component="header" sx={{ px: { xs: 2, md: 4 }, pt: { xs: 1.5, md: 2 }, pb: { xs: 1.5, md: 2 } }}>
+    <Box
+      data-testid="assets-page-layout"
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: { xs: 'calc(100dvh - 56px)', md: '100dvh' },
+        minHeight: 0,
+        overflow: 'hidden',
+      }}
+    >
+      <Box component="header" sx={{ px: { xs: 1.5, md: 2.5 }, pt: { xs: 1, md: 1.25 }, pb: { xs: 1, md: 1.25 }, flexShrink: 0 }}>
         <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 1.5 }}>
           <Stack direction="row" alignItems="baseline" spacing={1}>
-            <Typography component="h1" variant="h1" sx={{ fontSize: { xs: '1.35rem', sm: '1.55rem' }, lineHeight: 1.2 }}>Assets</Typography>
+            <Typography component="h1" variant="h1" sx={{ fontSize: { xs: '1.2rem', sm: '1.35rem' }, lineHeight: 1.2 }}>Assets</Typography>
             <Typography variant="caption" color="text.secondary">{tab === 'raw' ? 'Source inventory' : 'Library inventory'}</Typography>
           </Stack>
         </Stack>
@@ -349,13 +358,13 @@ export function AssetsPage() {
           needsReview={needsReviewSummary}
         />
       </Box>
-      <Box sx={{ px: { xs: 2, md: 4 }, pb: 3, minWidth: 0 }}>
+      <Box data-testid="assets-page-body" sx={{ px: { xs: 1.5, md: 2.5 }, pb: 0.75, minWidth: 0, minHeight: 0, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {assets.isError ? <Alert severity="warning">Unable to read library paths from the backend container.</Alert> : null}
         {unsupportedLegacyTab ? <Alert severity="info">This Assets link is no longer a supported inventory context. Open RAW or Library and use the persisted lifecycle filters.</Alert> : null}
         <LegacyAnalysisRecords settings={settings.data ?? []} />
 
-        <Card variant="outlined" sx={{ borderRadius: 1.5, borderColor: 'divider', overflow: 'hidden', bgcolor: 'background.paper' }}>
-          <CardContent sx={{ py: 1.25, px: { xs: 1.25, sm: 2 }, borderBottom: 1, borderColor: 'divider', '&:last-child': { pb: 1.25 } }}>
+        <Card variant="outlined" sx={{ borderRadius: 1.5, borderColor: 'divider', overflow: 'hidden', bgcolor: 'background.paper', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <CardContent sx={{ py: 0.8, px: { xs: 1, sm: 1.5 }, flexShrink: 0, borderBottom: 1, borderColor: 'divider', '&:last-child': { pb: 0.8 } }}>
             <Stack
               direction={{ xs: 'column', lg: 'row' }}
               alignItems={{ xs: 'stretch', lg: 'flex-start' }}
@@ -457,7 +466,8 @@ export function AssetsPage() {
               </Alert>
             ) : null}
           </CardContent>
-          {syncAssets.isError ? <Alert severity="warning" sx={{ m: 2 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
+          {syncAssets.isError ? <Alert severity="warning" sx={{ m: 1, flexShrink: 0 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
+	      <Box data-testid="assets-workspace-region" sx={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
 		  {tab === 'raw' ? (
 			<AssetsErrorBoundary boundaryKey="raw">
 				<RawAssetsView
@@ -500,6 +510,7 @@ export function AssetsPage() {
               />
             </AssetsErrorBoundary>
           )}
+          </Box>
         </Card>
       </Box>
       <BatchPreflightDialog
@@ -514,7 +525,7 @@ export function AssetsPage() {
           void queryClient.invalidateQueries({ queryKey: ['assets'] });
         }}
       />
-    </>
+    </Box>
   );
 }
 
@@ -934,10 +945,10 @@ function LibraryAssetTable({
   const selectedCanTestEncode = Boolean(selectedAsset && testEncodeEligibleAsset(selectedAsset, mode) && assetInfoCapability(selectedAsset, 'lab').allowed);
 
   return (
-    <Box sx={{ bgcolor: 'background.default', p: { xs: 1, sm: 1.5 } }}>
-      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 1, lg: 1.5 }} alignItems="stretch" sx={{ minWidth: 0 }}>
+    <Box data-testid="assets-mode-workspace" sx={{ bgcolor: 'background.default', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 0.75, lg: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
         {hierarchyPanel}
-        <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box data-testid="assets-content-column" sx={{ flex: 1, minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ px: 0.5, pb: 1, minWidth: 0 }}>
             <Box sx={{ minWidth: 0 }}>
               <WorkspaceBreadcrumbs segments={libraryBreadcrumbs} label="Library location" />
@@ -967,6 +978,7 @@ function LibraryAssetTable({
             />
           ) : null}
 
+          <Box data-testid="assets-list-scroll" role="region" aria-label="Library asset list" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain' }}>
           {visibleAssets.length ? (
             <AssetsInventoryTable mode="library">
                   {pageRows.map(({ asset, group }) => {
@@ -1016,6 +1028,7 @@ function LibraryAssetTable({
           ) : (
             <Alert severity="info" sx={{ mt: 1 }}>{emptyLabel}</Alert>
           )}
+          </Box>
 
           {visibleAssets.length ? (
             <TablePagination
@@ -1026,7 +1039,7 @@ function LibraryAssetTable({
               rowsPerPageOptions={[10, 25, 50, 100]}
               onPageChange={(_, nextPage) => { setPage(nextPage); setSelectedAssetPath(''); }}
               onRowsPerPageChange={(event) => { setRowsPerPage(Number(event.target.value)); setPage(0); setSelectedAssetPath(''); }}
-              sx={{ '& .MuiTablePagination-toolbar': { px: { xs: 0.5, sm: 1 } }, '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } } }}
+              sx={{ flexShrink: 0, '& .MuiTablePagination-toolbar': { px: { xs: 0.5, sm: 1 }, minHeight: 42 }, '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } } }}
             />
           ) : null}
 
@@ -1212,10 +1225,10 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
   };
 
   return (
-    <Box sx={{ bgcolor: 'background.default', p: { xs: 1, sm: 1.5 } }}>
-      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 1, lg: 1.5 }} alignItems="stretch" sx={{ minWidth: 0 }}>
+    <Box data-testid="assets-mode-workspace" sx={{ bgcolor: 'background.default', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 0.75, lg: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
         {hierarchyPanel}
-        <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box data-testid="assets-content-column" sx={{ flex: 1, minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <WorkspaceBreadcrumbs segments={rawBreadcrumbs} label="RAW source location" />
           {sourceGroup ? (
             <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: 0.5, pb: 0.75 }}>
@@ -1282,6 +1295,7 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
               onAssetSelectionChange={updateSelectedAssets}
             />
           ) : null}
+          <Box data-testid="assets-list-scroll" role="region" aria-label="RAW asset list" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain' }}>
           {visibleAssets.length ? (
             <AssetsInventoryTable mode="raw" selectable>
                   {pageRows.map(({ asset, path }) => {
@@ -1324,6 +1338,7 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
           ) : (
             <Alert severity="info" sx={{ mt: 1 }}>{sourceGroups.length ? 'No RAW assets match this context or search.' : 'No RAW Source Groups found.'}</Alert>
           )}
+          </Box>
           {visibleAssets.length ? (
             <TablePagination
               component="div"
@@ -1333,7 +1348,7 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
               rowsPerPageOptions={[10, 25, 50, 100]}
               onPageChange={(_, nextPage) => { setPage(nextPage); setSelectedAssetPath(''); }}
               onRowsPerPageChange={(event) => { setRowsPerPage(Number(event.target.value)); setPage(0); setSelectedAssetPath(''); }}
-              sx={{ '& .MuiTablePagination-toolbar': { px: { xs: 0.5, sm: 1 } }, '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } } }}
+              sx={{ flexShrink: 0, '& .MuiTablePagination-toolbar': { px: { xs: 0.5, sm: 1 }, minHeight: 42 }, '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } } }}
             />
           ) : null}
           {selectedAsset && selectedGroup && selectedEntry ? (

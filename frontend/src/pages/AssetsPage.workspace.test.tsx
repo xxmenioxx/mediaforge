@@ -260,14 +260,24 @@ describe('Library Assets workspace', () => {
     const row = await screen.findByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv');
     await user.click(row.closest('tr')!);
 
+    const list = screen.getByRole('region', { name: 'Library asset list' });
+    const table = within(list).getByRole('table', { name: 'Library assets' });
     const details = await screen.findByTestId('selected-asset-detail');
+    expect(getComputedStyle(list).overflowY).toBe('auto');
+    expect(list.contains(table)).toBe(true);
+    expect(list.contains(details)).toBe(false);
+    expect(list.contains(screen.getByLabelText('Total Assets: 2'))).toBe(false);
+    expect(list.contains(screen.getByPlaceholderText('Search path, file, library, status'))).toBe(false);
     expect(within(details).getByText('Perfil')).toBeTruthy();
     expect(within(details).getByText('Library HEVC')).toBeTruthy();
     expect(within(details).getByText('Subtítulos')).toBeTruthy();
     expect(within(details).getByText(/2 tracks/)).toBeTruthy();
-    expect(within(details).getByText('Video codec · hevc')).toBeTruthy();
-    expect(within(details).getByText('Resolution · 1920 × 1080')).toBeTruthy();
-    expect(within(details).getByText(/Audio · aac 2ch ja/)).toBeTruthy();
+    expect(within(details).getByText('Video codec')).toBeTruthy();
+    expect(within(details).getAllByText('hevc')).toHaveLength(2);
+    expect(within(details).getAllByText('Resolution')).toHaveLength(2);
+    expect(within(details).getAllByText('1920 × 1080')).toHaveLength(2);
+    expect(within(details).getByText('Audio')).toBeTruthy();
+    expect(within(details).getByText('aac 2ch ja')).toBeTruthy();
     expect(within(details).getByText('Category / Library')).toBeTruthy();
     expect(within(details).getByText('Anime')).toBeTruthy();
     expect(within(details).getByRole('img', { name: /MVForge artwork placeholder/ }).getAttribute('data-artwork-source')).toBe('placeholder');
@@ -553,6 +563,10 @@ describe('RAW Assets workspace', () => {
     expect(rawAssetRow).toBeTruthy();
     expect(within(rawAssetRow!).queryByText(/Attack on Titan|extras/)).toBeNull();
     const details = screen.getByTestId('selected-asset-detail');
+    const rawList = screen.getByRole('region', { name: 'RAW asset list' });
+    expect(getComputedStyle(rawList).overflowY).toBe('auto');
+    expect(rawList.contains(rawTable)).toBe(true);
+    expect(rawList.contains(details)).toBe(false);
     expect(within(details).getByRole('button', { name: /Play preview/ })).toBeTruthy();
     expect(within(details).getAllByRole('button', { name: /Play preview/ })).toHaveLength(1);
     expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();

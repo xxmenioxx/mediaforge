@@ -291,12 +291,21 @@ describe('Assets workspace presentation', () => {
       />,
     );
 
-    expect(screen.getByText('Video codec · hevc')).toBeTruthy();
+    expect(screen.getByText('Video codec')).toBeTruthy();
+    expect(screen.getAllByText('hevc')).toHaveLength(2);
     expect(screen.getByText('Container')).toBeTruthy();
     expect(screen.getByText('MATROSKA')).toBeTruthy();
-    expect(screen.getByText('Resolution · 1920 × 1080')).toBeTruthy();
-    expect(screen.getByText('Audio · aac 2ch ja')).toBeTruthy();
-    expect(screen.getByText('Quick facts')).toBeTruthy();
+    expect(screen.getAllByText('Resolution')).toHaveLength(2);
+    expect(screen.getAllByText('1920 × 1080')).toHaveLength(2);
+    expect(screen.getByText('Audio')).toBeTruthy();
+    expect(screen.getByText('aac 2ch ja')).toBeTruthy();
+    const details = screen.getByTestId('selected-asset-detail');
+    expect(within(details).queryByRole('heading', { name: 'Selected Asset Workspace' })).toBeNull();
+    expect(within(details).queryByText('Quick facts')).toBeNull();
+    expect(within(details).queryByText('Status / context')).toBeNull();
+    expect(within(details).queryByText('Technical information')).toBeNull();
+    expect(getComputedStyle(details).position).toBe('sticky');
+    expect(getComputedStyle(details).bottom).toBe('0px');
     expect(screen.getByText('Category / Library')).toBeTruthy();
     expect(screen.getAllByText('Ready')).toHaveLength(1);
     expect(screen.getByText('Subtítulos')).toBeTruthy();
@@ -343,9 +352,11 @@ describe('Assets workspace presentation', () => {
       />,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Collapse selected asset workspace' }));
+    const details = screen.getByTestId('selected-asset-detail');
+    await user.click(screen.getByRole('button', { name: 'Collapse selected asset workspace for Episode 01.mkv' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: /Play preview/ })).toBeNull());
-    const expand = screen.getByRole('button', { name: 'Expand selected asset workspace' });
+    expect(within(details).getByText('Episode 01.mkv')).toBeTruthy();
+    const expand = screen.getByRole('button', { name: 'Expand selected asset workspace for Episode 01.mkv' });
     expand.focus();
     await user.keyboard('{Enter}');
     await waitFor(() => expect(screen.getByRole('button', { name: /Play preview/ })).toBeTruthy());
