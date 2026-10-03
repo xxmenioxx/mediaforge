@@ -256,20 +256,12 @@ describe('Assets workspace presentation', () => {
     expect(screen.getByRole('separator', { name: 'Resize Assets hierarchy' }).getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
   });
 
-  it('uses Jellyfin artwork first, falls back to MVForge artwork, then to a generic placeholder', () => {
-    render(<SelectedAssetArtwork fileName="Episode 01.mkv" jellyfinArtworkUrl="/jellyfin.jpg" mvforgeArtworkUrl="/mvforge.jpg" />);
+  it('uses the generic artwork placeholder when no supported artwork URL is available', () => {
+    render(<SelectedAssetArtwork fileName="Episode 01.mkv" />);
 
-    const jellyfinArtwork = screen.getByRole('img', { name: 'Episode 01.mkv artwork' });
-    expect(jellyfinArtwork.getAttribute('src')).toBe('/jellyfin.jpg');
-    expect(jellyfinArtwork.getAttribute('data-artwork-source')).toBe('jellyfin');
-
-    fireEvent.error(jellyfinArtwork);
-    const mvforgeArtwork = screen.getByRole('img', { name: 'Episode 01.mkv artwork' });
-    expect(mvforgeArtwork.getAttribute('src')).toBe('/mvforge.jpg');
-    expect(mvforgeArtwork.getAttribute('data-artwork-source')).toBe('mvforge');
-
-    fireEvent.error(mvforgeArtwork);
-    expect(screen.getByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
+    const placeholder = screen.getByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' });
+    expect(placeholder.getAttribute('data-artwork-source')).toBe('placeholder');
+    expect(screen.queryByRole('img', { name: 'Episode 01.mkv artwork' })).toBeNull();
   });
 
   it('shows compact technical details with one integrated preview Play control', async () => {
@@ -299,10 +291,14 @@ describe('Assets workspace presentation', () => {
       />,
     );
 
-    expect(screen.getByText('Video · hevc')).toBeTruthy();
-    expect(screen.getByText('Container · MATROSKA')).toBeTruthy();
+    expect(screen.getByText('Video codec · hevc')).toBeTruthy();
+    expect(screen.getByText('Container')).toBeTruthy();
+    expect(screen.getByText('MATROSKA')).toBeTruthy();
     expect(screen.getByText('Resolution · 1920 × 1080')).toBeTruthy();
     expect(screen.getByText('Audio · aac 2ch ja')).toBeTruthy();
+    expect(screen.getByText('Quick facts')).toBeTruthy();
+    expect(screen.getByText('Category / Library')).toBeTruthy();
+    expect(screen.getAllByText('Ready')).toHaveLength(1);
     expect(screen.getByText('Subtítulos')).toBeTruthy();
     expect(screen.getByText('2 tracks · ja, en')).toBeTruthy();
     expect(screen.getByText('Estado')).toBeTruthy();
@@ -355,7 +351,7 @@ describe('Assets workspace presentation', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Play preview/ })).toBeTruthy());
   });
 
-  it('omits empty descriptive metadata and renders canonical tags when present', () => {
+  it('uses category metadata as a compact quick fact without a separate metadata block', () => {
     const asset = makeAsset();
     const base = {
       asset, pathContext: 'Anime · Series', status: 'Ready', assignedProfile: 'Inherited', snapshot: scan, snapshotLoading: false,
@@ -363,9 +359,11 @@ describe('Assets workspace presentation', () => {
       onTestEncode: vi.fn(), onMore: vi.fn(), canAssignProfile: true, canTestEncode: true,
     };
     const view = render(<SelectedAssetDetail {...base} />);
+    expect(screen.getByText('Category / Library')).toBeTruthy();
     expect(screen.queryByText(/^Metadata ·/)).toBeNull();
 
     view.rerender(<SelectedAssetDetail {...base} asset={makeAsset({ metadata: { categories: ['Anime'], tags: ['TV'] , updatedAt: '' } })} />);
-    expect(screen.getByText('Metadata · Anime, TV')).toBeTruthy();
+    expect(screen.getByText('Anime')).toBeTruthy();
+    expect(screen.queryByText(/^Metadata ·/)).toBeNull();
   });
 });

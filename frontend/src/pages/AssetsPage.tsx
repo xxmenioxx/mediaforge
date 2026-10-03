@@ -67,6 +67,8 @@ import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { AssetsHierarchyPanel, AssetsSummaryStrip, SelectedAssetDetail, WorkspaceBreadcrumbs } from '../components/AssetsWorkspace';
 import { AssetsInventoryTable } from '../components/AssetsInventoryTable';
+import { AssetsV2PathToolbar } from '../components/AssetsV2PathToolbar';
+import { assetLabHref } from '../components/assetsActionRoutes';
 import { assetPathWithin, formatDurationSummary, type LibraryTreeSelection, type RawHierarchySelection } from '../components/assetsWorkspaceModel';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
@@ -949,23 +951,20 @@ function LibraryAssetTable({
           </Stack>
 
           {selectedPathGroup ? (
-            <Table size="small" aria-label={`Actions for ${selectedPathGroup.path}`} sx={{ mb: 0.75, tableLayout: 'fixed' }}>
-              <TableBody>
-                <AssetGroupRow
-                  group={selectedPathGroup}
-                  libraries={libraries}
-                  profiles={profiles}
-                  audioProfiles={audioProfiles}
-                  trackProfiles={trackProfiles}
-                  settings={settings}
-                  assetCategories={assetCategories}
-                  queueJobs={queueJobs}
-                  runningSnapshotPaths={runningSnapshotPaths}
-                  mode={mode}
-                  compactPathHeader
-                />
-              </TableBody>
-            </Table>
+            <AssetGroupRow
+              group={selectedPathGroup}
+              libraries={libraries}
+              profiles={profiles}
+              audioProfiles={audioProfiles}
+              trackProfiles={trackProfiles}
+              settings={settings}
+              assetCategories={assetCategories}
+              queueJobs={queueJobs}
+              runningSnapshotPaths={runningSnapshotPaths}
+              mode={mode}
+              v2ToolbarOnly
+              selectedCount={selectedAsset ? 1 : 0}
+            />
           ) : null}
 
           {visibleAssets.length ? (
@@ -1266,23 +1265,22 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
             />
           ) : null}
           {selectedPathGroup ? (
-            <Table size="small" aria-label={`Actions for ${selectedPathGroup.path}`} sx={{ mb: 0.75, tableLayout: 'fixed' }}>
-              <TableBody>
-                <AssetGroupRow
-                  group={selectedPathGroup}
-                  libraries={libraries}
-                  profiles={profiles}
-                  audioProfiles={audioProfiles}
-                  trackProfiles={trackProfiles}
-                  settings={settings}
-                  assetCategories={assetCategories}
-                  queueJobs={queueJobs}
-                  runningSnapshotPaths={runningSnapshotPaths}
-                  mode="unprocessed"
-                  compactPathHeader
-                />
-              </TableBody>
-            </Table>
+            <AssetGroupRow
+              group={selectedPathGroup}
+              libraries={libraries}
+              profiles={profiles}
+              audioProfiles={audioProfiles}
+              trackProfiles={trackProfiles}
+              settings={settings}
+              assetCategories={assetCategories}
+              queueJobs={queueJobs}
+              runningSnapshotPaths={runningSnapshotPaths}
+              mode="unprocessed"
+              v2ToolbarOnly
+              selectedCount={scopedSelectedAssets.length}
+              selectedAssetIds={selectedAssetIds}
+              onAssetSelectionChange={updateSelectedAssets}
+            />
           ) : null}
           {visibleAssets.length ? (
             <AssetsInventoryTable mode="raw" selectable>
@@ -2201,8 +2199,10 @@ function AssetGroupRow({
 	forceExpanded = false,
 	hidePathHeader = false,
 	compactPathHeader = false,
-	selectedAssetIds,
-	onAssetSelectionChange,
+	v2ToolbarOnly = false,
+	selectedCount = 0,
+  selectedAssetIds,
+  onAssetSelectionChange,
 }: {
   group: AssetGroup;
   libraries: Library[];
@@ -2221,6 +2221,8 @@ function AssetGroupRow({
 	forceExpanded?: boolean;
 	hidePathHeader?: boolean;
 	compactPathHeader?: boolean;
+	v2ToolbarOnly?: boolean;
+	selectedCount?: number;
 	selectedAssetIds?: Set<number>;
 	onAssetSelectionChange?: (assetIds: number[], selected: boolean) => void;
 }) {
@@ -2251,6 +2253,7 @@ function AssetGroupRow({
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(configuredPathDestination);
   const [migrationLibraryId, setMigrationLibraryId] = useState<number>(0);
   const [renamePathOpen, setRenamePathOpen] = useState(false);
+  const [pathSnapshotsOpen, setPathSnapshotsOpen] = useState(false);
   const [groupCategory, setGroupCategory] = useState<string>(inheritedPathCategory);
   const [pathAdvisorOpen, setPathAdvisorOpen] = useState(false);
   const [pathAdvisorCurrent, setPathAdvisorCurrent] = useState('');
@@ -2341,15 +2344,6 @@ function AssetGroupRow({
         queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
       ]);
     },
-  });
-  const advisor = useQuery({
-    queryKey: ['advisor', group.id, representativeAsset?.path, effectiveProfileId],
-    queryFn: () =>
-      api.evaluateAdvisor({
-        mediaPath: representativeAsset?.path ?? '',
-        profileId: effectiveProfileId,
-      }),
-    enabled: expanded && !isReadOnlyGroup && isConfidenceEnabled && Boolean(effectiveProfileId && representativeAsset),
   });
   const runPathAdvisor = useMutation({
     mutationFn: async () => {
@@ -2552,10 +2546,100 @@ function AssetGroupRow({
       </Button>
     </Stack>
   ) : null;
+  const v2PathToolbar = v2ToolbarOnly ? (
+    <>
+      <AssetsV2PathToolbar
+        path={group.path}
+        label={`${group.libraryName} · ${pathLabelForCollection(group)}`}
+        assetCount={group.fileCount}
+        selectedCount={selectedAssetIds
+          ? groupAssets.filter((asset) => selectedAssetIds.has(asset.id ?? 0)).length
+          : selectedCount}
+        mode={mode === 'unprocessed' ? 'raw' : 'library'}
+        primaryActions={(
+          <>
+            {mode === 'unprocessed' ? (
+              <Button size="small" variant="outlined" onClick={() => setPathSnapshotsOpen(true)} disabled={groupAssets.every((asset) => asset.missing)}>
+                Scan
+              </Button>
+            ) : null}
+            {!isReadOnlyGroup && mode !== 'converted' ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={startPathAdvisor}
+                disabled={!isConfidenceEnabled || effectiveProfileId <= 0 || groupAssets.every((asset) => asset.missing) || runPathAdvisor.isPending}
+              >
+                Advisor
+              </Button>
+            ) : null}
+            {(mode === 'unprocessed' || isLibraryGroup) && !isReadOnlyGroup ? (
+              <Button
+                size="small"
+                variant="contained"
+                onClick={queuePath}
+                disabled={profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending || (!effectiveProfileId && !selectedAudioProfileKey && !selectedTrackProfileKey) || !selectedLibraryId || !groupAssets.length || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
+              >
+                Queue / Preflight
+              </Button>
+            ) : null}
+            {mode === 'unprocessed' && !isReadOnlyGroup ? (
+              <Tooltip title="Assign profiles and configure path-level settings">
+                <Box>
+                  <ScopeConfigureButton
+                    targetType="path"
+                    scopeKey={group.path}
+                    label="Configure Path"
+                    profiles={profiles}
+                    audioProfiles={audioProfiles}
+                    trackProfiles={trackProfiles}
+                    libraries={libraries}
+                    categories={assetCategories}
+                    compact
+                    readOnly={groupAssets.some((asset) => assetHasOpenJob(asset, queueJobs))}
+                  />
+                </Box>
+              </Tooltip>
+            ) : null}
+          </>
+        )}
+        pathOperations={migrationControls}
+        destructiveActions={bulkSelectableAssets.length ? (close) => {
+          const selectedPaths = selectedAssetIds
+            ? bulkSelectableAssets.filter((asset) => selectedAssetIds.has(asset.id ?? 0)).map((asset) => asset.path)
+            : selectedAssetPaths;
+          const pathTargets = bulkSelectableAssets.map((asset) => asset.path);
+          return (
+            <>
+              {selectedPaths.length ? (
+                <MenuItem onClick={() => { close(); runBulkAssetAction(selectedPaths); }} disabled={bulkAssetAction.isPending}>
+                  {isPublishedAsIsGroup ? 'Return selected to Raw' : 'Delete selected safely'}
+                </MenuItem>
+              ) : null}
+              <Divider component="li" />
+              <MenuItem
+                onClick={() => { close(); runBulkAssetAction(pathTargets); }}
+                disabled={bulkAssetAction.isPending || bulkSelectableAssets.some((asset) => assetHasOpenJob(asset, queueJobs))}
+              >
+                {isPublishedAsIsGroup ? 'Return path to Raw' : 'Delete path safely'}
+              </MenuItem>
+            </>
+          );
+        } : undefined}
+      />
+      <PathSnapshotsDialog
+        open={pathSnapshotsOpen}
+        group={group}
+        title={pathLabelForCollection(group)}
+        runningSnapshotPaths={runningSnapshotPaths}
+        onClose={() => setPathSnapshotsOpen(false)}
+      />
+    </>
+  ) : null;
 
   return (
     <>
-      {!hidePathHeader && compactPathHeader ? (
+      {v2ToolbarOnly ? v2PathToolbar : !hidePathHeader && compactPathHeader ? (
         <TableRow
           hover
           onClick={toggleExpanded}
@@ -2739,6 +2823,7 @@ function AssetGroupRow({
           </Stack>
         </TableCell>
 	  </TableRow> : null}
+      {!v2ToolbarOnly ? (
       <TableRow>
         <TableCell colSpan={compactPathHeader ? 2 : showConfidenceColumn ? 8 : 7} sx={{ p: 0, borderBottom: (forceExpanded || expanded) ? 1 : 0, borderColor: 'divider', maxWidth: 0 }}>
 		  <Collapse in={forceExpanded || expanded} timeout="auto" unmountOnExit>
@@ -2829,7 +2914,6 @@ function AssetGroupRow({
                     Folder queue is blocked because at least one asset in this path needs review. You can still queue approved assets individually.
                   </Alert>
                 ) : null}
-                {!isReadOnlyGroup && advisor.isError && representativeAsset ? <Alert severity="warning">Could not evaluate this path: {advisor.error instanceof Error ? advisor.error.message : 'unknown error'}</Alert> : null}
                 {!representativeAsset && groupAssets.length > 0 ? <Alert severity="warning">This path has no physically available asset to evaluate. Run Sync Assets after restoring or removing stale records.</Alert> : null}
                 {queueGroup.isSuccess ? (
                   <Alert severity="success">
@@ -3013,6 +3097,7 @@ function AssetGroupRow({
           </Collapse>
         </TableCell>
       </TableRow>
+      ) : null}
       <LibraryPathRenameDialog
         open={renamePathOpen}
         libraryId={group.libraryId}
@@ -3754,10 +3839,11 @@ function AssetRow({
   const isPublishedAsIs = assetProvenance === 'published_as_is' || (!assetProvenance && asset.status === 'published_as_is');
   const isAccepted = assetProvenance === 'imported' || (!assetProvenance && asset.status === 'accepted');
   const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is';
+  const compactAssetsRow = compactLibrary || compactRaw;
   const canGenerateTestEncode = testEncodeEligibleAsset(asset, mode);
   const labCapability = assetInfoCapability(asset, 'lab');
   const renameCapability = assetInfoCapability(asset, 'rename');
-  const rowColumnCount = compactLibrary ? compactRaw ? (bulkSelectionEnabled ? 11 : 10) : 12 : compactUnprocessed ? 5 : isConverted
+  const rowColumnCount = compactAssetsRow ? compactRaw ? (bulkSelectionEnabled ? 11 : 10) : 12 : compactUnprocessed ? 5 : isConverted
     ? bulkSelectionEnabled ? 8 : 7
     : isAccepted ? 5 : 10;
   const associatedJob = associatedJobForCurrentPublication(asset, queueJobs);
@@ -3785,9 +3871,6 @@ function AssetRow({
   const cachedAdvisor = confidenceEnabled
     ? advisor.data ?? queryClient.getQueryData<AdvisorResponse>(['advisor', 'asset-row', asset.path, effectiveProfileId])
     : undefined;
-  const advisorLabel = cachedAdvisor && Number.isFinite(cachedAdvisor.score)
-    ? String(cachedAdvisor.score)
-    : confidenceEnabled ? 'Not evaluated' : 'Unavailable';
   const technical = asset.technical;
   const technicalResolution = technical?.width && technical.height
     ? `${technical.width} × ${technical.height}`
@@ -4069,6 +4152,10 @@ function AssetRow({
 
   function openAssetTestEncode() {
     setShowTestEncodeDialog(true);
+  }
+
+  function openAssetInLab() {
+    window.location.href = assetLabHref(asset.path);
   }
 
   function delay(ms: number) {
@@ -4716,7 +4803,7 @@ async function generateExternalSubtitle(
 
   return (
     <>
-      {compactLibrary ? (
+      {compactAssetsRow ? (
         <TableRow
           hover
           selected={selected}
@@ -4753,11 +4840,19 @@ async function generateExternalSubtitle(
             </Tooltip>
           </TableCell>
           <TableCell>
-            <Tooltip title={cachedAdvisor?.summary ?? advisorLabel}>
-              <Typography variant="body2" noWrap aria-label={cachedAdvisor ? `Advisor score ${cachedAdvisor.score}` : `Advisor ${advisorLabel.toLowerCase()}`}>
-                {advisorLabel}
+            {cachedAdvisor && Number.isFinite(cachedAdvisor.score) ? (
+              <Tooltip title={cachedAdvisor.summary || `Advisor score ${cachedAdvisor.score}`}>
+                <Chip size="small" label={cachedAdvisor.score} color={recommendationColor(cachedAdvisor.recommendation)} aria-label={`Advisor score ${cachedAdvisor.score}`} sx={{ height: 22, fontVariantNumeric: 'tabular-nums', fontWeight: 700 }} />
+              </Tooltip>
+            ) : advisor.isError ? (
+              <Chip size="small" variant="outlined" label="Unavailable" aria-label="Advisor unavailable" sx={{ height: 22, color: 'text.secondary', borderColor: 'divider' }} />
+            ) : !confidenceEnabled ? (
+              <Chip size="small" variant="outlined" label="Off" aria-label="Advisor off" sx={{ height: 22, color: 'text.secondary', borderColor: 'divider' }} />
+            ) : (
+              <Typography variant="caption" color="text.secondary" noWrap aria-label="Advisor not evaluated">
+                Not evaluated
               </Typography>
-            </Tooltip>
+            )}
           </TableCell>
           <TableCell>
             <Typography variant="body2" noWrap title={pipelineState.label}>{pipelineState.label}</Typography>
@@ -5073,7 +5168,39 @@ async function generateExternalSubtitle(
       </TableRow>}
       <Menu anchorEl={assetMenuAnchor} open={Boolean(assetMenuAnchor)} onClose={() => setAssetMenuAnchor(null)}>
         <MenuItem onClick={() => { setAssetMenuAnchor(null); openAssetInfoDialog(); }}>Asset Info</MenuItem>
-        {!hidePreConversionActions && mode !== 'converted' ? (
+        {compactRaw ? (
+          <MenuItem
+            onClick={() => { setAssetMenuAnchor(null); refreshSnapshot(); }}
+            disabled={asset.missing || snapshotRunning || snapshot.isPending || !assetInfoCapability(asset, 'refreshAnalysis').allowed}
+          >
+            Scan / Analyze Asset
+          </MenuItem>
+        ) : null}
+        {compactAssetsRow && mode !== 'converted' ? (
+          <>
+            {!hidePreConversionActions ? (
+              <MenuItem
+                onClick={() => { setAssetMenuAnchor(null); setShowAdvisorDialog(true); }}
+                disabled={!confidenceEnabled || effectiveProfileId <= 0 || !assetInfoCapability(asset, 'refreshAnalysis').allowed}
+              >
+                Advisor
+              </MenuItem>
+            ) : null}
+            <MenuItem onClick={() => { setAssetMenuAnchor(null); openAssetInLab(); }} disabled={!labCapability.allowed}>
+              Open in Lab
+            </MenuItem>
+            {!hidePreConversionActions && (!isConverted || isLibraryReplacement) ? (
+              <MenuItem onClick={() => { setAssetMenuAnchor(null); setAssignProfileOpen(true); }} disabled={rowLocked || updateProfileAssignment.isPending}>
+                Assign Profile
+              </MenuItem>
+            ) : null}
+            {!hidePreConversionActions && canGenerateTestEncode ? (
+              <MenuItem onClick={() => { setAssetMenuAnchor(null); openAssetTestEncode(); }} disabled={!labCapability.allowed || showTestEncodeDialog}>
+                Test Encode
+              </MenuItem>
+            ) : null}
+          </>
+        ) : !hidePreConversionActions && mode !== 'converted' ? (
           <MenuItem onClick={() => { setAssetMenuAnchor(null); setShowAdvisorDialog(true); }} disabled={!confidenceEnabled || effectiveProfileId <= 0 || !assetInfoCapability(asset, 'refreshAnalysis').allowed}>
             Advisor
           </MenuItem>
@@ -5103,6 +5230,7 @@ async function generateExternalSubtitle(
             {assetReview.requiresReview ? 'Clear review flag' : 'Mark for review'}
           </MenuItem>
         ) : null}
+        {isConverted || isPublishedAsIs ? <Divider component="li" /> : null}
         {isConverted ? (
           <MenuItem onClick={() => { setAssetMenuAnchor(null); safelyDeleteConvertedAsset(); }} disabled={!assetInfoCapability(asset, 'deleteArchivedOriginal').allowed || deleteConvertedAsset.isPending}>
             Safely delete and restore original
@@ -5807,7 +5935,7 @@ async function generateExternalSubtitle(
                         onApplyRecommendations={
                           hasOpenJob ? undefined : applySnapshotRecommendations
                         }
-                        onReviewInLab={() => { window.location.href = `/profile-lab?assetPath=${encodeURIComponent(asset.path)}`; }}
+                        onReviewInLab={openAssetInLab}
                       />
                     ) : null}
                     {isConverted ? <Alert severity="info">This is already a converted asset. Re-processing recommendations should be evaluated from its archived original.</Alert> : null}

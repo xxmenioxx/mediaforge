@@ -6,11 +6,11 @@ Assets now has the foundation for a shared RAW and Library workspace, but issue 
 
 - Define one Assets workspace and canonical hierarchy with RAW and configured Library roots as siblings; do not add context tabs or Converted, Archive, or Reports inventory roots.
 - Make the hierarchy keyboard accessible, resizable from about 220px to 420px with a 300px default, and persist its width locally.
-- Specify compact, mode-specific Library and RAW inventory columns, filename-only rows, and one overflow menu for supported row actions.
-- Show only an already available canonical Advisor score; otherwise show an honest unavailable or not-evaluated state. Explicit path-level Advisor actions may populate existing results, but rendering rows never evaluates Advisor.
-- Keep path workflow actions in a distinct toolbar, with relevant RAW or Library actions and visually separated destructive operations.
-- Define a collapsible Selected Asset Workspace below the table with preview, identity, status/context, technical summaries, and existing primary and secondary actions.
-- Use available artwork in this order: Jellyfin-generated artwork, existing MVForge artwork or thumbnail, then a generic MVForge placeholder.
+- Specify compact, mode-specific Library and RAW inventory columns, filename-only rows, and a canonical (...) row menu containing supported actions for the current mode and asset.
+- Show a compact canonical Advisor score when already available, with distinct neutral not-evaluated and unavailable/off states. Advisor evaluation is explicit-only; rendering or expanding a path never evaluates it.
+- Keep path workflow actions in a compact V2 toolbar separate from rows, with mode-relevant actions, selected count, and visually separated destructive operations. Reuse existing AssetGroupRow action handlers and lifecycle owners.
+- Define a compact, collapsible Selected Asset Workspace below the table: landscape artwork/preview at left, filename and collection/path context with quick facts, status/context and technical summaries, and primary plus overflow actions.
+- Prefer supported Jellyfin artwork, then an existing MVForge asset thumbnail, then a generic placeholder. Do not claim the first two sources are integrated unless an existing supported URL/source is available to the caller.
 - Preserve responsive behavior, existing capability and eligibility enforcement, and bounded inventory/detail loading.
 
 ## Capabilities
@@ -32,4 +32,8 @@ None. The main OpenSpec inventory has no Assets workspace capability; existing A
 
 ## Follow-up
 
-The current API exposes no Jellyfin artwork or persisted MVForge artwork URL for Assets. The existing asset preview route streams the source media, so the workspace does not use it as an image. The implementation currently displays the generic placeholder; wiring canonical artwork metadata or an artwork service is a follow-up. No artwork is generated as part of this change.
+The current API/Asset contract exposes no Jellyfin artwork or persisted MVForge artwork URL for Assets. The existing asset preview route streams source media, so it cannot serve as artwork. Keep the generic placeholder in the workspace and do not describe artwork fallback as integrated until an existing supported source is wired. Adding artwork metadata or an artwork service is a follow-up outside this issue; do not generate artwork here.
+
+The existing path rename dialog is scoped to Library paths. RAW path rename is not exposed by a supported path action/backend contract, so this toolbar keeps Rename available only for Library and RAW path rename remains a follow-up if a canonical operation is added.
+
+Completion tasks track the remaining row-action, explicit-only Advisor, path-toolbar, selected-detail, and regression requirements; do not report those requirements as shipped until implementation and focused tests demonstrate them.

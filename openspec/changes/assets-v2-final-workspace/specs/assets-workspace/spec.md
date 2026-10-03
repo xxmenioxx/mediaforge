@@ -54,7 +54,7 @@ The RAW inventory MUST use the shared table presentation with columns for Asset,
 
 #### Scenario: Scan RAW columns
 - **WHEN** a RAW source, title, or path is selected
-- **THEN** the inventory displays the ten RAW columns in the specified order using source and preparation summaries
+- **THEN** the inventory displays the ten RAW columns in the specified order using source and preparation summaries and preserves existing pagination behavior
 
 #### Scenario: Avoid inventing RAW lifecycle state
 - **WHEN** existing backend state does not establish a suggested RAW label
@@ -66,7 +66,7 @@ The RAW inventory MUST use the shared table presentation with columns for Asset,
 
 ### Requirement: Advisor display uses available canonical evidence only
 
-The Advisor cell MUST use `AdvisorResponse.score` when that result is already available. When no result is available, the cell MUST show an honest unavailable or not-evaluated state and MUST NOT imply a score. Rendering an inventory row MUST NOT start Advisor evaluation. An explicit path-level Advisor workflow MAY create or refresh results through the existing owner.
+The compact Advisor cell MUST use `AdvisorResponse.score` when that result is already available and present it as a concise rating/score. When no result is available, the cell MUST show a restrained neutral not-evaluated state; an Advisor setting or capability that is unavailable/off MUST have a distinct unavailable state. Neither state may imply a score. Rendering a row, expanding a path group, sorting, pagination, refresh, or tree selection MUST NOT start Advisor evaluation. Advisor evaluation MUST happen only from an explicit user action. An explicit path-level Advisor workflow MAY create or refresh results through the existing owner and MUST populate/read the existing row cache key `['advisor', 'asset-row', asset.path, profileId]` where supported.
 
 #### Scenario: Display a cached Advisor result
 - **WHEN** an asset already has an available canonical Advisor response
@@ -76,23 +76,27 @@ The Advisor cell MUST use `AdvisorResponse.score` when that result is already av
 - **WHEN** no canonical Advisor result is available for an asset
 - **THEN** its row displays an unavailable or not-evaluated state without implying that evaluation succeeded
 
+#### Scenario: Distinguish unavailable Advisor from not evaluated
+- **WHEN** Advisor is unavailable or disabled for the current context
+- **THEN** the cell uses a compact unavailable/off treatment that is visually distinct from the neutral not-evaluated state
+
 #### Scenario: Render rows without Advisor work
-- **WHEN** RAW or Library rows are rendered or refreshed
+- **WHEN** RAW or Library rows are rendered, a path group is expanded, or inventory is refreshed
 - **THEN** no automatic Advisor evaluation is triggered for those rows
 
 #### Scenario: Run path-level Advisor explicitly
 - **WHEN** a user explicitly starts the supported Advisor action for a path
-- **THEN** the existing path-level workflow runs and any persisted results become available to the workspace through its existing data owner
+- **THEN** the existing path-level workflow runs and caches each resulting asset response under `['advisor', 'asset-row', asset.path, profileId]` without adding per-row evaluation on render
 
 ### Requirement: Row and path actions remain distinct and use existing eligibility
 
-Each inventory row MUST expose supported asset actions through one keyboard-accessible overflow menu. Library actions MAY include Open in Lab, Asset Info, Assign Profile, Test Encode, Queue, and Delete. RAW actions MAY include Scan Asset, Analyze, Advisor, Assign Profile, Queue, Open in Lab, Test Encode, Asset Info, and Delete. Only actions supported for the current asset and context may be offered or enabled. Action execution MUST preserve existing backend capability and eligibility decisions and existing confirmation, preflight, and lifecycle flows.
+Each inventory row MUST expose supported asset actions through one keyboard-accessible (...) overflow menu, which is the canonical row action surface for the compact V2 inventory. For an eligible Library asset, the menu MUST expose each applicable supported action from Open in Lab, Asset Info, Assign Profile, Test Encode, Queue/Queue replacement, Advisor, and lifecycle-safe Delete. For an eligible RAW asset, the menu MUST expose each applicable supported action from Scan/Analyze Asset, Advisor, Assign Profile, Queue, Open in Lab, Test Encode, Asset Info, and Delete where supported. Open in Lab, Asset Info, Assign Profile, Test Encode, Queue, Advisor, Scan/Analyze, and Delete MUST route through their existing capability contracts, dialogs, and lifecycle behavior. Only actions supported for the current asset and context may be offered or enabled. Action execution MUST preserve existing backend capability and eligibility decisions and existing confirmation, preflight, and lifecycle flows. Destructive actions MUST be visually separated from routine menu actions.
 
-Path-level actions MUST remain in a distinct toolbar rather than being duplicated as row actions. The toolbar MUST show the selected asset count and expose only relevant existing operations, including applicable Scan, Advisor, Queue/Preflight, Assign Profile, Configure Path, move, rename, and delete operations. Destructive path actions MUST be visually separated from routine workflow actions.
+Path-level actions MUST use a compact Assets V2 toolbar, distinct from both the inventory table rows and the row overflow menu. It MUST replace the legacy `AssetGroupRow`-inside-table presentation while reusing the same callbacks, mutations, confirmations, and backend behavior rather than duplicating business logic. The toolbar MUST show selected asset count and expose only relevant existing operations. For applicable RAW paths it MUST expose supported Scan, explicit Advisor, Queue/Preflight, and Configure Path; the existing Configure Path operation includes path-level profile configuration. For applicable Library paths it MUST expose supported Queue/Preflight, move/path operations, and Rename. The current path rename dialog supports Library paths only; RAW path Rename is unsupported and MUST NOT be added without an existing backend/action contract. Supported selected-delete and path-delete actions MUST remain available through a visually separated destructive overflow. Row actions MUST NOT be represented as path actions, or vice versa.
 
 #### Scenario: Open supported row actions
 - **WHEN** a user opens an asset's overflow menu
-- **THEN** the menu exposes one set of supported asset-level actions with accessible labels and preserves their existing workflows
+- **THEN** the menu exposes the supported actions for that row's RAW or Library context, uses accessible labels, separates destructive actions, and preserves existing dialogs/routes/workflows
 
 #### Scenario: Enforce current action eligibility
 - **WHEN** an asset or path is not eligible for a workflow action
@@ -100,7 +104,7 @@ Path-level actions MUST remain in a distinct toolbar rather than being duplicate
 
 #### Scenario: Distinguish path and row actions
 - **WHEN** a user selects a path and an asset within it
-- **THEN** path operations and selected-count context appear in the path toolbar while asset operations remain in that row's overflow menu
+- **THEN** path operations and selected-count context appear in the compact V2 toolbar while asset operations remain in that row's overflow menu; the toolbar is not rendered as a legacy table row
 
 #### Scenario: Queue through the existing path
 - **WHEN** a user starts Queue or Preflight from a path or row
@@ -108,7 +112,7 @@ Path-level actions MUST remain in a distinct toolbar rather than being duplicate
 
 ### Requirement: Selected Asset Workspace remains below the table
 
-Selecting an asset MUST show a collapsible Selected Asset Workspace below the inventory table; it MUST NOT become a persistent right-side panel. The workspace MUST organize available artwork and preview, filename and collection/series/season context, Estado, Perfil, Subtítulos, Duración, Modificado, container, size, resolution, video codec, and audio summary. Its primary actions MUST include Assign Profile, Test Encode, and More when supported. Secondary actions MAY include Open in Lab, Asset Info, Advisor, Rescan, Rename, and Delete when supported. Preview/play MUST be available through the artwork interaction without a redundant visible Play action elsewhere.
+Selecting an asset MUST show a collapsible Selected Asset Workspace below the inventory table; it MUST NOT become a persistent right-side panel. On desktop it MUST remain compact horizontally and organize: landscape artwork with centered Play overlay and duration badge at left; filename, series/collection/season/path context, and category/library, container, size, resolution, and codec quick facts in the center; Estado, Perfil, Subtítulos, Duración, and Modificado as status/context; video codec, resolution, and audio summary as technical detail; and primary Assign Profile, Test Encode, and (...) actions where supported. Do not repeat status as both a prominent badge and Estado unless the visual reference clearly benefits from both. At narrow widths, the same information and primary actions MUST reflow without page-level overflow. Secondary actions MAY include Open in Lab, Asset Info, Advisor, Rescan, Rename, and Delete when supported. Preview/play MUST be available through the artwork interaction without a redundant visible Play action elsewhere.
 
 #### Scenario: Show selected asset detail below the table
 - **WHEN** a user selects a RAW or Library asset
@@ -126,20 +130,12 @@ Selecting an asset MUST show a collapsible Selected Asset Workspace below the in
 - **WHEN** selected-asset summary or preview evidence is missing
 - **THEN** the workspace identifies unavailable values without generating artwork, preview, or media analysis to fill the gap
 
-### Requirement: Artwork follows the available-source fallback order
+### Requirement: Artwork remains a placeholder until a supported source exists
 
-The Selected Asset Workspace MUST prefer Jellyfin-generated artwork when it is already available, then existing MVForge asset artwork or thumbnail, then a generic MVForge placeholder. Artwork selection MUST NOT trigger automatic artwork generation or an unbounded per-row data request.
+The current Selected Asset Workspace MUST display the generic MVForge placeholder because the Asset/API contract and selected-detail caller expose no supported Jellyfin artwork or MVForge artwork/thumbnail source. It MUST NOT use the source-media preview as artwork or generate artwork, preview, or per-row image requests. Artwork integration is an explicit follow-up; when supported sources are added in a separately scoped change, the intended priority is Jellyfin-generated artwork, then existing MVForge artwork/thumbnail, then the generic placeholder. That future priority is not implemented behavior in this change.
 
-#### Scenario: Prefer artwork from the highest available source
-- **WHEN** artwork is available from Jellyfin and an existing MVForge thumbnail
-- **THEN** the selected workspace displays the Jellyfin-generated artwork
-
-#### Scenario: Fall back to existing MVForge artwork
-- **WHEN** Jellyfin artwork is unavailable and an existing MVForge asset artwork or thumbnail is available
-- **THEN** the selected workspace displays that existing MVForge artwork
-
-#### Scenario: Fall back to a generic placeholder
-- **WHEN** neither Jellyfin nor existing MVForge artwork is available
+#### Scenario: Keep the current generic placeholder when no artwork source is wired
+- **WHEN** neither supported artwork URL is available to the selected-detail caller, as with the current Asset/API contract
 - **THEN** the selected workspace displays a generic MVForge placeholder without generating new artwork
 
 ### Requirement: The shared workspace remains responsive and bounded

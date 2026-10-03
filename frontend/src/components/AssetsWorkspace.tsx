@@ -5,6 +5,7 @@ import {
   ButtonBase,
   Card,
   Collapse,
+  Divider,
   Grid,
   IconButton,
   List,
@@ -442,51 +443,27 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
   );
 }
 
-export function SelectedAssetArtwork({ fileName, jellyfinArtworkUrl, mvforgeArtworkUrl }: {
-  fileName: string;
-  jellyfinArtworkUrl?: string | null;
-  mvforgeArtworkUrl?: string | null;
-}) {
-  const sources = [
-    jellyfinArtworkUrl ? { kind: 'jellyfin', url: jellyfinArtworkUrl } : null,
-    mvforgeArtworkUrl ? { kind: 'mvforge', url: mvforgeArtworkUrl } : null,
-  ].filter((source): source is { kind: 'jellyfin' | 'mvforge'; url: string } => source !== null);
-  const sourceIdentity = sources.map(({ kind, url }) => `${kind}:${url}`).join('|');
-  const [imageState, setImageState] = useState({ identity: sourceIdentity, index: 0 });
-  const sourceIndex = imageState.identity === sourceIdentity ? imageState.index : 0;
-  const source = sources[sourceIndex];
-
+export function SelectedAssetArtwork({ fileName }: { fileName: string }) {
   return (
     <Box sx={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
-      {source ? (
-        <Box
-          component="img"
-          src={source.url}
-          alt={`${fileName} artwork`}
-          data-artwork-source={source.kind}
-          onError={() => setImageState({ identity: sourceIdentity, index: sourceIndex + 1 })}
-          sx={{ width: '100%', height: '100%', objectFit: 'cover' }}
-        />
-      ) : (
-        <Box
-          role="img"
-          aria-label={`MVForge artwork placeholder for ${fileName}`}
-          data-artwork-source="placeholder"
-          sx={{
-            width: '100%',
-            height: '100%',
-            display: 'grid',
-            placeItems: 'center',
-            color: 'text.secondary',
-            background: 'linear-gradient(135deg, rgba(35, 48, 77, 0.95), rgba(8, 19, 35, 0.98) 62%, rgba(57, 38, 94, 0.85))',
-          }}
-        >
-          <Stack spacing={0.4} alignItems="center">
-            <MovieOutlinedIcon sx={{ fontSize: 42, opacity: 0.75 }} />
-            <Typography variant="caption">Artwork unavailable</Typography>
-          </Stack>
-        </Box>
-      )}
+      <Box
+        role="img"
+        aria-label={`MVForge artwork placeholder for ${fileName}`}
+        data-artwork-source="placeholder"
+        sx={{
+          width: '100%',
+          height: '100%',
+          display: 'grid',
+          placeItems: 'center',
+          color: 'text.secondary',
+          background: 'linear-gradient(135deg, rgba(35, 48, 77, 0.95), rgba(8, 19, 35, 0.98) 62%, rgba(57, 38, 94, 0.85))',
+        }}
+      >
+        <Stack spacing={0.4} alignItems="center">
+          <MovieOutlinedIcon sx={{ fontSize: 42, opacity: 0.75 }} />
+          <Typography variant="caption">Artwork unavailable</Typography>
+        </Stack>
+      </Box>
     </Box>
   );
 }
@@ -508,8 +485,6 @@ export function SelectedAssetDetail({
   canAssignProfile,
   canTestEncode,
   testEncodeDisabled = false,
-  jellyfinArtworkUrl,
-  mvforgeArtworkUrl,
 }: {
   asset: Asset;
   pathContext: string;
@@ -527,15 +502,12 @@ export function SelectedAssetDetail({
   canAssignProfile: boolean;
   canTestEncode: boolean;
   testEncodeDisabled?: boolean;
-  jellyfinArtworkUrl?: string | null;
-  mvforgeArtworkUrl?: string | null;
 }) {
   const [expanded, setExpanded] = useState(true);
   const audioSummary = snapshot
     ? snapshot.audioStreams.slice(0, 2).map((stream) => [stream.codec, stream.channels ? `${stream.channels}ch` : '', stream.language].filter(Boolean).join(' ')).join(' · ') || 'None found'
     : 'Unavailable';
   const metadata = asset.metadata;
-  const metadataValues = [...(metadata?.categories ?? []), ...(metadata?.tags ?? [])].filter(Boolean);
   const extension = asset.extension.replace(/^\./, '').toUpperCase() || 'Unavailable';
   const container = snapshot?.container ? snapshot.container.toUpperCase() : extension;
   const duration = snapshot?.duration ?? asset.technical?.duration;
@@ -547,17 +519,22 @@ export function SelectedAssetDetail({
       : 'Unavailable';
   const subtitleCount = snapshot?.subtitleStreams.length;
   const subtitleValue = snapshotLoading ? 'Loading…' : subtitlesSummary || (subtitleCount === undefined ? 'Unavailable' : `${subtitleCount} ${subtitleCount === 1 ? 'track' : 'tracks'}`);
-  const summaryValues = [
+  const statusValues = [
     ['Estado', status || 'Unavailable'],
     ['Perfil', assignedProfile || 'Unavailable'],
     ['Subtítulos', subtitleValue],
     ['Duración', formatDurationSummary(duration)],
     ['Modificado', modifiedLabel || 'Unavailable'],
   ];
-  const technicalValues = [
+  const quickFacts = [
+    ['Category / Library', metadata?.categories?.[0] || asset.libraryName || 'Unavailable'],
     ['Container', container],
-    ['Size', sizeLabel],
-    ['Video', videoCodec],
+    ['Size', sizeLabel || 'Unavailable'],
+    ['Resolution', resolution],
+    ['Codec', videoCodec],
+  ];
+  const technicalValues = [
+    ['Video codec', videoCodec],
     ['Resolution', resolution],
     ['Audio', audioSummary],
   ];
@@ -593,7 +570,7 @@ export function SelectedAssetDetail({
         </IconButton>
       </Stack>
       <Collapse in={expanded} id="selected-asset-workspace-content" unmountOnExit>
-      <Stack direction={{ xs: 'column', xl: 'row' }} spacing={{ xs: 1.25, xl: 1.5 }} alignItems={{ xs: 'stretch', xl: 'center' }}>
+      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 1.25, lg: 1.5 }} alignItems={{ xs: 'stretch', lg: 'center' }}>
         <Tooltip title={`Play preview of ${asset.fileName}`}>
           <span>
             <ButtonBase
@@ -601,7 +578,7 @@ export function SelectedAssetDetail({
               disabled={asset.missing}
               aria-label={`Play preview of ${asset.fileName}`}
               sx={{
-                width: { xs: '100%', sm: 240, xl: 280 },
+                width: { xs: '100%', sm: 240, lg: 220, xl: 260 },
                 aspectRatio: '16 / 9',
                 height: 'auto',
                 flexShrink: 0,
@@ -615,7 +592,7 @@ export function SelectedAssetDetail({
                 '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 },
               }}
             >
-              <SelectedAssetArtwork fileName={asset.fileName} jellyfinArtworkUrl={jellyfinArtworkUrl} mvforgeArtworkUrl={mvforgeArtworkUrl} />
+              <SelectedAssetArtwork fileName={asset.fileName} />
               <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', bgcolor: 'rgba(0,0,0,0.2)' }}>
                 <PlayCircleOutlineIcon fontSize="large" />
               </Box>
@@ -636,45 +613,48 @@ export function SelectedAssetDetail({
             minWidth: 0,
             flex: 1,
             display: 'grid',
-            gridTemplateColumns: { xs: 'minmax(0, 1fr)', xl: 'minmax(0, 1.1fr) minmax(220px, 0.9fr)' },
-            gap: { xs: 1, xl: 1.5 },
+            gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'minmax(0, 1.2fr) minmax(220px, 0.8fr)' },
+            gap: { xs: 1, lg: 1.25 },
           }}
         >
           <Stack spacing={0.75} sx={{ minWidth: 0 }}>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+            <Box sx={{ minWidth: 0 }}>
               <Tooltip title={asset.fileName}>
                 <Typography component="h2" fontWeight={700} variant="h2" noWrap sx={{ minWidth: 0, fontSize: { xs: '1rem', sm: '1.1rem' }, lineHeight: 1.25 }}>
                   {asset.fileName}
                 </Typography>
               </Tooltip>
-              <Box sx={{ flexShrink: 0, border: 1, borderColor: 'divider', borderRadius: 99, px: 1, py: 0.2, bgcolor: 'rgba(255,255,255,0.035)' }}>
-                <Typography variant="caption" fontWeight={600} noWrap>{status}</Typography>
-              </Box>
-            </Stack>
-            <Typography variant="caption" color="text.secondary" noWrap title={pathContext}>{pathContext}</Typography>
-            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(4, minmax(0, 1fr))' }, gap: 0.75, mt: 0.4 }}>
-              {summaryValues.map(([label, value]) => (
+              <Typography variant="caption" color="text.secondary" noWrap title={pathContext}>{pathContext}</Typography>
+            </Box>
+            <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ mt: 0.2 }}>Quick facts</Typography>
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' }, gap: 0.6 }}>
+              {quickFacts.map(([label, value]) => (
                 <Box key={label} sx={{ minWidth: 0 }}>
                   <Typography component="div" variant="caption" color="text.secondary" noWrap>{label}</Typography>
                   <Typography variant="body2" fontWeight={500} noWrap title={value}>{value}</Typography>
                 </Box>
               ))}
             </Box>
-            {metadataValues.length ? (
-              <Typography variant="caption" color="text.secondary" display="block" noWrap title={metadataValues.join(', ')}>
-                Metadata · {metadataValues.join(', ')}
-              </Typography>
-            ) : null}
+            <Divider sx={{ my: 0.25 }} />
+            <Typography variant="caption" fontWeight={700} color="text.secondary">Status / context</Typography>
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' }, gap: 0.6 }}>
+              {statusValues.map(([label, value]) => (
+                <Box key={label} sx={{ minWidth: 0 }}>
+                  <Typography component="div" variant="caption" color="text.secondary" noWrap>{label}</Typography>
+                  <Typography variant="body2" fontWeight={500} noWrap title={value}>{value}</Typography>
+                </Box>
+              ))}
+            </Box>
           </Stack>
 
           <Box
             sx={{
               minWidth: 0,
-              borderLeft: { xl: 1 },
-              borderTop: { xs: 1, xl: 0 },
+              borderLeft: { lg: 1 },
+              borderTop: { xs: 1, lg: 0 },
               borderColor: 'divider',
-              pl: { xl: 1.5 },
-              pt: { xs: 1, xl: 0 },
+              pl: { lg: 1.25 },
+              pt: { xs: 1, lg: 0 },
             }}
           >
             <Typography variant="caption" fontWeight={700} color="text.secondary">Technical information</Typography>
@@ -684,7 +664,7 @@ export function SelectedAssetDetail({
           </Box>
         </Box>
 
-        <Stack direction="row" spacing={0.5} alignItems="center" justifyContent={{ xs: 'flex-start', xl: 'center' }} flexWrap="wrap" useFlexGap sx={{ flexShrink: 0 }}>
+        <Stack direction="row" spacing={0.5} alignItems="center" justifyContent={{ xs: 'flex-start', lg: 'center' }} flexWrap="wrap" useFlexGap sx={{ flexShrink: 0 }}>
           {canAssignProfile ? <Button size="small" variant="outlined" onClick={onAssignProfile}>Assign Profile</Button> : null}
           {canTestEncode ? <Button size="small" variant="contained" color="secondary" onClick={onTestEncode} disabled={testEncodeDisabled}>Test Encode</Button> : null}
           <Tooltip title="More asset actions">

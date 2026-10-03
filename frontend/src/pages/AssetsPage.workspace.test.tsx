@@ -20,6 +20,7 @@ vi.mock('../api/client', async (importOriginal) => {
 
 import { api } from '../api/client';
 import { AssetsPage, ReportsPage } from './AssetsPage';
+import { assetLabHref } from '../components/assetsActionRoutes';
 
 afterEach(cleanup);
 
@@ -264,10 +265,11 @@ describe('Library Assets workspace', () => {
     expect(within(details).getByText('Library HEVC')).toBeTruthy();
     expect(within(details).getByText('Subtítulos')).toBeTruthy();
     expect(within(details).getByText(/2 tracks/)).toBeTruthy();
-    expect(within(details).getByText('Video · hevc')).toBeTruthy();
+    expect(within(details).getByText('Video codec · hevc')).toBeTruthy();
     expect(within(details).getByText('Resolution · 1920 × 1080')).toBeTruthy();
     expect(within(details).getByText(/Audio · aac 2ch ja/)).toBeTruthy();
-    expect(within(details).getByText('Metadata · Anime, TV')).toBeTruthy();
+    expect(within(details).getByText('Category / Library')).toBeTruthy();
+    expect(within(details).getByText('Anime')).toBeTruthy();
     expect(within(details).getByRole('img', { name: /MVForge artwork placeholder/ }).getAttribute('data-artwork-source')).toBe('placeholder');
     const selectedRow = row.closest('tr')!;
     expect(within(selectedRow).getByText('Unverified')).toBeTruthy();
@@ -303,7 +305,9 @@ describe('Library Assets workspace', () => {
 
   it('keeps path Advisor direct and Queue/configuration actions reachable', async () => {
     const user = userEvent.setup();
-    renderLibraryPage();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const evaluateAdvisor = vi.spyOn(api, 'evaluateAdvisor').mockResolvedValue({ score: 88, recommendation: 'maybe' } as never);
+    renderLibraryPage(queryClient);
 
     await screen.findByRole('columnheader', { name: 'Asset' });
     await user.click(treeItem('Anime', 1));
@@ -312,11 +316,19 @@ describe('Library Assets workspace', () => {
     await user.click(treeExpander('Series', 2));
     await user.click(treeItem('Season 01', 3));
 
-    expect(await screen.findByRole('button', { name: 'Advisor' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Queue' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Advisor' }).closest('table')).not.toBe(screen.getByRole('table', { name: 'Library assets' }));
-    await user.click(screen.getByRole('button', { name: `More actions for ${path}` }));
-    expect(await screen.findByRole('menuitem', { name: 'Path configuration and more actions' })).toBeTruthy();
+    const toolbar = screen.getByRole('region', { name: 'Library path actions' });
+    expect(within(toolbar).getByRole('button', { name: 'Advisor' })).toBeTruthy();
+    expect(within(toolbar).getByRole('button', { name: 'Queue / Preflight' })).toBeTruthy();
+    expect(within(toolbar).getByRole('button', { name: 'Move path' })).toBeTruthy();
+    expect(within(toolbar).getByRole('button', { name: 'Rename path' })).toBeTruthy();
+    expect(screen.queryByRole('table', { name: `Actions for ${path}` })).toBeNull();
+    expect(evaluateAdvisor).not.toHaveBeenCalled();
+
+    await user.click(within(toolbar).getByRole('button', { name: 'Advisor' }));
+    await waitFor(() => expect(evaluateAdvisor).toHaveBeenCalledTimes(2));
+    expect(queryClient.getQueryData(['advisor', 'asset-row', `${path}/A Very Long Episode Filename That Should Stay Inside Its Column.mkv`, 1])).toEqual({ score: 88, recommendation: 'maybe' });
+    expect(queryClient.getQueryData(['advisor', 'asset-row', `${path}/Episode 02.mkv`, 1])).toEqual({ score: 88, recommendation: 'maybe' });
+    evaluateAdvisor.mockRestore();
   });
 
   it('shows a cached canonical Advisor score without evaluating rows and keeps row overflow asset-scoped', async () => {
@@ -334,11 +346,80 @@ describe('Library Assets workspace', () => {
     expect(within(table).getAllByText('Not evaluated')).toHaveLength(1);
     expect(evaluateAdvisor).not.toHaveBeenCalled();
 
-    await user.click(within(cachedRow!).getByRole('button', { name: 'More actions for A Very Long Episode Filename That Should Stay Inside Its Column.mkv' }));
-    expect(await screen.findByRole('menuitem', { name: 'Asset Info' })).toBeTruthy();
-    expect(screen.queryByRole('menuitem', { name: 'Configure' })).toBeNull();
+    const rowAfterAssignment = within(table).getByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv').closest('tr')!;
+    await user.click(within(rowAfterAssignment).getByRole('button', { name: 'More actions for A Very Long Episode Filename That Should Stay Inside Its Column.mkv' }));
+    for (const name of ['Asset Info', 'Advisor', 'Open in Lab', 'Assign Profile', 'Test Encode', 'Queue replacement']) {
+      expect(await screen.findByRole('menuitem', { name })).toBeTruthy();
+    }
+    expect(assetLabHref(firstPath)).toBe(`/profile-lab?assetPath=${encodeURIComponent(firstPath)}`);
+    await user.click(screen.getByRole('menuitem', { name: 'Assign Profile' }));
+    expect(await screen.findByRole('dialog', { name: /Assign Profile/ })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Assign Profile/ })).toBeNull());
+    const currentTable = screen.getByRole('table', { name: 'Library assets' });
+    const rowBeforeTestEncode = within(currentTable).getByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv').closest('tr')!;
+    await user.click(within(rowBeforeTestEncode).getByRole('button', { name: 'More actions for A Very Long Episode Filename That Should Stay Inside Its Column.mkv' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Test Encode' }));
+    expect(await screen.findByRole('dialog', { name: 'Generate Test Encode' })).toBeTruthy();
     expect(evaluateAdvisor).not.toHaveBeenCalled();
     evaluateAdvisor.mockRestore();
+  });
+
+  it('shows unavailable only after an explicit failed Advisor request and distinguishes confidence Off', async () => {
+    const user = userEvent.setup();
+    const evaluateAdvisor = vi.spyOn(api, 'evaluateAdvisor').mockRejectedValue(new Error('Advisor service unavailable'));
+    renderLibraryPage();
+
+    const table = await screen.findByRole('table', { name: 'Library assets' });
+    const row = within(table).getByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv').closest('tr')!;
+    expect(within(row).getByLabelText('Advisor not evaluated')).toBeTruthy();
+    expect(evaluateAdvisor).not.toHaveBeenCalled();
+    await user.click(within(row).getByRole('button', { name: 'More actions for A Very Long Episode Filename That Should Stay Inside Its Column.mkv' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Advisor' }));
+    await waitFor(() => expect(within(table).getByLabelText('Advisor unavailable')).toBeTruthy());
+    expect(evaluateAdvisor).toHaveBeenCalledTimes(1);
+    evaluateAdvisor.mockRestore();
+
+    cleanup();
+    vi.mocked(api.settings).mockResolvedValue([{ key: 'advisorAutomationPathOverrides', value: { disabledPaths: [path] } }] as never);
+    const offEvaluation = vi.spyOn(api, 'evaluateAdvisor');
+    renderLibraryPage();
+    const offTable = await screen.findByRole('table', { name: 'Library assets' });
+    expect(within(offTable).getAllByLabelText('Advisor off')).toHaveLength(2);
+    expect(offEvaluation).not.toHaveBeenCalled();
+    offEvaluation.mockRestore();
+  });
+
+  it('keeps lifecycle destructive actions capability-gated in the compact row menu', async () => {
+    const user = userEvent.setup();
+    const converted = {
+      ...asset(21, 'Converted Episode.mkv'),
+      status: 'converted',
+      lifecycle: {
+        location: 'library',
+        lifecycle: 'published',
+        provenance: 'converted',
+        validation: 'passed',
+        publication: 'published',
+        original: 'archived',
+        actions: {
+          lab: { allowed: false, reason: 'Lab unavailable' },
+          queue: { allowed: false, reason: 'Queue unavailable' },
+          deleteArchivedOriginal: { allowed: false, reason: 'Original cannot be restored' },
+          refreshAnalysis: { allowed: false, reason: 'Analysis unavailable' },
+        },
+      },
+    } as Asset;
+    vi.mocked(api.assets).mockResolvedValue(inventory([converted]));
+    renderLibraryPage();
+
+    const row = await screen.findByText('Converted Episode.mkv');
+    await user.click(within(row.closest('tr')!).getByRole('button', { name: 'More actions for Converted Episode.mkv' }));
+    const menu = await screen.findByRole('menu');
+    for (const name of ['Open in Lab', 'Queue asset', 'Safely delete and restore original']) {
+      expect(within(menu).getByRole('menuitem', { name }).getAttribute('aria-disabled')).toBe('true');
+    }
+    expect(within(menu).getByRole('separator')).toBeTruthy();
   });
 });
 
@@ -457,9 +538,12 @@ describe('RAW Assets workspace', () => {
     const rawTable = await screen.findByRole('table', { name: 'RAW assets' });
     expect(within(rawTable).getByText('Trailer.mkv')).toBeTruthy();
     expect(within(rawTable).queryByText('S01E01.mkv')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Queue' })).toBeTruthy();
-    const pathActions = screen.getByRole('table', { name: /Actions for .*extras/ });
-    expect(within(pathActions).getByRole('button', { name: 'Configure' })).toBeTruthy();
+    const pathToolbar = screen.getByRole('region', { name: 'RAW path actions' });
+    for (const name of ['Scan', 'Advisor', 'Queue / Preflight', 'Configure Path']) {
+      expect(within(pathToolbar).getByRole('button', { name })).toBeTruthy();
+    }
+    expect(within(pathToolbar).queryByRole('button', { name: 'Rename path' })).toBeNull();
+    expect(screen.queryByRole('table', { name: /Actions for .*extras/ })).toBeNull();
 
     for (const name of ['Asset', 'Advisor', 'Status', 'Source / Codec', 'Resolution', 'Duration', 'Bitrate', 'Size', 'Modified', 'Actions']) {
       expect(within(rawTable).getByRole('columnheader', { name })).toBeTruthy();
@@ -478,8 +562,17 @@ describe('RAW Assets workspace', () => {
     await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledTimes(2));
     expect(api.latestSnapshot).toHaveBeenLastCalledWith('/media/raw/anime/Attack on Titan/extras/Trailer.mkv');
 
-    await user.click(within(details).getByRole('button', { name: 'More actions for Trailer.mkv' }));
-    expect(await screen.findByRole('menuitem', { name: 'Asset Info' })).toBeTruthy();
+    await user.click(within(pathToolbar).getByRole('button', { name: 'Scan' }));
+    expect(await screen.findByRole('dialog', { name: /Snapshots/ })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Snapshots/ })).toBeNull());
+
+    const currentRawTable = screen.getByRole('table', { name: 'RAW assets' });
+    const currentRawRow = within(currentRawTable).getByText('Trailer.mkv').closest('tr')!;
+    await user.click(within(currentRawRow).getByRole('button', { name: 'More actions for Trailer.mkv' }));
+    for (const name of ['Scan / Analyze Asset', 'Advisor', 'Open in Lab', 'Assign Profile', 'Test Encode', 'Asset Info']) {
+      expect(await screen.findByRole('menuitem', { name })).toBeTruthy();
+    }
     expect(screen.getByRole('menuitem', { name: 'Queue asset' })).toBeTruthy();
     await user.keyboard('{Escape}');
     await user.click(treeItem('RAW', 1));
