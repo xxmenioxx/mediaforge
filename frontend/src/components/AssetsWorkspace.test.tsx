@@ -330,14 +330,15 @@ describe('Assets workspace presentation', () => {
     const media = within(screen.getByTestId('selected-asset-technical'));
     expect(getComputedStyle(details).position).toBe('sticky');
     expect(getComputedStyle(details).bottom).toBe('0px');
-    expect(getComputedStyle(preview).aspectRatio).toBe('4/3');
+    expect(getComputedStyle(preview).aspectRatio).toBe('1.52/1');
     expect(identity.textContent).toContain('Episode 01.mkv');
     expect(identity.textContent).toContain('Series/Season 01');
     expect(identity.contains(screen.getByTestId('selected-asset-state-context'))).toBe(false);
     expect(identity.contains(screen.getByTestId('selected-asset-technical'))).toBe(false);
     expect(information.contains(identity)).toBe(true);
-    expect(information.contains(screen.getByTestId('selected-asset-state-context'))).toBe(true);
-    expect(information.contains(screen.getByTestId('selected-asset-technical'))).toBe(true);
+    expect(information.contains(screen.getByTestId('selected-asset-quick-facts'))).toBe(true);
+    expect(information.contains(screen.getByTestId('selected-asset-state-context'))).toBe(false);
+    expect(information.contains(screen.getByTestId('selected-asset-technical'))).toBe(false);
     const quickFacts = within(screen.getByTestId('selected-asset-quick-facts'));
     expect(quickFacts.getByText('Category / Library')).toBeTruthy();
     expect(quickFacts.getByText('Anime')).toBeTruthy();
@@ -351,34 +352,34 @@ describe('Assets workspace presentation', () => {
     expect(context.getByText('2 embedded tracks')).toBeTruthy();
     expect(context.getByText('Duration')).toBeTruthy();
     expect(context.getByText('Modified')).toBeTruthy();
-    expect(within(information).getByTestId('selected-asset-status').getAttribute('aria-label')).toBe('Status: Library');
+    expect(within(details).getByTestId('selected-asset-status').getAttribute('aria-label')).toBe('Status: Library');
     expect(quickFacts.getByText('Size')).toBeTruthy();
     expect(quickFacts.getByText('Resolution')).toBeTruthy();
     expect(quickFacts.getByText('Codec')).toBeTruthy();
     expect(quickFacts.getByText('1920 × 1080')).toBeTruthy();
     expect(quickFacts.getByText('hevc')).toBeTruthy();
-    expect(media.getByText('MEDIA')).toBeTruthy();
+    expect(media.getByText('Technical')).toBeTruthy();
     expect(media.getByText('Video')).toBeTruthy();
-    expect(media.getByText('hevc · 1920 × 1080')).toBeTruthy();
-    expect(within(details).getAllByText('hevc · 1920 × 1080')).toHaveLength(1);
-    expect(media.getByText('Encoder')).toBeTruthy();
+    expect(media.getByText('hevc')).toBeTruthy();
+    expect(media.getByText('Resolution')).toBeTruthy();
+    expect(media.getByText('1920 × 1080')).toBeTruthy();
+    expect(within(details).getAllByText('1920 × 1080')).toHaveLength(2);
     expect(media.getByText('Audio')).toBeTruthy();
     expect(media.getByText('aac 2 ch')).toBeTruthy();
-    expect(media.getByText('Unavailable')).toBeTruthy();
-    expect(media.getByText('Duration')).toBeTruthy();
-    expect(media.getByText('Bitrate')).toBeTruthy();
-    expect(media.getByText('4.00 Mbps')).toBeTruthy();
-    expect(media.getByText('Range')).toBeTruthy();
-    expect(media.getByText('SDR')).toBeTruthy();
-    expect(media.getByText('Size')).toBeTruthy();
-    expect(media.getByText('1.5 MB')).toBeTruthy();
-    expect(media.getByText('Modified')).toBeTruthy();
-    expect(within(details).getByText('1920 × 1080', { exact: true })).toBeTruthy();
+    expect(media.queryByText('Encoder')).toBeNull();
+    expect(media.queryByText('Duration')).toBeNull();
+    expect(media.queryByText('Bitrate')).toBeNull();
+    expect(media.queryByText('Range')).toBeNull();
+    expect(media.queryByText('Size')).toBeNull();
+    expect(media.queryByText('Modified')).toBeNull();
+    const actions = within(screen.getByTestId('selected-asset-technical')).getByRole('group', { name: 'Selected asset actions' });
     expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
     expect(within(details).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
     const moreButton = within(details).getByRole('button', { name: 'More actions for Episode 01.mkv' });
     expect(within(details).queryByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
-    expect(within(details).getAllByText('23m 40s')).toHaveLength(3);
+    expect(within(details).getAllByText('23m 40s')).toHaveLength(2);
+    expect(actions.contains(within(details).getByRole('button', { name: 'Assign Profile' }))).toBe(true);
+    expect(actions.contains(moreButton)).toBe(true);
 
     await user.click(screen.getByRole('button', { name: 'Play preview of Episode 01.mkv' }));
     await user.click(within(details).getByRole('button', { name: 'Assign Profile' }));
@@ -427,14 +428,14 @@ describe('Assets workspace presentation', () => {
     expect(context.getByText('Inherited')).toBeTruthy();
     expect(context.getAllByText('Unavailable')).toHaveLength(1);
     const media = within(screen.getByTestId('selected-asset-technical'));
-    expect(media.getByText('Range').parentElement?.getAttribute('title')).toBe('Range: SDR');
+    expect(media.queryByText('Range')).toBeNull();
     expect(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'Assign Profile' }).hasAttribute('disabled')).toBe(true);
     expect(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'Test Encode' }).hasAttribute('disabled')).toBe(true);
     expect(screen.getByLabelText('Profile assignment is unavailable for this asset in its current Library lifecycle.').getAttribute('tabindex')).toBe('0');
     expect(screen.getByLabelText('Test Encode is unavailable for this asset in its current lifecycle.').getAttribute('tabindex')).toBe('0');
   });
 
-  it('preserves known zero technical values and keeps unknown HDR state unavailable', () => {
+  it('preserves known zero dimensions without inventing unsupported technical fields', () => {
     render(<SelectedAssetDetail {...selectedAssetDetailProps({
       asset: makeAsset({ technical: { videoCodec: '', width: 0, height: 0, duration: 0, bitrate: 0, hdr: undefined as unknown as boolean } }),
       snapshot: null,
@@ -448,8 +449,9 @@ describe('Assets workspace presentation', () => {
     const facts = within(screen.getByTestId('selected-asset-quick-facts'));
     const media = within(screen.getByTestId('selected-asset-technical'));
     expect(facts.getByText('0 × 0')).toBeTruthy();
-    expect(media.getByText('0.00 Mbps')).toBeTruthy();
-    expect(media.getByText('Range').parentElement?.getAttribute('title')).toBe('Range: Unavailable');
+    expect(media.getByText('Resolution')).toBeTruthy();
+    expect(media.getByText('0 × 0')).toBeTruthy();
+    expect(media.queryByText('Range')).toBeNull();
     expect(media.queryByText('SDR')).toBeNull();
   });
 
