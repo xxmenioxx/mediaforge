@@ -17,12 +17,12 @@
 
 ## 3. Selected asset and historical settings
 
-- [x] 3.1 Keep selected detail outside inventory scrolling and attached to the workspace bottom; match current 4:3 artwork, filename/path context, compact MEDIA strip, integrated Play action, and accessible collapse/reopen affordance.
+- [x] 3.1 Keep selected detail outside inventory scrolling and attached to the workspace bottom; preserve the current approximately 4:3 artwork and Figma grouping while showing issue #208 status/profile/subtitle/audio context, required selected-asset actions, non-duplicated technical facts, integrated Play, and accessible collapse/reopen behavior.
 - [x] 3.2 Keep the generic artwork placeholder because no supported per-asset Jellyfin/MVForge artwork URL reaches the detail caller; do not use reference demo art or generate artwork. Record the actual fallback order only as a future contract.
 - [x] 3.3 Keep Legacy Analysis Decisions out of the main Assets page and expose the unchanged records from the Assets Settings section.
 
 ## 4. Focused regressions and validation
 
-- [x] 4.1 Add and run focused structural/accessibility regressions for Library Safe Delete eligibility, visible-page header selection, active-detail/bulk-selection separation, safe target dispatch, RAW header selection, current detail composition/collapse, path icons, and desktop/mobile branding.
-- [x] 4.2 Focused Assets V2, hierarchy, navigation, and Assets Settings test run passed: 4 files, 36 tests.
-- [x] 4.3 Frontend lint passed (Babel large-file notice); frontend build passed (Vite chunk-size warning); `openspec validate assets-v2-final-workspace --strict` passed; `./scripts/verify.sh --auto` selected full scope and passed 10/10 checks.
+- [x] 4.1 Add and run focused structural/accessibility regressions for Library Safe Delete eligibility, visible-page header selection, active-detail/bulk-selection separation, safe target dispatch, RAW header selection, required selected-detail fields/action delegation/fallbacks/non-duplication/collapse, path icons, and desktop/mobile branding.
+- [x] 4.2 Re-run the focused Assets V2, hierarchy, navigation, and Assets Settings tests after restoring required selected-detail content and action owners.
+- [x] 4.3 Re-run required frontend lint/build, strict OpenSpec validation, and `./scripts/verify.sh --auto`; record only current observed results.

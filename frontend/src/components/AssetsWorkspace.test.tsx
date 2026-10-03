@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, ScanResult } from '../api/types';
 import {
   ASSETS_HIERARCHY_DEFAULT_WIDTH,
@@ -83,6 +83,29 @@ const scan = {
   attachmentInventoryAvailable: true,
   compatibilityAnalysis: { overall: 'client_dependent' },
 } as unknown as ScanResult;
+
+function selectedAssetDetailProps(overrides: Partial<ComponentProps<typeof SelectedAssetDetail>> = {}): ComponentProps<typeof SelectedAssetDetail> {
+  return {
+    asset: makeAsset(),
+    pathContext: 'Series/Season 01',
+    categoryLabel: 'Anime',
+    containerLabel: 'matroska',
+    snapshot: scan,
+    snapshotLoading: false,
+    statusLabel: 'Library',
+    statusColor: 'default',
+    assignedProfileLabel: 'Anime Main V2',
+    modifiedLabel: 'Sep 30, 2026',
+    sizeLabel: '1.5 MB',
+    onPlayPreview: vi.fn(),
+    onAssignProfile: vi.fn(),
+    onTestEncode: vi.fn(),
+    onMore: vi.fn(),
+    canAssignProfile: true,
+    canTestEncode: true,
+    ...overrides,
+  };
+}
 
 describe('Assets workspace presentation', () => {
   it('renders compact canonical inventory summaries', () => {
@@ -285,16 +308,15 @@ describe('Assets workspace presentation', () => {
     expect(screen.queryByRole('img', { name: 'Episode 01.mkv artwork' })).toBeNull();
   });
 
-  it('matches the current selected asset composition with concise, non-duplicated media facts', async () => {
+  it('keeps required status, profile, subtitle, audio, technical, and action details in the compact Figma composition', async () => {
     const user = userEvent.setup();
     const play = vi.fn();
+    const assignProfile = vi.fn();
+    const testEncode = vi.fn();
+    const more = vi.fn();
     render(
       <SelectedAssetDetail
-        asset={makeAsset()}
-        pathContext="Anime · Series/Season 01"
-        snapshot={scan}
-        modifiedLabel="Sep 30, 2026"
-        sizeLabel="1.5 MB"
+        {...selectedAssetDetailProps({ onAssignProfile: assignProfile, onTestEncode: testEncode, onMore: more })}
         onPlayPreview={play}
       />,
     );
@@ -307,10 +329,24 @@ describe('Assets workspace presentation', () => {
     expect(getComputedStyle(details).bottom).toBe('0px');
     expect(getComputedStyle(preview).aspectRatio).toBe('4/3');
     expect(identity.textContent).toContain('Episode 01.mkv');
-    expect(identity.textContent).toContain('Anime · Series/Season 01');
+    expect(identity.textContent).toContain('Series/Season 01');
+    const quickFacts = within(screen.getByTestId('selected-asset-quick-facts'));
+    expect(quickFacts.getByText('Category / Library')).toBeTruthy();
+    expect(quickFacts.getByText('Anime')).toBeTruthy();
+    expect(quickFacts.getByText('matroska')).toBeTruthy();
+    const context = within(screen.getByTestId('selected-asset-state-context'));
+    expect(context.getByText('Estado')).toBeTruthy();
+    expect(context.getByText('Library')).toBeTruthy();
+    expect(context.getByText('Perfil')).toBeTruthy();
+    expect(context.getByText('Anime Main V2')).toBeTruthy();
+    expect(context.getByText('Subtítulos')).toBeTruthy();
+    expect(context.getByText('2 embedded tracks')).toBeTruthy();
+    expect(context.getByText('Audio')).toBeTruthy();
+    expect(context.getByText('aac 2 ch')).toBeTruthy();
     expect(media.getByText('MEDIA')).toBeTruthy();
     expect(media.getByText('Video')).toBeTruthy();
     expect(media.getByText('hevc · 1920 × 1080')).toBeTruthy();
+    expect(within(details).getAllByText('hevc · 1920 × 1080')).toHaveLength(1);
     expect(media.getByText('Encoder')).toBeTruthy();
     expect(media.getByText('Unavailable')).toBeTruthy();
     expect(media.getByText('Duration')).toBeTruthy();
@@ -320,30 +356,26 @@ describe('Assets workspace presentation', () => {
     expect(media.getByText('1.5 MB')).toBeTruthy();
     expect(media.getByText('Modified')).toBeTruthy();
     expect(within(details).queryByText('1920 × 1080', { exact: true })).toBeNull();
-    expect(within(details).queryByText('Category / Library')).toBeNull();
-    expect(within(details).queryByText('Estado')).toBeNull();
-    expect(within(details).queryByText('Audio')).toBeNull();
-    expect(within(details).queryByRole('button', { name: 'Assign Profile' })).toBeNull();
-    expect(within(details).queryByRole('button', { name: 'Test Encode' })).toBeNull();
-    expect(within(details).queryByRole('button', { name: /More actions/ })).toBeNull();
+    expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
+    expect(within(details).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
+    const moreButton = within(details).getByRole('button', { name: 'More actions for Episode 01.mkv' });
     expect(within(details).queryByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
     expect(within(details).getAllByText('23m 40s')).toHaveLength(2);
 
     await user.click(screen.getByRole('button', { name: 'Play preview of Episode 01.mkv' }));
+    await user.click(within(details).getByRole('button', { name: 'Assign Profile' }));
+    await user.click(within(details).getByRole('button', { name: 'Test Encode' }));
+    await user.click(moreButton);
     expect(play).toHaveBeenCalledOnce();
+    expect(assignProfile).toHaveBeenCalledOnce();
+    expect(testEncode).toHaveBeenCalledOnce();
+    expect(more).toHaveBeenCalledWith(moreButton);
   });
 
   it('collapses and expands selected details with an accessible keyboard control', async () => {
     const user = userEvent.setup();
     render(
-      <SelectedAssetDetail
-        asset={makeAsset()}
-        pathContext="Anime · Series/Season 01"
-        snapshot={scan}
-        modifiedLabel="Sep 30, 2026"
-        sizeLabel="1.5 MB"
-        onPlayPreview={vi.fn()}
-      />,
+      <SelectedAssetDetail {...selectedAssetDetailProps()} />,
     );
 
     const details = screen.getByTestId('selected-asset-detail');
@@ -356,20 +388,30 @@ describe('Assets workspace presentation', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Play preview/ })).toBeTruthy());
   });
 
-  it('uses only the caller-provided path context instead of fabricating series metadata', () => {
+  it('keeps unavailable detail metadata explicit instead of fabricating it', () => {
     render(
-      <SelectedAssetDetail
-        asset={makeAsset({ metadata: { categories: ['Anime'], tags: ['TV'], updatedAt: '' } })}
-        pathContext="Anime · Series/Season 01"
-        snapshot={scan}
-        modifiedLabel="Sep 30, 2026"
-        sizeLabel="1.5 MB"
-        onPlayPreview={vi.fn()}
-      />,
+      <SelectedAssetDetail {...selectedAssetDetailProps({
+        asset: makeAsset({ metadata: { categories: [], tags: [], updatedAt: '' } }),
+        pathContext: 'Series/Season 01',
+        categoryLabel: 'Unavailable',
+        containerLabel: 'Unavailable',
+        snapshot: null,
+        assignedProfileLabel: 'Inherited',
+        snapshotLoading: false,
+        canAssignProfile: false,
+        canTestEncode: false,
+      })} />,
     );
-    expect(screen.getByTestId('selected-asset-identity').textContent).toContain('Anime · Series/Season 01');
-    expect(screen.queryByText('Category / Library')).toBeNull();
-    expect(screen.queryByText('Anime', { exact: true })).toBeNull();
+    expect(screen.getByTestId('selected-asset-path-context').textContent).toBe('Series/Season 01');
+    const facts = within(screen.getByTestId('selected-asset-quick-facts'));
+    expect(facts.getAllByText('Unavailable')).toHaveLength(2);
+    const context = within(screen.getByTestId('selected-asset-state-context'));
+    expect(context.getByText('Inherited')).toBeTruthy();
+    expect(context.getAllByText('Unavailable')).toHaveLength(2);
+    const media = within(screen.getByTestId('selected-asset-technical'));
+    expect(media.getByText('Unavailable')).toBeTruthy();
+    expect(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'Assign Profile' }).hasAttribute('disabled')).toBe(true);
+    expect(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'Test Encode' }).hasAttribute('disabled')).toBe(true);
   });
 
 });

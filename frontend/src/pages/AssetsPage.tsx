@@ -882,10 +882,12 @@ function LibraryAssetTable({
   const setPage = (page: number) => setPageSelection({ filterIdentity, page });
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
-  const selectedActions = useRef<{ path: string; actions: AssetWorkspaceActions } | null>(null);
+  const [selectedActions, setSelectedActions] = useState<{ path: string; actions: AssetWorkspaceActions } | null>(null);
   const registerActions = useCallback((path: string, actions: AssetWorkspaceActions | null) => {
-    if (actions) selectedActions.current = { path, actions };
-    else if (selectedActions.current?.path === path) selectedActions.current = null;
+    setSelectedActions((current) => {
+      if (actions) return { path, actions };
+      return current?.path === path ? null : current;
+    });
   }, []);
 
   const visibleGroups = useMemo(() => safeArray(groups).filter((group) => {
@@ -962,9 +964,31 @@ function LibraryAssetTable({
     ? selectedAssetRelativeParts.slice(0, -1).join('/')
     : selectedAssetRelativeParts.join('/');
   const selectedAssetPathContext = selectedAsset && selectedGroup
-    ? [selectedAsset.libraryName || selectedGroup.libraryName, selectedAssetParentPath].filter(Boolean).join(' · ')
+    ? selectedAssetParentPath
     : '';
   const selectedSnapshotData = selectedSnapshot.data?.snapshot ?? null;
+  const selectedAssetProfileAssignment = profileAssignments.data?.find((assignment) =>
+    assignment.targetType === 'asset' && assignment.mediaType === 'video' && normalizePath(assignment.targetPath) === normalizePath(selectedAsset?.path ?? ''),
+  );
+  const selectedPathProfileAssignment = profileAssignments.data?.find((assignment) =>
+    assignment.targetType === 'path' && assignment.mediaType === 'video' && normalizePath(assignment.targetPath) === normalizePath(selectedGroup?.path ?? ''),
+  );
+  const selectedProfileAssignment = selectedAssetProfileAssignment ?? selectedPathProfileAssignment;
+  const assignedProfileLabel = !profileAssignments.data
+    ? 'Loading…'
+    : !selectedProfileAssignment
+      ? 'Inherited'
+      : selectedProfileAssignment.selection === 'profile'
+        ? profiles.find((profile) => profile.id === selectedProfileAssignment.videoProfileId)?.name ?? 'Unavailable'
+        : selectedProfileAssignment.selection === 'disabled'
+          ? 'Disabled'
+          : selectedProfileAssignment.selection === 'override_only'
+            ? 'Overrides only'
+            : 'Audio only';
+  const selectedWorkspaceActions = selectedAsset && selectedActions?.path === selectedAsset.path ? selectedActions.actions : null;
+  const selectedPipelineState = selectedAsset
+    ? assetPipelineState(selectedAsset, associatedJobForCurrentPublication(selectedAsset, queueJobs), false)
+    : undefined;
 
   return (
     <Box data-testid="assets-mode-workspace" sx={{ bgcolor: 'background.default', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
@@ -1081,10 +1105,21 @@ function LibraryAssetTable({
             <SelectedAssetDetail
               asset={selectedAsset}
               pathContext={selectedAssetPathContext}
+              categoryLabel={selectedAsset.metadata.categories?.[0] || selectedAsset.libraryName || selectedGroup.libraryName || 'Unavailable'}
+              containerLabel={selectedSnapshotData?.container || 'Unavailable'}
               snapshot={selectedSnapshotData}
+              snapshotLoading={selectedSnapshot.isLoading}
+              statusLabel={selectedPipelineState?.label ?? statusLabel(selectedAsset.status)}
+              statusColor={selectedPipelineState?.color ?? statusColor(selectedAsset.status)}
+              assignedProfileLabel={assignedProfileLabel}
               modifiedLabel={formatDate(selectedAsset.modifiedAt)}
               sizeLabel={formatBytes(selectedAsset.sizeBytes)}
-              onPlayPreview={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.playPreview()}
+              onPlayPreview={() => selectedWorkspaceActions?.playPreview()}
+              onAssignProfile={() => selectedWorkspaceActions?.assignProfile()}
+              onTestEncode={() => selectedWorkspaceActions?.testEncode()}
+              onMore={(anchor) => selectedWorkspaceActions?.openMore(anchor)}
+              canAssignProfile={selectedWorkspaceActions?.canAssignProfile ?? false}
+              canTestEncode={selectedWorkspaceActions?.canTestEncode ?? false}
             />
           ) : null}
         </Box>
@@ -1098,6 +1133,8 @@ type AssetWorkspaceActions = {
   assignProfile: () => void;
   testEncode: () => void;
   openMore: (anchor: HTMLElement) => void;
+  canAssignProfile: boolean;
+  canTestEncode: boolean;
 };
 
 function assetGroupLifecycleFlags(group: AssetGroup, groupAssets = safeArray(group.assets)) {
@@ -1157,10 +1194,12 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
   const [selectedAssetPathState, setSelectedAssetPathState] = useState({ identity: '', path: '' });
   const [pageState, setPageState] = useState({ identity: '', page: 0 });
   const [rowsPerPage, setRowsPerPage] = useState(25);
-  const selectedActions = useRef<{ path: string; actions: AssetWorkspaceActions } | null>(null);
+  const [selectedActions, setSelectedActions] = useState<{ path: string; actions: AssetWorkspaceActions } | null>(null);
   const registerActions = useCallback((path: string, actions: AssetWorkspaceActions | null) => {
-    if (actions) selectedActions.current = { path, actions };
-    else if (selectedActions.current?.path === path) selectedActions.current = null;
+    setSelectedActions((current) => {
+      if (actions) return { path, actions };
+      return current?.path === path ? null : current;
+    });
   }, []);
   const cleanQuery = query.trim().toLowerCase();
   const filteredSourceGroups = useMemo(() => sourceGroups.map((sourceGroup) => ({
@@ -1226,6 +1265,18 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
     staleTime: 15_000,
   });
   const selectedSnapshotData = selectedSnapshot.data?.snapshot ?? null;
+  const selectedEffectiveProfileId = selectedAsset?.id
+    ? effectiveConfigurations.data?.configurations[String(selectedAsset.id)]?.video.videoProfileId
+    : undefined;
+  const assignedProfileLabel = selectedEffectiveProfileId === undefined
+    ? effectiveConfigurations.isLoading ? 'Loading…' : 'Unavailable'
+    : selectedEffectiveProfileId > 0
+      ? profiles.find((profile) => profile.id === selectedEffectiveProfileId)?.name ?? 'Unavailable'
+      : 'Unassigned';
+  const selectedWorkspaceActions = selectedAsset && selectedActions?.path === selectedAsset.path ? selectedActions.actions : null;
+  const selectedPipelineState = selectedAsset
+    ? assetPipelineState(selectedAsset, associatedJobForCurrentPublication(selectedAsset, queueJobs), false)
+    : undefined;
   const selectedPathGroup = selectedPath ? assetGroupFromTreePath(selectedPath) : undefined;
   const rawBreadcrumbs = selection.kind === 'all'
     ? ['Assets', 'RAW', 'All RAW assets']
@@ -1384,10 +1435,21 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
             <SelectedAssetDetail
               asset={selectedAsset}
               pathContext={`${selectedEntry.sourceGroup.name} · ${selectedEntry.logicalGroup.name} · ${selectedEntry.path.isLogicalGroupRoot ? 'Root' : selectedEntry.path.displayPath || selectedEntry.path.name}`}
+              categoryLabel={selectedAsset.metadata.categories?.[0] || selectedAsset.libraryName || selectedEntry.sourceGroup.name || 'Unavailable'}
+              containerLabel={selectedSnapshotData?.container || 'Unavailable'}
               snapshot={selectedSnapshotData}
+              snapshotLoading={selectedSnapshot.isLoading}
+              statusLabel={selectedPipelineState?.label ?? statusLabel(selectedAsset.status)}
+              statusColor={selectedPipelineState?.color ?? statusColor(selectedAsset.status)}
+              assignedProfileLabel={assignedProfileLabel}
               modifiedLabel={formatDate(selectedAsset.modifiedAt)}
               sizeLabel={formatBytes(selectedAsset.sizeBytes)}
-              onPlayPreview={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.playPreview()}
+              onPlayPreview={() => selectedWorkspaceActions?.playPreview()}
+              onAssignProfile={() => selectedWorkspaceActions?.assignProfile()}
+              onTestEncode={() => selectedWorkspaceActions?.testEncode()}
+              onMore={(anchor) => selectedWorkspaceActions?.openMore(anchor)}
+              canAssignProfile={selectedWorkspaceActions?.canAssignProfile ?? false}
+              canTestEncode={selectedWorkspaceActions?.canTestEncode ?? false}
             />
           ) : null}
         </Box>
@@ -3972,12 +4034,16 @@ function AssetRow({
   const openWorkspaceAssignProfile = useCallback(() => setAssignProfileOpen(true), []);
   const openWorkspaceTestEncode = useCallback(() => setShowTestEncodeDialog(true), []);
   const openWorkspaceMore = useCallback((anchor: HTMLElement) => setAssetMenuAnchor(anchor), []);
+  const canAssignProfile = !hidePreConversionActions && (!isConverted || isLibraryReplacement) && !rowLocked && !updateProfileAssignment.isPending;
+  const canTestEncode = !hidePreConversionActions && canGenerateTestEncode && labCapability.allowed && !showTestEncodeDialog;
   const workspaceActions = useMemo<AssetWorkspaceActions>(() => ({
     playPreview: openWorkspacePreview,
     assignProfile: openWorkspaceAssignProfile,
     testEncode: openWorkspaceTestEncode,
     openMore: openWorkspaceMore,
-  }), [openWorkspaceAssignProfile, openWorkspaceMore, openWorkspacePreview, openWorkspaceTestEncode]);
+    canAssignProfile,
+    canTestEncode,
+  }), [canAssignProfile, canTestEncode, openWorkspaceAssignProfile, openWorkspaceMore, openWorkspacePreview, openWorkspaceTestEncode]);
   useEffect(() => {
     if (!onRegisterWorkspaceActions) return;
     if (compactLibrary && selected) onRegisterWorkspaceActions(asset.path, workspaceActions);

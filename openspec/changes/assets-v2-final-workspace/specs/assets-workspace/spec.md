@@ -160,11 +160,19 @@ Each compact Library or RAW row MUST expose supported asset operations through o
 
 ### Requirement: Selected Asset context remains attached below the scrolling inventory
 
-When an asset is selected, a collapsible detail context MUST remain below the table and attached to the bottom of the Assets workspace while rows scroll. It MUST remain outside the inventory scroll region and MUST NOT become a modal or persistent right panel. The expanded desktop composition MUST match the current 4:3 artwork preview with centered Play overlay and duration badge at left; filename and caller-provided path/series context to its right; and one compact MEDIA strip containing Video (codec and resolution together), Encoder, Duration, Range, Size, and Modified. The panel MUST NOT add unprovided series metadata, a duplicated codec/resolution quick-facts group, a separate status/subtitle/audio block, or Assign Profile/Test Encode/overflow buttons. Play MUST remain integrated into the artwork, and row overflow remains the owner for asset actions. The panel MUST remain compact, use a subtle collapse control, and leave a compact accessible reopen affordance. Narrow layouts MUST reflow without page-level overflow.
+When an asset is selected, a collapsible detail context MUST remain below the table and attached to the bottom of the Assets workspace while rows scroll. It MUST remain outside the inventory scroll region and MUST NOT become a modal or persistent right panel. The expanded desktop composition MUST match the current approximately 4:3 artwork preview with centered Play overlay and duration badge at left; filename and caller-provided path/series context to its right; compact category/library and container facts; a compact state row for Estado, Perfil, Subtítulos, and Audio; and one compact MEDIA strip containing Video (codec and resolution together), Encoder, Duration, Range, Size, and Modified. Codec and resolution MUST NOT be duplicated in another group. Metadata MUST come from the asset, existing profile assignment/effective configuration, and selected snapshot; unavailable or unevaluated values MUST remain explicit. Assign Profile, Test Encode, and More MUST be visible in a compact action group and delegate to the selected row's existing action owners with their capability and eligibility gates. Play MUST remain integrated into the artwork. The panel MUST remain compact, use a subtle collapse control, and leave a compact accessible reopen affordance. Narrow layouts MUST reflow without page-level overflow.
 
 #### Scenario: Show selected asset context
 - **WHEN** the user selects a RAW or Library asset
-- **THEN** its collapsible context appears outside the inventory scroll region with filename/path context and available compact MEDIA facts
+- **THEN** its collapsible context appears outside the inventory scroll region with filename/path, supported quick facts, state/profile/subtitle/audio context, and compact MEDIA facts
+
+#### Scenario: Delegate selected asset actions to existing owners
+- **WHEN** the user activates Assign Profile, Test Encode, or More in selected context
+- **THEN** the selected row's existing action owner opens the existing dialog or menu and its capability/eligibility gate controls whether the action is enabled
+
+#### Scenario: Keep unavailable selected detail honest
+- **WHEN** the selected snapshot or profile evidence is unavailable
+- **THEN** the context shows a loading or unavailable/inherited state without fabricating metadata or probing other rows
 
 #### Scenario: Keep context visible while rows scroll
 - **WHEN** a long inventory list scrolls

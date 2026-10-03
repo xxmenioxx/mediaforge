@@ -1,8 +1,10 @@
 import {
   Box,
   Breadcrumbs,
+  Button,
   ButtonBase,
   Card,
+  Chip,
   Collapse,
   IconButton,
   List,
@@ -16,6 +18,7 @@ import AddIcon from '@mui/icons-material/Add';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import PlayCircleOutlineIcon from '@mui/icons-material/PlayCircleOutline';
+import MoreVertIcon from '@mui/icons-material/MoreVert';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
 import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined';
@@ -494,17 +497,39 @@ export function SelectedAssetArtwork({ fileName }: { fileName: string }) {
 export function SelectedAssetDetail({
   asset,
   pathContext,
+  categoryLabel,
+  containerLabel,
   snapshot,
+  snapshotLoading,
+  statusLabel,
+  statusColor,
+  assignedProfileLabel,
   modifiedLabel,
   sizeLabel,
   onPlayPreview,
+  onAssignProfile,
+  onTestEncode,
+  onMore,
+  canAssignProfile,
+  canTestEncode,
 }: {
   asset: Asset;
   pathContext: string;
+  categoryLabel: string;
+  containerLabel: string;
   snapshot?: ScanResult | null;
+  snapshotLoading: boolean;
+  statusLabel: string;
+  statusColor: 'default' | 'primary' | 'success' | 'warning' | 'error';
+  assignedProfileLabel: string;
   modifiedLabel: string;
   sizeLabel: string;
   onPlayPreview: () => void;
+  onAssignProfile: () => void;
+  onTestEncode: () => void;
+  onMore: (anchor: HTMLElement) => void;
+  canAssignProfile: boolean;
+  canTestEncode: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
   const duration = snapshot?.duration ?? asset.technical?.duration;
@@ -516,6 +541,30 @@ export function SelectedAssetDetail({
   const range = snapshot?.hdr === undefined && asset.technical?.hdr === undefined
     ? 'Unavailable'
     : (snapshot?.hdr ?? asset.technical?.hdr) ? 'HDR' : 'SDR';
+  const audioStreams = snapshot?.audioStreams ?? [];
+  const audioCodecs = [...new Set(audioStreams.map((stream) => {
+    const layout = stream.channelLayout || (stream.channels ? `${stream.channels} ch` : '');
+    return [stream.codec, layout].filter(Boolean).join(' ');
+  }).filter(Boolean))];
+  const audioSummary = snapshotLoading
+    ? 'Loading…'
+    : !snapshot
+      ? 'Unavailable'
+      : audioCodecs.length
+        ? audioCodecs.slice(0, 2).join(' · ') + (audioCodecs.length > 2 ? ` +${audioCodecs.length - 2}` : '')
+        : '0 embedded tracks';
+  const subtitleSummary = snapshotLoading
+    ? 'Loading…'
+    : !snapshot
+      ? 'Unavailable'
+      : snapshot.subtitleStreams.length
+        ? `${snapshot.subtitleStreams.length} embedded tracks`
+        : '0 embedded tracks';
+  const contextValues = [
+    ['Perfil', assignedProfileLabel],
+    ['Subtítulos', subtitleSummary],
+    ['Audio', audioSummary],
+  ];
   const mediaValues = [
     ['Video', videoSummary],
     ['Encoder', encoder],
@@ -535,12 +584,12 @@ export function SelectedAssetDetail({
         py: { xs: 0.65, sm: 0.75 },
         borderTop: 1,
         borderColor: '#26384d',
-        background: '#101b29',
+        background: 'linear-gradient(105deg, #101b29 0%, #111e2d 100%)',
         position: 'sticky',
         bottom: 0,
         zIndex: 2,
         flexShrink: 0,
-        minHeight: { xs: 102, sm: 160 },
+        minHeight: expanded ? { xs: 110, sm: 154 } : 42,
       }}
     >
       {!expanded ? (
@@ -568,12 +617,13 @@ export function SelectedAssetDetail({
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: { xs: '92px minmax(0, 1fr)', sm: '164px minmax(0, 1fr)', lg: '190px minmax(0, 1fr)' },
-              alignItems: 'stretch',
-              columnGap: { xs: 0.85, sm: 1.15 },
+              gridTemplateColumns: { xs: '92px minmax(0, 1fr)', sm: '164px minmax(0, 1fr)', lg: '190px minmax(0, 1fr) 132px' },
+              alignItems: 'center',
+              columnGap: { xs: 0.85, sm: 1.15, lg: 1.5 },
+              rowGap: 0.75,
               minWidth: 0,
               position: 'relative',
-              pr: { xs: 2.5, sm: 3 },
+              pr: { xs: 2.5, sm: 3, lg: 2.5 },
             }}
           >
             <Tooltip title={`Play preview of ${asset.fileName}`}>
@@ -616,7 +666,7 @@ export function SelectedAssetDetail({
               </span>
             </Tooltip>
 
-            <Box data-testid="selected-asset-identity" sx={{ minWidth: 0, gridColumn: '2', alignSelf: 'center', py: 0.2 }}>
+            <Stack data-testid="selected-asset-identity" spacing={0.45} sx={{ minWidth: 0, gridColumn: { xs: '2', lg: '2' }, alignSelf: 'center', py: 0.2 }}>
               <Tooltip title={asset.fileName}>
                 <Typography component="h2" fontWeight={700} noWrap sx={{ minWidth: 0, fontSize: { xs: '0.74rem', sm: '0.8rem' }, lineHeight: 1.2, color: '#e5edf8' }}>
                   {asset.fileName}
@@ -625,13 +675,43 @@ export function SelectedAssetDetail({
               <Typography data-testid="selected-asset-path-context" variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', mt: 0.25, fontSize: '0.62rem', color: '#91a1b6' }}>
                 {pathContext}
               </Typography>
+              <Stack direction="row" spacing={1.25} useFlexGap flexWrap="wrap" data-testid="selected-asset-quick-facts">
+                <DetailValue label="Category / Library" value={categoryLabel || 'Unavailable'} inline />
+                <DetailValue label="Container" value={containerLabel || 'Unavailable'} inline />
+              </Stack>
+              <Box data-testid="selected-asset-state-context" sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(4, minmax(0, 1fr))' }, gap: { xs: 0.45, sm: 0.7 }, minWidth: 0 }}>
+                <Box title={`Estado: ${statusLabel}`} sx={{ minWidth: 0 }}>
+                  <Typography component="div" variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.56rem', lineHeight: 1.1, color: '#71849b' }}>Estado</Typography>
+                  <Chip label={statusLabel || 'Unavailable'} color={statusColor} size="small" variant="outlined" sx={{ mt: 0.15, height: 18, maxWidth: '100%', fontSize: '0.61rem', '& .MuiChip-label': { px: 0.65, overflow: 'hidden', textOverflow: 'ellipsis' } }} />
+                </Box>
+                {contextValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
+              </Box>
               <Box data-testid="selected-asset-technical" sx={{ mt: 0.75, px: { xs: 0.65, sm: 0.85 }, py: 0.55, border: 1, borderColor: '#243347', borderRadius: '4px', backgroundColor: '#0d1724' }}>
                 <Typography variant="caption" sx={{ display: 'block', mb: 0.35, color: '#aebbd0', fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.035em' }}>MEDIA</Typography>
-                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' }, columnGap: { xs: 0.7, sm: 1.1 }, rowGap: 0.45 }}>
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', xl: 'repeat(6, minmax(0, 1fr))' }, columnGap: { xs: 0.7, sm: 1.1 }, rowGap: 0.45 }}>
                   {mediaValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} inline />)}
                 </Box>
               </Box>
-            </Box>
+            </Stack>
+            <Stack
+              role="group"
+              aria-label="Selected asset actions"
+              direction={{ xs: 'row', lg: 'column' }}
+              spacing={0.55}
+              alignItems={{ xs: 'center', lg: 'stretch' }}
+              justifyContent={{ xs: 'flex-end', lg: 'center' }}
+              sx={{ gridColumn: { xs: '1 / -1', lg: '3' }, minWidth: 0, flexWrap: 'wrap', pr: { xs: 2, lg: 0 } }}
+            >
+              <Button size="small" variant="contained" onClick={onAssignProfile} disabled={!canAssignProfile} sx={{ minHeight: 28, px: 1, borderRadius: '6px', textTransform: 'none', fontSize: '0.67rem', whiteSpace: 'nowrap' }}>
+                Assign Profile
+              </Button>
+              <Button size="small" variant="outlined" onClick={onTestEncode} disabled={!canTestEncode} sx={{ minHeight: 28, px: 1, borderRadius: '6px', textTransform: 'none', fontSize: '0.67rem', whiteSpace: 'nowrap' }}>
+                Test Encode
+              </Button>
+              <Button size="small" variant="text" startIcon={<MoreVertIcon />} onClick={(event) => onMore(event.currentTarget)} aria-label={`More actions for ${asset.fileName}`} sx={{ minHeight: 28, minWidth: 0, px: 0.75, borderRadius: '6px', textTransform: 'none', fontSize: '0.67rem', color: '#aebbd0', whiteSpace: 'nowrap' }}>
+                More
+              </Button>
+            </Stack>
             <IconButton
               size="small"
               aria-label={`Collapse selected asset details for ${asset.fileName}`}
