@@ -717,7 +717,11 @@ export function SelectedAssetDetail({
               <Box data-testid="selected-asset-technical" sx={{ gridColumn: '1 / -1', px: { xs: 0.7, sm: 0.9 }, py: { xs: 0.55, sm: 0.65 }, border: 1, borderColor: '#26384d', borderRadius: '5px', backgroundColor: '#0d1724', minWidth: 0 }}>
                 <Typography variant="caption" sx={{ display: 'block', mb: 0.45, color: '#aebbd0', fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.035em' }}>MEDIA</Typography>
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' }, columnGap: { xs: 0.75, sm: 1.1 }, rowGap: { xs: 0.65, sm: 0.8 }, minWidth: 0 }}>
-                  {mediaValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} inline />)}
+                  {mediaValues.map(([label, value]) => (
+                    <Box key={label} sx={{ minWidth: 0, gridColumn: label === 'Modified' ? { lg: 'span 2', xl: 'span 1' } : undefined }}>
+                      <DetailValue label={label} value={value} inline />
+                    </Box>
+                  ))}
                 </Box>
               </Box>
             </Box>
