@@ -1,39 +1,40 @@
 ## Why
 
-Assets now has the foundation for a shared RAW and Library workspace, but issue #208 needs one consistent contract for browsing, cached Advisor evidence, path and row actions, and selected-asset detail. The final workspace should make large inventories easier to scan while preserving the existing backend and lifecycle owners.
+Issue #208 completes the shared Assets V2 RAW/Library workspace. This final visual-fidelity pass re-audits the latest local reference files and updates layout, hierarchy presentation, controls, row density, sidebar branding, and selected-asset context without changing existing domain behavior.
 
 ## What Changes
 
-- Define one Assets workspace and canonical hierarchy with RAW and configured Library roots as siblings; do not add context tabs or Converted, Archive, or Reports inventory roots.
-- Make the hierarchy keyboard accessible, resizable from about 220px to 420px with a 300px default, and persist its width locally.
-- Specify compact, mode-specific Library and RAW inventory columns, filename-only rows, and a canonical (...) row menu containing supported actions for the current mode and asset.
-- Show a compact canonical Advisor score when already available, with distinct neutral not-evaluated and unavailable/off states. Advisor evaluation is explicit-only; rendering or expanding a path never evaluates it.
-- Keep path workflow actions in a compact V2 toolbar separate from rows, with mode-relevant actions, selected count, and visually separated destructive operations. Reuse existing AssetGroupRow action handlers and lifecycle owners.
-- Define a compact, collapsible Selected Asset Workspace below the table: landscape artwork/preview at left, filename and collection/path context with quick facts, status/context and technical summaries, and primary plus overflow actions.
-- Prefer supported Jellyfin artwork, then an existing MVForge asset thumbnail, then a generic placeholder. Do not claim the first two sources are integrated unless an existing supported URL/source is available to the caller.
-- Preserve responsive behavior, existing capability and eligibility enforcement, and bounded inventory/detail loading.
+- Use the current `docs/design-reference/assets-v2/figma-make/` and `docs/design-reference/assets-v2/asstesv2.png` visual references. In this checkout the selected-asset PNG has the existing `asstesv2.png` spelling.
+- Place a full-width Assets/Search row above the two-column workspace. Put Asset Library at left and summary, breadcrumb/path actions, inventory controls, independently scrolling rows, and sticky selected detail at right.
+- Present the two hierarchy sections as RAW and Libraries, with configured destination Library roots under Libraries; preserve canonical context IDs. Set resize bounds to 220px–390px with a 262px default and local persistence.
+- Keep summary counts canonical, existing filters in a compact Filter popover, and Sort disabled while safe sorting is unsupported.
+- Keep the shared RAW/Library table schemas, filename-only cells, thin row separators, selected/hover treatments, score-only Advisor indicator, and existing row-action menu.
+- Recompose breadcrumb and supported path actions into one bar while reusing current callbacks, dialogs, capability checks, confirmations, and lifecycle-safe destructive behavior.
+- Keep selected-asset context below the independently scrolling list, using the current reference's landscape/identity/status/technical-actions grouping and accessible collapse/reopen behavior.
+- Keep generic artwork until an actual supported artwork URL reaches the selected-detail caller. Record unsupported design actions as follow-ups instead of fabricating them.
+- Move Legacy Analysis Decisions from normal browsing into Assets Settings without changing saved records.
+- Refine the existing MVForge sidebar mark and icon spacing within React + MUI, preserving navigation behavior.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `assets-workspace`: Shared RAW and Library navigation, inventory presentation, contextual actions, and selected-asset workspace.
+- `assets-workspace`: Shared RAW and Library layout, hierarchy, inventory, path/row actions, filters, and selected-asset context.
 
 ### Modified Capabilities
 
-None. The main OpenSpec inventory has no Assets workspace capability; existing Asset defaults and subtitle contracts are not changed by this presentation work.
+None. No existing backend or lifecycle contract changes.
 
 ## Impact
 
-- Frontend: existing Assets route, shared workspace/tree/table/detail presentation, and focused observable tests.
-- APIs and backend: no new endpoint, eligibility rule, Advisor evaluation, lifecycle state, or media processing behavior; reuse existing inventory, Advisor, Queue/Preflight, profile, preview, snapshot, and Asset Info owners.
-- OpenSpec: add the `assets-workspace` capability contract for this issue; prior Assets V2 change artifacts remain historical inputs and are not rewritten.
-- Non-goals: Queue execution, worker/runtime, Advisor scoring, Test Encode pipeline, profile resolution, validation, Publisher, metadata enrichment, inventory redesign, and artwork generation.
+- Frontend: `AssetsPage`, shared Assets components, navigation shell, Assets Settings, and focused observable tests.
+- APIs and backend: no new endpoint, model, eligibility rule, Advisor evaluation, Queue behavior, artwork pipeline, or media processing behavior.
+- OpenSpec: current visual/layout behavior and explicit unsupported gaps are recorded in the `assets-workspace` capability.
 
 ## Follow-up
 
-The current API/Asset contract exposes no Jellyfin artwork or persisted MVForge artwork URL for Assets. The existing asset preview route streams source media, so it cannot serve as artwork. Keep the generic placeholder in the workspace and do not describe artwork fallback as integrated until an existing supported source is wired. Adding artwork metadata or an artwork service is a follow-up outside this issue; do not generate artwork here.
-
-The existing path rename dialog is scoped to Library paths. RAW path rename is not exposed by a supported path action/backend contract, so this toolbar keeps Rename available only for Library and RAW path rename remains a follow-up if a canonical operation is added.
-
-Completion tasks track the remaining row-action, explicit-only Advisor, path-toolbar, selected-detail, and regression requirements; do not report those requirements as shipped until implementation and focused tests demonstrate them.
+- Safe inventory sorting is not currently supported; Sort stays disabled.
+- No supported per-asset Jellyfin artwork or MVForge thumbnail URL reaches the selected-detail caller; artwork integration remains a follow-up.
+- Library migration remains the current Move path action; a separate additional Library “Move to library” operation is unsupported.
+- RAW path Rename is unsupported by current path action owners.
+- The reference's account/avatar, notifications, storage-capacity percentage, and trend indicators have no current canonical product contracts and are not fabricated.

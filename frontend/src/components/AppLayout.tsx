@@ -29,7 +29,6 @@ import AssessmentOutlinedIcon from '@mui/icons-material/AssessmentOutlined';
 import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import MenuIcon from '@mui/icons-material/Menu';
 import CloseIcon from '@mui/icons-material/Close';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import packageJson from '../../package.json';
@@ -84,7 +83,7 @@ const navSections: NavSection[] = [
 ];
 
 const expandedWidth = 248;
-const collapsedWidth = 76;
+const collapsedWidth = 68;
 
 function isNavigationItemActive(item: NavItem, pathname: string): boolean {
   const itemPath = item.path.split('?')[0];
@@ -104,13 +103,16 @@ function BrandMark({ size = 32 }: { size?: number }) {
         flex: `0 0 ${size}px`,
         display: 'grid',
         placeItems: 'center',
-        borderRadius: 1,
-        color: 'common.white',
-        background: 'linear-gradient(145deg, #5657f2 0%, #28a7d7 100%)',
-        boxShadow: '0 3px 10px rgba(65, 100, 220, 0.25)',
       }}
     >
-      <PlayArrowIcon sx={{ fontSize: size * 0.76 }} />
+      <Box component="span" aria-hidden="true" sx={{
+        display: 'block',
+        width: size * 0.84,
+        height: size,
+        clipPath: 'polygon(0 0, 100% 50%, 0 100%, 0 66%, 42% 50%, 0 34%)',
+        background: 'linear-gradient(145deg, #14dec0, #5054ff 58%, #8b4df8)',
+        filter: 'drop-shadow(0 0 9px rgba(108, 76, 246, 0.38))',
+      }} />
     </Box>
   );
 }
@@ -175,7 +177,7 @@ export function AppLayout() {
                     end={item.path === '/'}
                     className={isNavigationItemActive(item, location.pathname) ? 'active' : ''}
                     onClick={() => setMobileOpen(false)}
-                    sx={{ borderRadius: 1, mb: 0.15, minHeight: 40, color: 'text.secondary', '&.active': { bgcolor: 'rgba(79,179,255,0.14)', color: 'primary.main' } }}
+                    sx={{ borderRadius: 1, mb: 0.15, minHeight: 40, color: 'text.secondary', '&.active': { background: 'linear-gradient(90deg, rgba(108, 76, 246, 0.4), rgba(58, 41, 168, 0.75))', color: '#c3c5ff', boxShadow: 'inset 3px 0 #6c4cf6' } }}
                   >
                     <ListItemIcon sx={{ color: 'inherit', minWidth: 40 }}>{item.icon}</ListItemIcon>
                     <ListItemText primary={item.label} />
@@ -255,9 +257,11 @@ export function AppLayout() {
                         color: 'text.secondary',
                         px: isExpanded ? 1.15 : 0.75,
                         '&.active': {
-                          bgcolor: 'rgba(79,179,255,0.14)',
-                          color: 'primary.main',
+                          background: 'linear-gradient(90deg, rgba(108, 76, 246, 0.4), rgba(58, 41, 168, 0.75))',
+                          color: '#c3c5ff',
+                          boxShadow: 'inset 3px 0 #6c4cf6',
                         },
+                        '&:hover': { bgcolor: 'rgba(17, 42, 68, 0.72)', color: '#e7eef8' },
                       }}
                     >
                       <ListItemIcon

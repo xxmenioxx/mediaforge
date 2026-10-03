@@ -1,20 +1,27 @@
 ## 1. Shared hierarchy and inventory
 
-- [x] 1.1 Complete the shared RAW/Library hierarchy and accessible local resize control with a 300px default and 220px–420px bounds; verify keyboard resizing, selection state, persisted width, and invalid stored-width recovery in focused tests.
-- [x] 1.2 Render the mode-specific Library and RAW column sets through shared table presentation and keep row Asset cells filename-only; verify exact column order, status evidence, unavailable summaries, and absence of relative paths in focused tests.
-- [x] 1.3 Make Advisor evaluation explicit-only, including path-group expansion; distinguish compact score, neutral not-evaluated, and unavailable/off cell states, and verify the explicit path action populates `['advisor', 'asset-row', asset.path, profileId]` without row N+1 work.
-- [x] 1.4 Complete mode-specific compact row overflow parity and route Open in Lab, Asset Info, Assign Profile, Test Encode, Queue/replacement, Advisor, scan/analyze, and safe delete through their existing owners and capability gates. Replace the legacy `AssetGroupRow` table-row presentation with a compact V2 path toolbar that reuses the same handlers, shows selected count, varies relevant actions by mode, and visually separates destructive path operations. Add focused action and capability-gating regressions.
+- [x] 1.1 Keep one canonical RAW/Library tree, present visible RAW and Libraries sections with configured roots under Libraries, and provide accessible persisted resizing at 262px default / 220px–390px bounds. Verify grouping, keyboard navigation, pointer/keyboard resize, persistence, and invalid-width recovery.
+- [x] 1.2 Preserve the shared table with mode-specific Library/RAW schemas, filename-only cells, compact technical rows, and thin contiguous row surfaces; verify both column sets and no relative paths.
+- [x] 1.3 Keep Advisor explicit-only; display canonical cached score with a short score indicator, distinct neutral/unavailable/off states, and no row evaluation. Verify explicit path Advisor caches results under `['advisor', 'asset-row', asset.path, profileId]`.
+- [x] 1.4 Keep compact row overflow actions behind existing routes/dialogs and capability gates. Render path actions in the compact breadcrumb bar with eligible workflow actions, selected count, and visually separated lifecycle-safe destructive actions; reuse the existing action handlers.
 
-## 2. Selected Asset Workspace
+## 2. Current-reference workspace and navigation
 
-- [x] 2.1 Keep selected detail collapsible below the table and finish the reference composition: landscape preview/play/duration at left, filename and series/collection/season/path plus quick facts in the center, Estado/Perfil/Subtítulos/Duración/Modificado context, video/resolution/audio technical detail, and Assign Profile/Test Encode/(...) actions. Keep it horizontally compact on desktop and reflow accessibly at narrow widths; verify composition and action routes.
-- [x] 2.2 Confirm the current Asset/API contract and selected-detail caller expose no supported Jellyfin artwork or MVForge thumbnail URL; keep the generic placeholder and do not use the source-media preview as artwork or generate images. Record the fallback order as conditional on real supported URLs and the source integration as an explicit follow-up. A component helper/test with fabricated URLs does not count as integration.
-- [x] 2.3 Flatten the selected-asset panel: remove its visible workspace and group headings, tighten typography and spacing, cap the landscape artwork size, and align artwork, identity/metadata, status/technical values, and actions in a compact desktop row.
-- [x] 2.4 Keep selected detail sticky at the Assets workspace bottom with a compact reopen affordance; give RAW and Library inventory rows an independent scroll region with summary cards and top controls outside it.
-- [x] 2.5 Add the MVForge logo mark to the existing navigation shell, refine spacing and hierarchy, and retain every current route and navigation behavior.
+- [x] 2.1 Re-audit only the current Figma Make export and selected-asset PNG before editing; update the design/spec to remove stale hierarchy, spacing, color, action, and layout assumptions.
+- [x] 2.2 Put Assets, Search, and supported top actions in the full-width top row; place the Asset Library hierarchy and right workspace below it, with summary cards on the right.
+- [x] 2.3 Keep existing filters in the compact Filter popover; show count, Sync, Filter, and disabled unsupported Sort above the independent list region.
+- [x] 2.4 Keep breadcrumb and supported path actions in one visual bar; preserve contextual scope, handler reuse, selected count, destructive separation, and backend eligibility.
+- [x] 2.5 Match current compact table density, contiguous row surfaces, selected/hover state, and canonical Advisor indicator without creating artificial row gaps.
+- [x] 2.6 Refine the existing navigation shell with the current MVForge gradient triangle mark and compact icon treatment while preserving every route and mobile/desktop behavior.
 
-## 3. Focused regression and validation
+## 3. Selected asset and historical settings
 
-- [x] 3.1 Add and run focused observable regressions for shared RAW/Library context, both table schemas, filename-only rows, score/neutral/unavailable/off Advisor rendering, no render/expand evaluation, explicit cache population, compact mode-specific row menus and existing action routes, safe-delete capability gates, V2 path-toolbar actions/count/destructive separation, resize persistence/keyboard behavior, selected-detail composition, and the current placeholder behavior when no supported artwork source exists. Jellyfin/MVForge artwork fallback is not tested as implemented behavior because no supported source is available.
-- [x] 3.2 After the completion-pass focused tests pass, run `cd frontend && npm run lint`, `cd frontend && npm run build`, `openspec validate assets-v2-final-workspace --strict`, and `./scripts/verify.sh --auto`; record only results observed for this pass and report artwork integration as a follow-up while no supported source exists.
-- [x] 3.3 Verify the flatter selected panel, sticky collapsed/reopen behavior, independent RAW/Library list scrolling, fixed summary/top controls, MVForge sidebar branding, and compact navigation spacing in focused UI tests.
+- [x] 3.1 Keep selected detail outside inventory scrolling and attached to the workspace bottom; render the current four-part landscape/identity/status/technical-actions composition and accessible collapse/reopen affordance.
+- [x] 3.2 Keep the generic artwork placeholder because no supported per-asset Jellyfin/MVForge artwork URL reaches the detail caller; do not use reference demo art or generate artwork. Record the actual fallback order only as a future contract.
+- [x] 3.3 Keep Legacy Analysis Decisions out of the main Assets page and expose the unchanged records from the Assets Settings section.
+
+## 4. Focused regressions and validation
+
+- [x] 4.1 Add and run structural/accessibility regressions for the top row and hierarchy order, RAW/Libraries grouping, summary placement, filter controls, row surface, separate list scrolling, path bar/actions, Advisor states, selected detail composition/collapse, Assets Settings relocation, and MVForge branding.
+- [x] 4.2 Run focused Assets V2, hierarchy, navigation, and Assets Settings tests; observed result: 5 test files passed, 32 tests passed.
+- [x] 4.3 Validation observed: focused tests passed (5 files / 32 tests); frontend lint passed with the Babel large-file notice; frontend build passed with Vite's large-chunk warning; strict OpenSpec validation passed; `./scripts/verify.sh --auto` selected full scope and passed 10/10 checks.

@@ -50,10 +50,12 @@ import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutli
 import EditIcon from '@mui/icons-material/Edit';
 import ScienceIcon from '@mui/icons-material/Science';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
+import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { filterAssetGroups, subtitleOCRReviewKey, subtitleOCRSidecarSelection, subtitleOperationStopsPolling } from '../utils/assetPageHelpers';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
@@ -68,6 +70,7 @@ import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { AssetsHierarchyPanel, AssetsSummaryStrip, SelectedAssetDetail, WorkspaceBreadcrumbs } from '../components/AssetsWorkspace';
 import { AssetsInventoryTable } from '../components/AssetsInventoryTable';
 import { AssetsV2PathToolbar } from '../components/AssetsV2PathToolbar';
+import { AssetsV2InventoryControls } from '../components/AssetsV2InventoryControls';
 import { assetLabHref } from '../components/assetsActionRoutes';
 import { assetPathWithin, formatDurationSummary, type LibraryTreeSelection, type RawHierarchySelection } from '../components/assetsWorkspaceModel';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
@@ -169,9 +172,7 @@ export function AssetsPage() {
   const [attentionFilter, setAttentionFilter] = useState(searchParams.get('attention') ?? '');
   const [assetQuery, setAssetQuery] = useState(searchParams.get('search') ?? searchParams.get('asset') ?? '');
   const [mediaArea, setMediaArea] = useState(searchParams.get('mediaArea') ?? '');
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-
-  const activeAdvancedFilters = [originalFilter, validationFilter, workflowFilter, attentionFilter].filter(Boolean).length;
+  const activeFilterCount = [libraryDecision, mediaArea, validationFilter, originalFilter, workflowFilter, attentionFilter].filter(Boolean).length;
   const legacyTab = searchParams.get('tab');
   const unsupportedLegacyTab = legacyTab && !['unprocessed', 'library', 'converted', 'archive'].includes(legacyTab);
   useEffect(() => {
@@ -235,7 +236,6 @@ export function AssetsPage() {
       if (librarySelection?.path) next.set('libraryPath', librarySelection.path);
       else next.delete('libraryPath');
     }
-    setAdvancedOpen(false);
     setSearchParams(next);
   };
   const jobs = useQuery({
@@ -320,6 +320,62 @@ export function AssetsPage() {
     ?? safeArray(jobs.data).filter((job) => job.status === 'queued' || job.status === 'running').length;
   const needsReviewSummary = summaryCounts?.needsReview
     ?? [...safeArray(assets.data?.unprocessed), ...safeArray(assets.data?.library)].filter((asset) => asset.review?.requiresReview).length;
+  const syncDetails = [
+    `Last sync: ${formatDate(assets.data?.sync?.lastSyncedAt ?? '')}`,
+    `${assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0} missing assets`,
+    `${assets.data?.sync?.missingHistorical ?? 0} historical paths`,
+  ].join(' · ');
+  const filterContent = tab === 'library' ? (
+    <Grid container spacing={1}>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={libraryDecision} onChange={(event) => { setLibraryDecision(event.target.value); updateLibraryFilter('provenance', event.target.value); }} label="Provenance" size="small">
+          <MenuItem value="">All provenance</MenuItem>
+          <MenuItem value="converted">Converted ({convertedCount})</MenuItem>
+          <MenuItem value="published_as_is">Published as-is</MenuItem>
+          <MenuItem value="imported">Imported / accepted ({acceptedCount})</MenuItem>
+          <MenuItem value="legacy_or_unknown">Legacy / unknown</MenuItem>
+        </TextField>
+      </Grid>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={mediaArea} onChange={(event) => { setMediaArea(event.target.value); updateLibraryFilter('mediaArea', event.target.value); }} label="Media area" size="small">
+          <MenuItem value="">All media</MenuItem>
+          {mediaAreas.map((area) => <MenuItem key={area} value={area}>media/{area}</MenuItem>)}
+        </TextField>
+      </Grid>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={validationFilter} onChange={(event) => { setValidationFilter(event.target.value); updateLibraryFilter('validation', event.target.value); }} label="Validation" size="small">
+          <MenuItem value="">All validation</MenuItem><MenuItem value="passed">Passed</MenuItem><MenuItem value="passed_with_warnings">Warnings</MenuItem><MenuItem value="review_required">Review</MenuItem><MenuItem value="failed">Failed</MenuItem><MenuItem value="unavailable">Unavailable</MenuItem>
+        </TextField>
+      </Grid>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={originalFilter} onChange={(event) => updateLibraryFilter('original', event.target.value)} label="Original" size="small">
+          <MenuItem value="">All originals</MenuItem><MenuItem value="available">Available</MenuItem><MenuItem value="deleted">Deleted</MenuItem><MenuItem value="unknown">Unknown</MenuItem>
+        </TextField>
+      </Grid>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={workflowFilter} onChange={(event) => { setWorkflowFilter(event.target.value); updateLibraryFilter('workflow', event.target.value); }} label="Workflow" size="small">
+          <MenuItem value="">All workflow</MenuItem><MenuItem value="available">Ready</MenuItem><MenuItem value="queued">Queued</MenuItem><MenuItem value="processing">Processing</MenuItem><MenuItem value="publishing">Publishing</MenuItem><MenuItem value="needs_review">Needs attention</MenuItem><MenuItem value="failed">Failed</MenuItem>
+        </TextField>
+      </Grid>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={attentionFilter} onChange={(event) => { setAttentionFilter(event.target.value); updateLibraryFilter('attention', event.target.value); }} label="Attention" size="small">
+          <MenuItem value="">All attention</MenuItem><MenuItem value="needs_review">Needs review</MenuItem><MenuItem value="publication_conflict">Publication conflict</MenuItem>
+        </TextField>
+      </Grid>
+    </Grid>
+  ) : (
+    <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 480 }}>
+      Provenance, media area, validation, original, workflow, and attention filters apply to Library inventory. Search remains available in both RAW and Library.
+    </Typography>
+  );
+  const summaryStrip = (
+    <AssetsSummaryStrip
+      total={totalAssetsSummary}
+      processing={processingSummary}
+      completed={summaryCounts?.converted ?? convertedCount}
+      needsReview={needsReviewSummary}
+    />
+  );
   const hierarchyPanel = (
     <AssetsHierarchyPanel
       sourceGroups={sourceGroups}
@@ -342,155 +398,102 @@ export function AssetsPage() {
         height: { xs: 'calc(100dvh - 56px)', md: '100dvh' },
         minHeight: 0,
         overflow: 'hidden',
+        bgcolor: '#04101d',
       }}
     >
-      <Box component="header" sx={{ px: { xs: 1.5, md: 2.5 }, pt: { xs: 1, md: 1.25 }, pb: { xs: 1, md: 1.25 }, flexShrink: 0 }}>
-        <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 1.5 }}>
-          <Stack direction="row" alignItems="baseline" spacing={1}>
-            <Typography component="h1" variant="h1" sx={{ fontSize: { xs: '1.2rem', sm: '1.35rem' }, lineHeight: 1.2 }}>Assets</Typography>
-            <Typography variant="caption" color="text.secondary">{tab === 'raw' ? 'Source inventory' : 'Library inventory'}</Typography>
-          </Stack>
-        </Stack>
-        <AssetsSummaryStrip
-          total={totalAssetsSummary}
-          processing={processingSummary}
-          completed={summaryCounts?.converted ?? convertedCount}
-          needsReview={needsReviewSummary}
+      <Box
+        component="header"
+        data-testid="assets-topbar"
+        sx={{
+          minHeight: { xs: 72, md: 64 },
+          px: { xs: 1.25, md: 2.5 },
+          py: { xs: 0.75, md: 0 },
+          display: 'flex',
+          alignItems: 'center',
+          gap: { xs: 1, md: 1.5 },
+          flexWrap: { xs: 'wrap', md: 'nowrap' },
+          flexShrink: 0,
+          borderBottom: 1,
+          borderColor: '#15304a',
+          bgcolor: 'rgba(5, 17, 30, 0.92)',
+        }}
+      >
+        <Typography component="h1" variant="h1" sx={{ width: { xs: 'auto', md: 152 }, flex: { xs: '1 0 auto', md: '0 0 152px' }, fontSize: '1.25rem', lineHeight: 1.2, letterSpacing: '-0.025em', color: '#e7eef8' }}>
+          Assets
+        </Typography>
+        <TextField
+          value={assetQuery}
+          onChange={(event) => { setAssetQuery(event.target.value); updateSearchFilter(event.target.value); }}
+          placeholder="Search assets, series, movies…"
+          size="small"
+          inputProps={{ 'aria-label': 'Search assets, series, movies' }}
+          sx={{
+            width: { xs: '100%', md: 'min(44vw, 590px)' },
+            maxWidth: 590,
+            order: { xs: 3, md: 0 },
+            '& .MuiOutlinedInput-root': { height: 36, borderRadius: 1, bgcolor: '#091a2c', color: '#e7eef8', fontSize: '0.75rem', '& fieldset': { borderColor: '#15304a' }, '&:hover fieldset': { borderColor: '#1f4467' }, '&.Mui-focused fieldset': { borderColor: '#6c4cf6' } },
+            '& input::placeholder': { color: '#59718b', opacity: 1 },
+          }}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchIcon fontSize="small" sx={{ color: '#59718b', fontSize: 18 }} />
+              </InputAdornment>
+            ),
+          }}
         />
+        <Tooltip title="Assets Settings">
+          <IconButton component={RouterLink} to="/settings?section=assets" aria-label="Open Assets Settings" sx={{ ml: 'auto', width: 34, height: 34, color: '#9cb0c8', '&:hover': { bgcolor: '#112a44', color: '#e7eef8' } }}>
+            <SettingsOutlinedIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
       </Box>
-      <Box data-testid="assets-page-body" sx={{ px: { xs: 1.5, md: 2.5 }, pb: 0.75, minWidth: 0, minHeight: 0, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {assets.isError ? <Alert severity="warning">Unable to read library paths from the backend container.</Alert> : null}
-        {unsupportedLegacyTab ? <Alert severity="info">This Assets link is no longer a supported inventory context. Open RAW or Library and use the persisted lifecycle filters.</Alert> : null}
-        <LegacyAnalysisRecords settings={settings.data ?? []} />
-
-        <Card variant="outlined" sx={{ borderRadius: 1.5, borderColor: 'divider', overflow: 'hidden', bgcolor: 'background.paper', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          <CardContent sx={{ py: 0.8, px: { xs: 1, sm: 1.5 }, flexShrink: 0, borderBottom: 1, borderColor: 'divider', '&:last-child': { pb: 0.8 } }}>
-            <Stack
-              direction={{ xs: 'column', lg: 'row' }}
-              alignItems={{ xs: 'stretch', lg: 'flex-start' }}
-              justifyContent="space-between"
-              spacing={1.5}
-            >
-              <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ flex: 1 }}>
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" alignItems={{ xs: 'stretch', sm: 'center' }} sx={{ width: '100%' }}>
-                  <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => syncAssets.mutate()} disabled={syncAssets.isPending} sx={{ minHeight: 40 }}>
-                    Sync
-                  </Button>
-                  {tab === 'library' ? (
-                      <TextField
-                        select
-                        value={libraryDecision}
-                        onChange={(event) => { setLibraryDecision(event.target.value); updateLibraryFilter('provenance', event.target.value); }}
-                        label="Provenance"
-                        size="small"
-                        sx={{ width: { xs: '100%', sm: 180 } }}
-                      >
-                        <MenuItem value="">All provenance</MenuItem>
-                        <MenuItem value="converted">Converted ({convertedCount})</MenuItem>
-                        <MenuItem value="published_as_is">Published as-is</MenuItem>
-                        <MenuItem value="imported">Imported / accepted ({acceptedCount})</MenuItem>
-                        <MenuItem value="legacy_or_unknown">Legacy / unknown</MenuItem>
-                      </TextField>
-                  ) : null}
-                  {tab === 'library' ? (
-                    <TextField
-                      select
-                      value={mediaArea}
-                      onChange={(event) => { setMediaArea(event.target.value); updateLibraryFilter('mediaArea', event.target.value); }}
-                      label="Media area"
-                      size="small"
-                      sx={{ width: { xs: '100%', sm: 210 } }}
-                    >
-                      <MenuItem value="">All media</MenuItem>
-                      {mediaAreas.map((area) => <MenuItem key={area} value={area}>media/{area}</MenuItem>)}
-                    </TextField>
-                  ) : null}
-                  <TextField
-                      value={assetQuery}
-                      onChange={(event) => { setAssetQuery(event.target.value); updateSearchFilter(event.target.value); }}
-                      placeholder="Search path, file, library, status"
-                      size="small"
-                      sx={{ width: { xs: '100%', sm: 330 } }}
-                      InputProps={{
-                        startAdornment: (
-                          <InputAdornment position="start">
-                            <SearchIcon fontSize="small" />
-                          </InputAdornment>
-                        ),
-                      }}
-                  />
-                  {tab === 'library' ? (
-                    <Button
-                      endIcon={<ExpandMoreIcon sx={{ transform: advancedOpen ? 'rotate(180deg)' : 'none', transition: 'transform 150ms ease' }} />}
-                      onClick={() => setAdvancedOpen((current) => !current)}
-                      aria-expanded={advancedOpen}
-                      aria-label={activeAdvancedFilters ? `Advanced filters, ${activeAdvancedFilters} active` : 'Advanced filters'}
-                      sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
-                    >
-                      Advanced{activeAdvancedFilters ? ` · ${activeAdvancedFilters} active` : ''}
-                    </Button>
-                  ) : null}
-                </Stack>
-                {tab === 'library' ? (
-                  <Collapse in={advancedOpen} unmountOnExit>
-                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" sx={{ pt: 1 }}>
-                      <TextField select value={validationFilter} onChange={(event) => { setValidationFilter(event.target.value); updateLibraryFilter('validation', event.target.value); }} label="Validation" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                        <MenuItem value="">All validation</MenuItem><MenuItem value="passed">Passed</MenuItem><MenuItem value="passed_with_warnings">Warnings</MenuItem><MenuItem value="review_required">Review</MenuItem><MenuItem value="failed">Failed</MenuItem><MenuItem value="unavailable">Unavailable</MenuItem>
-                      </TextField>
-                      <TextField select value={originalFilter} onChange={(event) => updateLibraryFilter('original', event.target.value)} label="Original" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                        <MenuItem value="">All originals</MenuItem><MenuItem value="available">Available</MenuItem><MenuItem value="deleted">Deleted</MenuItem><MenuItem value="unknown">Unknown</MenuItem>
-                      </TextField>
-                      <TextField select value={workflowFilter} onChange={(event) => { setWorkflowFilter(event.target.value); updateLibraryFilter('workflow', event.target.value); }} label="Workflow" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                        <MenuItem value="">All workflow</MenuItem><MenuItem value="available">Ready</MenuItem><MenuItem value="queued">Queued</MenuItem><MenuItem value="processing">Processing</MenuItem><MenuItem value="publishing">Publishing</MenuItem><MenuItem value="needs_review">Needs attention</MenuItem><MenuItem value="failed">Failed</MenuItem>
-                      </TextField>
-                      <TextField select value={attentionFilter} onChange={(event) => { setAttentionFilter(event.target.value); updateLibraryFilter('attention', event.target.value); }} label="Attention" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                        <MenuItem value="">All attention</MenuItem><MenuItem value="needs_review">Needs review</MenuItem><MenuItem value="publication_conflict">Publication conflict</MenuItem>
-                      </TextField>
-                    </Stack>
-                  </Collapse>
-                ) : null}
-                <Stack direction="row" spacing={1} flexWrap="wrap" alignItems="center" justifyContent={{ xs: 'flex-start', sm: 'flex-end' }} useFlexGap>
-                  <Typography variant="caption" color="text.secondary">
-                    Last sync · {formatDate(assets.data?.sync?.lastSyncedAt ?? '')}
-                  </Typography>
-                  {(assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0} missing`} color="warning" size="small" /> : null}
-                  {(assets.data?.sync?.missingHistorical ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingHistorical ?? 0} historical paths`} size="small" /> : null}
-                </Stack>
-              </Stack>
-            </Stack>
-            {tab === 'library' && libraryDecision === 'converted' ? <Alert severity="info" sx={{ mt: 1.25 }}>Converted is a Library provenance projection. Re-processing and original retention remain independent lifecycle evidence.</Alert> : null}
-            {syncAssets.isSuccess ? (
-              <Alert severity={syncAssets.data.reviewMatches > 0 ? 'warning' : 'success'} sx={{ mt: 1 }}>
-                Inventory synced. {syncAssets.data.reconciledFiles} relocated asset(s) reconciled automatically.
-                {syncAssets.data.reviewMatches > 0 ? ` ${syncAssets.data.reviewMatches} possible match(es) were sent to Review.` : ''}
-              </Alert>
-            ) : null}
-          </CardContent>
-          {syncAssets.isError ? <Alert severity="warning" sx={{ m: 1, flexShrink: 0 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
-	      <Box data-testid="assets-workspace-region" sx={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
-		  {tab === 'raw' ? (
-			<AssetsErrorBoundary boundaryKey="raw">
-				<RawAssetsView
-					key={assetQuery}
-					sourceGroups={sourceGroups}
-					libraries={libraries.data ?? []}
-					profiles={profiles.data ?? []}
-					audioProfiles={audioProfiles}
-					trackProfiles={trackProfiles}
-					settings={settings.data ?? []}
-					assetCategories={assetCategories}
-					queueJobs={jobs.data ?? []}
-					runningSnapshotPaths={runningSnapshotPaths}
-					query={assetQuery}
-					legacyAssetPath={legacyAssetPath}
-					selection={rawSelection}
-					hierarchyPanel={hierarchyPanel}
-				/>
-			</AssetsErrorBoundary>
+      <Box data-testid="assets-page-body" sx={{ px: { xs: 0.75, md: 1.5 }, pt: { xs: 0.75, md: 1.5 }, pb: { xs: 0.75, md: 1.25 }, minWidth: 0, minHeight: 0, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <Stack spacing={0.5} sx={{ flexShrink: 0, mb: 0.5 }}>
+          {assets.isError ? <Alert severity="warning" sx={{ py: 0 }}>Unable to read library paths from the backend container.</Alert> : null}
+          {unsupportedLegacyTab ? <Alert severity="info" sx={{ py: 0 }}>This Assets link is no longer a supported inventory context. Open RAW or Library and use the persisted lifecycle filters.</Alert> : null}
+          {tab === 'library' && libraryDecision === 'converted' ? <Alert severity="info" sx={{ py: 0 }}>Converted is a Library provenance projection. Re-processing and original retention remain independent lifecycle evidence.</Alert> : null}
+          {syncAssets.isSuccess ? <Alert severity={syncAssets.data.reviewMatches > 0 ? 'warning' : 'success'} sx={{ py: 0 }}>
+            Inventory synced. {syncAssets.data.reconciledFiles} relocated asset(s) reconciled automatically.{syncAssets.data.reviewMatches > 0 ? ` ${syncAssets.data.reviewMatches} possible match(es) were sent to Review.` : ''}
+          </Alert> : null}
+          {syncAssets.isError ? <Alert severity="warning" sx={{ py: 0 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
+        </Stack>
+        <Box data-testid="assets-workspace-region" sx={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+          {tab === 'raw' ? (
+            <AssetsErrorBoundary boundaryKey="raw">
+              <RawAssetsView
+                key={assetQuery}
+                summaryStrip={summaryStrip}
+                filterContent={filterContent}
+                activeFilterCount={activeFilterCount}
+                syncDetails={syncDetails}
+                syncPending={syncAssets.isPending}
+                onSync={() => syncAssets.mutate()}
+                sourceGroups={sourceGroups}
+                libraries={libraries.data ?? []}
+                profiles={profiles.data ?? []}
+                audioProfiles={audioProfiles}
+                trackProfiles={trackProfiles}
+                settings={settings.data ?? []}
+                assetCategories={assetCategories}
+                queueJobs={jobs.data ?? []}
+                runningSnapshotPaths={runningSnapshotPaths}
+                query={assetQuery}
+                legacyAssetPath={legacyAssetPath}
+                selection={rawSelection}
+                hierarchyPanel={hierarchyPanel}
+              />
+            </AssetsErrorBoundary>
           ) : (
             <AssetsErrorBoundary boundaryKey={tab}>
               <AssetTable
                 key={tab}
+                summaryStrip={summaryStrip}
+                filterContent={filterContent}
+                activeFilterCount={activeFilterCount}
+                syncDetails={syncDetails}
+                syncPending={syncAssets.isPending}
+                onSync={() => syncAssets.mutate()}
                 groups={filteredGroups}
                 libraries={libraries.data ?? []}
                 profiles={profiles.data ?? []}
@@ -504,14 +507,11 @@ export function AssetsPage() {
                 query={assetQuery}
                 libraryTreeSelection={libraryTreeSelection}
                 hierarchyPanel={hierarchyPanel}
-                emptyLabel={
-                  'No Library asset groups match the persisted filters.'
-                }
+                emptyLabel="No Library asset groups match the persisted filters."
               />
             </AssetsErrorBoundary>
           )}
-          </Box>
-        </Card>
+        </Box>
       </Box>
       <BatchPreflightDialog
         candidate={queuePreflightCandidate}
@@ -549,26 +549,6 @@ export function ReportsPage() {
       </Card>
     </Box>
   );
-}
-
-function LegacyAnalysisRecords({ settings }: { settings: AppSetting[] }) {
-  const [open, setOpen] = useState(false);
-  const value = settings.find((setting) => setting.key === 'analysisRecords')?.value.records;
-  const records = Array.isArray(value) ? value.filter((record): record is Record<string, unknown> => Boolean(record && typeof record === 'object')) : [];
-  if (!records.length) return null;
-  return <Box sx={{ mb: 1.5 }}>
-    <Button size="small" onClick={() => setOpen((current) => !current)} aria-expanded={open}>Legacy Analysis decisions ({records.length})</Button>
-    <Collapse in={open}>
-      <Stack spacing={1} sx={{ mt: 1 }}>
-        <Alert severity="info">Saved decisions and notes are preserved as legacy records. Asset Info History shows an annotation only when the full source-evidence identity matches; path equality alone is never sufficient.</Alert>
-        {records.map((record, index) => <Card variant="outlined" key={String(record.id ?? index)}><CardContent sx={{ py: 1 }}>
-          <Typography fontWeight={700}>{String(record.assetName ?? 'Legacy asset')} · {String(record.decision ?? 'No decision')}</Typography>
-          <Typography variant="body2" color="text.secondary">Legacy record · {String(record.assetPath ?? 'source path unavailable')} · {String(record.createdAt ?? '')}</Typography>
-          {record.notes ? <Typography variant="body2" sx={{ mt: 0.5 }}>{String(record.notes)}</Typography> : null}
-        </CardContent></Card>)}
-      </Stack>
-    </Collapse>
-  </Box>;
 }
 
 function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
@@ -769,7 +749,16 @@ class AssetsErrorBoundary extends Component<
   }
 }
 
-type AssetTableProps = {
+type AssetsWorkspaceChromeProps = {
+  summaryStrip: ReactNode;
+  filterContent: ReactNode;
+  activeFilterCount: number;
+  syncDetails: string;
+  syncPending: boolean;
+  onSync: () => void;
+};
+
+type AssetTableProps = AssetsWorkspaceChromeProps & {
   groups: AssetGroup[];
   libraries: Library[];
   profiles: Profile[];
@@ -861,6 +850,12 @@ function LegacyAssetTable({ groups, libraries, profiles, audioProfiles, trackPro
 }
 
 function LibraryAssetTable({
+  summaryStrip,
+  filterContent,
+  activeFilterCount,
+  syncDetails,
+  syncPending,
+  onSync,
   groups,
   libraries,
   profiles,
@@ -926,8 +921,8 @@ function LibraryAssetTable({
   const selectedPathParts = treeSelection.path.replace(/\\/g, '/').split('/').filter(Boolean);
   const libraryRootPartCount = selectedLibrary?.destinationPath.replace(/\\/g, '/').split('/').filter(Boolean).length ?? 0;
   const libraryBreadcrumbs = treeSelection.libraryId === null && !treeSelection.path
-    ? ['Assets', 'Library', 'All Library assets']
-    : ['Assets', selectedLibraryName ?? 'Library', ...selectedPathParts.slice(libraryRootPartCount)];
+    ? ['Assets', 'Libraries', 'All Library assets']
+    : ['Assets', 'Libraries', selectedLibraryName ?? 'Library', ...selectedPathParts.slice(libraryRootPartCount)];
 
   const selectedAssetPathContext = selectedAsset && selectedGroup
     ? `${selectedAsset.libraryName || selectedGroup.libraryName}${selectedAsset.relativePath ? ` · ${selectedAsset.relativePath}` : ''}`
@@ -949,17 +944,7 @@ function LibraryAssetTable({
       <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 0.75, lg: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
         {hierarchyPanel}
         <Box data-testid="assets-content-column" sx={{ flex: 1, minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ px: 0.5, pb: 1, minWidth: 0 }}>
-            <Box sx={{ minWidth: 0 }}>
-              <WorkspaceBreadcrumbs segments={libraryBreadcrumbs} label="Library location" />
-              <Typography variant="h2" sx={{ fontSize: '1rem', lineHeight: 1.3 }} noWrap>
-                {selectedPathGroup ? cleanPathLabel(selectedPathGroup.path) : treeSelection.path || treeSelection.libraryId !== null ? cleanPathLabel(treeSelection.path) || selectedLibraryName || 'Library' : 'All Library assets'}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {visibleAssets.length.toLocaleString()} {visibleAssets.length === 1 ? 'asset' : 'assets'}
-              </Typography>
-            </Box>
-          </Stack>
+          <Box data-testid="assets-summary-in-workspace" sx={{ mb: 1.1, flexShrink: 0 }}>{summaryStrip}</Box>
 
           {selectedPathGroup ? (
             <AssetGroupRow
@@ -974,11 +959,22 @@ function LibraryAssetTable({
               runningSnapshotPaths={runningSnapshotPaths}
               mode={mode}
               v2ToolbarOnly
+              breadcrumbSegments={libraryBreadcrumbs}
               selectedCount={selectedAsset ? 1 : 0}
             />
-          ) : null}
+          ) : (
+            <AssetsV2PathToolbar
+              path={treeSelection.path || selectedLibraryName || 'Library'}
+              mode="library"
+              breadcrumbs={<WorkspaceBreadcrumbs segments={libraryBreadcrumbs} label="Library location" />}
+            />
+          )}
 
-          <Box data-testid="assets-list-scroll" role="region" aria-label="Library asset list" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain' }}>
+          <AssetsV2InventoryControls count={visibleAssets.length} filterCount={activeFilterCount} syncDetails={syncDetails} syncPending={syncPending} onSync={onSync}>
+            {filterContent}
+          </AssetsV2InventoryControls>
+
+          <Box data-testid="assets-list-scroll" role="region" aria-label="Library asset list" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', pb: 1.25 }}>
           {visibleAssets.length ? (
             <AssetsInventoryTable mode="library">
                   {pageRows.map(({ asset, group }) => {
@@ -1097,7 +1093,7 @@ type AssetCollection = {
   sizeBytes: number;
 };
 
-function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query, legacyAssetPath, selection, hierarchyPanel }: {
+function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDetails, syncPending, onSync, sourceGroups, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query, legacyAssetPath, selection, hierarchyPanel }: AssetsWorkspaceChromeProps & {
   sourceGroups: AssetSourceGroup[];
   libraries: Library[];
   profiles: Profile[];
@@ -1195,13 +1191,6 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
   const selectedCanAssignProfile = Boolean(selectedAsset && !hidePreConversionActionsForAsset(selectedAsset) && !selectedAsset.missing && !assetHasOpenJob(selectedAsset, queueJobs));
   const selectedCanTestEncode = Boolean(selectedAsset && testEncodeEligibleAsset(selectedAsset, 'unprocessed') && assetInfoCapability(selectedAsset, 'lab').allowed);
   const selectedPathGroup = selectedPath ? assetGroupFromTreePath(selectedPath) : undefined;
-  const contextLabel = selection.kind === 'all'
-    ? 'All RAW assets'
-    : selection.kind === 'source'
-      ? sourceGroup?.name ?? 'RAW source'
-      : selection.kind === 'logical'
-      ? logicalGroup?.name ?? 'RAW title'
-      : selectedPath?.isLogicalGroupRoot ? `${logicalGroup?.name ?? 'RAW title'} · Root` : selectedPath?.displayPath || selectedPath?.name || 'RAW path';
   const rawBreadcrumbs = selection.kind === 'all'
     ? ['Assets', 'RAW', 'All RAW assets']
     : [
@@ -1229,17 +1218,26 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
       <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 0.75, lg: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
         {hierarchyPanel}
         <Box data-testid="assets-content-column" sx={{ flex: 1, minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <WorkspaceBreadcrumbs segments={rawBreadcrumbs} label="RAW source location" />
-          {sourceGroup ? (
-            <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: 0.5, pb: 0.75 }}>
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="h2" sx={{ fontSize: '1.05rem', lineHeight: 1.3 }} noWrap title={sourceGroup.name}>{sourceGroup.name}</Typography>
-                <Typography variant="caption" color="text.secondary">{countLabel(sourceGroup.assetCount, 'asset')} · {countLabel(sourceGroup.titleCount, 'title')} · {countLabel(sourceGroup.pathCount, 'path')} · {formatBytes(sourceGroup.totalSizeBytes)}</Typography>
-              </Box>
-              <SourceGroupConfigureButton sourceGroup={sourceGroup} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} />
-            </Stack>
-          ) : null}
-          {selection.kind === 'logical' && logicalGroup ? (
+          <Box data-testid="assets-summary-in-workspace" sx={{ mb: 1.1, flexShrink: 0 }}>{summaryStrip}</Box>
+          {selectedPathGroup ? (
+            <AssetGroupRow
+              group={selectedPathGroup}
+              libraries={libraries}
+              profiles={profiles}
+              audioProfiles={audioProfiles}
+              trackProfiles={trackProfiles}
+              settings={settings}
+              assetCategories={assetCategories}
+              queueJobs={queueJobs}
+              runningSnapshotPaths={runningSnapshotPaths}
+              mode="unprocessed"
+              v2ToolbarOnly
+              breadcrumbSegments={rawBreadcrumbs}
+              selectedCount={scopedSelectedAssets.length}
+              selectedAssetIds={selectedAssetIds}
+              onAssetSelectionChange={updateSelectedAssets}
+            />
+          ) : selection.kind === 'logical' && logicalGroup ? (
             <UnprocessedLogicalGroup
               key={logicalGroup.id}
               logicalGroup={logicalGroup}
@@ -1254,15 +1252,16 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
               assetCategories={assetCategories}
               queueJobs={queueJobs}
               runningSnapshotPaths={runningSnapshotPaths}
+              breadcrumbSegments={rawBreadcrumbs}
               headerOnly
             />
-          ) : selection.kind === 'source' ? null : (
-            <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: 0.5, pb: 0.75 }}>
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="h2" sx={{ fontSize: '1.05rem', lineHeight: 1.3 }} noWrap title={contextLabel}>{contextLabel}</Typography>
-                <Typography variant="caption" color="text.secondary">{visibleAssets.length.toLocaleString()} {visibleAssets.length === 1 ? 'asset' : 'assets'}</Typography>
-              </Box>
-            </Stack>
+          ) : (
+            <AssetsV2PathToolbar
+              path={sourceGroup?.sourcePath ?? ''}
+              mode="raw"
+              breadcrumbs={<WorkspaceBreadcrumbs segments={rawBreadcrumbs} label="RAW source location" />}
+              primaryActions={sourceGroup ? <SourceGroupConfigureButton sourceGroup={sourceGroup} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} /> : null}
+            />
           )}
           {scopedSelectedAssets.length ? (
             <UnprocessedSelectionToolbar
@@ -1277,25 +1276,10 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
               onClear={() => setSelectedAssetIdsState({ identity: selectionIdentity, ids: new Set() })}
             />
           ) : null}
-          {selectedPathGroup ? (
-            <AssetGroupRow
-              group={selectedPathGroup}
-              libraries={libraries}
-              profiles={profiles}
-              audioProfiles={audioProfiles}
-              trackProfiles={trackProfiles}
-              settings={settings}
-              assetCategories={assetCategories}
-              queueJobs={queueJobs}
-              runningSnapshotPaths={runningSnapshotPaths}
-              mode="unprocessed"
-              v2ToolbarOnly
-              selectedCount={scopedSelectedAssets.length}
-              selectedAssetIds={selectedAssetIds}
-              onAssetSelectionChange={updateSelectedAssets}
-            />
-          ) : null}
-          <Box data-testid="assets-list-scroll" role="region" aria-label="RAW asset list" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain' }}>
+          <AssetsV2InventoryControls count={visibleAssets.length} filterCount={activeFilterCount} syncDetails={syncDetails} syncPending={syncPending} onSync={onSync}>
+            {filterContent}
+          </AssetsV2InventoryControls>
+          <Box data-testid="assets-list-scroll" role="region" aria-label="RAW asset list" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', pb: 1.25 }}>
           {visibleAssets.length ? (
             <AssetsInventoryTable mode="raw" selectable>
                   {pageRows.map(({ asset, path }) => {
@@ -1379,8 +1363,8 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
 
 type PreparedSelectionQueue = QueueSelectedAssetsResponse;
 
-function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, headerOnly = false }: {
-	logicalGroup: AssetLogicalGroup; legacyAssetPath: string; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>; headerOnly?: boolean;
+function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, breadcrumbSegments, headerOnly = false }: {
+	logicalGroup: AssetLogicalGroup; legacyAssetPath: string; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>; breadcrumbSegments?: string[]; headerOnly?: boolean;
 }) {
 	const queryClient = useQueryClient();
 	const targetPath = safeArray(logicalGroup.assetPaths).find((path) => safeArray(path.assets).some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)));
@@ -1458,12 +1442,12 @@ function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetI
 			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} autoOpenAssetInfo={normalizePath(asset.path) === normalizePath(legacyAssetPath)} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)} bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
 		})}</TableBody></Table></Box>;
 	};
-	return <Box sx={{ border: headerOnly ? 0 : 1, borderBottom: headerOnly ? 1 : 0, borderColor: 'divider', borderRadius: headerOnly ? 0 : 1, overflow: 'hidden', mb: headerOnly ? 1 : 0 }}>
-		<Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: headerOnly ? 0.5 : 1, py: headerOnly ? 0.5 : 1, bgcolor: headerOnly ? 'transparent' : 'rgba(255,255,255,0.035)' }}>
-			<Stack direction="row" alignItems="center" spacing={0.5}><Checkbox size="small" checked={groupSelection.checked} indeterminate={groupSelection.indeterminate} disabled={!assets.length} onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select title ${logicalGroup.name}` }} />{headerOnly ? null : <IconButton size="small" onClick={() => setExpanded((value) => !value)} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${logicalGroup.name}`}><ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'none' }} /></IconButton>}<Box><Typography variant={headerOnly ? 'h2' : 'h3'} sx={headerOnly ? { fontSize: '1.05rem', lineHeight: 1.3 } : undefined}>{logicalGroup.name}</Typography><Typography variant="body2" color="text.secondary">{countLabel(logicalGroup.assetCount, 'asset')} · {countLabel(logicalGroup.pathCount, 'path')} · {formatBytes(logicalGroup.totalSizeBytes)}</Typography></Box></Stack>
-			<Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-				<ScopeConfigureButton targetType="logical_group" scopeKey={logicalGroup.path} label="Configure title" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} readOnly={titleHasOpenJob} />
-				<Button size="small" variant="outlined" startIcon={<InfoOutlinedIcon />} onClick={() => runTitleAdvisor.mutate()} disabled={!assets.length || runTitleAdvisor.isPending}>{runTitleAdvisor.isPending ? 'Running Advisor…' : 'Run Advisor'}</Button>
+	return <Box data-testid={headerOnly ? 'assets-path-toolbar' : undefined} aria-label={headerOnly ? 'RAW title path actions' : undefined} sx={{ border: headerOnly ? 1 : 1, borderColor: '#15304a', borderRadius: headerOnly ? 1 : 1, overflow: 'hidden', mb: headerOnly ? 0.7 : 0, bgcolor: headerOnly ? '#091a2c' : 'rgba(255,255,255,0.035)' }}>
+		<Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={0.6} sx={{ px: headerOnly ? 1.25 : 1, py: headerOnly ? 0.55 : 1 }}>
+			<Stack direction="row" alignItems="center" spacing={0.45} sx={{ minWidth: 0, flex: 1 }}><Checkbox size="small" checked={groupSelection.checked} indeterminate={groupSelection.indeterminate} disabled={!assets.length} onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select title ${logicalGroup.name}` }} />{headerOnly ? <WorkspaceBreadcrumbs segments={breadcrumbSegments ?? ['Assets', 'RAW', logicalGroup.name]} label="RAW title location" /> : <><IconButton size="small" onClick={() => setExpanded((value) => !value)} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${logicalGroup.name}`}><ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography variant="h3">{logicalGroup.name}</Typography><Typography variant="body2" color="text.secondary">{countLabel(logicalGroup.assetCount, 'asset')} · {countLabel(logicalGroup.pathCount, 'path')} · {formatBytes(logicalGroup.totalSizeBytes)}</Typography></Box></>}</Stack>
+			<Stack direction="row" spacing={0.45} flexWrap="wrap" useFlexGap>
+				<ScopeConfigureButton targetType="logical_group" scopeKey={logicalGroup.path} label={headerOnly ? 'Configure Path' : 'Configure title'} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact={headerOnly} readOnly={titleHasOpenJob} />
+				<Button size="small" variant="outlined" startIcon={<InfoOutlinedIcon />} onClick={() => runTitleAdvisor.mutate()} disabled={!assets.length || runTitleAdvisor.isPending} sx={headerOnly ? { minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } } : undefined}>{runTitleAdvisor.isPending ? 'Running Advisor…' : headerOnly ? 'Advisor' : 'Run Advisor'}</Button>
 				{headerOnly ? (
 					<>
 						<Tooltip title="More title actions">
@@ -2212,10 +2196,11 @@ function AssetGroupRow({
   onOpenPathSnapshots,
 	collectionManaged = false,
 	forceExpanded = false,
-	hidePathHeader = false,
-	compactPathHeader = false,
+  hidePathHeader = false,
+  compactPathHeader = false,
 	v2ToolbarOnly = false,
 	selectedCount = 0,
+  breadcrumbSegments,
   selectedAssetIds,
   onAssetSelectionChange,
 }: {
@@ -2238,6 +2223,7 @@ function AssetGroupRow({
 	compactPathHeader?: boolean;
 	v2ToolbarOnly?: boolean;
 	selectedCount?: number;
+  breadcrumbSegments?: string[];
 	selectedAssetIds?: Set<number>;
 	onAssetSelectionChange?: (assetIds: number[], selected: boolean) => void;
 }) {
@@ -2360,6 +2346,13 @@ function AssetGroupRow({
       ]);
     },
   });
+  const canPublishPathAsIs = Boolean(selectedLibraryId && !publishAsIs.isPending && groupAssets.length && !groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs)));
+  const publishPathAsIs = () => {
+    const destination = libraries.find((library) => library.id === selectedLibraryId);
+    if (!destination || !canPublishPathAsIs) return;
+    if (!window.confirm(`Publish ${groupAssets.length} original asset(s) as-is to ${destination.name}? FFmpeg will not run and the files will be moved from Raw to Library.`)) return;
+    publishAsIs.mutate({ sourcePath: group.path, destinationLibraryId: destination.id });
+  };
   const runPathAdvisor = useMutation({
     mutationFn: async () => {
       const candidates = groupAssets.filter((asset) => !asset.missing);
@@ -2525,13 +2518,13 @@ function AssetGroupRow({
   }
 
   const migrationControls = (isLibraryGroup || isConvertedGroup) ? (
-    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}>
-      <Box sx={{ width: { xs: '100%', sm: 280 } }}>
+    <Stack direction="row" spacing={0.45} alignItems="center" flexWrap="wrap" useFlexGap>
+      <Box sx={{ width: { xs: 132, sm: 156 } }}>
         <LibraryAutocomplete
           libraries={libraries.filter((library) => library.id !== group.libraryId)}
           value={migrationLibraryId}
           onChange={setMigrationLibraryId}
-          label="Move path to library"
+          label="Destination library"
           size="small"
         />
       </Box>
@@ -2545,7 +2538,7 @@ function AssetGroupRow({
           if (!destination || !window.confirm(`Move ${group.path} and all files inside it to ${destination.name}? MVForge will update inventory and publication paths.`)) return;
           migratePath.mutate({ sourcePath: group.path, destinationLibraryId: migrationLibraryId });
         }}
-        sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+        sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', whiteSpace: 'nowrap' }}
       >
         {migratePath.isPending ? 'Moving...' : 'Move path'}
       </Button>
@@ -2555,7 +2548,7 @@ function AssetGroupRow({
         startIcon={<DriveFileRenameOutlineIcon />}
         disabled={!group.libraryId || groupAssets.some((asset) => assetHasOpenJob(asset, queueJobs))}
         onClick={() => setRenamePathOpen(true)}
-        sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+        sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', whiteSpace: 'nowrap' }}
       >
         Rename path
       </Button>
@@ -2565,16 +2558,15 @@ function AssetGroupRow({
     <>
       <AssetsV2PathToolbar
         path={group.path}
-        label={`${group.libraryName} · ${pathLabelForCollection(group)}`}
-        assetCount={group.fileCount}
+        breadcrumbs={<WorkspaceBreadcrumbs segments={breadcrumbSegments ?? ['Assets', group.libraryName, pathLabelForCollection(group)]} label={`${mode === 'unprocessed' ? 'RAW' : 'Library'} location`} />}
         selectedCount={selectedAssetIds
           ? groupAssets.filter((asset) => selectedAssetIds.has(asset.id ?? 0)).length
           : selectedCount}
         mode={mode === 'unprocessed' ? 'raw' : 'library'}
         primaryActions={(
           <>
-            {mode === 'unprocessed' ? (
-              <Button size="small" variant="outlined" onClick={() => setPathSnapshotsOpen(true)} disabled={groupAssets.every((asset) => asset.missing)}>
+            {mode !== 'converted' ? (
+              <Button size="small" variant="outlined" startIcon={<ManageSearchIcon />} onClick={() => setPathSnapshotsOpen(true)} disabled={groupAssets.every((asset) => asset.missing)} sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } }}>
                 Scan
               </Button>
             ) : null}
@@ -2582,8 +2574,10 @@ function AssetGroupRow({
               <Button
                 size="small"
                 variant="outlined"
+                startIcon={<InfoOutlinedIcon />}
                 onClick={startPathAdvisor}
                 disabled={!isConfidenceEnabled || effectiveProfileId <= 0 || groupAssets.every((asset) => asset.missing) || runPathAdvisor.isPending}
+                sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } }}
               >
                 Advisor
               </Button>
@@ -2592,8 +2586,10 @@ function AssetGroupRow({
               <Button
                 size="small"
                 variant="contained"
+                startIcon={<PlaylistAddIcon />}
                 onClick={queuePath}
                 disabled={profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending || (!effectiveProfileId && !selectedAudioProfileKey && !selectedTrackProfileKey) || !selectedLibraryId || !groupAssets.length || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
+                sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } }}
               >
                 Queue / Preflight
               </Button>
@@ -2616,6 +2612,15 @@ function AssetGroupRow({
                 </Box>
               </Tooltip>
             ) : null}
+            {mode === 'unprocessed' && !isReadOnlyGroup ? (
+              <Tooltip title="Publish these originals as-is to the configured Library">
+                <span>
+                  <Button size="small" variant="outlined" startIcon={<DriveFileMoveIcon />} onClick={publishPathAsIs} disabled={!canPublishPathAsIs} sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } }}>
+                    Move to library
+                  </Button>
+                </span>
+              </Tooltip>
+            ) : null}
           </>
         )}
         pathOperations={migrationControls}
@@ -2627,17 +2632,13 @@ function AssetGroupRow({
           return (
             <>
               {selectedPaths.length ? (
-                <MenuItem onClick={() => { close(); runBulkAssetAction(selectedPaths); }} disabled={bulkAssetAction.isPending}>
-                  {isPublishedAsIsGroup ? 'Return selected to Raw' : 'Delete selected safely'}
-                </MenuItem>
+                <Button size="small" color="error" variant="contained" startIcon={<DeleteForeverIcon />} onClick={() => { close(); runBulkAssetAction(selectedPaths); }} disabled={bulkAssetAction.isPending} sx={{ minHeight: 30, px: 0.9, fontSize: '0.66rem', whiteSpace: 'nowrap', bgcolor: '#4b1826', color: '#ff92a3', border: 1, borderColor: '#982841', boxShadow: 'none', '&:hover': { bgcolor: 'rgba(255, 78, 106, 0.2)', boxShadow: 'none' }, '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 14 } }}>
+                  {isPublishedAsIsGroup ? 'Return selected' : 'Delete selected'}
+                </Button>
               ) : null}
-              <Divider component="li" />
-              <MenuItem
-                onClick={() => { close(); runBulkAssetAction(pathTargets); }}
-                disabled={bulkAssetAction.isPending || bulkSelectableAssets.some((asset) => assetHasOpenJob(asset, queueJobs))}
-              >
-                {isPublishedAsIsGroup ? 'Return path to Raw' : 'Delete path safely'}
-              </MenuItem>
+              <Button size="small" color="error" variant="text" onClick={() => { close(); runBulkAssetAction(pathTargets); }} disabled={bulkAssetAction.isPending || bulkSelectableAssets.some((asset) => assetHasOpenJob(asset, queueJobs))} sx={{ minHeight: 30, px: 0.8, fontSize: '0.66rem', color: '#ff778d', whiteSpace: 'nowrap' }}>
+                {isPublishedAsIsGroup ? 'Return path to Raw' : 'Delete path'}
+              </Button>
             </>
           );
         } : undefined}
@@ -2957,12 +2958,8 @@ function AssetGroupRow({
                         variant="outlined"
                         color="success"
                         size="small"
-                        disabled={!selectedLibraryId || publishAsIs.isPending || groupAssets.length === 0 || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
-                        onClick={() => {
-                          const destination = libraries.find((library) => library.id === selectedLibraryId);
-                          if (!destination || !window.confirm(`Publish ${groupAssets.length} original asset(s) as-is to ${destination.name}? FFmpeg will not run and the files will be moved from Raw to Library.`)) return;
-                          publishAsIs.mutate({ sourcePath: group.path, destinationLibraryId: selectedLibraryId });
-                        }}
+                        disabled={!canPublishPathAsIs}
+                        onClick={publishPathAsIs}
                         sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
                       >
                         {publishAsIs.isPending ? 'Publishing...' : 'Publish as-is'}
@@ -4824,6 +4821,7 @@ async function generateExternalSubtitle(
           selected={selected}
           aria-selected={selected}
           data-testid="asset-list-row"
+          data-row-surface="compact-asset"
           tabIndex={0}
           onClick={onSelectAsset}
           onKeyDown={(event) => {
@@ -4832,7 +4830,16 @@ async function generateExternalSubtitle(
               onSelectAsset?.();
             }
           }}
-          sx={{ cursor: 'pointer' }}
+          sx={{
+            cursor: 'pointer',
+            transition: 'background-color 120ms ease, box-shadow 120ms ease',
+            '& > td': { borderTop: '1px solid rgba(39, 75, 108, 0.34)', borderBottomColor: 'rgba(39, 75, 108, 0.42)' },
+            '&:hover > td': { backgroundColor: 'rgba(19, 46, 73, 0.64)' },
+            '&.Mui-selected, &.Mui-selected:hover': { background: 'linear-gradient(90deg, rgba(72, 49, 140, 0.54), rgba(26, 70, 105, 0.62))' },
+            '&.Mui-selected > td': { backgroundColor: 'transparent', borderTopColor: 'rgba(138, 105, 255, 0.5)', borderBottomColor: 'rgba(89, 176, 255, 0.34)' },
+            '&.Mui-selected > td:first-of-type': { boxShadow: 'inset 2px 0 0 #8265ff' },
+            '&:focus-visible': { outline: '2px solid #8265ff', outlineOffset: -2 },
+          }}
         >
           {bulkSelectionEnabled ? (
             <TableCell padding="checkbox">
@@ -4849,22 +4856,32 @@ async function generateExternalSubtitle(
           ) : null}
           <TableCell sx={{ minWidth: 0 }}>
             <Tooltip title={asset.fileName}>
-              <Typography variant="body2" fontWeight={600} noWrap sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {asset.fileName}
-              </Typography>
+              <Stack direction="row" alignItems="center" spacing={0.65} sx={{ minWidth: 0 }}>
+                <InsertDriveFileOutlinedIcon sx={{ fontSize: 15, flexShrink: 0, color: selected ? '#b8a7ff' : '#8fb3d0' }} />
+                <Typography variant="body2" fontWeight={600} noWrap sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '0.76rem' }}>
+                  {asset.fileName}
+                </Typography>
+              </Stack>
             </Tooltip>
           </TableCell>
           <TableCell>
             {cachedAdvisor && Number.isFinite(cachedAdvisor.score) ? (
               <Tooltip title={cachedAdvisor.summary || `Advisor score ${cachedAdvisor.score}`}>
-                <Chip size="small" label={cachedAdvisor.score} color={recommendationColor(cachedAdvisor.recommendation)} aria-label={`Advisor score ${cachedAdvisor.score}`} sx={{ height: 22, fontVariantNumeric: 'tabular-nums', fontWeight: 700 }} />
+                <Stack spacing={0.28} alignItems="flex-start" sx={{ width: 36 }} aria-label={`Advisor score ${cachedAdvisor.score}`}>
+                  <Typography component="span" sx={{ fontSize: '0.73rem', lineHeight: 1, fontWeight: 700, color: selected ? '#c9bbff' : '#b7a7ff', fontVariantNumeric: 'tabular-nums' }}>
+                    {cachedAdvisor.score}
+                  </Typography>
+                  <Box aria-hidden="true" data-testid="advisor-score-indicator" sx={{ width: 35, height: 2, borderRadius: 2, bgcolor: 'rgba(122, 103, 196, 0.26)', overflow: 'hidden' }}>
+                    <Box sx={{ width: `${Math.max(0, Math.min(100, cachedAdvisor.score))}%`, height: '100%', background: 'linear-gradient(90deg, #8b62ff, #35c3f5)' }} />
+                  </Box>
+                </Stack>
               </Tooltip>
             ) : advisor.isError ? (
-              <Chip size="small" variant="outlined" label="Unavailable" aria-label="Advisor unavailable" sx={{ height: 22, color: 'text.secondary', borderColor: 'divider' }} />
+              <Typography variant="caption" aria-label="Advisor unavailable" noWrap sx={{ fontSize: '0.65rem', color: 'text.disabled' }}>Unavailable</Typography>
             ) : !confidenceEnabled ? (
-              <Chip size="small" variant="outlined" label="Off" aria-label="Advisor off" sx={{ height: 22, color: 'text.secondary', borderColor: 'divider' }} />
+              <Typography variant="caption" aria-label="Advisor off" noWrap sx={{ fontSize: '0.65rem', color: 'text.disabled' }}>Off</Typography>
             ) : (
-              <Typography variant="caption" color="text.secondary" noWrap aria-label="Advisor not evaluated">
+              <Typography variant="caption" color="text.secondary" noWrap aria-label="Advisor not evaluated" sx={{ fontSize: '0.65rem' }}>
                 Not evaluated
               </Typography>
             )}

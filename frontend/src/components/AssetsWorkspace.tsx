@@ -13,23 +13,28 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
+import AddIcon from '@mui/icons-material/Add';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import PlayCircleOutlineIcon from '@mui/icons-material/PlayCircleOutline';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
+import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
+import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
+import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined';
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import AutorenewOutlinedIcon from '@mui/icons-material/AutorenewOutlined';
 import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
 import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined';
 import MovieOutlinedIcon from '@mui/icons-material/MovieOutlined';
 import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { Link as RouterLink } from 'react-router-dom';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, ScanResult } from '../api/types';
 import { buildLibraryTree, buildRawHierarchy, formatDurationSummary, type LibraryTreeNode, type LibraryTreeSelection, type RawHierarchyNode, type RawHierarchySelection } from './assetsWorkspaceModel';
 
 export const ASSETS_HIERARCHY_WIDTH_STORAGE_KEY = 'mvforge.assets.hierarchyWidth';
 export const ASSETS_HIERARCHY_MIN_WIDTH = 220;
-export const ASSETS_HIERARCHY_DEFAULT_WIDTH = 300;
-export const ASSETS_HIERARCHY_MAX_WIDTH = 420;
+export const ASSETS_HIERARCHY_DEFAULT_WIDTH = 262;
+export const ASSETS_HIERARCHY_MAX_WIDTH = 390;
 
 function clampHierarchyWidth(width: number) {
   return Math.min(ASSETS_HIERARCHY_MAX_WIDTH, Math.max(ASSETS_HIERARCHY_MIN_WIDTH, Math.round(width)));
@@ -61,10 +66,10 @@ export function AssetsSummaryStrip({ total, processing, completed, needsReview }
   needsReview: number;
 }) {
   const items = [
-    { label: 'Total Assets', value: total, icon: <StorageOutlinedIcon />, color: 'info.main', tint: 'rgba(42, 156, 255, 0.14)' },
-    { label: 'Processing', value: processing, icon: <AutorenewOutlinedIcon />, color: 'secondary.main', tint: 'rgba(158, 93, 255, 0.14)' },
-    { label: 'Completed', value: completed, icon: <TaskAltOutlinedIcon />, color: 'success.main', tint: 'rgba(0, 206, 145, 0.14)' },
-    { label: 'Needs Review', value: needsReview, icon: <ReportProblemOutlinedIcon />, color: 'error.main', tint: 'rgba(255, 74, 98, 0.14)' },
+    { label: 'Total Assets', value: total, icon: <StorageOutlinedIcon />, color: '#55a0ff', tint: '#0b3152' },
+    { label: 'Processing', value: processing, icon: <AutorenewOutlinedIcon />, color: '#a78bfa', tint: '#27175d' },
+    { label: 'Completed', value: completed, icon: <TaskAltOutlinedIcon />, color: '#00d99b', tint: '#073d35' },
+    { label: 'Needs Review', value: needsReview, icon: <ReportProblemOutlinedIcon />, color: '#ff4e6a', tint: '#481827' },
   ] as const;
 
   return (
@@ -74,7 +79,7 @@ export function AssetsSummaryStrip({ total, processing, completed, needsReview }
       sx={{
         display: 'grid',
         gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(4, minmax(0, 1fr))' },
-        gap: { xs: 1, sm: 1.25 },
+        gap: { xs: 0.75, sm: 1.5 },
       }}
     >
       {items.map(({ label, value, icon, color, tint }) => (
@@ -84,32 +89,34 @@ export function AssetsSummaryStrip({ total, processing, completed, needsReview }
           sx={{
             display: 'flex',
             minWidth: 0,
-            minHeight: { xs: 72, sm: 82 },
+            minHeight: { xs: 68, sm: 96 },
             alignItems: 'center',
-            gap: { xs: 1, sm: 1.5 },
-            px: { xs: 1, sm: 1.5 },
-            py: 1,
-            borderRadius: 1.5,
+            gap: { xs: 0.85, sm: 1.5 },
+            px: { xs: 0.9, sm: 1.6 },
+            py: 1.1,
+            borderRadius: 1.25,
             bgcolor: 'background.paper',
             borderColor: 'divider',
+            background: 'linear-gradient(135deg, #091a2c, rgba(9, 26, 44, 0.72))',
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
           }}
         >
           <Box aria-hidden="true" sx={{
             display: 'grid',
             placeItems: 'center',
-            width: { xs: 36, sm: 44 },
-            height: { xs: 36, sm: 44 },
+            width: { xs: 34, sm: 42 },
+            height: { xs: 34, sm: 42 },
             flexShrink: 0,
-            borderRadius: 1.25,
+            borderRadius: 1,
             bgcolor: tint,
             color,
-            '& svg': { fontSize: { xs: 20, sm: 24 } },
+            '& svg': { fontSize: { xs: 19, sm: 22 } },
           }}>
             {icon}
           </Box>
           <Stack spacing={0.15} sx={{ minWidth: 0 }}>
-            <Typography variant="caption" color="text.secondary" noWrap>{label}</Typography>
-            <Typography variant="h2" fontWeight={700} aria-label={`${label}: ${value}`} sx={{ fontSize: { xs: '1.1rem', sm: '1.25rem' }, lineHeight: 1.1 }}>
+            <Typography variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.68rem', color: '#9cb0c8' }}>{label}</Typography>
+            <Typography variant="h2" fontWeight={700} aria-label={`${label}: ${value}`} sx={{ fontSize: { xs: '1.1rem', sm: '1.3rem' }, lineHeight: 1.1, color: '#e7eef8' }}>
               {value.toLocaleString()}
             </Typography>
           </Stack>
@@ -145,7 +152,8 @@ export function WorkspaceBreadcrumbs({ segments, label }: { segments: string[]; 
 
 type AssetsHierarchyNode =
   | { kind: 'raw'; id: string; label: string; selection: RawHierarchySelection; children: AssetsHierarchyNode[]; sourceRoot?: boolean }
-  | { kind: 'library'; id: string; label: string; selection: LibraryTreeSelection; children: AssetsHierarchyNode[] };
+  | { kind: 'library'; id: string; label: string; selection: LibraryTreeSelection; children: AssetsHierarchyNode[] }
+  | { kind: 'library-section'; id: string; label: string; children: AssetsHierarchyNode[] };
 
 function rawTreeNodes(nodes: RawHierarchyNode[]): AssetsHierarchyNode[] {
   return nodes.map((node) => ({
@@ -168,6 +176,7 @@ function libraryTreeNodes(nodes: LibraryTreeNode[]): AssetsHierarchyNode[] {
 }
 
 function hierarchySelectionMatches(node: AssetsHierarchyNode, raw: RawHierarchySelection | null, library: LibraryTreeSelection) {
+  if (node.kind === 'library-section') return false;
   if (node.kind === 'raw') {
     if (!raw || node.selection.kind !== raw.kind) return false;
     if (node.selection.kind === 'all' && raw.kind === 'all') return true;
@@ -208,8 +217,13 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
     selection: { kind: 'all' },
     children: rawTreeNodes(buildRawHierarchy(sourceGroups)),
     sourceRoot: true,
-  }, ...libraryTreeNodes(buildLibraryTree(groups, libraries))], [sourceGroups, groups, libraries]);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['assets-raw-root']));
+  }, {
+    kind: 'library-section',
+    id: 'assets-library-section',
+    label: 'Libraries',
+    children: libraryTreeNodes(buildLibraryTree(groups, libraries)),
+  }], [sourceGroups, groups, libraries]);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['assets-library-section']));
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [hierarchyWidth, setHierarchyWidth] = useState(readStoredHierarchyWidth);
   const resizeGesture = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -236,15 +250,20 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
 
   const renderNode = (node: AssetsHierarchyNode, level: number, parentNodeId?: string): ReactNode => {
     const isRawRoot = node.kind === 'raw' && node.sourceRoot === true;
+    const isLibrarySection = node.kind === 'library-section';
     const hasChildren = node.children.length > 0;
     const isExpanded = expandedItems.has(node.id);
     const isSelected = (location === 'raw' && node.kind === 'raw' && hierarchySelectionMatches(node, rawSelection, librarySelection))
       || (location === 'library' && node.kind === 'library' && hierarchySelectionMatches(node, rawSelection, librarySelection));
     const selectNode = () => {
+      if (isLibrarySection) {
+        toggleExpanded(node.id);
+        return;
+      }
       setExpanded((current) => new Set([...current, ...selectedAncestors]));
       setCollapsed(new Set());
       if (node.kind === 'raw') onSelectRaw(node.selection);
-      else onSelectLibrary(node.selection);
+      else if (node.kind === 'library') onSelectLibrary(node.selection);
     };
     return (
       <Box component="li" key={node.id} role="none" sx={{ listStyle: 'none' }}>
@@ -256,7 +275,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
           }}
           role="treeitem"
           aria-level={level}
-          aria-label={isRawRoot ? 'RAW source inventory' : node.label}
+          aria-label={node.label}
           aria-selected={isSelected}
           aria-expanded={hasChildren ? isExpanded : undefined}
           tabIndex={0}
@@ -287,14 +306,16 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
             }
           }}
           sx={{
-            minHeight: isRawRoot ? 40 : 36,
+            minHeight: isRawRoot || isLibrarySection ? 35 : 31,
             borderRadius: 1,
             borderLeft: '2px solid transparent',
-            py: 0.3,
-            pl: Math.min(1 + (level - 1) * 1.35, 6),
-            pr: 0.75,
-            fontWeight: isRawRoot ? 700 : 400,
-            '&[aria-selected="true"]': { bgcolor: 'rgba(101, 86, 255, 0.16)', color: 'primary.main', borderLeftColor: 'primary.main' },
+            py: 0.2,
+            pl: Math.min(0.8 + (level - 1) * 1.2, 6),
+            pr: 0.65,
+            fontWeight: isRawRoot || isLibrarySection ? 700 : 400,
+            color: isRawRoot || isLibrarySection ? '#9cb0c8' : '#59718b',
+            '&[aria-selected="true"]': { background: 'linear-gradient(90deg, rgba(58, 43, 164, 0.56), rgba(34, 41, 96, 0.36))', color: '#e7eef8', borderColor: 'rgba(95, 75, 247, 0.48)', borderLeftColor: '#6c4cf6' },
+            '&:hover': { bgcolor: 'rgba(17, 42, 68, 0.72)', color: '#e7eef8' },
             '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
           }}
         >
@@ -309,11 +330,10 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
               <ExpandMoreIcon fontSize="small" sx={{ transform: isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 120ms ease' }} />
             </IconButton>
           ) : <Box sx={{ width: 24, flexShrink: 0 }} />}
+          {isRawRoot ? <Inventory2OutlinedIcon sx={{ mr: 0.65, fontSize: 16, color: '#9cb0c8' }} /> : isLibrarySection || isSelected || isExpanded ? <FolderOpenOutlinedIcon sx={{ mr: 0.65, fontSize: 16, color: isSelected ? '#a99aff' : '#9cb0c8' }} /> : <FolderOutlinedIcon sx={{ mr: 0.65, fontSize: 16, color: '#59718b' }} />}
           <ListItemText
             primary={node.label}
-            secondary={isRawRoot ? 'Source inventory' : undefined}
-            primaryTypographyProps={{ variant: 'body2', noWrap: true, title: node.label, fontWeight: isRawRoot ? 700 : undefined }}
-            secondaryTypographyProps={{ variant: 'caption', noWrap: true }}
+            primaryTypographyProps={{ variant: 'body2', noWrap: true, title: node.label, fontWeight: isRawRoot || isLibrarySection ? 700 : undefined, sx: { fontSize: '0.72rem' } }}
             sx={{ my: 0 }}
           />
         </ListItemButton>
@@ -350,7 +370,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
     <Box
       component="nav"
       id="assets-hierarchy-navigation"
-      aria-label="Assets hierarchy"
+      aria-label="Asset Library"
       sx={{
         width: { xs: '100%', lg: `${hierarchyWidth}px` },
         minWidth: { xs: 0, lg: `${ASSETS_HIERARCHY_MIN_WIDTH}px` },
@@ -364,22 +384,23 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
         flexDirection: 'column',
         border: 1,
         borderColor: 'divider',
-        borderRadius: 1.5,
+        borderRadius: 1,
         bgcolor: 'background.paper',
-        p: 1,
+        px: 1,
+        pt: 1.25,
+        pb: 0.75,
       }}
     >
-      <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ px: 0.5, pb: 0.75 }}>
-        <Typography variant="subtitle2" fontWeight={700}>Assets hierarchy</Typography>
-        <Typography variant="caption" color="text.secondary">{nodes.length} roots</Typography>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.4, pb: 0.75 }}>
+        <Typography variant="subtitle2" fontWeight={700} sx={{ color: '#9cb0c8', fontSize: '0.72rem', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Asset Library</Typography>
+        <Tooltip title="Configure libraries">
+          <IconButton component={RouterLink} to="/libraries" size="small" aria-label="Configure libraries" sx={{ width: 28, height: 28, border: 1, borderColor: 'divider', borderRadius: 1, color: '#9cb0c8', bgcolor: '#0c2035', '&:hover': { bgcolor: '#112a44', borderColor: '#1f4467' } }}>
+            <AddIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
       </Stack>
-      <List role="tree" aria-label="Assets hierarchy" dense disablePadding sx={{ flex: 1, minHeight: 0, overflowY: { xs: 'auto', lg: 'auto' } }}>
+      <List role="tree" aria-label="Asset Library" dense disablePadding sx={{ flex: 1, minHeight: 0, overflowY: { xs: 'auto', lg: 'auto' } }}>
         {nodes.map((node) => renderNode(node, 1))}
-      {location === 'library' && librarySelection.libraryId === null ? (
-          <Typography component="li" role="none" variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.25, py: 0.75 }}>
-            Showing all Library assets
-          </Typography>
-      ) : null}
       </List>
     </Box>
     <Box
@@ -549,26 +570,27 @@ export function SelectedAssetDetail({
       aria-label={`Details for ${asset.fileName}`}
       data-testid="selected-asset-detail"
       sx={{
-        mt: 0.65,
-        p: { xs: 0.75, sm: 1 },
+        mt: 0.55,
+        p: { xs: 0.7, sm: 0.85 },
         border: 1,
-        borderColor: 'divider',
-        borderRadius: 1.1,
-        bgcolor: 'background.paper',
-        boxShadow: '0 -4px 16px rgba(0, 0, 0, 0.16)',
+        borderColor: 'rgba(39, 75, 108, 0.72)',
+        borderRadius: 1,
+        background: 'linear-gradient(115deg, rgba(8, 25, 43, 0.98), rgba(8, 20, 35, 0.98))',
+        boxShadow: '0 -4px 18px rgba(0, 0, 0, 0.22)',
         position: 'sticky',
         bottom: 0,
         zIndex: 2,
         flexShrink: 0,
+        minHeight: 188,
       }}
     >
       {!expanded ? (
         <Stack direction="row" alignItems="center" spacing={1}>
           <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Typography variant="body2" fontWeight={700} noWrap title={asset.fileName} sx={{ fontSize: '0.8rem' }}>
+            <Typography variant="body2" fontWeight={700} noWrap title={asset.fileName} sx={{ fontSize: '0.78rem' }}>
               {asset.fileName}
             </Typography>
-            <Typography variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ fontSize: '0.68rem' }}>
+            <Typography variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ fontSize: '0.66rem' }}>
               {pathContext}
             </Typography>
           </Box>
@@ -588,47 +610,50 @@ export function SelectedAssetDetail({
         sx={{
           display: 'grid',
           gridTemplateColumns: {
-            xs: '104px minmax(0, 1fr)',
-            sm: '136px minmax(0, 1.15fr) minmax(0, 1.55fr)',
-            lg: 'minmax(132px, 0.72fr) minmax(0, 1.3fr) minmax(0, 1.65fr) auto',
+            xs: '92px minmax(0, 1fr)',
+            sm: '150px minmax(0, 1.2fr) minmax(210px, 1fr)',
+            lg: 'minmax(205px, 0.98fr) minmax(225px, 1.15fr) minmax(225px, 1.08fr) minmax(205px, 0.95fr)',
           },
-          alignItems: 'center',
-          columnGap: { xs: 0.9, sm: 1, lg: 1.25 },
-          rowGap: 0.8,
+          alignItems: 'stretch',
+          columnGap: { xs: 0.85, sm: 1, lg: 1.15 },
+          rowGap: 0.65,
           minWidth: 0,
+          position: 'relative',
+          pr: { xs: 0, sm: 0.2 },
         }}
       >
         <Tooltip title={`Play preview of ${asset.fileName}`}>
           <span>
             <ButtonBase
+              data-testid="selected-asset-preview"
               onClick={onPlayPreview}
               disabled={asset.missing}
               aria-label={`Play preview of ${asset.fileName}`}
               sx={{
                 width: '100%',
-                maxWidth: { xs: 104, sm: 136, lg: 174 },
+                maxWidth: { xs: 92, sm: 150, lg: 276 },
                 aspectRatio: '16 / 9',
                 height: 'auto',
                 flexShrink: 0,
                 borderRadius: 0.8,
-                bgcolor: 'rgba(255,255,255,0.06)',
-                color: 'primary.main',
+                bgcolor: 'rgba(14, 35, 57, 0.95)',
+                color: '#e6f2ff',
                 overflow: 'hidden',
                 position: 'relative',
-                boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.1)',
+                boxShadow: 'inset 0 0 0 1px rgba(85, 135, 177, 0.26)',
                 '&:hover': { bgcolor: 'rgba(79,179,255,0.14)' },
                 '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 },
               }}
             >
               <SelectedAssetArtwork fileName={asset.fileName} />
               <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', bgcolor: 'rgba(0,0,0,0.2)' }}>
-                <PlayCircleOutlineIcon sx={{ fontSize: 30 }} />
+                <PlayCircleOutlineIcon sx={{ fontSize: { xs: 24, sm: 30 }, filter: 'drop-shadow(0 2px 8px rgba(0,0,0,.7))' }} />
               </Box>
               <Typography
                 component="span"
                 variant="caption"
                 fontWeight={700}
-                sx={{ position: 'absolute', right: 0.55, bottom: 0.55, px: 0.55, py: 0.1, borderRadius: 0.5, bgcolor: 'rgba(0,0,0,0.78)', color: 'common.white', fontSize: '0.65rem' }}
+                sx={{ position: 'absolute', right: 0.45, bottom: 0.45, px: 0.5, py: 0.08, borderRadius: 0.45, bgcolor: 'rgba(0,0,0,0.82)', color: 'common.white', fontSize: '0.61rem' }}
               >
                 {formatDurationSummary(duration)}
               </Typography>
@@ -636,70 +661,78 @@ export function SelectedAssetDetail({
           </span>
         </Tooltip>
 
-        <Box sx={{ minWidth: 0, gridColumn: { xs: '2', sm: '2' } }}>
+        <Box data-testid="selected-asset-identity" sx={{ minWidth: 0, gridColumn: { xs: '2', sm: '2', lg: 'auto' }, alignSelf: 'center', py: { lg: 0.25 } }}>
           <Tooltip title={asset.fileName}>
-            <Typography component="h2" fontWeight={700} noWrap sx={{ minWidth: 0, fontSize: { xs: '0.82rem', sm: '0.88rem' }, lineHeight: 1.2 }}>
+            <Typography component="h2" fontWeight={700} noWrap sx={{ minWidth: 0, fontSize: { xs: '0.76rem', sm: '0.82rem' }, lineHeight: 1.2, color: '#f0f6ff' }}>
               {asset.fileName}
             </Typography>
           </Tooltip>
-          <Typography variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', mt: 0.1, fontSize: '0.68rem' }}>
+          <Typography variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', mt: 0.2, fontSize: '0.63rem', color: '#91a9c0' }}>
             {pathContext}
           </Typography>
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', lg: 'repeat(5, minmax(0, 1fr))' }, gapX: 0.8, gapY: 0.35, mt: 0.65 }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', lg: 'repeat(2, minmax(0, 1fr))' }, columnGap: 0.8, rowGap: 0.48, mt: 0.85 }}>
             {quickFacts.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
           </Box>
         </Box>
 
         <Box
+          data-testid="selected-asset-status"
           sx={{
             minWidth: 0,
             gridColumn: { xs: '1 / -1', sm: '3', lg: 'auto' },
             gridRow: { sm: '1 / span 2', lg: 'auto' },
             borderLeft: { sm: 1, lg: 1 },
             borderTop: { xs: 1, sm: 0 },
-            borderColor: 'divider',
+            borderColor: 'rgba(39, 75, 108, 0.72)',
             pl: { xs: 0, sm: 1 },
-            pt: { xs: 0.65, sm: 0 },
+            pt: { xs: 0.55, sm: 0 },
+            alignSelf: 'center',
           }}
         >
-          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', columnGap: 0.7 }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(2, minmax(0, 1fr))' }, columnGap: 0.8, rowGap: 0.42 }}>
             {statusValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
-          </Box>
-          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', columnGap: 0.9, borderTop: 1, borderColor: 'divider', mt: 0.6, pt: 0.5 }}>
-            {technicalValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} />)}
           </Box>
         </Box>
 
-        <Stack direction={{ xs: 'row', sm: 'row', lg: 'column' }} spacing={0.45} alignItems="center" justifyContent={{ xs: 'flex-end', sm: 'flex-end', lg: 'center' }} flexWrap="wrap" useFlexGap sx={{ gridColumn: { xs: '1 / -1', sm: '1 / -1', lg: 'auto' }, gridRow: { sm: '3', lg: 'auto' }, minWidth: 0, flexShrink: 0 }}>
-          {canAssignProfile ? <Button size="small" variant="outlined" onClick={onAssignProfile} sx={{ minHeight: 30, px: 1, fontSize: '0.7rem', whiteSpace: 'nowrap' }}>Assign Profile</Button> : null}
-          {canTestEncode ? <Button size="small" variant="contained" color="secondary" onClick={onTestEncode} disabled={testEncodeDisabled} sx={{ minHeight: 30, px: 1, fontSize: '0.7rem', whiteSpace: 'nowrap' }}>Test Encode</Button> : null}
-          <Tooltip title="More asset actions">
-            <IconButton size="small" aria-label={`More actions for ${asset.fileName}`} onClick={(event) => onMore(event.currentTarget)}>
-              <MoreVertIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-          <IconButton
-            size="small"
-            aria-label={`Collapse selected asset workspace for ${asset.fileName}`}
-            aria-expanded
-            aria-controls="selected-asset-workspace-content"
-            onClick={() => setExpanded(false)}
-          >
-            <ExpandMoreIcon sx={{ transform: 'rotate(180deg)' }} />
-          </IconButton>
-        </Stack>
+        <Box data-testid="selected-asset-technical" sx={{ minWidth: 0, gridColumn: { xs: '1 / -1', sm: '1 / -1', lg: 'auto' }, borderLeft: { lg: 1 }, borderTop: { xs: 1, sm: 1, lg: 0 }, borderColor: 'rgba(39, 75, 108, 0.72)', pl: { xs: 0, lg: 1 }, pt: { xs: 0.55, sm: 0.55, lg: 0 }, alignSelf: 'center' }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.035em', mb: 0.35 }}>
+            Información técnica
+          </Typography>
+          <Stack spacing={0.25}>
+            {technicalValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} inline />)}
+          </Stack>
+          <Stack direction="row" spacing={0.35} alignItems="center" sx={{ mt: 0.7, pr: { xs: 0, lg: 3 } }}>
+            {canAssignProfile ? <Button size="small" variant="outlined" onClick={onAssignProfile} sx={{ minHeight: 26, px: 0.7, fontSize: '0.62rem', whiteSpace: 'nowrap', borderColor: 'rgba(115, 140, 178, .55)' }}>Assign Profile</Button> : null}
+            {canTestEncode ? <Button size="small" variant="contained" color="secondary" onClick={onTestEncode} disabled={testEncodeDisabled} sx={{ minHeight: 26, px: 0.7, fontSize: '0.62rem', whiteSpace: 'nowrap', boxShadow: 'none' }}>Test Encode</Button> : null}
+            <Tooltip title="More asset actions">
+              <IconButton size="small" aria-label={`More actions for ${asset.fileName}`} onClick={(event) => onMore(event.currentTarget)} sx={{ color: '#adc5de' }}>
+                <MoreVertIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Stack>
+        </Box>
       </Box>
+      <IconButton
+        size="small"
+        aria-label={`Collapse selected asset workspace for ${asset.fileName}`}
+        aria-expanded
+        aria-controls="selected-asset-workspace-content"
+        onClick={() => setExpanded(false)}
+        sx={{ position: 'absolute', top: 2, right: 2, width: 23, height: 23, color: '#91a9c0' }}
+      >
+        <ExpandMoreIcon sx={{ transform: 'rotate(180deg)', fontSize: 18 }} />
+      </IconButton>
         </Collapse>
       )}
     </Box>
   );
 }
 
-function DetailValue({ label, value }: { label: string; value: string }) {
+function DetailValue({ label, value, inline = false }: { label: string; value: string; inline?: boolean }) {
   return (
-    <Box sx={{ minWidth: 0 }} title={`${label}: ${value}`}>
-      <Typography component="div" variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.64rem', lineHeight: 1.1 }}>{label}</Typography>
-      <Typography variant="body2" fontWeight={500} noWrap sx={{ fontSize: '0.72rem', lineHeight: 1.2 }}>{value}</Typography>
+    <Box sx={{ minWidth: 0, display: inline ? 'flex' : 'block', alignItems: 'baseline', gap: inline ? 0.55 : 0 }} title={`${label}: ${value}`}>
+      <Typography component="div" variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.59rem', lineHeight: 1.1, flexShrink: 0 }}>{label}</Typography>
+      <Typography variant="body2" fontWeight={500} noWrap sx={{ fontSize: '0.66rem', lineHeight: 1.2, color: '#dce8f4' }}>{value}</Typography>
     </Box>
   );
 }

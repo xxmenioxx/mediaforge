@@ -103,7 +103,7 @@ function SearchProbe() {
 }
 
 function assetsTree() {
-  return screen.getByRole('tree', { name: 'Assets hierarchy' });
+  return screen.getByRole('tree', { name: 'Asset Library' });
 }
 
 function treeItem(name: string, level?: number) {
@@ -120,6 +120,21 @@ function treeExpander(name: string, level?: number) {
     || candidate.closest('[role="treeitem"]')?.getAttribute('aria-level') === String(level));
   if (!button) throw new Error(`Missing Assets tree expander ${name}${level ? ` at level ${level}` : ''}`);
   return button;
+}
+
+function childTreeItem(parentName: string, name: string) {
+  const parent = treeItem(parentName, 1);
+  const group = parent.parentElement?.querySelector<HTMLElement>('[role="group"]');
+  if (!group) throw new Error(`Missing child tree group for ${parentName}`);
+  return within(group).getByRole('treeitem', { name });
+}
+
+function libraryTreeItem(name: string) {
+  return childTreeItem('Libraries', name);
+}
+
+function rawTreeItem(name: string) {
+  return childTreeItem('RAW', name);
 }
 
 function renderLibraryPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
@@ -221,6 +236,20 @@ describe('Library Assets workspace', () => {
     renderLibraryPage();
 
     expect(await screen.findByRole('columnheader', { name: 'Asset' })).toBeTruthy();
+    const pageLayout = screen.getByTestId('assets-page-layout');
+    const topbar = screen.getByTestId('assets-topbar');
+    const pageBody = screen.getByTestId('assets-page-body');
+    expect(pageLayout.firstElementChild).toBe(topbar);
+    expect(topbar.nextElementSibling).toBe(pageBody);
+    expect(within(topbar).getByRole('heading', { name: 'Assets' })).toBeTruthy();
+    expect(within(topbar).getByRole('textbox', { name: 'Search assets, series, movies' })).toBeTruthy();
+    expect(topbar.contains(screen.getByRole('navigation', { name: 'Asset Library' }))).toBe(false);
+    const hierarchyTitle = within(screen.getByRole('navigation', { name: 'Asset Library' })).getByText('Asset Library');
+    expect(hierarchyTitle).toBeTruthy();
+    const contentColumn = screen.getByTestId('assets-content-column');
+    expect(contentColumn.contains(screen.getByRole('region', { name: 'Asset summary' }))).toBe(true);
+    expect(pageBody.contains(screen.getByTestId('assets-inventory-controls'))).toBe(true);
+    expect(pageBody.contains(screen.getByTestId('assets-list-scroll'))).toBe(true);
     for (const name of ['Advisor', 'Status', 'Codec', 'Resolution', 'Encoder', 'Duration', 'Bitrate', 'HDR/SDR', 'Size', 'Modified', 'Actions']) {
       expect(screen.getByRole('columnheader', { name })).toBeTruthy();
     }
@@ -230,20 +259,28 @@ describe('Library Assets workspace', () => {
     expect(screen.getByLabelText('Completed: 3').textContent).toBe('3');
     expect(screen.getByLabelText('Needs Review: 0').textContent).toBe('0');
     expect(screen.queryByRole('img')).toBeNull();
-    expect(treeItem('Anime', 1).getAttribute('aria-selected')).toBe('false');
+    expect(libraryTreeItem('Anime').getAttribute('aria-selected')).toBe('false');
     expect(screen.queryByRole('tab', { name: 'RAW' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Library' })).toBeNull();
     const firstRow = screen.getByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv').closest('tr');
     expect(firstRow).toBeTruthy();
+    expect(firstRow?.getAttribute('data-row-surface')).toBe('compact-asset');
     expect(within(firstRow!).queryByText(/Series\/Season 01/)).toBeNull();
     expect(within(firstRow!).queryByText('/media/library/anime/Series/Season 01')).toBeNull();
     expect(api.latestSnapshot).not.toHaveBeenCalled();
+    const controls = screen.getByTestId('assets-inventory-controls');
+    expect(within(controls).getByRole('button', { name: 'Sync' })).toBeTruthy();
+    expect(within(controls).getByRole('button', { name: /Filter assets/ })).toBeTruthy();
+    expect((within(controls).getByRole('button', { name: 'Sort assets (unavailable)' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(within(controls).getByRole('button', { name: /Filter assets/ }));
+    expect(await screen.findByTestId('assets-filter-popover-content')).toBeTruthy();
+    await user.keyboard('{Escape}');
 
-    await user.click(treeItem('Anime', 1));
-    expect(treeItem('Anime', 1).getAttribute('aria-selected')).toBe('true');
-    await user.click(treeExpander('Anime', 1));
-    await user.click(treeItem('Series', 2));
-    expect(treeItem('Series', 2).getAttribute('aria-selected')).toBe('true');
+    await user.click(libraryTreeItem('Anime'));
+    expect(libraryTreeItem('Anime').getAttribute('aria-selected')).toBe('true');
+    await user.click(treeExpander('Anime', 2));
+    await user.click(treeItem('Series', 3));
+    expect(treeItem('Series', 3).getAttribute('aria-selected')).toBe('true');
     const libraryQuery = new URLSearchParams(screen.getByTestId('asset-query').textContent ?? '');
     expect(libraryQuery.get('location')).toBe('library');
     expect(libraryQuery.get('search')).toBe('Episode');
@@ -251,6 +288,15 @@ describe('Library Assets workspace', () => {
     expect(screen.getByText(/2 assets/)).toBeTruthy();
     expect(screen.getByRole('navigation', { name: 'Library location' }).textContent).toContain('Series');
     expect(api.latestSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('keeps historical Legacy Analysis Decisions out of the main Assets browsing workspace', async () => {
+    vi.mocked(api.settings).mockResolvedValue([{ key: 'analysisRecords', value: { records: [{ id: 'legacy-1', assetName: 'Old episode.mkv', decision: 'keep' }] } }] as never);
+    renderLibraryPage();
+
+    await screen.findByRole('columnheader', { name: 'Asset' });
+    expect(screen.queryByTestId('legacy-analysis-settings')).toBeNull();
+    expect(screen.getByRole('link', { name: 'Open Assets Settings' }).getAttribute('href')).toBe('/settings?section=assets');
   });
 
   it('selects an asset, loads persisted detail only for it, and exposes existing actions', async () => {
@@ -267,7 +313,7 @@ describe('Library Assets workspace', () => {
     expect(list.contains(table)).toBe(true);
     expect(list.contains(details)).toBe(false);
     expect(list.contains(screen.getByLabelText('Total Assets: 2'))).toBe(false);
-    expect(list.contains(screen.getByPlaceholderText('Search path, file, library, status'))).toBe(false);
+    expect(screen.getByTestId('assets-topbar').contains(screen.getByLabelText('Search assets, series, movies'))).toBe(true);
     expect(within(details).getByText('Perfil')).toBeTruthy();
     expect(within(details).getByText('Library HEVC')).toBeTruthy();
     expect(within(details).getByText('Subtítulos')).toBeTruthy();
@@ -320,17 +366,18 @@ describe('Library Assets workspace', () => {
     renderLibraryPage(queryClient);
 
     await screen.findByRole('columnheader', { name: 'Asset' });
-    await user.click(treeItem('Anime', 1));
-    await user.click(treeExpander('Anime', 1));
-    await user.click(treeItem('Series', 2));
-    await user.click(treeExpander('Series', 2));
-    await user.click(treeItem('Season 01', 3));
+    await user.click(libraryTreeItem('Anime'));
+    await user.click(treeExpander('Anime', 2));
+    await user.click(treeItem('Series', 3));
+    await user.click(treeExpander('Series', 3));
+    await user.click(treeItem('Season 01', 4));
 
-    const toolbar = screen.getByRole('region', { name: 'Library path actions' });
+    const toolbar = screen.getByTestId('assets-path-toolbar');
     expect(within(toolbar).getByRole('button', { name: 'Advisor' })).toBeTruthy();
     expect(within(toolbar).getByRole('button', { name: 'Queue / Preflight' })).toBeTruthy();
     expect(within(toolbar).getByRole('button', { name: 'Move path' })).toBeTruthy();
     expect(within(toolbar).getByRole('button', { name: 'Rename path' })).toBeTruthy();
+    expect(within(toolbar).getByRole('navigation', { name: 'Library location' })).toBeTruthy();
     expect(screen.queryByRole('table', { name: `Actions for ${path}` })).toBeNull();
     expect(evaluateAdvisor).not.toHaveBeenCalled();
 
@@ -353,7 +400,10 @@ describe('Library Assets workspace', () => {
     const cachedRow = screen.getByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv').closest('tr');
     expect(cachedRow).toBeTruthy();
     expect(within(cachedRow!).getByText('87')).toBeTruthy();
+    expect(within(cachedRow!).getByTestId('advisor-score-indicator')).toBeTruthy();
     expect(within(table).getAllByText('Not evaluated')).toHaveLength(1);
+    const unevaluatedRow = screen.getByText('Episode 02.mkv').closest('tr')!;
+    expect(within(unevaluatedRow).queryByTestId('advisor-score-indicator')).toBeNull();
     expect(evaluateAdvisor).not.toHaveBeenCalled();
 
     const rowAfterAssignment = within(table).getByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv').closest('tr')!;
@@ -464,16 +514,16 @@ describe('RAW Assets workspace', () => {
     const tree = assetsTree();
     expect(screen.queryByRole('tab', { name: 'RAW' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Library' })).toBeNull();
-    expect(screen.getAllByRole('tree', { name: 'Assets hierarchy' })).toHaveLength(1);
+    expect(screen.getAllByRole('tree', { name: 'Asset Library' })).toHaveLength(1);
     await screen.findByRole('treeitem', { name: 'Movies' });
-    expect(treeItem('RAW', 1).getAttribute('aria-label')).toBe('RAW source inventory');
-    expect(treeItem('Anime', 1)).toBeTruthy();
-    expect(treeItem('Movies', 1)).toBeTruthy();
+    expect(treeItem('RAW', 1).getAttribute('aria-label')).toBe('RAW');
+    expect(rawTreeItem('Anime')).toBeTruthy();
+    expect(libraryTreeItem('Movies')).toBeTruthy();
     expect(within(tree).queryByRole('treeitem', { name: 'Converted' })).toBeNull();
     expect(within(tree).queryByRole('treeitem', { name: 'Archive' })).toBeNull();
     expect(within(tree).queryByRole('treeitem', { name: 'Reports' })).toBeNull();
 
-    await user.click(treeItem('Anime', 1));
+    await user.click(libraryTreeItem('Anime'));
     let query = new URLSearchParams(screen.getByTestId('asset-query').textContent ?? '');
     expect(query.get('location')).toBe('library');
     expect(query.get('search')).toBe('Attack');
@@ -506,17 +556,17 @@ describe('RAW Assets workspace', () => {
     const title = await screen.findByRole('treeitem', { name: 'Attack on Titan' });
     expect(title.getAttribute('aria-selected')).toBe('true');
     expect(treeItem('RAW', 1).getAttribute('aria-selected')).toBe('false');
-    const rawBreadcrumbs = screen.getByRole('navigation', { name: 'RAW source location' }).textContent ?? '';
+    const rawBreadcrumbs = screen.getByRole('navigation', { name: 'RAW title location' }).textContent ?? '';
     expect(rawBreadcrumbs).toContain('RAW');
     expect(rawBreadcrumbs).toContain('Anime');
     expect(rawBreadcrumbs).toContain('Attack on Titan');
     expect(await screen.findByTestId('selected-asset-detail')).toBeTruthy();
     await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledTimes(1));
     expect(api.latestSnapshot).toHaveBeenCalledWith('/media/raw/anime/Attack on Titan/S01E01.mkv');
-    expect(screen.getByRole('button', { name: 'Run Advisor' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Configure title' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Advisor' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Configure Path' })).toBeTruthy();
 
-    const sourceGroupNode = treeItem('Anime', 2);
+    const sourceGroupNode = rawTreeItem('Anime');
     await user.click(sourceGroupNode);
     expect(sourceGroupNode.getAttribute('aria-selected')).toBe('true');
     let sourceQuery = new URLSearchParams(screen.getByTestId('asset-query').textContent ?? '');
@@ -544,11 +594,11 @@ describe('RAW Assets workspace', () => {
     expect(rawQuery.get('sourceGroup')).toBe('7');
     expect(rawQuery.get('logicalGroup')).toBe('/media/raw/anime/Attack on Titan');
     expect(rawQuery.get('path')).toBe('/media/raw/anime/Attack on Titan/extras');
-    expect(screen.getByRole('navigation', { name: 'RAW source location' }).textContent).toContain('extras');
+    expect(screen.getByRole('navigation', { name: 'RAW location' }).textContent).toContain('extras');
     const rawTable = await screen.findByRole('table', { name: 'RAW assets' });
     expect(within(rawTable).getByText('Trailer.mkv')).toBeTruthy();
     expect(within(rawTable).queryByText('S01E01.mkv')).toBeNull();
-    const pathToolbar = screen.getByRole('region', { name: 'RAW path actions' });
+    const pathToolbar = screen.getByTestId('assets-path-toolbar');
     for (const name of ['Scan', 'Advisor', 'Queue / Preflight', 'Configure Path']) {
       expect(within(pathToolbar).getByRole('button', { name })).toBeTruthy();
     }

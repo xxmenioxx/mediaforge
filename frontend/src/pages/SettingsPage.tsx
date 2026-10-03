@@ -50,6 +50,7 @@ import { PageHeader } from '../components/PageHeader';
 import { AssetDefaultsCard } from '../components/AssetDefaultsCard';
 import { JellyfinSettingsCard } from '../components/JellyfinSettingsCard';
 import { TestEncodeSettingsDomain } from './TestEncodeSettingsDomain';
+import { LegacyAnalysisRecords } from '../components/LegacyAnalysisRecords';
 import type { HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
 import { defaultMVForgePreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { encoderNamesForWorker } from '../utils/workerEncoders';
@@ -301,6 +302,8 @@ export function SettingsPage() {
   const runtimeProfilesQuery = useQuery({ queryKey: ['runtime-profiles'], queryFn: api.runtimeProfiles });
   const profilesQuery = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const schedulerRecovery = useQuery({ queryKey: ['scheduler-recovery'], queryFn: api.schedulerRecovery });
+  const legacyAnalysisRecords = settings.data?.find((item) => item.key === 'analysisRecords')?.value.records;
+  const hasLegacyAnalysisRecords = Array.isArray(legacyAnalysisRecords) && legacyAnalysisRecords.length > 0;
   const [tab, setTab] = useState<'general' | 'advanced'>('general');
   const requestedSection = searchParams.get('section');
   const [section, setSection] = useState<SettingsSection>(() => isSettingsSection(requestedSection) ? requestedSection : 'overview');
@@ -714,6 +717,14 @@ export function SettingsPage() {
                     { key: 'workspace', value: workspace as unknown as Record<string, unknown> },
                   ] })}
                 />
+                {hasLegacyAnalysisRecords ? (
+                  <Card variant="outlined" component="section" aria-label="Assets Settings" data-testid="assets-settings-section">
+                    <CardContent>
+                      <Typography variant="h3" sx={{ mb: 1 }}>Assets Settings</Typography>
+                      <LegacyAnalysisRecords settings={settings.data ?? []} />
+                    </CardContent>
+                  </Card>
+                ) : null}
               </Stack>
             ) : null}
 

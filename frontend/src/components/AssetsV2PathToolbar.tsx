@@ -1,68 +1,60 @@
-import { useState } from 'react';
-import { Box, Divider, IconButton, Menu, Stack, Tooltip, Typography } from '@mui/material';
-import MoreVertIcon from '@mui/icons-material/MoreVert';
+import { Box, Divider, Stack, Typography } from '@mui/material';
 import type { ReactNode } from 'react';
 
 export function AssetsV2PathToolbar({
   path,
-  label,
-  assetCount,
-  selectedCount = 0,
   mode,
+  breadcrumbs,
   primaryActions,
   pathOperations,
+  selectedCount = 0,
   destructiveActions,
 }: {
   path: string;
-  label: string;
-  assetCount: number;
-  selectedCount?: number;
   mode: 'raw' | 'library';
-  primaryActions: ReactNode;
+  breadcrumbs: ReactNode;
+  primaryActions?: ReactNode;
   pathOperations?: ReactNode;
+  selectedCount?: number;
   destructiveActions?: (close: () => void) => ReactNode;
 }) {
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const closeMenu = () => setAnchor(null);
-
   return (
     <Box
       component="section"
-      aria-label={`${mode === 'raw' ? 'RAW' : 'Library'} path actions`}
+      aria-label={`${mode === 'raw' ? 'RAW' : 'Library'} path actions for ${path || 'current location'}`}
+      data-testid="assets-path-toolbar"
       sx={{
-        mb: 0.75,
-        px: { xs: 1, sm: 1.25 },
-        py: 0.9,
+        minHeight: 44,
+        mb: 0.7,
+        px: { xs: 0.85, sm: 1.25 },
+        py: 0.55,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 1,
         border: 1,
-        borderColor: 'divider',
-        borderRadius: 1.25,
-        bgcolor: 'background.paper',
+        borderColor: '#15304a',
+        borderRadius: 1,
+        bgcolor: '#091a2c',
       }}
     >
-      <Stack direction={{ xs: 'column', lg: 'row' }} alignItems={{ xs: 'stretch', lg: 'center' }} justifyContent="space-between" spacing={1}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="subtitle2" fontWeight={700} noWrap title={path}>{label}</Typography>
-          <Typography variant="caption" color="text.secondary" noWrap title={path}>
-            {path} · {assetCount} {assetCount === 1 ? 'asset' : 'assets'} · {selectedCount} selected
+      <Box sx={{ minWidth: 120, flex: '1 1 220px', overflow: 'hidden' }}>{breadcrumbs}</Box>
+      <Stack direction="row" alignItems="center" justifyContent="flex-end" spacing={0.45} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
+        {primaryActions}
+        {pathOperations}
+        {destructiveActions ? (
+          <>
+            <Divider orientation="vertical" flexItem sx={{ mx: 0.35, height: 24, alignSelf: 'center', borderColor: '#1f4467' }} />
+            <Stack direction="row" alignItems="center" spacing={0.35} flexWrap="wrap" useFlexGap aria-label="Destructive path actions" data-testid="assets-path-destructive-actions">
+              {destructiveActions(() => undefined)}
+            </Stack>
+          </>
+        ) : null}
+        {selectedCount > 0 ? (
+          <Typography variant="caption" aria-label={`${selectedCount} selected`} sx={{ px: 0.5, color: '#59718b', fontSize: '0.64rem', whiteSpace: 'nowrap' }}>
+            {selectedCount} selected
           </Typography>
-        </Box>
-        <Stack direction="row" alignItems="center" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
-          {primaryActions}
-          {pathOperations}
-          {destructiveActions ? (
-            <>
-              <Divider orientation="vertical" flexItem sx={{ mx: 0.25, display: { xs: 'none', sm: 'block' } }} />
-              <Tooltip title="Destructive path actions">
-                <IconButton size="small" aria-label={`More path actions for ${path}`} onClick={(event) => setAnchor(event.currentTarget)}>
-                  <MoreVertIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <Menu anchorEl={anchor} open={Boolean(anchor)} onClose={closeMenu}>
-                {destructiveActions(closeMenu)}
-              </Menu>
-            </>
-          ) : null}
-        </Stack>
+        ) : null}
       </Stack>
     </Box>
   );

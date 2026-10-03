@@ -50,7 +50,7 @@ export function AssetsInventoryTable({ mode, selectable = false, children }: {
   const minWidth = columns.reduce((total, column) => total + column.width, selectionWidth);
 
   return (
-    <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', border: 1, borderColor: 'divider', borderRadius: 1.25, bgcolor: 'background.paper' }}>
+    <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', border: 1, borderColor: 'rgba(39, 75, 108, 0.68)', borderRadius: 1, bgcolor: '#071727' }}>
       <Table
         size="small"
         aria-label={mode === 'raw' ? 'RAW assets' : 'Library assets'}
@@ -58,9 +58,11 @@ export function AssetsInventoryTable({ mode, selectable = false, children }: {
           width: '100%',
           minWidth,
           tableLayout: 'fixed',
-          '& th': { color: 'text.secondary', fontSize: '0.72rem', fontWeight: 700, bgcolor: 'rgba(255,255,255,0.025)', borderColor: 'divider' },
-          '& td': { borderColor: 'rgba(148, 163, 184, 0.12)' },
-          '& td, & th': { py: 0.65, px: 0.8 },
+          borderCollapse: 'separate',
+          borderSpacing: 0,
+          '& th': { color: '#93aac1', fontSize: '0.67rem', fontWeight: 700, bgcolor: '#0b1d30', borderColor: 'rgba(39, 75, 108, 0.48)', whiteSpace: 'nowrap', letterSpacing: '0.01em' },
+          '& td': { borderColor: 'rgba(39, 75, 108, 0.34)', color: '#d5e0ec' },
+          '& td, & th': { py: 0.66, px: 0.8 },
         }}
       >
         <TableHead>

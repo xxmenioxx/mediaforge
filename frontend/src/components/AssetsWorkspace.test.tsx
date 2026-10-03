@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, ScanResult } from '../api/types';
 import {
   ASSETS_HIERARCHY_DEFAULT_WIDTH,
@@ -17,6 +19,10 @@ import {
 import { buildLibraryTree, buildRawHierarchy } from './assetsWorkspaceModel';
 
 afterEach(cleanup);
+
+function render(ui: ReactNode) {
+  return rtlRender(ui, { wrapper: MemoryRouter });
+}
 
 function makeAsset(overrides: Partial<Asset> = {}): Asset {
   return {
@@ -118,23 +124,29 @@ describe('Assets workspace presentation', () => {
       onSelectRaw={onSelectRaw}
       onSelectLibrary={onSelectLibrary}
     />);
-    const hierarchy = screen.getByRole('tree', { name: 'Assets hierarchy' });
+    const hierarchy = screen.getByRole('tree', { name: 'Asset Library' });
     const topLevelItems = within(hierarchy).getAllByRole('treeitem').filter((item) => item.getAttribute('aria-level') === '1');
-    expect(topLevelItems[0].getAttribute('aria-label')).toBe('RAW source inventory');
-    expect(topLevelItems.slice(1).map((item) => item.textContent?.trim())).toEqual(['Anime', 'Movies']);
+    expect(topLevelItems.map((item) => item.getAttribute('aria-label'))).toEqual(['RAW', 'Libraries']);
+    const libraryGroup = topLevelItems[1]!.parentElement?.querySelector<HTMLElement>('[role="group"]');
+    const libraryRoots = within(libraryGroup!).getAllByRole('treeitem').filter((item) => item.getAttribute('aria-level') === '2');
+    expect(libraryRoots.map((item) => item.getAttribute('aria-label'))).toEqual(['Anime', 'Movies']);
     expect(within(hierarchy).queryByRole('treeitem', { name: 'Converted' })).toBeNull();
     expect(within(hierarchy).queryByRole('treeitem', { name: 'Archive' })).toBeNull();
     expect(within(hierarchy).queryByRole('treeitem', { name: 'Reports' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'Configure libraries' }).getAttribute('href')).toBe('/libraries');
     expect(within(hierarchy).getAllByRole('treeitem').find((item) => item.getAttribute('aria-level') === '2')?.getAttribute('aria-selected')).toBe('true');
 
     (topLevelItems[1] as HTMLElement).focus();
     await user.keyboard('{ArrowRight}');
     expect(topLevelItems[1].getAttribute('aria-expanded')).toBe('true');
-    const seriesNode = within(hierarchy).getByRole('treeitem', { name: 'Series' });
+    const libraryRoot = within(libraryGroup!).getByRole('treeitem', { name: 'Anime' });
+    expect(document.activeElement).toBe(libraryRoot);
+    await user.keyboard('{ArrowRight}');
+    const seriesNode = await within(hierarchy).findByRole('treeitem', { name: 'Series' });
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(seriesNode);
     await user.keyboard('{ArrowUp}');
-    expect(document.activeElement).toBe(topLevelItems[1]);
+    expect(document.activeElement).toBe(libraryRoot);
     await user.keyboard('{Enter}');
     expect(onSelectLibrary).toHaveBeenCalledWith({ libraryId: 1, path: '' });
     await user.keyboard(' ');
@@ -204,7 +216,8 @@ describe('Assets workspace presentation', () => {
       onSelectLibrary={vi.fn()}
     />);
 
-    const sourceNode = screen.getByRole('treeitem', { name: 'RAW Anime' });
+    await user.click(screen.getByRole('button', { name: 'Expand RAW' }));
+    const sourceNode = await screen.findByRole('treeitem', { name: 'RAW Anime' });
     sourceNode.focus();
     await user.keyboard('{ArrowRight}');
     const logicalGroupNode = screen.getByRole('treeitem', { name: 'Attack' });
@@ -245,8 +258,8 @@ describe('Assets workspace presentation', () => {
     fireEvent.pointerDown(separator, { button: 0, clientX: 100, pointerId: 1 });
     fireEvent.pointerMove(separator, { clientX: 164, pointerId: 1 });
     fireEvent.pointerUp(separator, { clientX: 164, pointerId: 1 });
-    expect(separator.getAttribute('aria-valuenow')).toBe('364');
-    expect(window.localStorage.getItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY)).toBe('364');
+    expect(separator.getAttribute('aria-valuenow')).toBe('326');
+    expect(window.localStorage.getItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY)).toBe('326');
 
     fireEvent.keyDown(separator, { key: 'End' });
     expect(separator.getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
@@ -254,6 +267,14 @@ describe('Assets workspace presentation', () => {
     view.unmount();
     render(<AssetsHierarchyPanel {...props} />);
     expect(screen.getByRole('separator', { name: 'Resize Assets hierarchy' }).getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
+    cleanup();
+    window.localStorage.setItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY, '999');
+    const clamped = render(<AssetsHierarchyPanel {...props} />);
+    expect(screen.getByRole('separator', { name: 'Resize Assets hierarchy' }).getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
+    clamped.unmount();
+    window.localStorage.setItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY, 'not-a-width');
+    render(<AssetsHierarchyPanel {...props} />);
+    expect(screen.getByRole('separator', { name: 'Resize Assets hierarchy' }).getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_DEFAULT_WIDTH));
   });
 
   it('uses the generic artwork placeholder when no supported artwork URL is available', () => {
@@ -307,6 +328,12 @@ describe('Assets workspace presentation', () => {
     expect(getComputedStyle(details).position).toBe('sticky');
     expect(getComputedStyle(details).bottom).toBe('0px');
     expect(screen.getByText('Category / Library')).toBeTruthy();
+    expect(screen.getByTestId('selected-asset-preview')).toBeTruthy();
+    expect(screen.getByTestId('selected-asset-identity').contains(screen.getByText('Episode 01.mkv'))).toBe(true);
+    expect(screen.getByTestId('selected-asset-status').contains(screen.getByText('Estado'))).toBe(true);
+    expect(screen.getByTestId('selected-asset-technical').contains(screen.getByText('Información técnica'))).toBe(true);
+    expect(within(screen.getByTestId('selected-asset-technical')).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
+    expect(within(screen.getByTestId('selected-asset-technical')).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
     expect(screen.getAllByText('Ready')).toHaveLength(1);
     expect(screen.getByText('Subtítulos')).toBeTruthy();
     expect(screen.getByText('2 tracks · ja, en')).toBeTruthy();

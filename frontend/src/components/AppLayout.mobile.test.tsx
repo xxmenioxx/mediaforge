@@ -108,6 +108,7 @@ describe('desktop navigation rail', () => {
 
     const rail = screen.getByRole('complementary');
     expect(within(rail).getByRole('img', { name: 'MVForge logo' })).toBeTruthy();
+    expect(within(rail).getByTestId('mvforge-brand-mark')).toBeTruthy();
     expect(within(rail).queryByText('Assets')).toBeNull();
     await user.hover(rail);
     expect(within(rail).getByText('Assets')).toBeTruthy();
