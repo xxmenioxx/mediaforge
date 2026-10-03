@@ -17,7 +17,7 @@
 
 ## 3. Selected asset and historical settings
 
-- [x] 3.1 Keep selected detail outside inventory scrolling and attached to the workspace bottom; preserve the current approximately 4:3 artwork and Figma grouping while showing issue #208 status/profile/subtitle/audio context, required selected-asset actions, non-duplicated technical facts, integrated Play, and accessible collapse/reopen behavior.
+- [x] 3.1 Keep selected detail outside inventory scrolling and attached to the workspace bottom; use a compact approximately 4:3 artwork, filename/path identity, quick facts, a single Status pill, Profile/Subtitles/Duration/Modified context, and a broad responsive MEDIA region for Video, Encoder, Duration, Bitrate, Range, Size, Modified, and Audio. Preserve unavailable and zero values, route actions through existing gates, keep Play integrated into artwork, and retain accessible collapse/reopen behavior.
 - [x] 3.2 Keep the generic artwork placeholder because no supported per-asset Jellyfin/MVForge artwork URL reaches the detail caller; do not use reference demo art or generate artwork. Record the actual fallback order only as a future contract.
 - [x] 3.3 Keep Legacy Analysis Decisions out of the main Assets page and expose the unchanged records from the Assets Settings section.
 

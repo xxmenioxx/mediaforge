@@ -1545,6 +1545,54 @@ function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetI
 			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} autoOpenAssetInfo={normalizePath(asset.path) === normalizePath(legacyAssetPath)} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)} bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
 		})}</TableBody></Table></Box>;
 	};
+	if (headerOnly) {
+		return (
+			<>
+				<AssetsV2PathToolbar
+					path={logicalGroup.path}
+					mode="raw"
+					selectedCount={assets.filter((asset) => selectedAssetIds.has(asset.id ?? 0)).length}
+					breadcrumbs={(
+						<Stack direction="row" alignItems="center" spacing={0.45} sx={{ minWidth: 0 }}>
+							<Checkbox
+								size="small"
+								checked={groupSelection.checked}
+								indeterminate={groupSelection.indeterminate}
+								disabled={!assets.length}
+								onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)}
+								inputProps={{ 'aria-label': 'Select title ' + logicalGroup.name }}
+							/>
+							<WorkspaceBreadcrumbs segments={breadcrumbSegments ?? ['Assets', 'RAW', logicalGroup.name]} label="RAW title location" />
+						</Stack>
+					)}
+					primaryActions={(
+						<>
+							<Button size="small" variant="outlined" startIcon={<RefreshIcon />} onClick={() => setTitleSnapshotsOpen(true)} disabled={!titleSnapshotGroup || assets.every((asset) => asset.missing)}>
+								Scan
+							</Button>
+							<ScopeConfigureButton targetType="logical_group" scopeKey={logicalGroup.path} label="Configure Path" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact readOnly={titleHasOpenJob} />
+							<Button size="small" variant="outlined" startIcon={<InfoOutlinedIcon />} onClick={() => runTitleAdvisor.mutate()} disabled={!assets.length || runTitleAdvisor.isPending}>
+								{runTitleAdvisor.isPending ? 'Running Advisor…' : 'Advisor'}
+							</Button>
+							<Button
+								size="small"
+								variant="contained"
+								startIcon={<DriveFileMoveIcon />}
+								onClick={() => publishTitleAsIs.mutate()}
+								disabled={!assets.length || titleHasOpenJob || assets.some((asset) => asset.review?.requiresReview) || publishTitleAsIs.isPending}
+							>
+								{publishTitleAsIs.isPending ? 'Moving…' : 'Move to library'}
+							</Button>
+						</>
+					)}
+				/>
+				{titleAdvisorResults.length ? <Alert severity={titleAdvisorResults.some((result) => result.error) ? 'warning' : 'success'} sx={{ mt: 0.6 }}>{titleAdvisorResults.length} asset{titleAdvisorResults.length === 1 ? '' : 's'} evaluated · {titleAdvisorResults.filter((result) => result.response?.recommendation === 'worth_it').length} comply · {titleAdvisorResults.filter((result) => result.response?.recommendation === 'maybe').length} review · {titleAdvisorResults.filter((result) => result.error).length} failed</Alert> : null}
+				{publishTitleAsIs.isSuccess ? <Alert severity="success" sx={{ mt: 0.6 }}>{publishTitleAsIs.data.message}</Alert> : null}
+				{publishTitleAsIs.isError && publishTitleAsIs.error.message !== 'Publish as-is canceled.' ? <Alert severity="warning" sx={{ mt: 0.6 }}>{publishTitleAsIs.error.message}</Alert> : null}
+				{titleSnapshotGroup ? <PathSnapshotsDialog open={titleSnapshotsOpen} group={titleSnapshotGroup} title={logicalGroup.name} pathLabels={snapshotPathLabels} runningSnapshotPaths={runningSnapshotPaths} onClose={() => setTitleSnapshotsOpen(false)} /> : null}
+			</>
+		);
+	}
 	return <Box data-testid={headerOnly ? 'assets-path-toolbar' : undefined} aria-label={headerOnly ? 'RAW title path actions' : undefined} sx={{ border: headerOnly ? 1 : 1, borderColor: '#15304a', borderRadius: headerOnly ? 1 : 1, overflow: 'hidden', mb: headerOnly ? 0.7 : 0, bgcolor: headerOnly ? '#091a2c' : 'rgba(255,255,255,0.035)' }}>
 		<Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={0.6} sx={{ px: headerOnly ? 1.25 : 1, py: headerOnly ? 0.55 : 1 }}>
 			<Stack direction="row" alignItems="center" spacing={0.45} sx={{ minWidth: 0, flex: 1 }}><Checkbox size="small" checked={groupSelection.checked} indeterminate={groupSelection.indeterminate} disabled={!assets.length} onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select title ${logicalGroup.name}` }} />{headerOnly ? <WorkspaceBreadcrumbs segments={breadcrumbSegments ?? ['Assets', 'RAW', logicalGroup.name]} label="RAW title location" /> : <><IconButton size="small" onClick={() => setExpanded((value) => !value)} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${logicalGroup.name}`}><ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography variant="h3">{logicalGroup.name}</Typography><Typography variant="body2" color="text.secondary">{countLabel(logicalGroup.assetCount, 'asset')} · {countLabel(logicalGroup.pathCount, 'path')} · {formatBytes(logicalGroup.totalSizeBytes)}</Typography></Box></>}</Stack>

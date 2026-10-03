@@ -16,7 +16,7 @@ type InventoryColumn = {
 };
 
 const libraryColumns: InventoryColumn[] = [
-  { label: 'Asset', width: 280 },
+  { label: 'Asset', width: 340 },
   { label: 'Advisor', width: 105 },
   { label: 'Status', width: 125 },
   { label: 'Codec', width: 88 },
@@ -31,7 +31,7 @@ const libraryColumns: InventoryColumn[] = [
 ];
 
 const rawColumns: InventoryColumn[] = [
-  { label: 'Asset', width: 280 },
+  { label: 'Asset', width: 340 },
   { label: 'Advisor', width: 105 },
   { label: 'Status', width: 130 },
   { label: 'Source / Codec', width: 170 },

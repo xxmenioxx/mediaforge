@@ -320,15 +320,15 @@ describe('Library Assets workspace', () => {
     expect(within(details).getByTestId('selected-asset-path-context').textContent).toBe('Series/Season 01');
     const media = within(within(details).getByTestId('selected-asset-technical'));
     expect(media.getByText('Video')).toBeTruthy();
-    expect(media.getByText('hevc')).toBeTruthy();
-    expect(media.getByText('Resolution')).toBeTruthy();
-    expect(media.getByText('1920 × 1080')).toBeTruthy();
-    expect(media.queryByText('Encoder')).toBeNull();
-    expect(media.queryByText('Duration')).toBeNull();
-    expect(media.queryByText('Range')).toBeNull();
-    expect(media.queryByText('Size')).toBeNull();
-    expect(media.queryByText('Modified')).toBeNull();
-    expect(within(details).getByText('Status')).toBeTruthy();
+    expect(media.getByText('hevc · 1920 × 1080')).toBeTruthy();
+    expect(media.getByText('Encoder')).toBeTruthy();
+    expect(media.getByText('Duration')).toBeTruthy();
+    expect(media.getByText('Bitrate')).toBeTruthy();
+    expect(media.getByText('Range')).toBeTruthy();
+    expect(media.getByText('Size')).toBeTruthy();
+    expect(media.getByText('Modified')).toBeTruthy();
+    expect(media.getByText('Audio')).toBeTruthy();
+    expect(within(details).getByTestId('selected-asset-status').getAttribute('aria-label')).toContain('Status:');
     expect(within(details).getByText('Profile')).toBeTruthy();
     expect(within(details).getByText('Subtitles')).toBeTruthy();
     expect(within(details).getByText('Audio')).toBeTruthy();
@@ -660,6 +660,11 @@ describe('RAW Assets workspace', () => {
     expect(await screen.findByTestId('selected-asset-detail')).toBeTruthy();
     await waitFor(() => expect(api.latestSnapshot).toHaveBeenCalledTimes(1));
     expect(api.latestSnapshot).toHaveBeenCalledWith('/media/raw/anime/Attack on Titan/S01E01.mkv');
+    const titleToolbar = screen.getByTestId('assets-path-toolbar');
+    for (const name of ['Scan', 'Advisor', 'Configure Path', 'Move to library']) {
+      expect(within(titleToolbar).getByRole('button', { name })).toBeTruthy();
+    }
+    expect(within(titleToolbar).getByRole('checkbox', { name: 'Select title Attack on Titan' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Advisor' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Configure Path' })).toBeTruthy();
 
@@ -716,7 +721,7 @@ describe('RAW Assets workspace', () => {
     expect(rawList.contains(details)).toBe(false);
     expect(within(details).getByRole('button', { name: /Play preview/ })).toBeTruthy();
     expect(within(details).getAllByRole('button', { name: /Play preview/ })).toHaveLength(1);
-    expect(within(details).getByTestId('selected-asset-technical').textContent).toContain('Technical');
+    expect(within(details).getByTestId('selected-asset-technical').textContent).toContain('MEDIA');
     expect(within(details).getByTestId('selected-asset-technical').textContent).toContain('hevc');
     expect(within(details).getByTestId('selected-asset-technical').textContent).toContain('1920 × 1080');
     expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
