@@ -29,7 +29,6 @@ import AssessmentOutlinedIcon from '@mui/icons-material/AssessmentOutlined';
 import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import MenuIcon from '@mui/icons-material/Menu';
 import CloseIcon from '@mui/icons-material/Close';
-import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import packageJson from '../../package.json';
@@ -104,13 +103,20 @@ function BrandMark({ size = 32 }: { size?: number }) {
         flex: `0 0 ${size}px`,
         display: 'grid',
         placeItems: 'center',
-        borderRadius: '5px',
-        bgcolor: '#6c4cf6',
-        color: '#fff',
-        boxShadow: '0 2px 8px rgba(108, 76, 246, 0.22)',
+        bgcolor: 'transparent',
       }}
     >
-      <PlayArrowOutlinedIcon data-testid="mvforge-logo-symbol" sx={{ fontSize: size * 0.7, color: 'inherit' }} />
+      <Box
+        data-testid="mvforge-logo-symbol"
+        aria-hidden="true"
+        sx={{
+          width: size * 0.78,
+          height: size * 0.88,
+          clipPath: 'polygon(0 0, 100% 50%, 0 100%, 0 66%, 42% 50%, 0 34%)',
+          background: 'linear-gradient(145deg, #14dec0 0%, #5054ff 58%, #8b4df8 100%)',
+          filter: 'drop-shadow(0 1px 4px rgba(20, 222, 192, 0.28))',
+        }}
+      />
     </Box>
   );
 }
@@ -134,9 +140,9 @@ export function AppLayout() {
           px: 1.25,
           alignItems: 'center',
           gap: 1,
-          bgcolor: 'background.paper',
+          bgcolor: '#081a2b',
           borderBottom: 1,
-          borderColor: 'divider',
+          borderColor: '#183853',
           zIndex: (theme) => theme.zIndex.appBar,
         }}
       >
@@ -200,8 +206,8 @@ export function AppLayout() {
           left: 0,
           zIndex: (theme) => theme.zIndex.drawer + 10,
           borderRight: 1,
-          borderColor: 'divider',
-          bgcolor: 'background.paper',
+          borderColor: '#183853',
+          bgcolor: '#081a2b',
           display: { xs: 'none', md: 'block' },
           overflowX: 'hidden',
           transition: 'width 160ms ease',

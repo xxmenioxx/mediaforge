@@ -34,7 +34,7 @@ The Assets page MUST keep one shared workspace and one canonical hierarchy. Its 
 
 ### Requirement: Storage summary stays at the bottom of the hierarchy
 
-The shared hierarchy MUST show the existing storage summary below its scrollable tree in both RAW and Library workspaces. It MUST reuse the existing `['runtime-state']` query/cache and `RuntimeState.disks` fields, preserve loading, error, unavailable, and known-zero values, and keep the footer reachable without covering hierarchy content. It MUST NOT add filesystem scans, invented capacity, or duplicate polling.
+The shared hierarchy MUST show the existing storage summary below its scrollable tree in both RAW and Library workspaces. It MUST reuse the existing `['runtime-state']` query/cache and `RuntimeState.disks` fields, preserve loading, error, unavailable, and known-zero values, and keep the footer reachable without covering hierarchy content. Backend disk evidence MUST identify the actual measured path and volume. Configured destinations sharing a volume MUST display one filesystem capacity entry with their roles and paths; distinct volumes MUST remain separate. Inaccessible paths MUST remain unavailable and MUST NOT inherit statistics from a parent directory. Used/free values describe filesystem capacity, not media-folder size. The behavior MUST NOT add filesystem scans or duplicate polling.
 
 #### Scenario: Show storage in both workspaces
 - **WHEN** the user browses RAW or a configured Library
@@ -43,6 +43,14 @@ The shared hierarchy MUST show the existing storage summary below its scrollable
 #### Scenario: Preserve storage availability states
 - **WHEN** RuntimeState is loading, fails, omits controlled disks, or reports known zero capacity
 - **THEN** the footer presents the corresponding state and does not substitute guessed capacity
+
+#### Scenario: Count a shared filesystem once
+- **WHEN** configured Library destinations and Workspace paths resolve to the same filesystem volume
+- **THEN** the footer shows one capacity entry with both roles and does not duplicate or sum its capacity
+
+#### Scenario: Keep distinct and unavailable destinations truthful
+- **WHEN** destinations resolve to different volumes or a configured path cannot be measured
+- **THEN** each distinct volume is shown separately and the failed destination is labeled unavailable without parent-directory statistics
 
 ### Requirement: The hierarchy is resizable, persistent, and keyboard accessible
 
@@ -138,7 +146,7 @@ The Advisor cell MUST use `AdvisorResponse.score` when that canonical result is 
 
 ### Requirement: Path decisions use canonical effective configuration
 
-Assets V2 path Queue and explicit Advisor actions MUST use the existing batched effective-configuration resolver instead of guessing a profile or checking only direct path assignments. The resolver's Asset > Path > LogicalGroup > SourceGroup > Global/default precedence and distinct INHERIT, DISABLED, profile, and Custom states MUST remain intact. Explicit Advisor MUST evaluate only the asset's effective video profile and populate `['advisor', 'asset-row', asset.path, profileId]`. Inherited destination changes MUST refresh compact-row Queue availability through the existing configuration cache invalidation without opening Asset Info or remounting the row. Individual Queue MUST submit backend-valid Custom, override, audio, and track configurations through the existing resolver path; when a destination or capability is unavailable, the UI MUST expose an explicit existing-pattern reason and the backend MUST remain authoritative.
+Assets V2 path Queue and explicit Advisor actions MUST use the existing batched effective-configuration resolver instead of guessing a profile or checking only direct path assignments. The resolver's Asset > Path > LogicalGroup > SourceGroup > Global/default precedence and distinct INHERIT, DISABLED, profile, and Custom states MUST remain intact. Explicit Advisor MUST evaluate only the asset's effective video profile and populate `['advisor', 'asset-row', asset.path, profileId]`. Inherited destination changes MUST refresh compact-row Queue availability through the existing configuration cache invalidation without opening Asset Info or remounting the row. Individual Queue MUST submit backend-valid Custom, override, audio, and track configurations through the existing resolver path; when a destination or capability is unavailable, the UI MUST expose an explicit existing-pattern reason and the backend MUST remain authoritative. At claim preparation, an assignment-backed individual Library job with inherited destination MAY use the asset's own Library only when the queued Library ID matches the record's Library ID and the asset path is inside that Library's configured destination. Explicit destination values take precedence; DISABLED and invalid states MUST still block. Folder Queue/Preflight keeps its existing RAW, Unprocessed eligibility and explicit effective-destination requirements.
 
 #### Scenario: Recompute inherited destination eligibility
 - **WHEN** an inherited effective destination changes
@@ -151,6 +159,14 @@ Assets V2 path Queue and explicit Advisor actions MUST use the existing batched 
 #### Scenario: Explain unavailable Queue
 - **WHEN** effective destination or capability evidence does not allow Queue
 - **THEN** the existing row UX explains why Queue is unavailable
+
+#### Scenario: Freeze the inherited Library destination safely
+- **WHEN** an assignment-backed individual Queue job reaches claim preparation with INHERIT destination and its queued Library matches the asset record's Library
+- **THEN** preparation uses that Library only when the asset path is inside its destination, and freezes the resolved Library into the immutable job configuration
+
+#### Scenario: Keep folder Preflight lifecycle scope
+- **WHEN** folder Queue/Preflight receives a non-Unprocessed Library record or lacks an effective destination for a RAW candidate
+- **THEN** existing lifecycle blockers and destination requirements remain in force
 
 ### Requirement: Path actions share the breadcrumb bar and existing handlers
 
@@ -204,7 +220,7 @@ Each compact Library or RAW row MUST expose supported asset operations through o
 
 ### Requirement: Selected Asset context remains attached below the scrolling inventory
 
-When an asset is selected, a collapsible detail context MUST remain below the table and attached to the bottom of the Assets workspace while rows scroll. It MUST remain outside the inventory scroll region and MUST NOT become a modal or persistent right panel. The expanded desktop composition MUST match the current landscape preview (approximately 16:10) with centered Play overlay and duration badge at left; filename and caller-provided path/series context to its right; compact category/library, container, size, resolution, and codec facts; a single Status pill plus Profile, Subtitles, Duration, and Modified context; and a compact technical group containing Video codec, Resolution, and Audio summary. Values may repeat between quick facts, context, and technical grouping where issue #208 or the current reference calls for them. Metadata MUST come from the asset, existing profile assignment/effective configuration, and selected persisted snapshot; unavailable or unevaluated values MUST remain explicit, and known zero values MUST remain distinguishable from missing values. Assign Profile, Test Encode, and More MUST align with the technical group and delegate to the selected row's existing action owners with their capability and eligibility gates. Play MUST remain integrated into the artwork. The panel MUST remain compact, use a subtle collapse control, and leave a compact accessible reopen affordance. Narrow layouts MUST reflow without page-level overflow.
+When an asset is selected, a collapsible detail context MUST remain below the table and attached to the bottom of the Assets workspace while rows scroll. It MUST remain outside the inventory scroll region and MUST NOT become a modal or persistent right panel. The expanded desktop composition MUST match the current landscape preview (approximately 16:10) with centered Play overlay and duration badge at left; a two-line filename and caller-provided path/series context to its right; compact category/library, container, size, resolution, and codec facts; a single Status pill plus Profile, Subtitles, Duration, and Modified context; a compact technical group containing Video codec, Resolution, and Audio summary with small technical icons; and a distinct right-side action column for Assign Profile, Test Encode, and More. Thin navy separators, compact typography, and restrained action styles MUST follow the current reference. Values may repeat between quick facts, context, and technical grouping where issue #208 or the current reference calls for them. Metadata MUST come from the asset, existing profile assignment/effective configuration, and selected persisted snapshot; unavailable or unevaluated values MUST remain explicit, and known zero values MUST remain distinguishable from missing values. Actions MUST delegate to the selected row's existing action owners with their capability and eligibility gates. Play MUST remain integrated into the artwork. The panel MUST remain compact, use a subtle collapse control, and leave a compact accessible reopen affordance. Narrow layouts MUST reflow without page-level overflow.
 
 #### Scenario: Show selected asset context
 - **WHEN** the user selects a RAW or Library asset
@@ -260,7 +276,7 @@ The main Assets browsing workspace MUST NOT render Legacy Analysis Decisions. Ex
 
 ### Requirement: Sidebar branding and navigation retain the current shell
 
-The global navigation MUST use the current Figma's purple rounded-square MVForge tile with a white outlined Play glyph while preserving existing routes, sections, responsive navigation, and active-state behavior. It MUST NOT use the stale CSS-generated gradient triangle. The current frame has no pin/unpin affordance; desktop hover expansion and the mobile drawer remain the current navigation behavior. The implementation MUST NOT copy the Figma Make framework or dependencies.
+The global navigation MUST use the current Figma's angular teal-to-blue-to-violet MVForge brand mark without a purple tile or Play glyph, while preserving existing routes, sections, responsive navigation, and active-state behavior. The current frame has no pin/unpin affordance; desktop hover expansion and the mobile drawer remain the current navigation behavior. The implementation MUST NOT copy the Figma Make framework or dependencies.
 
 #### Scenario: Navigate from the branded shell
 - **WHEN** the Assets route is opened from desktop or mobile navigation
@@ -288,5 +304,6 @@ The hierarchy, toolbar, table, and selected context MUST remain usable at deskto
 - No existing per-asset artwork URL reaches the selected-detail caller; the placeholder remains until a supported source is exposed.
 - Library migration is one existing Move path operation; the current backend does not expose a separate second Library “Move to library” operation.
 - RAW path Rename has no current supported owner.
+- The running visual-review server returned pre-change storage role objects without `volumeId`, `measuredPath`, or `filesystems`; populated RAW and Library screenshots therefore could not visually confirm shared-volume merging until that server loads the current backend. Local filesystem metadata and backend tests confirm the configured Library and Workspace paths share a device.
 - The reference's account/avatar, notifications, and trend figures lack current product contracts and are not fabricated. Storage uses only existing RuntimeState disk data; it adds no scan or polling behavior.
 - Some source/title scopes do not own every path action shown by the reference; only actions with existing owners are shown.

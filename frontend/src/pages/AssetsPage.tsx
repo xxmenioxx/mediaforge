@@ -995,7 +995,7 @@ function LibraryAssetTable({
     : undefined;
 
   return (
-    <Box data-testid="assets-mode-workspace" sx={{ bgcolor: 'background.default', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+    <Box data-testid="assets-mode-workspace" sx={{ bgcolor: '#061525', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={{ xs: 0.75, md: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
         {hierarchyPanel}
         <Box data-testid="assets-content-column" sx={{ flex: 1, minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -1309,7 +1309,7 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
   };
 
   return (
-    <Box data-testid="assets-mode-workspace" sx={{ bgcolor: 'background.default', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+    <Box data-testid="assets-mode-workspace" sx={{ bgcolor: '#061525', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={{ xs: 0.75, md: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
         {hierarchyPanel}
         <Box data-testid="assets-content-column" sx={{ flex: 1, minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -5133,7 +5133,7 @@ async function generateExternalSubtitle(
             <Tooltip title={asset.fileName}>
               <Stack direction="row" alignItems="center" spacing={0.65} sx={{ minWidth: 0 }}>
                 <InsertDriveFileOutlinedIcon sx={{ fontSize: 15, flexShrink: 0, color: selected ? '#b8a7ff' : '#8fb3d0' }} />
-                <Typography variant="body2" fontWeight={600} noWrap sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '0.74rem', color: selected ? '#e7eef8' : '#9cb0c8' }}>
+                <Typography variant="body2" fontWeight={600} noWrap sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '0.72rem', color: selected ? '#e7eef8' : '#afc1d5' }}>
                   {asset.fileName}
                 </Typography>
               </Stack>
@@ -5143,11 +5143,11 @@ async function generateExternalSubtitle(
             {cachedAdvisor && Number.isFinite(cachedAdvisor.score) ? (
               <Tooltip title={cachedAdvisor.summary || `Advisor score ${cachedAdvisor.score}`}>
                 <Stack spacing={0.28} alignItems="flex-start" sx={{ width: 36 }} aria-label={`Advisor score ${cachedAdvisor.score}`}>
-                  <Typography component="span" sx={{ fontSize: '0.68rem', lineHeight: 1, fontWeight: 700, color: selected ? '#c9bbff' : '#b9adff', fontVariantNumeric: 'tabular-nums' }}>
+                  <Typography component="span" sx={{ fontSize: '0.66rem', lineHeight: 1, fontWeight: 700, color: selected ? '#c9d3ff' : '#aebdff', fontVariantNumeric: 'tabular-nums' }}>
                     {cachedAdvisor.score}
                   </Typography>
-                  <Box aria-hidden="true" data-testid="advisor-score-indicator" sx={{ width: 35, height: 2, borderRadius: 2, bgcolor: '#15304a', overflow: 'hidden' }}>
-                    <Box sx={{ width: `${Math.max(0, Math.min(100, cachedAdvisor.score))}%`, height: '100%', background: 'linear-gradient(90deg, #6c4cf6, #27b8ff)' }} />
+                  <Box aria-hidden="true" data-testid="advisor-score-indicator" sx={{ width: 35, height: 2, borderRadius: 2, bgcolor: '#1b3853', overflow: 'hidden' }}>
+                    <Box sx={{ width: `${Math.max(0, Math.min(100, cachedAdvisor.score))}%`, height: '100%', background: 'linear-gradient(90deg, #555cff, #24c5cb)' }} />
                   </Box>
                 </Stack>
               </Tooltip>
@@ -5181,24 +5181,24 @@ async function generateExternalSubtitle(
           </TableCell>
           {compactRaw ? (
             <>
-              <TableCell><Typography variant="body2" noWrap title={rawSourceCodec}>{rawSourceCodec}</Typography></TableCell>
-              <TableCell><Typography variant="body2" noWrap>{technicalResolution}</Typography></TableCell>
-              <TableCell><Typography variant="body2" noWrap>{formatDurationSummary(technical?.duration)}</Typography></TableCell>
-              <TableCell><Typography variant="body2" noWrap>{technicalBitrate}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap title={rawSourceCodec} sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{rawSourceCodec}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technicalResolution}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{formatDurationSummary(technical?.duration)}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technicalBitrate}</Typography></TableCell>
             </>
           ) : (
             <>
-              <TableCell><Typography variant="body2" noWrap>{technical?.videoCodec || 'Unavailable'}</Typography></TableCell>
-              <TableCell><Typography variant="body2" noWrap>{technicalResolution}</Typography></TableCell>
-              <TableCell><Typography variant="body2" noWrap title={technical?.encoder || 'Unavailable'}>{technical?.encoder || 'Unavailable'}</Typography></TableCell>
-              <TableCell><Typography variant="body2" noWrap>{formatDurationSummary(technical?.duration)}</Typography></TableCell>
-              <TableCell><Typography variant="body2" noWrap>{technicalBitrate}</Typography></TableCell>
-              <TableCell><Typography variant="body2" noWrap>{technicalRange}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technical?.videoCodec || 'Unavailable'}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technicalResolution}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap title={technical?.encoder || 'Unavailable'} sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technical?.encoder || 'Unavailable'}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{formatDurationSummary(technical?.duration)}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technicalBitrate}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technicalRange}</Typography></TableCell>
             </>
           )}
-          <TableCell><Typography variant="body2" noWrap>{formatBytes(asset.sizeBytes)}</Typography></TableCell>
+          <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{formatBytes(asset.sizeBytes)}</Typography></TableCell>
           <TableCell>
-            <Typography variant="body2" noWrap title={asset.modifiedAt}>{formatDate(asset.modifiedAt)}</Typography>
+            <Typography variant="body2" noWrap title={asset.modifiedAt} sx={{ fontSize: '0.66rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{formatDate(asset.modifiedAt)}</Typography>
           </TableCell>
           <TableCell padding="checkbox" align="right" onClick={(event) => event.stopPropagation()}>
             <Tooltip title="More asset actions">

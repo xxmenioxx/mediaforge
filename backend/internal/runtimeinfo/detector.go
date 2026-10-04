@@ -69,9 +69,10 @@ func Detect(db *gorm.DB) (models.RuntimeState, error) {
 		info, err := diskInfoForPaths(probePaths)
 		if err != nil {
 			snapshot.Warnings = append(snapshot.Warnings, fmt.Sprintf("%s disk: %v", label, err))
-			continue
 		}
-		snapshot.Disks[label] = info
+		if info != nil {
+			snapshot.Disks[label] = info
+		}
 	}
 	for _, name := range encoderCandidates {
 		capability := capabilities.CheckEncoder(name)
@@ -257,30 +258,76 @@ func loadDiskProbePaths(db *gorm.DB) map[string][]string {
 }
 
 func diskInfoForPaths(paths []string) (models.JSONMap, error) {
+	return diskInfoForPathsWithProbe(paths, diskInfo)
+}
+
+func diskInfoForPathsWithProbe(paths []string, probe func(string) (models.JSONMap, error)) (models.JSONMap, error) {
 	var selected models.JSONMap
 	var selectedAvailable int64
-	probed := models.JSONList{}
+	destinations := models.JSONList{}
+	filesystems := models.JSONList{}
+	filesystemIndexes := map[string]int{}
 	warnings := models.JSONList{}
+	seenPaths := map[string]bool{}
 	for _, path := range paths {
-		info, err := diskInfo(path)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("%s: %v", path, err))
+		cleanPath := filepath.Clean(strings.TrimSpace(path))
+		if cleanPath == "." || seenPaths[cleanPath] {
 			continue
 		}
-		probed = append(probed, path)
+		seenPaths[cleanPath] = true
+		info, err := probe(cleanPath)
+		destination := models.JSONMap{"path": cleanPath, "accessible": err == nil}
+		if err != nil {
+			destination["error"] = err.Error()
+			warnings = append(warnings, fmt.Sprintf("%s: %v", cleanPath, err))
+			destinations = append(destinations, destination)
+			continue
+		}
+		measuredPath, _ := info["measuredPath"].(string)
+		if strings.TrimSpace(measuredPath) == "" {
+			measuredPath = cleanPath
+		}
+		volumeID, _ := info["volumeId"].(string)
+		filesystemKey := volumeID
+		if filesystemKey == "" {
+			filesystemKey = "path:" + filepath.Clean(measuredPath)
+		}
+		destination["measuredPath"] = measuredPath
+		if volumeID != "" {
+			destination["volumeId"] = volumeID
+		}
+		destinations = append(destinations, destination)
+		if index, exists := filesystemIndexes[filesystemKey]; exists {
+			filesystem := filesystems[index].(models.JSONMap)
+			filesystem["paths"] = append(filesystem["paths"].(models.JSONList), cleanPath)
+		} else {
+			filesystem := models.JSONMap{
+				"volumeId": volumeID, "measuredPath": measuredPath,
+				"totalBytes": info["totalBytes"], "availableBytes": info["availableBytes"],
+				"type": info["type"], "paths": models.JSONList{cleanPath},
+			}
+			filesystemIndexes[filesystemKey] = len(filesystems)
+			filesystems = append(filesystems, filesystem)
+		}
 		available, _ := info["availableBytes"].(int64)
 		if selected == nil || available < selectedAvailable {
 			selected, selectedAvailable = info, available
 		}
 	}
+	summary := models.JSONMap{"filesystems": filesystems, "destinations": destinations}
 	if selected == nil {
-		return nil, fmt.Errorf("none of the configured paths are accessible: %v", paths)
+		if len(warnings) > 0 {
+			summary["probeWarnings"] = warnings
+		}
+		return summary, fmt.Errorf("none of the configured paths are accessible: %v", paths)
 	}
-	selected["probePaths"] = probed
+	for key, value := range selected {
+		summary[key] = value
+	}
 	if len(warnings) > 0 {
-		selected["probeWarnings"] = warnings
+		summary["probeWarnings"] = warnings
 	}
-	return selected, nil
+	return summary, nil
 }
 
 func SelectProfile(snapshot models.RuntimeSnapshot) (string, models.JSONList) {
@@ -327,18 +374,39 @@ func loadPaths(db *gorm.DB) map[string]string {
 }
 
 func diskInfo(path string) (models.JSONMap, error) {
-	probe := filepath.Clean(path)
-	for {
-		var stat syscall.Statfs_t
-		if err := syscall.Statfs(probe, &stat); err == nil {
-			return models.JSONMap{"path": path, "totalBytes": int64(stat.Blocks) * int64(stat.Bsize), "availableBytes": int64(stat.Bavail) * int64(stat.Bsize), "type": detectDiskType(probe)}, nil
-		}
-		parent := filepath.Dir(probe)
-		if parent == probe {
-			return nil, fmt.Errorf("path is not accessible: %s", path)
-		}
-		probe = parent
+	configuredPath := filepath.Clean(strings.TrimSpace(path))
+	if configuredPath == "" || configuredPath == "." {
+		return nil, fmt.Errorf("path is empty")
 	}
+	pathInfo, err := os.Stat(configuredPath)
+	if err != nil {
+		return nil, fmt.Errorf("configured path is not accessible: %s: %w", configuredPath, err)
+	}
+	if !pathInfo.IsDir() {
+		return nil, fmt.Errorf("configured destination is not a directory: %s", configuredPath)
+	}
+	measuredPath, err := filepath.EvalSymlinks(configuredPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve configured path %s: %w", configuredPath, err)
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(measuredPath, &stat); err != nil {
+		return nil, fmt.Errorf("measure configured path %s: %w", configuredPath, err)
+	}
+	measuredInfo, err := os.Stat(measuredPath)
+	if err != nil {
+		return nil, fmt.Errorf("identify filesystem for %s: %w", configuredPath, err)
+	}
+	volumeID := ""
+	if device, ok := measuredInfo.Sys().(*syscall.Stat_t); ok {
+		volumeID = strconv.FormatUint(uint64(device.Dev), 10)
+	}
+	return models.JSONMap{
+		"path": configuredPath, "measuredPath": measuredPath, "volumeId": volumeID,
+		"totalBytes":     int64(stat.Blocks) * int64(stat.Bsize),
+		"availableBytes": int64(stat.Bavail) * int64(stat.Bsize),
+		"type":           detectDiskType(measuredPath),
+	}, nil
 }
 
 func detectContainer() bool {

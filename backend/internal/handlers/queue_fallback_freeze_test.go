@@ -152,6 +152,57 @@ func TestExplicitQueueIntentPreservesProfileWhenClaimAssignmentDiffers(t *testin
 	}
 }
 
+func TestAssignmentBackedLibraryQueueUsesAssetLibraryWhenDestinationInherits(t *testing.T) {
+	db, path, library, profile := queueCreationFreezeFixture(t, false)
+	library.DestinationPath = filepath.Dir(path)
+	if err := db.Save(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	var record models.AssetRecord
+	if err := db.Where("path = ?", path).First(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	record.LibraryID = library.ID
+	record.Status = "published"
+	if err := db.Save(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProfileAssignment{
+		TargetType: assetScopePath, TargetPath: filepath.Dir(record.Path),
+		MediaType: "video", Selection: "profile", VideoProfileID: profile.ID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/queue/jobs", NewQueueHandler(db).Create)
+	body := fmt.Sprintf(`{"mediaPath":%q,"libraryId":%d,"resolveProfileAssignments":true}`, path, library.ID)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("queue create status=%d body=%s", response.Code, response.Body.String())
+	}
+	var job models.QueueJob
+	if err := db.First(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.LibraryID != library.ID {
+		t.Fatalf("queued Library ID=%d want asset Library ID=%d", job.LibraryID, library.ID)
+	}
+	markQueueJobClaimed(t, db, &job)
+	prepared, err := NewWorkerHandler(db).prepareClaimedQueueJob(job)
+	if err != nil {
+		t.Fatalf("claim preparation rejected the asset's inherited Library destination: %v", err)
+	}
+	if prepared.LibraryID != library.ID || !queueJobFreezeComplete(prepared) {
+		t.Fatalf("prepared job did not preserve and freeze the asset Library destination: library=%d frozen=%v", prepared.LibraryID, queueJobFreezeComplete(prepared))
+	}
+}
+
 func TestHistoricalBatchQueueIntentStillFreezesAtClaim(t *testing.T) {
 	db, path, library, profile := queueCreationFreezeFixture(t, false)
 	job := models.QueueJob{

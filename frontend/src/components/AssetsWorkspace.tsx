@@ -26,6 +26,7 @@ import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import AspectRatioOutlinedIcon from '@mui/icons-material/AspectRatioOutlined';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import MovieOutlinedIcon from '@mui/icons-material/MovieOutlined';
+import VolumeUpOutlinedIcon from '@mui/icons-material/VolumeUpOutlined';
 import AutorenewOutlinedIcon from '@mui/icons-material/AutorenewOutlined';
 import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
 import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined';
@@ -320,7 +321,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
             pl: Math.min(0.8 + (level - 1) * 1.2, 6),
             pr: 0.65,
             fontWeight: isRawRoot || isLibrarySection ? 700 : 400,
-            color: isRawRoot || isLibrarySection ? '#9cb0c8' : '#59718b',
+            color: isRawRoot || isLibrarySection ? '#b1c2d6' : '#7b91a9',
             '&[aria-selected="true"]': { background: 'linear-gradient(90deg, rgba(58, 43, 164, 0.56), rgba(34, 41, 96, 0.36))', color: '#e7eef8', borderColor: 'rgba(95, 75, 247, 0.48)', borderLeftColor: '#6c4cf6' },
             '&:hover': { bgcolor: 'rgba(17, 42, 68, 0.72)', color: '#e7eef8' },
             '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
@@ -337,7 +338,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
               <ExpandMoreIcon fontSize="small" sx={{ transform: isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 120ms ease' }} />
             </IconButton>
           ) : <Box sx={{ width: 24, flexShrink: 0 }} />}
-          {isRawRoot ? <Inventory2OutlinedIcon sx={{ mr: 0.65, fontSize: 16, color: '#9cb0c8' }} /> : isLibrarySection || isSelected || isExpanded ? <FolderOpenOutlinedIcon sx={{ mr: 0.65, fontSize: 16, color: isSelected ? '#a99aff' : '#9cb0c8' }} /> : <FolderOutlinedIcon sx={{ mr: 0.65, fontSize: 16, color: '#59718b' }} />}
+          {isRawRoot ? <Inventory2OutlinedIcon sx={{ mr: 0.65, fontSize: 16, color: '#a9bfd5' }} /> : isLibrarySection || isSelected || isExpanded ? <FolderOpenOutlinedIcon sx={{ mr: 0.65, fontSize: 16, color: isSelected ? '#b6aaff' : '#a9bfd5' }} /> : <FolderOutlinedIcon sx={{ mr: 0.65, fontSize: 16, color: '#7188a1' }} />}
           <ListItemText
             primary={node.label}
             primaryTypographyProps={{ variant: 'body2', noWrap: true, title: node.label, fontWeight: isRawRoot || isLibrarySection ? 700 : undefined, sx: { fontSize: '0.72rem' } }}
@@ -390,9 +391,9 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
         display: 'flex',
         flexDirection: 'column',
         border: 1,
-        borderColor: 'divider',
+        borderColor: '#1b3a56',
         borderRadius: 1,
-        bgcolor: 'background.paper',
+        bgcolor: '#081a2b',
         px: 1,
         pt: 1.25,
         pb: 0.75,
@@ -401,7 +402,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.4, pb: 0.75 }}>
         <Typography variant="subtitle2" fontWeight={700} sx={{ color: '#9cb0c8', fontSize: '0.72rem', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Asset Library</Typography>
         <Tooltip title="Configure libraries">
-          <IconButton component={RouterLink} to="/libraries" size="small" aria-label="Configure libraries" sx={{ width: 28, height: 28, border: 1, borderColor: 'divider', borderRadius: 1, color: '#9cb0c8', bgcolor: '#0c2035', '&:hover': { bgcolor: '#112a44', borderColor: '#1f4467' } }}>
+        <IconButton component={RouterLink} to="/libraries" size="small" aria-label="Configure libraries" sx={{ width: 28, height: 28, border: 1, borderColor: '#274763', borderRadius: 1, color: '#a9bfd5', bgcolor: '#0c2035', '&:hover': { bgcolor: '#112a44', borderColor: '#426888' } }}>
             <AddIcon fontSize="small" />
           </IconButton>
         </Tooltip>
@@ -467,7 +468,7 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
         touchAction: 'none',
         userSelect: 'none',
         borderRadius: 99,
-        '&::after': { content: '""', display: 'block', width: 2, height: '100%', mx: 'auto', bgcolor: 'divider' },
+          '&::after': { content: '""', display: 'block', width: 2, height: '100%', mx: 'auto', bgcolor: '#1b3a56' },
         '&:hover::after, &:focus-visible::after': { bgcolor: 'primary.main' },
         '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
       }}
@@ -578,9 +579,9 @@ export function SelectedAssetDetail({
     ['Modified', modifiedLabel || 'Unavailable'],
   ];
   const mediaValues = [
-    ['Video', videoCodec || 'Unavailable'],
-    ['Resolution', resolutionSummary],
-    ['Audio', audioSummary],
+    { label: 'Video', value: videoCodec || 'Unavailable', icon: <MovieOutlinedIcon sx={{ fontSize: 12, color: '#778fa9', flexShrink: 0 }} /> },
+    { label: 'Resolution', value: resolutionSummary, icon: <AspectRatioOutlinedIcon sx={{ fontSize: 12, color: '#778fa9', flexShrink: 0 }} /> },
+    { label: 'Audio', value: audioSummary, icon: <VolumeUpOutlinedIcon sx={{ fontSize: 12, color: '#778fa9', flexShrink: 0 }} /> },
   ];
   const quickFacts = [
     { label: 'Category / Library', value: categoryLabel || 'Unavailable', icon: <FolderOutlinedIcon sx={{ fontSize: 13, color: '#7289a5', flexShrink: 0 }} /> },
@@ -605,8 +606,8 @@ export function SelectedAssetDetail({
         px: { xs: 0.65, sm: 0.9 },
         py: { xs: 0.35, sm: 0.45 },
         borderTop: 1,
-        borderColor: 'rgba(67, 92, 123, 0.42)',
-        background: 'linear-gradient(105deg, #111b28 0%, #101c2a 100%)',
+        borderColor: '#1d3b56',
+        background: 'linear-gradient(105deg, #091a2a 0%, #0a1d30 100%)',
         position: 'sticky',
         bottom: 0,
         zIndex: 2,
@@ -640,14 +641,14 @@ export function SelectedAssetDetail({
             sx={{
               display: 'grid',
               gridTemplateColumns: {
-                xs: '72px minmax(0, 1fr)',
+                xs: '64px minmax(0, 1fr)',
                 sm: '132px minmax(0, 1fr)',
-                md: 'minmax(120px, 16%) minmax(0, 1.1fr) minmax(220px, 0.9fr)',
-                lg: 'minmax(130px, 18%) minmax(0, 1.25fr) minmax(175px, 0.85fr) minmax(180px, 0.85fr)',
+                md: 'minmax(110px, 15%) minmax(0, 1fr) minmax(240px, 1.05fr)',
+                lg: 'minmax(130px, 16%) minmax(0, 1.08fr) minmax(270px, 1.08fr) minmax(195px, 0.72fr)',
               },
               alignItems: 'center',
-              columnGap: { xs: 0.85, sm: 1.1, md: 1, lg: 0 },
-              rowGap: { xs: 0.75, md: 0.8, lg: 0 },
+              columnGap: { xs: 0.7, sm: 1, md: 0, lg: 0 },
+              rowGap: { xs: 0.7, md: 0.65, lg: 0 },
               minWidth: 0,
               position: 'relative',
               pr: { xs: 2.4, sm: 2.8 },
@@ -662,17 +663,17 @@ export function SelectedAssetDetail({
                   aria-label={"Play preview of " + asset.fileName}
                   sx={{
                     width: '100%',
-                    maxWidth: { xs: 72, sm: 132, md: '100%' },
+                    maxWidth: { xs: 64, sm: 132, md: 220 },
                     aspectRatio: '16 / 10',
                     height: 'auto',
                     flexShrink: 0,
                     borderRadius: '4px',
-                    bgcolor: '#0b1420',
+                    bgcolor: '#061321',
                     color: '#e6f2ff',
                     overflow: 'hidden',
                     position: 'relative',
-                    boxShadow: 'inset 0 0 0 1px #29394d',
-                    '&:hover': { bgcolor: '#172638' },
+                    boxShadow: 'inset 0 0 0 1px #29445f',
+                    '&:hover': { bgcolor: '#13283d' },
                     '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 },
                   }}
                 >
@@ -696,28 +697,28 @@ export function SelectedAssetDetail({
               data-testid="selected-asset-information"
               sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', rowGap: { xs: 0.55, sm: 0.75 }, minWidth: 0, px: { xs: 0, md: 1.3 }, py: { xs: 0, md: 0.55 } }}
             >
-                <Box data-testid="selected-asset-identity" sx={{ minWidth: 0 }}>
+              <Box data-testid="selected-asset-identity" sx={{ minWidth: 0, gridColumn: { xs: '2', md: 'auto' }, px: { xs: 0, md: 1.2 }, py: { xs: 0, md: 0.3 } }}>
                   <Tooltip title={asset.fileName}>
                     <Typography
                       component="h2"
                       fontWeight={700}
                       sx={{
                         minWidth: 0,
-                        fontSize: { xs: '0.78rem', sm: '0.86rem', xl: '0.92rem' },
+                        fontSize: { xs: '0.74rem', sm: '0.82rem', xl: '0.86rem' },
                         lineHeight: 1.16,
                         color: '#e5edf8',
-                        whiteSpace: { xs: 'normal', sm: 'nowrap' },
+                        whiteSpace: 'normal',
                         overflowWrap: 'anywhere',
                         overflow: 'hidden',
                         display: '-webkit-box',
                         WebkitBoxOrient: 'vertical',
-                        WebkitLineClamp: { xs: 2, sm: 1 },
+                        WebkitLineClamp: 2,
                       }}
                     >
                       {asset.fileName}
                     </Typography>
                   </Tooltip>
-                  <Typography data-testid="selected-asset-path-context" variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', fontSize: { xs: '0.62rem', sm: '0.65rem' }, color: '#91a1b6', mt: 0.25 }}>
+                  <Typography data-testid="selected-asset-path-context" variant="caption" color="text.secondary" noWrap title={pathContext} sx={{ display: 'block', fontSize: { xs: '0.59rem', sm: '0.61rem' }, color: '#8ca1b8', mt: 0.2 }}>
                     {pathContext}
                   </Typography>
                 </Box>
@@ -725,35 +726,36 @@ export function SelectedAssetDetail({
                   data-testid="selected-asset-quick-facts"
                   role="group"
                   aria-label="Category, container, size, resolution, and codec"
-                  sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', columnGap: { xs: 0.7, sm: 0.95 }, rowGap: 0.4, minWidth: 0 }}
+                  sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', columnGap: { xs: 0.6, sm: 0.8 }, rowGap: 0.3, minWidth: 0, mt: 0.45 }}
                 >
                   {quickFacts.map(({ label, value, icon }) => (
                     <Tooltip key={label} title={`${label}: ${value}`}>
-                      <Stack direction="row" alignItems="center" spacing={0.35} aria-label={`${label}: ${value}`} sx={{ minWidth: 0, color: '#98aac0' }}>
+                      <Stack direction="row" alignItems="center" spacing={0.3} aria-label={`${label}: ${value}`} sx={{ minWidth: 0, color: '#93a8c0' }}>
                         {icon}
-                        <Typography variant="caption" noWrap sx={{ color: '#a9b8cc', fontSize: '0.64rem', lineHeight: 1.2 }}>{value}</Typography>
+                        <Typography variant="caption" noWrap sx={{ color: '#aabbd0', fontSize: '0.61rem', lineHeight: 1.2 }}>{value}</Typography>
                       </Stack>
                     </Tooltip>
                   ))}
                 </Box>
             </Box>
               <Box
-                data-testid="selected-asset-state-context"
+                data-testid="selected-asset-context-technical"
                 sx={{
                   display: 'flex',
                   flexDirection: 'column',
                   justifyContent: 'center',
-                  rowGap: 0.65,
+                  rowGap: 0.55,
                   minWidth: 0,
-                  px: { xs: 0, md: 1.3 },
-                  py: { xs: 0.65, md: 0.25 },
+                  gridColumn: { xs: '1 / -1', md: 'auto' },
+                  px: { xs: 0.2, md: 1.2 },
+                  py: { xs: 0.5, md: 0.3 },
                   borderTop: { xs: 1, md: 0 },
-                  borderLeft: { xs: 0, md: 1, lg: 1 },
-                  borderColor: 'rgba(67, 92, 123, 0.46)',
+                  borderLeft: { xs: 0, md: 1 },
+                  borderColor: '#1e3c57',
                 }}
               >
-                <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={0.75}>
-                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.64rem', color: '#8395aa' }}>Status</Typography>
+                <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={0.65}>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6rem', color: '#8299b2' }}>Status</Typography>
                   <Chip
                     data-testid="selected-asset-status"
                     label={statusLabel || 'Unavailable'}
@@ -761,64 +763,54 @@ export function SelectedAssetDetail({
                     color={statusColor}
                     size="small"
                     variant="outlined"
-                    sx={{ height: 18, maxWidth: '72%', fontSize: '0.61rem', '& .MuiChip-label': { px: 0.55, overflow: 'hidden', textOverflow: 'ellipsis' } }}
+                    sx={{ height: 17, maxWidth: '72%', fontSize: '0.59rem', '& .MuiChip-label': { px: 0.5, overflow: 'hidden', textOverflow: 'ellipsis' } }}
                   />
                 </Stack>
-                {stateValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} inline />)}
+                <Box data-testid="selected-asset-state-context" sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', columnGap: 0.8, rowGap: 0.38 }}>
+                  {stateValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} inline />)}
+                </Box>
+                <Box data-testid="selected-asset-technical" sx={{ borderTop: 1, borderColor: '#1d3a54', pt: 0.5, minWidth: 0 }}>
+                  <Typography variant="caption" sx={{ display: 'block', color: '#8ea5be', fontSize: '0.59rem', fontWeight: 700, lineHeight: 1.1, mb: 0.35 }}>
+                    Technical information
+                  </Typography>
+                  <Stack direction="row" spacing={1.15} useFlexGap flexWrap="wrap" sx={{ minWidth: 0, rowGap: 0.4 }}>
+                    {mediaValues.map(({ label, value, icon }) => <DetailValue key={label} label={label} value={value} inline icon={icon} technical />)}
+                  </Stack>
+                </Box>
               </Box>
 
-              <Box
-                data-testid="selected-asset-technical"
-                sx={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'center',
-                  rowGap: { xs: 0.45, md: 0.65 },
-                  minWidth: 0,
-                  px: { xs: 0, md: 1.3 },
-                  py: { xs: 0.65, md: 0.25 },
-                  borderTop: { xs: 1, md: 1, lg: 0 },
-                  borderLeft: { xs: 0, md: 1, lg: 1 },
-                  gridColumn: { md: '2 / 4', lg: 'auto' },
-                  borderColor: 'rgba(67, 92, 123, 0.46)',
-                }}
-              >
-                <Typography variant="caption" sx={{ color: '#aebbd0', fontSize: '0.66rem', fontWeight: 700, lineHeight: 1.1 }}>
-                  Technical information
-                </Typography>
-                {mediaValues.map(([label, value]) => <DetailValue key={label} label={label} value={value} inline />)}
-                <Stack
+              <Stack
+                  data-testid="selected-asset-actions"
                   role="group"
                   aria-label="Selected asset actions"
                   direction="row"
-                  spacing={0.55}
+                  spacing={0.5}
                   alignItems="center"
                   justifyContent="flex-end"
                   useFlexGap
                   flexWrap="wrap"
-                  sx={{ minWidth: 0, pt: 0.45, mt: 0.1, borderTop: 1, borderColor: 'rgba(46, 68, 94, 0.45)' }}
+                  sx={{ minWidth: 0, gridColumn: { xs: '1 / -1', md: '2 / 4', lg: 'auto' }, px: { xs: 0.2, md: 1 }, py: { xs: 0.45, md: 0 }, borderTop: { xs: 1, md: 0 }, borderLeft: { xs: 0, md: 1 }, borderColor: '#1e3c57' }}
                 >
                   <Tooltip title={canAssignProfile ? '' : assignProfileUnavailableReason || assignProfileFallbackReason} describeChild>
                     <span tabIndex={canAssignProfile ? undefined : 0} aria-label={canAssignProfile ? undefined : assignProfileUnavailableReason || assignProfileFallbackReason}>
-                      <Button size="small" variant="contained" onClick={onAssignProfile} disabled={!canAssignProfile} sx={{ minHeight: 27, px: 0.9, borderRadius: '5px', textTransform: 'none', fontSize: '0.65rem', whiteSpace: 'nowrap', '&.Mui-disabled': { bgcolor: 'rgba(82, 104, 129, 0.14)', color: '#71849b' } }}>
+                      <Button size="small" variant="outlined" onClick={onAssignProfile} disabled={!canAssignProfile} sx={{ minHeight: 28, px: 0.85, borderRadius: '4px', textTransform: 'none', fontSize: '0.64rem', whiteSpace: 'nowrap', borderColor: '#4656a5', bgcolor: 'rgba(80, 84, 255, 0.11)', color: '#c6ccff', '&:hover': { borderColor: '#7280df', bgcolor: 'rgba(80, 84, 255, 0.18)' }, '&.Mui-disabled': { bgcolor: 'rgba(82, 104, 129, 0.08)', color: '#71849b', borderColor: 'rgba(82, 104, 129, 0.2)' } }}>
                         Assign Profile
                       </Button>
                     </span>
                   </Tooltip>
                   <Tooltip title={canTestEncode ? '' : testEncodeUnavailableReason || testEncodeFallbackReason} describeChild>
                     <span tabIndex={canTestEncode ? undefined : 0} aria-label={canTestEncode ? undefined : testEncodeUnavailableReason || testEncodeFallbackReason}>
-                      <Button size="small" variant="outlined" onClick={onTestEncode} disabled={!canTestEncode} sx={{ minHeight: 27, px: 0.9, borderRadius: '5px', textTransform: 'none', fontSize: '0.65rem', whiteSpace: 'nowrap', '&.Mui-disabled': { borderColor: 'rgba(82, 104, 129, 0.28)', color: '#71849b' } }}>
+                      <Button size="small" variant="outlined" onClick={onTestEncode} disabled={!canTestEncode} sx={{ minHeight: 28, px: 0.85, borderRadius: '4px', textTransform: 'none', fontSize: '0.64rem', whiteSpace: 'nowrap', borderColor: '#30465f', color: '#b4c4d7', bgcolor: 'rgba(13, 31, 49, 0.68)', '&:hover': { borderColor: '#58718c', bgcolor: '#122b43' }, '&.Mui-disabled': { bgcolor: 'rgba(82, 104, 129, 0.05)', borderColor: 'rgba(82, 104, 129, 0.18)', color: '#71849b' } }}>
                         Test Encode
                       </Button>
                     </span>
                   </Tooltip>
                   <Tooltip title="More actions">
-                    <IconButton size="small" onClick={(event) => onMore(event.currentTarget)} aria-label={"More actions for " + asset.fileName} sx={{ width: 27, height: 27, border: 1, borderColor: '#33465c', borderRadius: '5px', color: '#aebbd0', '&:hover': { bgcolor: '#1b2a3c', borderColor: '#526b89' } }}>
+                    <IconButton size="small" onClick={(event) => onMore(event.currentTarget)} aria-label={"More actions for " + asset.fileName} sx={{ width: 28, height: 28, border: 1, borderColor: '#30465f', borderRadius: '4px', color: '#9fb1c6', bgcolor: 'rgba(13, 31, 49, 0.68)', '&:hover': { bgcolor: '#122b43', borderColor: '#58718c' } }}>
                       <MoreVertIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
-                </Stack>
-              </Box>
+              </Stack>
             <IconButton
               size="small"
               aria-label={"Collapse selected asset details for " + asset.fileName}
@@ -835,11 +827,12 @@ export function SelectedAssetDetail({
     </Box>
   );
 }
-function DetailValue({ label, value, inline = false }: { label: string; value: string; inline?: boolean }) {
+function DetailValue({ label, value, inline = false, icon, technical = false }: { label: string; value: string; inline?: boolean; icon?: ReactNode; technical?: boolean }) {
   return (
-    <Box sx={{ minWidth: 0, display: inline ? 'flex' : 'block', alignItems: 'baseline', gap: inline ? 0.55 : 0 }} title={`${label}: ${value}`}>
-      <Typography component="div" variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.64rem', lineHeight: 1.15, color: '#8395aa', flexShrink: 0 }}>{label}</Typography>
-      <Typography variant="body2" fontWeight={500} noWrap sx={{ minWidth: 0, maxWidth: '100%', color: '#d8e0ea', fontSize: '0.7rem', lineHeight: 1.25 }}>{value}</Typography>
+    <Box sx={{ minWidth: 0, display: inline ? 'flex' : 'block', alignItems: 'baseline', gap: inline ? 0.42 : 0 }} title={`${label}: ${value}`}>
+      {icon}
+      <Typography component="div" variant="caption" color="text.secondary" noWrap sx={{ fontSize: technical ? '0.57rem' : '0.59rem', lineHeight: 1.15, color: '#8398b0', flexShrink: 0 }}>{label}</Typography>
+      <Typography variant="body2" fontWeight={500} noWrap sx={{ minWidth: 0, maxWidth: '100%', color: technical ? '#bfcee0' : '#d0dbe8', fontSize: technical ? '0.61rem' : '0.64rem', lineHeight: 1.2, fontFamily: technical ? 'ui-monospace, SFMono-Regular, Menlo, monospace' : undefined }}>{value}</Typography>
     </Box>
   );
 }

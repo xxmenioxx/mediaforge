@@ -58,7 +58,7 @@ export function AssetsInventoryTable({ mode, selectable = false, selectAll, chil
   const minWidth = columns.reduce((total, column) => total + column.width, selectionWidth);
 
   return (
-    <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', border: 1, borderColor: '#15304a', borderRadius: '6px', bgcolor: '#04101d' }}>
+    <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', border: 1, borderColor: '#193853', borderRadius: '6px', bgcolor: '#061525' }}>
       <Table
         size="small"
         aria-label={mode === 'raw' ? 'RAW assets' : 'Library assets'}
@@ -68,12 +68,12 @@ export function AssetsInventoryTable({ mode, selectable = false, selectAll, chil
           tableLayout: 'fixed',
           borderCollapse: 'separate',
           borderSpacing: '0 4px',
-          '& th': { height: 34, color: '#59718b', fontSize: '0.64rem', fontWeight: 600, bgcolor: '#091a2c', borderColor: 'rgba(21, 48, 74, 0.62)', whiteSpace: 'nowrap', letterSpacing: '0.015em' },
-          '& td': { borderColor: 'rgba(21, 48, 74, 0.58)', color: '#9cb0c8' },
-          '& td, & th': { py: 0.62, px: 0.8 },
-          '& tbody td': { height: 42 },
-          '& tbody tr:not(.Mui-selected) > td': { bgcolor: '#091a2c', borderTop: '1px solid rgba(21, 48, 74, 0.62)', borderBottom: '1px solid rgba(21, 48, 74, 0.62)' },
-          '& tbody tr:not(.Mui-selected):hover > td': { bgcolor: '#112a44' },
+          '& th': { height: 33, color: '#7890aa', fontSize: '0.61rem', fontWeight: 600, bgcolor: '#081a2b', borderColor: 'rgba(25, 56, 83, 0.68)', whiteSpace: 'nowrap', letterSpacing: '0.015em' },
+          '& td': { borderColor: 'rgba(25, 56, 83, 0.62)', color: '#a9bbd0' },
+          '& td, & th': { py: 0.48, px: 0.72 },
+          '& tbody td': { height: 39 },
+          '& tbody tr:not(.Mui-selected) > td': { bgcolor: '#091b2d', borderTop: '1px solid rgba(25, 56, 83, 0.65)', borderBottom: '1px solid rgba(25, 56, 83, 0.65)' },
+          '& tbody tr:not(.Mui-selected):hover > td': { bgcolor: '#122c46' },
           '& tbody tr > td:first-of-type': { borderTopLeftRadius: '5px', borderBottomLeftRadius: '5px' },
           '& tbody tr > td:last-of-type': { borderTopRightRadius: '5px', borderBottomRightRadius: '5px' },
         }}
