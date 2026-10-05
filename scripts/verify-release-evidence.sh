@@ -13,7 +13,7 @@ archive="$evidence_dir/mvforge-corresponding-source.tar.gz"
 for path in \
   "$archive" "$archive.sha256" \
   "$evidence_dir/LICENSE" "$evidence_dir/NOTICE" "$evidence_dir/LEGAL.md" \
-  "$evidence_dir/THIRD_PARTY_LICENSES.md" \
+  "$evidence_dir/THIRD_PARTY_LICENSES.md" "$evidence_dir/THIRD_PARTY_NOTICES.md" \
   "$evidence_dir/GO_MODULES.txt" "$evidence_dir/GO_LICENSES.csv" \
   "$evidence_dir/GO_LICENSES.md" \
   "$evidence_dir/frontend-NPM-inventory.json" \

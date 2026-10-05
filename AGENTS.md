@@ -73,6 +73,19 @@ Asset/processing rules:
   known lint baseline.
 - Do not claim NAS/production validation unless performed.
 
+## Third-party dependencies and source
+
+Before adding a dependency, copied component, icon pack, font, image, template
+code, or other third-party asset, verify its exact upstream source and license
+and update `THIRD_PARTY_NOTICES.md` for direct frontend dependencies or source
+actually incorporated. Prefer permissive dependencies and MVForge components;
+preserve required notices. Commercial/Pro/Premium material requires explicit
+approval and a license. GPL, AGPL, SSPL, source-available, custom, or unclear
+licenses require review before inclusion. This is a conservative project policy,
+not a blanket legal compatibility conclusion. Software licenses do not
+automatically cover logos, trademarks, branding, screenshots, illustrations,
+demo artwork, or separately licensed fonts.
+
 ## Serena MCP navigation
 
 "Serena" means the configured Serena MCP tools, not the `serena` CLI. Do not

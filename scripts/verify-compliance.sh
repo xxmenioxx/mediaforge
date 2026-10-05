@@ -6,7 +6,7 @@ fail() {
   exit 1
 }
 
-for path in LICENSE NOTICE LEGAL.md THIRD_PARTY_LICENSES.md \
+for path in LICENSE NOTICE LEGAL.md THIRD_PARTY_LICENSES.md THIRD_PARTY_NOTICES.md \
             backend/licenses/NOTICE backend/licenses/THIRD_PARTY_LICENSES.md \
             backend/licenses/MVFORGE-APACHE-2.0.txt \
             backend/licenses/SOURCE-OFFER.md \
@@ -70,6 +70,12 @@ grep -Fq 'LEGAL.md' README.md || fail "README does not link the legal boundaries
 grep -Fq 'Radarr/Sonarr' README.md || fail "README does not position MVForge alongside Radarr/Sonarr"
 grep -Fq 'backend/go.mod' THIRD_PARTY_LICENSES.md || fail "third-party inventory does not identify the backend Go manifest"
 grep -Fq 'frontend/package-lock.json' THIRD_PARTY_LICENSES.md || fail "third-party inventory does not identify the frontend npm lockfile"
+grep -Fq 'frontend/package.json' THIRD_PARTY_NOTICES.md || fail "frontend notice inventory does not identify the direct dependency manifest"
+grep -Fq 'frontend/package-lock.json' THIRD_PARTY_NOTICES.md || fail "frontend notice inventory does not identify the resolved dependency lockfile"
+node -e 'const fs=require("node:fs");const manifest=JSON.parse(fs.readFileSync("frontend/package.json","utf8"));const lock=JSON.parse(fs.readFileSync("frontend/package-lock.json","utf8"));const doc=fs.readFileSync("THIRD_PARTY_NOTICES.md","utf8");const groups=["dependencies","devDependencies","optionalDependencies","peerDependencies"];const entries=groups.flatMap(group=>Object.entries(manifest[group]||{}));const missing=entries.filter(([name,range])=>{const entry=lock.packages?.["node_modules/"+name];const license=String(entry?.license||"");const row="| `"+name+"` | `"+range+"` → `"+(entry?.version||"")+"` | "+license+" |";return !license||/^(UNKNOWN|UNLICENSED|SEE LICENSE IN)/i.test(license)||!doc.includes(row)}).map(([name])=>name);console.log("npm direct dependency audit: "+entries.length+" packages, "+missing.length+" missing license metadata or current notice rows");if(missing.length){console.error(missing.join("\n"));process.exit(1)}'
+if grep -R -n -E '@mui/x-[[:alnum:]_-]*(pro|premium)' frontend/src frontend/package.json frontend/package-lock.json; then
+  fail "MUI X Pro/Premium imports or dependencies require explicit license review"
+fi
 
 python3 -c 'import json,sys; lock=json.load(open("frontend/package-lock.json", encoding="utf-8")); packages=[(name,entry) for name,entry in lock.get("packages",{}).items() if name.startswith("node_modules/")]; missing=[name for name,entry in packages if not entry.get("license")]; print(f"npm lock license metadata: {len(packages)} resolved packages, {len(missing)} missing"); sys.exit(bool(missing) or not packages)'
 node frontend/scripts/generate-license-inventory.mjs --check --require-complete || fail "npm runtime license evidence is stale or incomplete"
@@ -95,7 +101,7 @@ grep -Fq 'verify-image-attestations.sh' .github/workflows/release-images.yml || 
 [[ -x scripts/capture-frontend-compliance-evidence.sh ]] || fail "frontend image evidence capture is not executable"
 grep -Fq -- '-buildconf' scripts/capture-backend-compliance-evidence.sh || fail "backend evidence capture omits ffmpeg -buildconf"
 grep -Fq 'ldd /opt/ffmpeg/lib/libavcodec.so' scripts/capture-backend-compliance-evidence.sh || fail "backend evidence capture omits FFmpeg linkage"
-for notice in LICENSE NOTICE LEGAL.md THIRD_PARTY_LICENSES.md; do
+for notice in LICENSE NOTICE LEGAL.md THIRD_PARTY_LICENSES.md THIRD_PARTY_NOTICES.md; do
   grep -Fq "$notice" .github/workflows/release-images.yml || fail "release workflow omits $notice"
 done
 
