@@ -68,6 +68,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.GET("/logs/files", logs.ListFiles)
 		api.GET("/logs/files/:name", logs.ReadFile)
 		api.GET("/assets", assets.List)
+		api.GET("/assets/:assetId/thumbnail", assets.Thumbnail)
 		api.GET("/source-groups", assetConfiguration.ListSourceGroups)
 		api.POST("/source-groups/:id", assetConfiguration.UpdateSourceGroup)
 		api.GET("/asset-scope-configurations", assetConfiguration.ListScopeConfigurations)

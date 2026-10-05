@@ -23,7 +23,10 @@ import { api } from '../api/client';
 import { AssetsPage, ReportsPage } from './AssetsPage';
 import { assetLabHref } from '../components/assetsActionRoutes';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 const path = '/media/library/anime/Series/Season 01';
 
@@ -261,6 +264,35 @@ describe('Library Assets workspace', () => {
     vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => effectiveConfigurationsForIds(assetIds) as never);
     vi.mocked(api.createQueueJob).mockResolvedValue({ id: 99 } as never);
     vi.mocked(api.createQueueBatchPreflight).mockResolvedValue({ id: 'candidate-1' } as never);
+  });
+
+  it('creates no row thumbnail requests and only one image request per selected asset', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.assets).mockResolvedValue(inventory(Array.from({ length: 12 }, (_, index) => asset(index + 1, `Episode ${index + 1}.mkv`))));
+    // Each new/changed image src initiates the browser request. jsdom does not
+    // fetch images, so observe that boundary directly rather than mock fetch.
+    const imageAttributes = vi.spyOn(HTMLImageElement.prototype, 'setAttribute');
+    const thumbnailRequests = () => imageAttributes.mock.calls
+      .filter(([name, value]) => name === 'src' && value.endsWith('/thumbnail'))
+      .map(([, value]) => value);
+    const { queryClient } = renderLibraryPage();
+    const row = (await screen.findByText('Episode 1.mkv')).closest('tr')!;
+    expect(thumbnailRequests()).toEqual([]);
+    expect(screen.queryByTestId('selected-asset-detail')).toBeNull();
+    expect(screen.getByRole('table', { name: 'Library assets' }).querySelectorAll('img')).toHaveLength(0);
+
+    await user.click(row);
+    const image = await screen.findByRole('img', { name: 'Episode 1.mkv artwork' });
+    expect(thumbnailRequests()).toEqual(['/api/assets/1/thumbnail']);
+    fireEvent.error(image);
+    expect(screen.getByRole('img', { name: 'MVForge artwork placeholder for Episode 1.mkv' })).toBeTruthy();
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['assets'] }); });
+    expect(thumbnailRequests()).toEqual(['/api/assets/1/thumbnail']);
+
+    await user.click(screen.getByText('Episode 2.mkv'));
+    expect(await screen.findByRole('img', { name: 'Episode 2.mkv artwork' })).toBeTruthy();
+    expect(thumbnailRequests()).toEqual(['/api/assets/1/thumbnail', '/api/assets/2/thumbnail']);
+    expect(screen.getByRole('table', { name: 'Library assets' }).querySelectorAll('img')).toHaveLength(0);
   });
 
   it('uses the batched global effective profile for Library labels, Advisor keys, and Test Encode', async () => {
@@ -835,6 +867,24 @@ describe('RAW Assets workspace', () => {
     vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => effectiveConfigurationsForIds(assetIds) as never);
     vi.mocked(api.createQueueJob).mockResolvedValue({ id: 99 } as never);
     vi.mocked(api.createQueueBatchPreflight).mockResolvedValue({ id: 'candidate-1' } as never);
+  });
+
+  it('loads artwork for the one selected RAW identity and keeps every RAW row image-free', async () => {
+    const user = userEvent.setup();
+    const imageAttributes = vi.spyOn(HTMLImageElement.prototype, 'setAttribute');
+    const thumbnailRequests = () => imageAttributes.mock.calls
+      .filter(([name, value]) => name === 'src' && value.endsWith('/thumbnail'))
+      .map(([, value]) => value);
+    renderRawPage();
+    const table = await screen.findByRole('table', { name: 'RAW assets' });
+    const selected = await screen.findByRole('img', { name: 'S01E01.mkv artwork' });
+    expect(selected.getAttribute('src')).toBe('/api/assets/11/thumbnail');
+    expect(thumbnailRequests()).toEqual(['/api/assets/11/thumbnail']);
+    expect(table.querySelectorAll('img')).toHaveLength(0);
+    await user.click(within(table).getByText('Trailer.mkv'));
+    expect(await screen.findByRole('img', { name: 'Trailer.mkv artwork' })).toBeTruthy();
+    expect(thumbnailRequests()).toEqual(['/api/assets/11/thumbnail', '/api/assets/12/thumbnail']);
+    expect(table.querySelectorAll('img')).toHaveLength(0);
   });
 
   it('selects only visible RAW assets through the shared header checkbox', async () => {

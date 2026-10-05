@@ -793,6 +793,7 @@ export const api = {
   snapshotOperations: (path: string) =>
     request<{ operations: SnapshotOperation[] }>(`/api/scan/operations?path=${encodeURIComponent(path)}`),
   assetPreviewUrl: (path: string) => `${API_BASE_URL}/api/assets/preview?path=${encodeURIComponent(path)}`,
+  assetThumbnailUrl: (assetId: number) => `${API_BASE_URL}/api/assets/${encodeURIComponent(assetId)}/thumbnail`,
   createCompatiblePreviewRequest: async (options: CompatiblePreviewOptions, signal?: AbortSignal) => {
     const created = await request<CompatiblePreviewRequest>('/api/assets/preview/compatible/requests', {
       method: 'POST',

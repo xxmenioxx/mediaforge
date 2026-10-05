@@ -34,6 +34,7 @@ import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, RuntimeState, ScanResult } from '../api/types';
+import { api } from '../api/client';
 import { mvforgeTokens } from '../theme/theme';
 import { buildLibraryTree, buildRawHierarchy, formatDurationSummary, type LibraryTreeNode, type LibraryTreeSelection, type RawHierarchyNode, type RawHierarchySelection } from './assetsWorkspaceModel';
 import { RuntimeStorageSummary } from './RuntimeStorageSummary';
@@ -481,10 +482,22 @@ export function AssetsHierarchyPanel({ sourceGroups, groups, libraries, location
   );
 }
 
-export function SelectedAssetArtwork({ fileName }: { fileName: string }) {
+export function SelectedAssetArtwork({ fileName, thumbnailUrl }: { fileName: string; thumbnailUrl?: string }) {
+  const [failedUrl, setFailedUrl] = useState<string>();
+  const available = Boolean(thumbnailUrl && thumbnailUrl !== failedUrl);
   return (
     <Box sx={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
-      <Box
+      {available ? (
+        <Box
+          component="img"
+          key={thumbnailUrl}
+          src={thumbnailUrl}
+          alt={`${fileName} artwork`}
+          data-artwork-source="thumbnail"
+          onError={() => setFailedUrl(thumbnailUrl)}
+          sx={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      ) : <Box
         role="img"
         aria-label={`MVForge artwork placeholder for ${fileName}`}
         data-artwork-source="placeholder"
@@ -503,7 +516,7 @@ export function SelectedAssetArtwork({ fileName }: { fileName: string }) {
         >
           Artwork unavailable
         </Typography>
-      </Box>
+      </Box>}
     </Box>
   );
 }
@@ -681,7 +694,11 @@ export function SelectedAssetDetail({
                     '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 2 },
                   }}
                 >
-                  <SelectedAssetArtwork fileName={asset.fileName} />
+                  <SelectedAssetArtwork
+                    key={asset.id ?? asset.path}
+                    fileName={asset.fileName}
+                    thumbnailUrl={asset.id && !asset.missing ? api.assetThumbnailUrl(asset.id) : undefined}
+                  />
                   <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', bgcolor: 'rgba(0,0,0,0.18)' }}>
                     <PlayCircleOutlineIcon sx={{ fontSize: { xs: 26, sm: 34 }, filter: 'drop-shadow(0 2px 8px rgba(0,0,0,.7))' }} />
                   </Box>
