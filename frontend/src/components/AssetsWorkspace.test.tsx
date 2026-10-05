@@ -310,7 +310,7 @@ describe('Assets workspace presentation', () => {
     expect(screen.queryByRole('img', { name: 'Episode 01.mkv artwork' })).toBeNull();
   });
 
-  it('keeps the selected asset in the four-zone Figma composition', async () => {
+  it('keeps the selected asset in the fe48377 detail composition', async () => {
     const user = userEvent.setup();
     const play = vi.fn();
     const assignProfile = vi.fn();
@@ -328,8 +328,8 @@ describe('Assets workspace presentation', () => {
     const identity = screen.getByTestId('selected-asset-identity');
     const information = screen.getByTestId('selected-asset-information');
     const media = within(screen.getByTestId('selected-asset-technical'));
-    const statusColumn = screen.getByTestId('selected-asset-context');
-    const technicalActions = screen.getByTestId('selected-asset-technical-actions');
+    const contextTechnical = screen.getByTestId('selected-asset-context-technical');
+    const stateContext = screen.getByTestId('selected-asset-state-context');
     expect(getComputedStyle(details).position).toBe('sticky');
     expect(getComputedStyle(details).bottom).toBe('0px');
     expect(getComputedStyle(preview).aspectRatio.replace(/\s/g, '')).toBe('16/10');
@@ -343,9 +343,12 @@ describe('Assets workspace presentation', () => {
     expect(information.contains(screen.getByTestId('selected-asset-technical'))).toBe(false);
     expect(details.contains(screen.getByTestId('selected-asset-state-context'))).toBe(true);
     expect(details.contains(screen.getByTestId('selected-asset-technical'))).toBe(true);
-    expect(statusColumn.contains(screen.getByTestId('selected-asset-state-context'))).toBe(true);
-    expect(statusColumn.contains(screen.getByTestId('selected-asset-technical'))).toBe(false);
-    expect(technicalActions.contains(screen.getByTestId('selected-asset-technical'))).toBe(true);
+    expect(contextTechnical.contains(stateContext)).toBe(true);
+    expect(contextTechnical.contains(screen.getByTestId('selected-asset-technical'))).toBe(true);
+    expect(contextTechnical.contains(screen.getByTestId('selected-asset-actions'))).toBe(false);
+    expect(within(details).queryByTestId('selected-asset-context')).toBeNull();
+    expect(within(details).queryByTestId('selected-asset-technical-actions')).toBeNull();
+    expect(getComputedStyle(stateContext).gridTemplateColumns.replace(/\s/g, '').replace(/0px/g, '0')).toBe('repeat(2,minmax(0,1fr))');
     const quickFacts = within(screen.getByTestId('selected-asset-quick-facts'));
     expect(quickFacts.getByLabelText('Category / Library: Anime')).toBeTruthy();
     expect(quickFacts.getByText('Anime')).toBeTruthy();
@@ -389,7 +392,8 @@ describe('Assets workspace presentation', () => {
     const moreButton = within(details).getByRole('button', { name: 'More actions for Episode 01.mkv' });
     expect(within(details).queryByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
     expect(within(details).getAllByText('23m 40s')).toHaveLength(2);
-    expect(technicalActions.contains(actions)).toBe(true);
+    expect(details.contains(actions)).toBe(true);
+    expect(contextTechnical.contains(actions)).toBe(false);
     expect(actions.contains(within(details).getByRole('button', { name: 'Assign Profile' }))).toBe(true);
     expect(actions.contains(moreButton)).toBe(true);
 
