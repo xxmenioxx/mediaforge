@@ -12,6 +12,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
+import type { Theme } from '@mui/material/styles';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import FolderIcon from '@mui/icons-material/Folder';
 import VideoLibraryIcon from '@mui/icons-material/VideoLibrary';
@@ -32,6 +33,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import packageJson from '../../package.json';
+import { getMVForgeTokens } from '../theme/theme';
 
 type NavItem = {
   label: string;
@@ -85,6 +87,47 @@ const navSections: NavSection[] = [
 const expandedWidth = 248;
 const collapsedWidth = 68;
 
+function navigationItemSx(isExpanded: boolean, isMobile = false) {
+  return (theme: Theme) => {
+    const tokens = getMVForgeTokens(theme);
+    return {
+      borderRadius: 1,
+      mb: 0.2,
+      minHeight: 40,
+      justifyContent: isExpanded ? 'flex-start' : 'center',
+      color: tokens.colors.text.secondary,
+      px: isMobile ? 2 : isExpanded ? 1.15 : 0.75,
+      '&:hover': {
+        bgcolor: tokens.interaction.hoverBackground,
+        color: tokens.colors.text.primary,
+      },
+      '&.active': {
+        background: tokens.interaction.selectedBackground,
+        color: tokens.colors.text.primary,
+        boxShadow: `inset 3px 0 ${tokens.colors.accent.violet}`,
+      },
+      '&:focus-visible': {
+        outline: `2px solid ${tokens.interaction.focus}`,
+        outlineOffset: -2,
+      },
+    };
+  };
+}
+
+function navigationSectionLabelSx(theme: Theme) {
+  const tokens = getMVForgeTokens(theme);
+  return {
+    display: 'block',
+    px: 1.25,
+    py: 0.55,
+    color: tokens.colors.text.muted,
+    fontWeight: 700,
+    fontSize: tokens.typography.tertiary,
+    letterSpacing: '0.055em',
+    textTransform: 'uppercase',
+  } as const;
+}
+
 function isNavigationItemActive(item: NavItem, pathname: string): boolean {
   const itemPath = item.path.split('?')[0];
   if (itemPath === '/') return pathname === '/';
@@ -129,7 +172,7 @@ export function AppLayout() {
   const drawerWidth = isExpanded ? expandedWidth : collapsedWidth;
 
   return (
-    <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
+    <Box sx={{ display: 'flex', width: '100%', minHeight: '100vh', bgcolor: 'background.default' }}>
       <Box
         component="header"
         sx={{
@@ -140,9 +183,9 @@ export function AppLayout() {
           px: 1.25,
           alignItems: 'center',
           gap: 1,
-          bgcolor: '#081a2b',
+          bgcolor: (theme) => getMVForgeTokens(theme).colors.surface,
           borderBottom: 1,
-          borderColor: '#183853',
+          borderColor: (theme) => getMVForgeTokens(theme).colors.border.subtle,
           zIndex: (theme) => theme.zIndex.appBar,
         }}
       >
@@ -150,7 +193,7 @@ export function AppLayout() {
           <MenuIcon />
         </IconButton>
         <BrandMark size={30} />
-        <Typography variant="h2" noWrap sx={{ fontSize: '1.05rem', letterSpacing: '0.01em' }}>MVForge</Typography>
+        <Typography variant="h2" noWrap sx={{ fontSize: (theme) => getMVForgeTokens(theme).typography.pageHeading, letterSpacing: '0.01em' }}>MVForge</Typography>
         <Typography color="text.secondary" variant="caption" noWrap sx={{ ml: 'auto' }}>v{packageJson.version}</Typography>
       </Box>
       <Drawer
@@ -158,19 +201,28 @@ export function AppLayout() {
         onClose={() => setMobileOpen(false)}
         variant="temporary"
         ModalProps={{ keepMounted: true }}
-        sx={{ display: { xs: 'block', md: 'none' }, '& .MuiDrawer-paper': { width: 280, maxWidth: '88vw' } }}
+        sx={{
+          display: { xs: 'block', md: 'none' },
+          '& .MuiDrawer-paper': {
+            width: 280,
+            maxWidth: '88vw',
+            bgcolor: (theme) => getMVForgeTokens(theme).colors.workspace,
+            color: (theme) => getMVForgeTokens(theme).colors.text.primary,
+            borderColor: (theme) => getMVForgeTokens(theme).colors.border.default,
+          },
+        }}
       >
         <Stack sx={{ height: '100%' }}>
           <Toolbar sx={{ minHeight: 56, px: 1.5, gap: 1 }}>
             <BrandMark size={30} />
-            <Typography variant="h2" sx={{ fontSize: '1.05rem', flex: 1 }}>MVForge</Typography>
+            <Typography variant="h2" sx={{ fontSize: (theme) => getMVForgeTokens(theme).typography.pageHeading, flex: 1 }}>MVForge</Typography>
             <IconButton aria-label="Close navigation" onClick={() => setMobileOpen(false)}><CloseIcon /></IconButton>
           </Toolbar>
           <Divider />
           <List sx={{ px: 1, py: 1, flex: 1, overflowY: 'auto' }}>
             {navSections.map((section) => (
               <Box key={section.label} sx={{ mb: 1 }}>
-                <Typography color="text.secondary" variant="caption" sx={{ display: 'block', px: 1.25, py: 0.55, fontWeight: 700, fontSize: '0.68rem', letterSpacing: '0.055em', textTransform: 'uppercase' }}>
+                <Typography variant="caption" sx={navigationSectionLabelSx}>
                   {section.label}
                 </Typography>
                 {section.items.map((item) => (
@@ -181,17 +233,17 @@ export function AppLayout() {
                     end={item.path === '/'}
                     className={isNavigationItemActive(item, location.pathname) ? 'active' : ''}
                     onClick={() => setMobileOpen(false)}
-                    sx={{ borderRadius: 1, mb: 0.15, minHeight: 40, color: 'text.secondary', '&.active': { background: 'linear-gradient(90deg, rgba(108, 76, 246, 0.4), rgba(58, 41, 168, 0.75))', color: '#c3c5ff', boxShadow: 'inset 3px 0 #6c4cf6' } }}
+                    sx={navigationItemSx(true, true)}
                   >
                     <ListItemIcon sx={{ color: 'inherit', minWidth: 40 }}>{item.icon}</ListItemIcon>
-                    <ListItemText primary={item.label} />
+                    <ListItemText primary={item.label} primaryTypographyProps={{ noWrap: true, sx: { fontSize: (theme: Theme) => getMVForgeTokens(theme).typography.compactBody } }} />
                   </ListItemButton>
                 ))}
               </Box>
             ))}
           </List>
           <Divider />
-          <Typography color="text.secondary" variant="caption" sx={{ p: 2 }}>Media & Video Forge · v{packageJson.version}</Typography>
+          <Typography color="text.secondary" variant="caption" sx={{ p: 2, fontSize: (theme) => getMVForgeTokens(theme).typography.tertiary }}>Media & Video Forge · v{packageJson.version}</Typography>
         </Stack>
       </Drawer>
       <Box
@@ -206,8 +258,8 @@ export function AppLayout() {
           left: 0,
           zIndex: (theme) => theme.zIndex.drawer + 10,
           borderRight: 1,
-          borderColor: '#183853',
-          bgcolor: '#081a2b',
+          borderColor: (theme) => getMVForgeTokens(theme).colors.border.default,
+          bgcolor: (theme) => getMVForgeTokens(theme).colors.workspace,
           display: { xs: 'none', md: 'block' },
           overflowX: 'hidden',
           transition: 'width 160ms ease',
@@ -225,8 +277,8 @@ export function AppLayout() {
             {isExpanded ? <BrandMark size={32} /> : null}
             {isExpanded ? (
               <Stack spacing={0} sx={{ minWidth: 0 }}>
-                <Typography variant="h2" noWrap sx={{ fontSize: '1rem', lineHeight: 1.2, letterSpacing: '0.01em' }}>MVForge</Typography>
-                <Typography color="text.secondary" variant="caption" noWrap sx={{ fontSize: '0.66rem' }}>MEDIA WORKSPACE</Typography>
+                <Typography variant="h2" noWrap sx={{ fontSize: (theme) => getMVForgeTokens(theme).typography.pageHeading, lineHeight: 1.2, letterSpacing: '0.01em' }}>MVForge</Typography>
+                <Typography color="text.secondary" variant="caption" noWrap sx={{ fontSize: (theme) => getMVForgeTokens(theme).typography.tertiary }}>MEDIA WORKSPACE</Typography>
               </Stack>
             ) : (
               <Tooltip title="MVForge" placement="right"><Box><BrandMark size={34} /></Box></Tooltip>
@@ -237,11 +289,7 @@ export function AppLayout() {
             {navSections.map((section) => (
               <Box key={section.label} sx={{ mb: isExpanded ? 1.1 : 0.4 }}>
                 {isExpanded ? (
-                  <Typography
-                    color="text.secondary"
-                    variant="caption"
-                    sx={{ display: 'block', px: 1.25, py: 0.55, fontWeight: 700, fontSize: '0.66rem', letterSpacing: '0.055em', textTransform: 'uppercase' }}
-                  >
+                  <Typography variant="caption" sx={navigationSectionLabelSx}>
                     {section.label}
                   </Typography>
                 ) : null}
@@ -253,20 +301,7 @@ export function AppLayout() {
                       to={item.path}
                       end={item.path === '/'}
                       className={isNavigationItemActive(item, location.pathname) ? 'active' : ''}
-                      sx={{
-                        borderRadius: 1,
-                        mb: 0.2,
-                        minHeight: 40,
-                        justifyContent: isExpanded ? 'flex-start' : 'center',
-                        color: 'text.secondary',
-                        px: isExpanded ? 1.15 : 0.75,
-                        '&.active': {
-                          background: 'linear-gradient(90deg, rgba(108, 76, 246, 0.4), rgba(58, 41, 168, 0.75))',
-                          color: '#c3c5ff',
-                          boxShadow: 'inset 3px 0 #6c4cf6',
-                        },
-                        '&:hover': { bgcolor: 'rgba(17, 42, 68, 0.72)', color: '#e7eef8' },
-                      }}
+                      sx={navigationItemSx(isExpanded)}
                     >
                       <ListItemIcon
                         sx={{
@@ -277,7 +312,7 @@ export function AppLayout() {
                       >
                         {item.icon}
                       </ListItemIcon>
-                      {isExpanded ? <ListItemText primary={item.label} primaryTypographyProps={{ noWrap: true }} /> : null}
+                      {isExpanded ? <ListItemText primary={item.label} primaryTypographyProps={{ noWrap: true, sx: { fontSize: (theme: Theme) => getMVForgeTokens(theme).typography.compactBody } }} /> : null}
                     </ListItemButton>
                   );
 
@@ -294,13 +329,13 @@ export function AppLayout() {
           </List>
           <Divider />
           <Box sx={{ px: isExpanded ? 2 : 1, py: 1.25, textAlign: isExpanded ? 'left' : 'center' }}>
-            <Typography color="text.secondary" variant="caption" noWrap sx={{ fontSize: '0.64rem' }}>
+            <Typography color="text.secondary" variant="caption" noWrap sx={{ fontSize: (theme) => getMVForgeTokens(theme).typography.tertiary }}>
               {isExpanded ? `MVForge · Media & Video Forge · v${packageJson.version}` : `v${packageJson.version}`}
             </Typography>
           </Box>
         </Stack>
       </Box>
-      <Box component="main" sx={{ flex: 1, minWidth: 0, ml: { md: `${collapsedWidth}px` }, pt: { xs: '56px', md: 0 }, maxWidth: '100%' }}>
+      <Box component="main" sx={{ flex: 1, width: '100%', minWidth: 0, ml: { md: `${collapsedWidth}px` }, pt: { xs: '56px', md: 0 }, maxWidth: '100%', bgcolor: 'background.default' }}>
         <Outlet />
       </Box>
     </Box>

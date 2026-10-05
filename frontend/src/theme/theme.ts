@@ -1,4 +1,4 @@
-import { alpha, createTheme } from '@mui/material/styles';
+import { alpha, createTheme, type Theme } from '@mui/material/styles';
 
 const selectedSurface = 'rgba(58, 43, 164, 0.56)';
 
@@ -73,6 +73,10 @@ declare module '@mui/material/styles' {
   interface ThemeOptions {
     mvforge?: MVForgeThemeTokens;
   }
+}
+
+export function getMVForgeTokens(currentTheme: Partial<Theme> = {}): MVForgeThemeTokens {
+  return currentTheme.mvforge ?? mvforgeTokens;
 }
 
 export const theme = createTheme({
