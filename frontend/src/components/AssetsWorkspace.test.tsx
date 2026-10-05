@@ -310,7 +310,7 @@ describe('Assets workspace presentation', () => {
     expect(screen.queryByRole('img', { name: 'Episode 01.mkv artwork' })).toBeNull();
   });
 
-  it('keeps required status, profile, subtitle, audio, technical, and action details in the compact Figma composition', async () => {
+  it('keeps the selected asset in the four-zone Figma composition', async () => {
     const user = userEvent.setup();
     const play = vi.fn();
     const assignProfile = vi.fn();
@@ -328,7 +328,8 @@ describe('Assets workspace presentation', () => {
     const identity = screen.getByTestId('selected-asset-identity');
     const information = screen.getByTestId('selected-asset-information');
     const media = within(screen.getByTestId('selected-asset-technical'));
-    const contextTechnical = screen.getByTestId('selected-asset-context-technical');
+    const statusColumn = screen.getByTestId('selected-asset-context');
+    const technicalActions = screen.getByTestId('selected-asset-technical-actions');
     expect(getComputedStyle(details).position).toBe('sticky');
     expect(getComputedStyle(details).bottom).toBe('0px');
     expect(getComputedStyle(preview).aspectRatio.replace(/\s/g, '')).toBe('16/10');
@@ -342,8 +343,9 @@ describe('Assets workspace presentation', () => {
     expect(information.contains(screen.getByTestId('selected-asset-technical'))).toBe(false);
     expect(details.contains(screen.getByTestId('selected-asset-state-context'))).toBe(true);
     expect(details.contains(screen.getByTestId('selected-asset-technical'))).toBe(true);
-    expect(contextTechnical.contains(screen.getByTestId('selected-asset-state-context'))).toBe(true);
-    expect(contextTechnical.contains(screen.getByTestId('selected-asset-technical'))).toBe(true);
+    expect(statusColumn.contains(screen.getByTestId('selected-asset-state-context'))).toBe(true);
+    expect(statusColumn.contains(screen.getByTestId('selected-asset-technical'))).toBe(false);
+    expect(technicalActions.contains(screen.getByTestId('selected-asset-technical'))).toBe(true);
     const quickFacts = within(screen.getByTestId('selected-asset-quick-facts'));
     expect(quickFacts.getByLabelText('Category / Library: Anime')).toBeTruthy();
     expect(quickFacts.getByText('Anime')).toBeTruthy();
@@ -355,6 +357,7 @@ describe('Assets workspace presentation', () => {
     expect(context.getByText('2 embedded tracks')).toBeTruthy();
     expect(context.getByText('Duration')).toBeTruthy();
     expect(context.getByText('Modified')).toBeTruthy();
+    expect(context.getAllByText(/^(Profile|Subtitles|Duration|Modified)$/)).toHaveLength(4);
     expect(within(details).getByTestId('selected-asset-status').getAttribute('aria-label')).toBe('Status: Library');
     expect(quickFacts.getByLabelText('Size: 1.5 MB')).toBeTruthy();
     expect(quickFacts.getByLabelText('Resolution: 1920 × 1080')).toBeTruthy();
@@ -376,12 +379,17 @@ describe('Assets workspace presentation', () => {
     expect(within(details).queryByText('Status / context')).toBeNull();
     const actions = screen.getByRole('group', { name: 'Selected asset actions' });
     expect(actions).toBe(screen.getByTestId('selected-asset-actions'));
+    expect(within(actions).getAllByRole('button').map((button) => button.getAttribute('aria-label') || button.textContent?.trim())).toEqual([
+      'Assign Profile',
+      'Test Encode',
+      'More actions for Episode 01.mkv',
+    ]);
     expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
     expect(within(details).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
     const moreButton = within(details).getByRole('button', { name: 'More actions for Episode 01.mkv' });
     expect(within(details).queryByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
     expect(within(details).getAllByText('23m 40s')).toHaveLength(2);
-    expect(screen.getByTestId('selected-asset-technical').contains(actions)).toBe(false);
+    expect(technicalActions.contains(actions)).toBe(true);
     expect(actions.contains(within(details).getByRole('button', { name: 'Assign Profile' }))).toBe(true);
     expect(actions.contains(moreButton)).toBe(true);
 
