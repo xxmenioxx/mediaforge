@@ -14,6 +14,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
 import AddIcon from '@mui/icons-material/Add';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
@@ -33,6 +34,7 @@ import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, RuntimeState, ScanResult } from '../api/types';
+import { mvforgeTokens } from '../theme/theme';
 import { buildLibraryTree, buildRawHierarchy, formatDurationSummary, type LibraryTreeNode, type LibraryTreeSelection, type RawHierarchyNode, type RawHierarchySelection } from './assetsWorkspaceModel';
 import { RuntimeStorageSummary } from './RuntimeStorageSummary';
 
@@ -70,11 +72,13 @@ export function AssetsSummaryStrip({ total, processing, completed, needsReview }
   completed: number;
   needsReview: number;
 }) {
+  const theme = useTheme();
+  const tokens = theme.mvforge ?? mvforgeTokens;
   const items = [
-    { label: 'Total Assets', value: total, icon: <StorageOutlinedIcon />, color: '#55a0ff', tint: '#0b3152' },
-    { label: 'Processing', value: processing, icon: <AutorenewOutlinedIcon />, color: '#a78bfa', tint: '#27175d' },
-    { label: 'Completed', value: completed, icon: <TaskAltOutlinedIcon />, color: '#00d99b', tint: '#073d35' },
-    { label: 'Needs Review', value: needsReview, icon: <ReportProblemOutlinedIcon />, color: '#ff4e6a', tint: '#481827' },
+    { label: 'Total Assets', value: total, icon: <StorageOutlinedIcon />, color: tokens.colors.accent.primary, tint: tokens.colors.status.infoSurface },
+    { label: 'Processing', value: processing, icon: <AutorenewOutlinedIcon />, color: tokens.colors.accent.secondary, tint: tokens.colors.accent.secondarySurface },
+    { label: 'Completed', value: completed, icon: <TaskAltOutlinedIcon />, color: tokens.colors.status.success, tint: tokens.colors.status.successSurface },
+    { label: 'Needs Review', value: needsReview, icon: <ReportProblemOutlinedIcon />, color: tokens.colors.status.error, tint: tokens.colors.status.errorSurface },
   ] as const;
 
   return (
@@ -100,9 +104,9 @@ export function AssetsSummaryStrip({ total, processing, completed, needsReview }
             px: { xs: 0.9, sm: 1.6 },
             py: 1.1,
             borderRadius: 1.25,
-            bgcolor: 'background.paper',
-            borderColor: 'divider',
-            background: 'linear-gradient(135deg, #091a2c, rgba(9, 26, 44, 0.72))',
+            bgcolor: tokens.colors.surface,
+            borderColor: tokens.colors.border.subtle,
+            background: `linear-gradient(135deg, ${tokens.colors.surface}, ${alpha(tokens.colors.surface, 0.72)})`,
             boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
           }}
         >
@@ -120,8 +124,8 @@ export function AssetsSummaryStrip({ total, processing, completed, needsReview }
             {icon}
           </Box>
           <Stack spacing={0.15} sx={{ minWidth: 0 }}>
-            <Typography variant="caption" color="text.secondary" noWrap sx={{ fontSize: '0.75rem', color: '#9cb0c8' }}>{label}</Typography>
-            <Typography variant="h2" fontWeight={700} aria-label={`${label}: ${value}`} sx={{ fontSize: { xs: '1.1rem', sm: '1.3rem' }, lineHeight: 1.1, color: '#e7eef8' }}>
+            <Typography variant="caption" noWrap sx={{ fontSize: tokens.typography.supporting, color: tokens.colors.text.secondary }}>{label}</Typography>
+            <Typography variant="h2" fontWeight={700} aria-label={`${label}: ${value}`} sx={{ fontSize: { xs: '1.1rem', sm: '1.3rem' }, lineHeight: 1.1, color: tokens.colors.text.primary }}>
               {value.toLocaleString()}
             </Typography>
           </Stack>
