@@ -1,13 +1,28 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ComponentProps, ReactNode } from 'react';
 import type { Asset, AssetGroup, AssetSourceGroup, Library, ScanResult } from '../api/types';
-import { AssetsHierarchyPanel, AssetsSummaryStrip, SelectedAssetDetail } from './AssetsWorkspace';
+import {
+  ASSETS_HIERARCHY_DEFAULT_WIDTH,
+  ASSETS_HIERARCHY_MAX_WIDTH,
+  ASSETS_HIERARCHY_MIN_WIDTH,
+  ASSETS_HIERARCHY_WIDTH_STORAGE_KEY,
+  AssetsHierarchyPanel,
+  AssetsSummaryStrip,
+  SelectedAssetArtwork,
+  SelectedAssetDetail,
+} from './AssetsWorkspace';
 import { buildLibraryTree, buildRawHierarchy } from './assetsWorkspaceModel';
 
 afterEach(cleanup);
+
+function render(ui: ReactNode) {
+  return rtlRender(ui, { wrapper: MemoryRouter });
+}
 
 function makeAsset(overrides: Partial<Asset> = {}): Asset {
   return {
@@ -69,6 +84,31 @@ const scan = {
   compatibilityAnalysis: { overall: 'client_dependent' },
 } as unknown as ScanResult;
 
+function selectedAssetDetailProps(overrides: Partial<ComponentProps<typeof SelectedAssetDetail>> = {}): ComponentProps<typeof SelectedAssetDetail> {
+  return {
+    asset: makeAsset(),
+    pathContext: 'Series/Season 01',
+    categoryLabel: 'Anime',
+    containerLabel: 'matroska',
+    snapshot: scan,
+    snapshotLoading: false,
+    statusLabel: 'Library',
+    statusColor: 'default',
+    assignedProfileLabel: 'Anime Main V2',
+    modifiedLabel: 'Sep 30, 2026',
+    sizeLabel: '1.5 MB',
+    assignProfileUnavailableReason: 'Profile assignment is unavailable for this asset in its current Library lifecycle.',
+    testEncodeUnavailableReason: 'Test Encode is unavailable for this asset in its current lifecycle.',
+    onPlayPreview: vi.fn(),
+    onAssignProfile: vi.fn(),
+    onTestEncode: vi.fn(),
+    onMore: vi.fn(),
+    canAssignProfile: true,
+    canTestEncode: true,
+    ...overrides,
+  };
+}
+
 describe('Assets workspace presentation', () => {
   it('renders compact canonical inventory summaries', () => {
     render(<AssetsSummaryStrip total={220} processing={3} completed={140} needsReview={4} />);
@@ -109,23 +149,29 @@ describe('Assets workspace presentation', () => {
       onSelectRaw={onSelectRaw}
       onSelectLibrary={onSelectLibrary}
     />);
-    const hierarchy = screen.getByRole('tree', { name: 'Assets hierarchy' });
+    const hierarchy = screen.getByRole('tree', { name: 'Asset Library' });
     const topLevelItems = within(hierarchy).getAllByRole('treeitem').filter((item) => item.getAttribute('aria-level') === '1');
-    expect(topLevelItems[0].getAttribute('aria-label')).toBe('RAW source inventory');
-    expect(topLevelItems.slice(1).map((item) => item.textContent?.trim())).toEqual(['Anime', 'Movies']);
+    expect(topLevelItems.map((item) => item.getAttribute('aria-label'))).toEqual(['RAW', 'Libraries']);
+    const libraryGroup = topLevelItems[1]!.parentElement?.querySelector<HTMLElement>('[role="group"]');
+    const libraryRoots = within(libraryGroup!).getAllByRole('treeitem').filter((item) => item.getAttribute('aria-level') === '2');
+    expect(libraryRoots.map((item) => item.getAttribute('aria-label'))).toEqual(['Anime', 'Movies']);
     expect(within(hierarchy).queryByRole('treeitem', { name: 'Converted' })).toBeNull();
     expect(within(hierarchy).queryByRole('treeitem', { name: 'Archive' })).toBeNull();
     expect(within(hierarchy).queryByRole('treeitem', { name: 'Reports' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'Configure libraries' }).getAttribute('href')).toBe('/libraries');
     expect(within(hierarchy).getAllByRole('treeitem').find((item) => item.getAttribute('aria-level') === '2')?.getAttribute('aria-selected')).toBe('true');
 
     (topLevelItems[1] as HTMLElement).focus();
     await user.keyboard('{ArrowRight}');
     expect(topLevelItems[1].getAttribute('aria-expanded')).toBe('true');
-    const seriesNode = within(hierarchy).getByRole('treeitem', { name: 'Series' });
+    const libraryRoot = within(libraryGroup!).getByRole('treeitem', { name: 'Anime' });
+    expect(document.activeElement).toBe(libraryRoot);
+    await user.keyboard('{ArrowRight}');
+    const seriesNode = await within(hierarchy).findByRole('treeitem', { name: 'Series' });
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(seriesNode);
     await user.keyboard('{ArrowUp}');
-    expect(document.activeElement).toBe(topLevelItems[1]);
+    expect(document.activeElement).toBe(libraryRoot);
     await user.keyboard('{Enter}');
     expect(onSelectLibrary).toHaveBeenCalledWith({ libraryId: 1, path: '' });
     await user.keyboard(' ');
@@ -195,7 +241,8 @@ describe('Assets workspace presentation', () => {
       onSelectLibrary={vi.fn()}
     />);
 
-    const sourceNode = screen.getByRole('treeitem', { name: 'RAW Anime' });
+    await user.click(screen.getByRole('button', { name: 'Expand RAW' }));
+    const sourceNode = await screen.findByRole('treeitem', { name: 'RAW Anime' });
     sourceNode.focus();
     await user.keyboard('{ArrowRight}');
     const logicalGroupNode = screen.getByRole('treeitem', { name: 'Attack' });
@@ -215,64 +262,220 @@ describe('Assets workspace presentation', () => {
     expect(document.activeElement).toBe(sourceNode);
   });
 
-  it('shows compact technical details with one integrated preview Play control', async () => {
+  it('resizes the hierarchy with pointer and keyboard controls and persists the chosen width', () => {
+    window.localStorage.removeItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY);
+    const props = {
+      sourceGroups: [] as AssetSourceGroup[],
+      groups: [] as AssetGroup[],
+      libraries: [] as Library[],
+      location: 'library' as const,
+      rawSelection: { kind: 'all' as const },
+      librarySelection: { libraryId: null, path: '' },
+      onSelectRaw: vi.fn(),
+      onSelectLibrary: vi.fn(),
+    };
+    const view = render(<AssetsHierarchyPanel {...props} />);
+    const separator = screen.getByRole('separator', { name: 'Resize Assets hierarchy' });
+    expect(separator.getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_DEFAULT_WIDTH));
+    expect(separator.getAttribute('aria-valuemin')).toBe(String(ASSETS_HIERARCHY_MIN_WIDTH));
+    expect(separator.getAttribute('aria-valuemax')).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
+
+    fireEvent.pointerDown(separator, { button: 0, clientX: 100, pointerId: 1 });
+    fireEvent.pointerMove(separator, { clientX: 164, pointerId: 1 });
+    fireEvent.pointerUp(separator, { clientX: 164, pointerId: 1 });
+    expect(separator.getAttribute('aria-valuenow')).toBe('326');
+    expect(window.localStorage.getItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY)).toBe('326');
+
+    fireEvent.keyDown(separator, { key: 'End' });
+    expect(separator.getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
+    expect(window.localStorage.getItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY)).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
+    view.unmount();
+    render(<AssetsHierarchyPanel {...props} />);
+    expect(screen.getByRole('separator', { name: 'Resize Assets hierarchy' }).getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
+    cleanup();
+    window.localStorage.setItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY, '999');
+    const clamped = render(<AssetsHierarchyPanel {...props} />);
+    expect(screen.getByRole('separator', { name: 'Resize Assets hierarchy' }).getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_MAX_WIDTH));
+    clamped.unmount();
+    window.localStorage.setItem(ASSETS_HIERARCHY_WIDTH_STORAGE_KEY, 'not-a-width');
+    render(<AssetsHierarchyPanel {...props} />);
+    expect(screen.getByRole('separator', { name: 'Resize Assets hierarchy' }).getAttribute('aria-valuenow')).toBe(String(ASSETS_HIERARCHY_DEFAULT_WIDTH));
+  });
+
+  it('uses the generic artwork placeholder when no supported artwork URL is available', () => {
+    render(<SelectedAssetArtwork fileName="Episode 01.mkv" />);
+
+    const placeholder = screen.getByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' });
+    expect(placeholder.getAttribute('data-artwork-source')).toBe('placeholder');
+    expect(screen.queryByRole('img', { name: 'Episode 01.mkv artwork' })).toBeNull();
+  });
+
+  it('keeps four selected asset zones with vertical context and technical actions', async () => {
     const user = userEvent.setup();
     const play = vi.fn();
-    const assign = vi.fn();
+    const assignProfile = vi.fn();
     const testEncode = vi.fn();
     const more = vi.fn();
-    const asset = makeAsset();
     render(
       <SelectedAssetDetail
-        asset={asset}
-        pathContext="Anime · Series/Season 01"
-        status="Ready"
-        assignedProfile="HEVC Main"
-        snapshot={scan}
-        snapshotLoading={false}
-        subtitlesSummary="2 tracks · ja, en"
-        modifiedLabel="Sep 30, 2026"
-        sizeLabel="1.5 MB"
+        {...selectedAssetDetailProps({ onAssignProfile: assignProfile, onTestEncode: testEncode, onMore: more })}
         onPlayPreview={play}
-        onAssignProfile={assign}
-        onTestEncode={testEncode}
-        onMore={(anchor) => more(anchor)}
-        canAssignProfile
-        canTestEncode
       />,
     );
 
-    expect(screen.getByText('Video · hevc')).toBeTruthy();
-    expect(screen.getByText('Container · MATROSKA')).toBeTruthy();
-    expect(screen.getByText('Resolution · 1920 × 1080')).toBeTruthy();
-    expect(screen.getByText('Audio · aac 2ch ja')).toBeTruthy();
-    expect(screen.getByText('Subtitles')).toBeTruthy();
-    expect(screen.getByText('2 tracks · ja, en')).toBeTruthy();
-    expect(screen.getAllByRole('button', { name: /Play preview of Episode 01.mkv/ })).toHaveLength(1);
-    expect((screen.getByRole('img', { name: 'Episode 01.mkv preview' }) as HTMLImageElement).getAttribute('src')).toContain('/api/assets/preview?path=');
-    expect(screen.queryByRole('button', { name: /View.*Play|Play.*View/ })).toBeNull();
+    const details = screen.getByTestId('selected-asset-detail');
+    const preview = screen.getByTestId('selected-asset-preview');
+    const identity = screen.getByTestId('selected-asset-identity');
+    const information = screen.getByTestId('selected-asset-information');
+    const media = within(screen.getByTestId('selected-asset-technical'));
+    const contextTechnical = screen.getByTestId('selected-asset-context');
+    const technicalActions = screen.getByTestId('selected-asset-technical-actions');
+    const stateContext = screen.getByTestId('selected-asset-state-context');
+    expect(getComputedStyle(details).position).toBe('sticky');
+    expect(getComputedStyle(details).bottom).toBe('0px');
+    expect(getComputedStyle(preview).aspectRatio.replace(/\s/g, '')).toBe('16/10');
+    expect(identity.textContent).toContain('Episode 01.mkv');
+    expect(identity.textContent).toContain('Series/Season 01');
+    expect(identity.contains(screen.getByTestId('selected-asset-state-context'))).toBe(false);
+    expect(identity.contains(screen.getByTestId('selected-asset-technical'))).toBe(false);
+    expect(information.contains(identity)).toBe(true);
+    expect(information.contains(screen.getByTestId('selected-asset-quick-facts'))).toBe(true);
+    expect(information.contains(screen.getByTestId('selected-asset-state-context'))).toBe(false);
+    expect(information.contains(screen.getByTestId('selected-asset-technical'))).toBe(false);
+    expect(details.contains(screen.getByTestId('selected-asset-state-context'))).toBe(true);
+    expect(details.contains(screen.getByTestId('selected-asset-technical'))).toBe(true);
+    expect(contextTechnical.contains(stateContext)).toBe(true);
+    expect(contextTechnical.contains(screen.getByTestId('selected-asset-technical'))).toBe(false);
+    expect(technicalActions.contains(screen.getByTestId('selected-asset-technical'))).toBe(true);
+    expect(technicalActions.contains(screen.getByTestId('selected-asset-actions'))).toBe(true);
+    expect(contextTechnical.contains(screen.getByTestId('selected-asset-actions'))).toBe(false);
+    expect(getComputedStyle(stateContext).gridTemplateColumns.replace(/\s/g, '').replace(/0px/g, '0')).toBe('minmax(0,1fr)');
+    const quickFacts = within(screen.getByTestId('selected-asset-quick-facts'));
+    expect(quickFacts.getByLabelText('Category / Library: Anime')).toBeTruthy();
+    expect(quickFacts.getByText('Anime')).toBeTruthy();
+    expect(quickFacts.getByText('matroska')).toBeTruthy();
+    const context = within(screen.getByTestId('selected-asset-state-context'));
+    expect(context.getByText('Profile')).toBeTruthy();
+    expect(context.getByText('Anime Main V2')).toBeTruthy();
+    expect(context.getByText('Subtitles')).toBeTruthy();
+    expect(context.getByText('2 embedded tracks')).toBeTruthy();
+    expect(context.getByText('Duration')).toBeTruthy();
+    expect(context.getByText('Modified')).toBeTruthy();
+    expect(context.getAllByText(/^(Profile|Subtitles|Duration|Modified)$/)).toHaveLength(4);
+    expect(within(details).getByTestId('selected-asset-status').getAttribute('aria-label')).toBe('Status: Library');
+    expect(quickFacts.getByLabelText('Size: 1.5 MB')).toBeTruthy();
+    expect(quickFacts.getByLabelText('Resolution: 1920 × 1080')).toBeTruthy();
+    expect(quickFacts.getByLabelText('Codec: hevc')).toBeTruthy();
+    expect(quickFacts.getByText('1920 × 1080')).toBeTruthy();
+    expect(quickFacts.getByText('hevc')).toBeTruthy();
+    expect(media.getByText('Technical information')).toBeTruthy();
+    expect(media.getByText('Video')).toBeTruthy();
+    expect(media.getByText('hevc')).toBeTruthy();
+    expect(within(details).getAllByText('1920 × 1080')).toHaveLength(2);
+    expect(media.getByText('Audio')).toBeTruthy();
+    expect(media.getByText('aac 2 ch')).toBeTruthy();
+    expect(within(details).getByText('Duration')).toBeTruthy();
+    expect(within(details).getByText('Modified')).toBeTruthy();
+    expect(within(details).queryByText('Encoder')).toBeNull();
+    expect(within(details).queryByText('Bitrate')).toBeNull();
+    expect(within(details).queryByText('Range')).toBeNull();
+    expect(within(details).queryByText('Quick facts')).toBeNull();
+    expect(within(details).queryByText('Status / context')).toBeNull();
+    const actions = screen.getByRole('group', { name: 'Selected asset actions' });
+    expect(actions).toBe(screen.getByTestId('selected-asset-actions'));
+    expect(within(actions).getAllByRole('button').map((button) => button.getAttribute('aria-label') || button.textContent?.trim())).toEqual([
+      'Assign Profile',
+      'Test Encode',
+      'More actions for Episode 01.mkv',
+    ]);
+    expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
+    expect(within(details).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
+    const moreButton = within(details).getByRole('button', { name: 'More actions for Episode 01.mkv' });
+    expect(within(details).queryByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
+    expect(within(details).getAllByText('23m 40s')).toHaveLength(2);
+    expect(details.contains(actions)).toBe(true);
+    expect(contextTechnical.contains(actions)).toBe(false);
+    expect(actions.contains(within(details).getByRole('button', { name: 'Assign Profile' }))).toBe(true);
+    expect(actions.contains(moreButton)).toBe(true);
 
-    await user.click(screen.getByRole('button', { name: /Play preview of Episode 01.mkv/ }));
-    await user.click(screen.getByRole('button', { name: 'Assign Profile' }));
-    await user.click(screen.getByRole('button', { name: 'Test Encode' }));
-    fireEvent.click(screen.getByRole('button', { name: 'More actions for Episode 01.mkv' }));
+    await user.click(screen.getByRole('button', { name: 'Play preview of Episode 01.mkv' }));
+    await user.click(within(details).getByRole('button', { name: 'Assign Profile' }));
+    await user.click(within(details).getByRole('button', { name: 'Test Encode' }));
+    await user.click(moreButton);
     expect(play).toHaveBeenCalledOnce();
-    expect(assign).toHaveBeenCalledOnce();
+    expect(assignProfile).toHaveBeenCalledOnce();
     expect(testEncode).toHaveBeenCalledOnce();
-    expect(more).toHaveBeenCalledOnce();
+    expect(more).toHaveBeenCalledWith(moreButton);
   });
 
-  it('omits empty descriptive metadata and renders canonical tags when present', () => {
-    const asset = makeAsset();
-    const base = {
-      asset, pathContext: 'Anime · Series', status: 'Ready', assignedProfile: 'Inherited', snapshot: scan, snapshotLoading: false,
-      subtitlesSummary: '2 tracks', modifiedLabel: 'Sep 30, 2026', sizeLabel: '1.5 MB', onPlayPreview: vi.fn(), onAssignProfile: vi.fn(),
-      onTestEncode: vi.fn(), onMore: vi.fn(), canAssignProfile: true, canTestEncode: true,
-    };
-    const view = render(<SelectedAssetDetail {...base} />);
-    expect(screen.queryByText(/^Metadata ·/)).toBeNull();
+  it('collapses and expands selected details with an accessible keyboard control', async () => {
+    const user = userEvent.setup();
+    render(
+      <SelectedAssetDetail {...selectedAssetDetailProps()} />,
+    );
 
-    view.rerender(<SelectedAssetDetail {...base} asset={makeAsset({ metadata: { categories: ['Anime'], tags: ['TV'] , updatedAt: '' } })} />);
-    expect(screen.getByText('Metadata · Anime, TV')).toBeTruthy();
+    const details = screen.getByTestId('selected-asset-detail');
+    await user.click(screen.getByRole('button', { name: 'Collapse selected asset details for Episode 01.mkv' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Play preview/ })).toBeNull());
+    expect(within(details).getByText('Episode 01.mkv')).toBeTruthy();
+    const expand = screen.getByRole('button', { name: 'Expand selected asset details for Episode 01.mkv' });
+    expand.focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.getByRole('button', { name: /Play preview/ })).toBeTruthy());
   });
+
+  it('keeps unavailable detail metadata explicit instead of fabricating it', () => {
+    render(
+      <SelectedAssetDetail {...selectedAssetDetailProps({
+        asset: makeAsset({ metadata: { categories: [], tags: [], updatedAt: '' } }),
+        pathContext: 'Series/Season 01',
+        categoryLabel: 'Unavailable',
+        containerLabel: 'Unavailable',
+        snapshot: null,
+        assignedProfileLabel: 'Inherited',
+        snapshotLoading: false,
+        canAssignProfile: false,
+        canTestEncode: false,
+      })} />,
+    );
+    expect(screen.getByTestId('selected-asset-path-context').textContent).toBe('Series/Season 01');
+    const facts = within(screen.getByTestId('selected-asset-quick-facts'));
+    expect(facts.getAllByText('Unavailable')).toHaveLength(2);
+    const context = within(screen.getByTestId('selected-asset-state-context'));
+    expect(context.getByText('Inherited')).toBeTruthy();
+    expect(context.getAllByText('Unavailable')).toHaveLength(1);
+    const media = within(screen.getByTestId('selected-asset-technical'));
+    expect(media.getByText('Technical information')).toBeTruthy();
+    expect(media.getByText('Video')).toBeTruthy();
+    expect(media.getByText('Resolution')).toBeTruthy();
+    expect(media.getByText('Audio')).toBeTruthy();
+    expect(media.queryByText('Bitrate')).toBeNull();
+    expect(media.getAllByText('Unavailable').length).toBeGreaterThan(0);
+    expect(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'Assign Profile' }).hasAttribute('disabled')).toBe(true);
+    expect(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'Test Encode' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByLabelText('Profile assignment is unavailable for this asset in its current Library lifecycle.').getAttribute('tabindex')).toBe('0');
+    expect(screen.getByLabelText('Test Encode is unavailable for this asset in its current lifecycle.').getAttribute('tabindex')).toBe('0');
+  });
+
+  it('preserves known zero dimensions without inventing unsupported technical fields', () => {
+    render(<SelectedAssetDetail {...selectedAssetDetailProps({
+      asset: makeAsset({ technical: { videoCodec: '', width: 0, height: 0, duration: 0, bitrate: 0, hdr: undefined as unknown as boolean } }),
+      snapshot: null,
+      snapshotLoading: false,
+      categoryLabel: 'Unavailable',
+      containerLabel: 'Unavailable',
+      modifiedLabel: 'Unavailable',
+      sizeLabel: '0 B',
+    })} />);
+
+    const facts = within(screen.getByTestId('selected-asset-quick-facts'));
+    const media = within(screen.getByTestId('selected-asset-technical'));
+    expect(facts.getByText('0 × 0')).toBeTruthy();
+    expect(media.getByText('0 × 0')).toBeTruthy();
+    expect(media.queryByText('Bitrate')).toBeNull();
+    expect(media.queryByText('Range')).toBeNull();
+    expect(media.getAllByText('Unavailable').length).toBeGreaterThan(0);
+    expect(media.queryByText('SDR')).toBeNull();
+  });
+
 });

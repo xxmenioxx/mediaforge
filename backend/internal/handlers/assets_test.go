@@ -1107,6 +1107,25 @@ func TestPublishAsIsMovesPathAndRegistersOriginalPublication(t *testing.T) {
 	if publications != 1 {
 		t.Fatalf("active MVF publication records=%d, want 1", publications)
 	}
+	if err := db.Create(&models.QueueJob{MediaPath: publishedMVFVideo, LibraryID: library.ID, Status: "queued", Stage: "queued"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	blockedReturn := httptest.NewRecorder()
+	blockedRequest := httptest.NewRequest(http.MethodPost, "/api/assets/return-published-as-is?path="+url.QueryEscape(publishedMVFVideo), strings.NewReader(`{}`))
+	blockedRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(blockedReturn, blockedRequest)
+	if blockedReturn.Code != http.StatusConflict || !strings.Contains(blockedReturn.Body.String(), "active Queue job") {
+		t.Fatalf("active Queue work was not blocked: status=%d body=%s", blockedReturn.Code, blockedReturn.Body.String())
+	}
+	if _, err := os.Stat(publishedMVFVideo); err != nil {
+		t.Fatalf("blocked return moved the Published as-is file: %v", err)
+	}
+	if _, err := os.Stat(videoPath); !os.IsNotExist(err) {
+		t.Fatalf("blocked return restored the source while Queue work was active: %v", err)
+	}
+	if err := db.Where("media_path = ?", publishedMVFVideo).Delete(&models.QueueJob{}).Error; err != nil {
+		t.Fatal(err)
+	}
 	publication = models.DirectPublication{}
 	if err := db.First(&publication, publicationID).Error; err != nil {
 		t.Fatal(err)

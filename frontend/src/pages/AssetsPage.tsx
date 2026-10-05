@@ -39,6 +39,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import ManageSearchIcon from '@mui/icons-material/ManageSearch';
 import PlayCircleIcon from '@mui/icons-material/PlayCircle';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
@@ -50,10 +51,12 @@ import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutli
 import EditIcon from '@mui/icons-material/Edit';
 import ScienceIcon from '@mui/icons-material/Science';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
+import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { filterAssetGroups, subtitleOCRReviewKey, subtitleOCRSidecarSelection, subtitleOperationStopsPolling } from '../utils/assetPageHelpers';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
@@ -66,6 +69,10 @@ import { semanticMotionModes } from '../utils/motionModes';
 import { HEVCLevelControls } from '../components/HEVCLevelControls';
 import { SmartUpscaleControls } from '../components/SmartUpscaleControls';
 import { AssetsHierarchyPanel, AssetsSummaryStrip, SelectedAssetDetail, WorkspaceBreadcrumbs } from '../components/AssetsWorkspace';
+import { AssetsInventoryTable } from '../components/AssetsInventoryTable';
+import { AssetsV2PathToolbar } from '../components/AssetsV2PathToolbar';
+import { AssetsV2InventoryControls } from '../components/AssetsV2InventoryControls';
+import { assetLabHref } from '../components/assetsActionRoutes';
 import { assetPathWithin, formatDurationSummary, type LibraryTreeSelection, type RawHierarchySelection } from '../components/assetsWorkspaceModel';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
@@ -73,7 +80,7 @@ import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDial
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
 import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
 import { openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_OPEN_EVENT, QUEUE_BATCH_PREFLIGHT_STORAGE_KEY } from '../utils/queueBatchPreflightEvents';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AudioEnhancementProfile, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AudioEnhancementProfile, EffectiveAssetConfiguration, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -86,7 +93,7 @@ import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
 import { assetInfoDiscardDraft, assetInfoDocumentsEqual, assetInfoEditDocument, assetInfoHydrationReconciliation, assetInfoRefreshReconciliation, assetInfoSaveFailureReconciliation, assetInfoSaveReconciliation, type AssetInfoEditDocument } from '../utils/assetInfoEditing';
 import { patchAssetInventoryAsset } from '../utils/assetInventoryPatch';
-import { hidePreConversionActionsForAsset, testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
+import { effectiveVideoProfileLabel, hidePreConversionActionsForAsset, testEncodeConfigurationReason, testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
 import { customUpscaleHeightError, smartUpscaleControlsDisabled } from '../upscale';
 import { hierarchicalSelectionState, selectableAssetsForPaths, selectedSelectableAssetsForLogicalGroups } from '../utils/unprocessedAssetSelection';
 import {
@@ -166,9 +173,7 @@ export function AssetsPage() {
   const [attentionFilter, setAttentionFilter] = useState(searchParams.get('attention') ?? '');
   const [assetQuery, setAssetQuery] = useState(searchParams.get('search') ?? searchParams.get('asset') ?? '');
   const [mediaArea, setMediaArea] = useState(searchParams.get('mediaArea') ?? '');
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-
-  const activeAdvancedFilters = [originalFilter, validationFilter, workflowFilter, attentionFilter].filter(Boolean).length;
+  const activeFilterCount = [libraryDecision, mediaArea, validationFilter, originalFilter, workflowFilter, attentionFilter].filter(Boolean).length;
   const legacyTab = searchParams.get('tab');
   const unsupportedLegacyTab = legacyTab && !['unprocessed', 'library', 'converted', 'archive'].includes(legacyTab);
   useEffect(() => {
@@ -232,7 +237,6 @@ export function AssetsPage() {
       if (librarySelection?.path) next.set('libraryPath', librarySelection.path);
       else next.delete('libraryPath');
     }
-    setAdvancedOpen(false);
     setSearchParams(next);
   };
   const jobs = useQuery({
@@ -248,6 +252,7 @@ export function AssetsPage() {
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const runtimeState = useQuery({ queryKey: ['runtime-state'], queryFn: api.runtimeState });
   const snapshotOperations = useQuery({
     queryKey: ['snapshotOperations'],
     queryFn: () => api.snapshotOperations(''),
@@ -317,6 +322,62 @@ export function AssetsPage() {
     ?? safeArray(jobs.data).filter((job) => job.status === 'queued' || job.status === 'running').length;
   const needsReviewSummary = summaryCounts?.needsReview
     ?? [...safeArray(assets.data?.unprocessed), ...safeArray(assets.data?.library)].filter((asset) => asset.review?.requiresReview).length;
+  const syncDetails = [
+    `Last sync: ${formatDate(assets.data?.sync?.lastSyncedAt ?? '')}`,
+    `${assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0} missing assets`,
+    `${assets.data?.sync?.missingHistorical ?? 0} historical paths`,
+  ].join(' · ');
+  const filterContent = tab === 'library' ? (
+    <Grid container spacing={1}>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={libraryDecision} onChange={(event) => { setLibraryDecision(event.target.value); updateLibraryFilter('provenance', event.target.value); }} label="Provenance" size="small">
+          <MenuItem value="">All provenance</MenuItem>
+          <MenuItem value="converted">Converted ({convertedCount})</MenuItem>
+          <MenuItem value="published_as_is">Published as-is</MenuItem>
+          <MenuItem value="imported">Imported / accepted ({acceptedCount})</MenuItem>
+          <MenuItem value="legacy_or_unknown">Legacy / unknown</MenuItem>
+        </TextField>
+      </Grid>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={mediaArea} onChange={(event) => { setMediaArea(event.target.value); updateLibraryFilter('mediaArea', event.target.value); }} label="Media area" size="small">
+          <MenuItem value="">All media</MenuItem>
+          {mediaAreas.map((area) => <MenuItem key={area} value={area}>media/{area}</MenuItem>)}
+        </TextField>
+      </Grid>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={validationFilter} onChange={(event) => { setValidationFilter(event.target.value); updateLibraryFilter('validation', event.target.value); }} label="Validation" size="small">
+          <MenuItem value="">All validation</MenuItem><MenuItem value="passed">Passed</MenuItem><MenuItem value="passed_with_warnings">Warnings</MenuItem><MenuItem value="review_required">Review</MenuItem><MenuItem value="failed">Failed</MenuItem><MenuItem value="unavailable">Unavailable</MenuItem>
+        </TextField>
+      </Grid>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={originalFilter} onChange={(event) => updateLibraryFilter('original', event.target.value)} label="Original" size="small">
+          <MenuItem value="">All originals</MenuItem><MenuItem value="available">Available</MenuItem><MenuItem value="deleted">Deleted</MenuItem><MenuItem value="unknown">Unknown</MenuItem>
+        </TextField>
+      </Grid>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={workflowFilter} onChange={(event) => { setWorkflowFilter(event.target.value); updateLibraryFilter('workflow', event.target.value); }} label="Workflow" size="small">
+          <MenuItem value="">All workflow</MenuItem><MenuItem value="available">Ready</MenuItem><MenuItem value="queued">Queued</MenuItem><MenuItem value="processing">Processing</MenuItem><MenuItem value="publishing">Publishing</MenuItem><MenuItem value="needs_review">Needs attention</MenuItem><MenuItem value="failed">Failed</MenuItem>
+        </TextField>
+      </Grid>
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField select fullWidth value={attentionFilter} onChange={(event) => { setAttentionFilter(event.target.value); updateLibraryFilter('attention', event.target.value); }} label="Attention" size="small">
+          <MenuItem value="">All attention</MenuItem><MenuItem value="needs_review">Needs review</MenuItem><MenuItem value="publication_conflict">Publication conflict</MenuItem>
+        </TextField>
+      </Grid>
+    </Grid>
+  ) : (
+    <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 480 }}>
+      Provenance, media area, validation, original, workflow, and attention filters apply to Library inventory. Search remains available in both RAW and Library.
+    </Typography>
+  );
+  const summaryStrip = (
+    <AssetsSummaryStrip
+      total={totalAssetsSummary}
+      processing={processingSummary}
+      completed={summaryCounts?.converted ?? convertedCount}
+      needsReview={needsReviewSummary}
+    />
+  );
   const hierarchyPanel = (
     <AssetsHierarchyPanel
       sourceGroups={sourceGroups}
@@ -327,157 +388,117 @@ export function AssetsPage() {
       librarySelection={libraryTreeSelection}
       onSelectRaw={(selection) => switchLocation('raw', selection)}
       onSelectLibrary={(selection) => switchLocation('library', selection)}
+      storageSnapshot={runtimeState.data}
+      storageLoading={runtimeState.isLoading}
+      storageError={runtimeState.isError}
     />
   );
 
   return (
-    <>
-      <Box component="header" sx={{ px: { xs: 2, md: 4 }, pt: { xs: 1.5, md: 2 }, pb: { xs: 1.5, md: 2 } }}>
-        <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 1.5 }}>
-          <Stack direction="row" alignItems="baseline" spacing={1}>
-            <Typography component="h1" variant="h1" sx={{ fontSize: { xs: '1.35rem', sm: '1.55rem' }, lineHeight: 1.2 }}>Assets</Typography>
-            <Typography variant="caption" color="text.secondary">{tab === 'raw' ? 'Source inventory' : 'Library inventory'}</Typography>
-          </Stack>
-        </Stack>
-        <AssetsSummaryStrip
-          total={totalAssetsSummary}
-          processing={processingSummary}
-          completed={summaryCounts?.converted ?? convertedCount}
-          needsReview={needsReviewSummary}
+    <Box
+      data-testid="assets-page-layout"
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: { xs: 'calc(100dvh - 56px)', md: '100dvh' },
+        minHeight: 0,
+        overflow: 'hidden',
+        bgcolor: '#04101d',
+      }}
+    >
+      <Box
+        component="header"
+        data-testid="assets-topbar"
+        sx={{
+          minHeight: { xs: 72, md: 64 },
+          px: { xs: 1.25, md: 2.5 },
+          py: { xs: 0.75, md: 0 },
+          display: 'flex',
+          alignItems: 'center',
+          gap: { xs: 1, md: 1.5 },
+          flexWrap: { xs: 'wrap', md: 'nowrap' },
+          flexShrink: 0,
+          borderBottom: 1,
+          borderColor: '#15304a',
+          bgcolor: 'rgba(5, 17, 30, 0.92)',
+        }}
+      >
+        <Typography component="h1" variant="h1" sx={{ width: { xs: 'auto', md: 152 }, flex: { xs: '1 0 auto', md: '0 0 152px' }, fontSize: '1.25rem', lineHeight: 1.2, letterSpacing: '-0.025em', color: '#e7eef8' }}>
+          Assets
+        </Typography>
+        <TextField
+          value={assetQuery}
+          onChange={(event) => { setAssetQuery(event.target.value); updateSearchFilter(event.target.value); }}
+          placeholder="Search assets, series, movies…"
+          size="small"
+          inputProps={{ 'aria-label': 'Search assets, series, movies' }}
+          sx={{
+            width: { xs: '100%', md: 'min(44vw, 590px)' },
+            maxWidth: 590,
+            order: { xs: 3, md: 0 },
+            '& .MuiOutlinedInput-root': { height: 36, borderRadius: 1, bgcolor: '#091a2c', color: '#e7eef8', fontSize: '0.75rem', '& fieldset': { borderColor: '#15304a' }, '&:hover fieldset': { borderColor: '#1f4467' }, '&.Mui-focused fieldset': { borderColor: '#6c4cf6' } },
+            '& input::placeholder': { color: '#59718b', opacity: 1 },
+          }}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchIcon fontSize="small" sx={{ color: '#59718b', fontSize: 18 }} />
+              </InputAdornment>
+            ),
+          }}
         />
+        <Tooltip title="Assets Settings">
+          <IconButton component={RouterLink} to="/settings?section=assets" aria-label="Open Assets Settings" sx={{ ml: 'auto', width: 34, height: 34, color: '#9cb0c8', '&:hover': { bgcolor: '#112a44', color: '#e7eef8' } }}>
+            <SettingsOutlinedIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
       </Box>
-      <Box sx={{ px: { xs: 2, md: 4 }, pb: 3, minWidth: 0 }}>
-        {assets.isError ? <Alert severity="warning">Unable to read library paths from the backend container.</Alert> : null}
-        {unsupportedLegacyTab ? <Alert severity="info">This Assets link is no longer a supported inventory context. Open RAW or Library and use the persisted lifecycle filters.</Alert> : null}
-        <LegacyAnalysisRecords settings={settings.data ?? []} />
-
-        <Card variant="outlined" sx={{ borderRadius: 1.5, borderColor: 'divider', overflow: 'hidden', bgcolor: 'background.paper' }}>
-          <CardContent sx={{ py: 1.25, px: { xs: 1.25, sm: 2 }, borderBottom: 1, borderColor: 'divider', '&:last-child': { pb: 1.25 } }}>
-            <Stack
-              direction={{ xs: 'column', lg: 'row' }}
-              alignItems={{ xs: 'stretch', lg: 'flex-start' }}
-              justifyContent="space-between"
-              spacing={1.5}
-            >
-              <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ flex: 1 }}>
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" alignItems={{ xs: 'stretch', sm: 'center' }} sx={{ width: '100%' }}>
-                  <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => syncAssets.mutate()} disabled={syncAssets.isPending} sx={{ minHeight: 40 }}>
-                    Sync
-                  </Button>
-                  {tab === 'library' ? (
-                      <TextField
-                        select
-                        value={libraryDecision}
-                        onChange={(event) => { setLibraryDecision(event.target.value); updateLibraryFilter('provenance', event.target.value); }}
-                        label="Provenance"
-                        size="small"
-                        sx={{ width: { xs: '100%', sm: 180 } }}
-                      >
-                        <MenuItem value="">All provenance</MenuItem>
-                        <MenuItem value="converted">Converted ({convertedCount})</MenuItem>
-                        <MenuItem value="published_as_is">Published as-is</MenuItem>
-                        <MenuItem value="imported">Imported / accepted ({acceptedCount})</MenuItem>
-                        <MenuItem value="legacy_or_unknown">Legacy / unknown</MenuItem>
-                      </TextField>
-                  ) : null}
-                  {tab === 'library' ? (
-                    <TextField
-                      select
-                      value={mediaArea}
-                      onChange={(event) => { setMediaArea(event.target.value); updateLibraryFilter('mediaArea', event.target.value); }}
-                      label="Media area"
-                      size="small"
-                      sx={{ width: { xs: '100%', sm: 210 } }}
-                    >
-                      <MenuItem value="">All media</MenuItem>
-                      {mediaAreas.map((area) => <MenuItem key={area} value={area}>media/{area}</MenuItem>)}
-                    </TextField>
-                  ) : null}
-                  <TextField
-                      value={assetQuery}
-                      onChange={(event) => { setAssetQuery(event.target.value); updateSearchFilter(event.target.value); }}
-                      placeholder="Search path, file, library, status"
-                      size="small"
-                      sx={{ width: { xs: '100%', sm: 330 } }}
-                      InputProps={{
-                        startAdornment: (
-                          <InputAdornment position="start">
-                            <SearchIcon fontSize="small" />
-                          </InputAdornment>
-                        ),
-                      }}
-                  />
-                  {tab === 'library' ? (
-                    <Button
-                      endIcon={<ExpandMoreIcon sx={{ transform: advancedOpen ? 'rotate(180deg)' : 'none', transition: 'transform 150ms ease' }} />}
-                      onClick={() => setAdvancedOpen((current) => !current)}
-                      aria-expanded={advancedOpen}
-                      aria-label={activeAdvancedFilters ? `Advanced filters, ${activeAdvancedFilters} active` : 'Advanced filters'}
-                      sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
-                    >
-                      Advanced{activeAdvancedFilters ? ` · ${activeAdvancedFilters} active` : ''}
-                    </Button>
-                  ) : null}
-                </Stack>
-                {tab === 'library' ? (
-                  <Collapse in={advancedOpen} unmountOnExit>
-                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end" sx={{ pt: 1 }}>
-                      <TextField select value={validationFilter} onChange={(event) => { setValidationFilter(event.target.value); updateLibraryFilter('validation', event.target.value); }} label="Validation" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                        <MenuItem value="">All validation</MenuItem><MenuItem value="passed">Passed</MenuItem><MenuItem value="passed_with_warnings">Warnings</MenuItem><MenuItem value="review_required">Review</MenuItem><MenuItem value="failed">Failed</MenuItem><MenuItem value="unavailable">Unavailable</MenuItem>
-                      </TextField>
-                      <TextField select value={originalFilter} onChange={(event) => updateLibraryFilter('original', event.target.value)} label="Original" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                        <MenuItem value="">All originals</MenuItem><MenuItem value="available">Available</MenuItem><MenuItem value="deleted">Deleted</MenuItem><MenuItem value="unknown">Unknown</MenuItem>
-                      </TextField>
-                      <TextField select value={workflowFilter} onChange={(event) => { setWorkflowFilter(event.target.value); updateLibraryFilter('workflow', event.target.value); }} label="Workflow" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                        <MenuItem value="">All workflow</MenuItem><MenuItem value="available">Ready</MenuItem><MenuItem value="queued">Queued</MenuItem><MenuItem value="processing">Processing</MenuItem><MenuItem value="publishing">Publishing</MenuItem><MenuItem value="needs_review">Needs attention</MenuItem><MenuItem value="failed">Failed</MenuItem>
-                      </TextField>
-                      <TextField select value={attentionFilter} onChange={(event) => { setAttentionFilter(event.target.value); updateLibraryFilter('attention', event.target.value); }} label="Attention" size="small" sx={{ width: { xs: '100%', sm: 180 } }}>
-                        <MenuItem value="">All attention</MenuItem><MenuItem value="needs_review">Needs review</MenuItem><MenuItem value="publication_conflict">Publication conflict</MenuItem>
-                      </TextField>
-                    </Stack>
-                  </Collapse>
-                ) : null}
-                <Stack direction="row" spacing={1} flexWrap="wrap" alignItems="center" justifyContent={{ xs: 'flex-start', sm: 'flex-end' }} useFlexGap>
-                  <Typography variant="caption" color="text.secondary">
-                    Last sync · {formatDate(assets.data?.sync?.lastSyncedAt ?? '')}
-                  </Typography>
-                  {(assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingActionable ?? assets.data?.sync?.missingFiles ?? 0} missing`} color="warning" size="small" /> : null}
-                  {(assets.data?.sync?.missingHistorical ?? 0) > 0 ? <Chip label={`${assets.data?.sync?.missingHistorical ?? 0} historical paths`} size="small" /> : null}
-                </Stack>
-              </Stack>
-            </Stack>
-            {tab === 'library' && libraryDecision === 'converted' ? <Alert severity="info" sx={{ mt: 1.25 }}>Converted is a Library provenance projection. Re-processing and original retention remain independent lifecycle evidence.</Alert> : null}
-            {syncAssets.isSuccess ? (
-              <Alert severity={syncAssets.data.reviewMatches > 0 ? 'warning' : 'success'} sx={{ mt: 1 }}>
-                Inventory synced. {syncAssets.data.reconciledFiles} relocated asset(s) reconciled automatically.
-                {syncAssets.data.reviewMatches > 0 ? ` ${syncAssets.data.reviewMatches} possible match(es) were sent to Review.` : ''}
-              </Alert>
-            ) : null}
-          </CardContent>
-          {syncAssets.isError ? <Alert severity="warning" sx={{ m: 2 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
-		  {tab === 'raw' ? (
-			<AssetsErrorBoundary boundaryKey="raw">
-				<RawAssetsView
-					key={assetQuery}
-					sourceGroups={sourceGroups}
-					libraries={libraries.data ?? []}
-					profiles={profiles.data ?? []}
-					audioProfiles={audioProfiles}
-					trackProfiles={trackProfiles}
-					settings={settings.data ?? []}
-					assetCategories={assetCategories}
-					queueJobs={jobs.data ?? []}
-					runningSnapshotPaths={runningSnapshotPaths}
-					query={assetQuery}
-					legacyAssetPath={legacyAssetPath}
-					selection={rawSelection}
-					hierarchyPanel={hierarchyPanel}
-				/>
-			</AssetsErrorBoundary>
+      <Box data-testid="assets-page-body" sx={{ px: { xs: 0.75, md: 1.5 }, pt: { xs: 0.75, md: 1.5 }, pb: { xs: 0.75, md: 1.25 }, minWidth: 0, minHeight: 0, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <Stack spacing={0.5} sx={{ flexShrink: 0, mb: 0.5 }}>
+          {assets.isError ? <Alert severity="warning" sx={{ py: 0 }}>Unable to read library paths from the backend container.</Alert> : null}
+          {unsupportedLegacyTab ? <Alert severity="info" sx={{ py: 0 }}>This Assets link is no longer a supported inventory context. Open RAW or Library and use the persisted lifecycle filters.</Alert> : null}
+          {tab === 'library' && libraryDecision === 'converted' ? <Alert severity="info" sx={{ py: 0 }}>Converted is a Library provenance projection. Re-processing and original retention remain independent lifecycle evidence.</Alert> : null}
+          {syncAssets.isSuccess ? <Alert severity={syncAssets.data.reviewMatches > 0 ? 'warning' : 'success'} sx={{ py: 0 }}>
+            Inventory synced. {syncAssets.data.reconciledFiles} relocated asset(s) reconciled automatically.{syncAssets.data.reviewMatches > 0 ? ` ${syncAssets.data.reviewMatches} possible match(es) were sent to Review.` : ''}
+          </Alert> : null}
+          {syncAssets.isError ? <Alert severity="warning" sx={{ py: 0 }}>Could not sync assets: {syncAssets.error.message}</Alert> : null}
+        </Stack>
+        <Box data-testid="assets-workspace-region" sx={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+          {tab === 'raw' ? (
+            <AssetsErrorBoundary boundaryKey="raw">
+              <RawAssetsView
+                key={assetQuery}
+                summaryStrip={summaryStrip}
+                filterContent={filterContent}
+                activeFilterCount={activeFilterCount}
+                syncDetails={syncDetails}
+                syncPending={syncAssets.isPending}
+                onSync={() => syncAssets.mutate()}
+                sourceGroups={sourceGroups}
+                libraries={libraries.data ?? []}
+                profiles={profiles.data ?? []}
+                audioProfiles={audioProfiles}
+                trackProfiles={trackProfiles}
+                settings={settings.data ?? []}
+                assetCategories={assetCategories}
+                queueJobs={jobs.data ?? []}
+                runningSnapshotPaths={runningSnapshotPaths}
+                query={assetQuery}
+                legacyAssetPath={legacyAssetPath}
+                selection={rawSelection}
+                hierarchyPanel={hierarchyPanel}
+              />
+            </AssetsErrorBoundary>
           ) : (
             <AssetsErrorBoundary boundaryKey={tab}>
               <AssetTable
                 key={tab}
+                summaryStrip={summaryStrip}
+                filterContent={filterContent}
+                activeFilterCount={activeFilterCount}
+                syncDetails={syncDetails}
+                syncPending={syncAssets.isPending}
+                onSync={() => syncAssets.mutate()}
                 groups={filteredGroups}
                 libraries={libraries.data ?? []}
                 profiles={profiles.data ?? []}
@@ -491,13 +512,11 @@ export function AssetsPage() {
                 query={assetQuery}
                 libraryTreeSelection={libraryTreeSelection}
                 hierarchyPanel={hierarchyPanel}
-                emptyLabel={
-                  'No Library asset groups match the persisted filters.'
-                }
+                emptyLabel="No Library asset groups match the persisted filters."
               />
             </AssetsErrorBoundary>
           )}
-        </Card>
+        </Box>
       </Box>
       <BatchPreflightDialog
         candidate={queuePreflightCandidate}
@@ -511,7 +530,7 @@ export function AssetsPage() {
           void queryClient.invalidateQueries({ queryKey: ['assets'] });
         }}
       />
-    </>
+    </Box>
   );
 }
 
@@ -535,26 +554,6 @@ export function ReportsPage() {
       </Card>
     </Box>
   );
-}
-
-function LegacyAnalysisRecords({ settings }: { settings: AppSetting[] }) {
-  const [open, setOpen] = useState(false);
-  const value = settings.find((setting) => setting.key === 'analysisRecords')?.value.records;
-  const records = Array.isArray(value) ? value.filter((record): record is Record<string, unknown> => Boolean(record && typeof record === 'object')) : [];
-  if (!records.length) return null;
-  return <Box sx={{ mb: 1.5 }}>
-    <Button size="small" onClick={() => setOpen((current) => !current)} aria-expanded={open}>Legacy Analysis decisions ({records.length})</Button>
-    <Collapse in={open}>
-      <Stack spacing={1} sx={{ mt: 1 }}>
-        <Alert severity="info">Saved decisions and notes are preserved as legacy records. Asset Info History shows an annotation only when the full source-evidence identity matches; path equality alone is never sufficient.</Alert>
-        {records.map((record, index) => <Card variant="outlined" key={String(record.id ?? index)}><CardContent sx={{ py: 1 }}>
-          <Typography fontWeight={700}>{String(record.assetName ?? 'Legacy asset')} · {String(record.decision ?? 'No decision')}</Typography>
-          <Typography variant="body2" color="text.secondary">Legacy record · {String(record.assetPath ?? 'source path unavailable')} · {String(record.createdAt ?? '')}</Typography>
-          {record.notes ? <Typography variant="body2" sx={{ mt: 0.5 }}>{String(record.notes)}</Typography> : null}
-        </CardContent></Card>)}
-      </Stack>
-    </Collapse>
-  </Box>;
 }
 
 function AssetReportsPanel({ inventory }: { inventory?: AssetInventory }) {
@@ -755,7 +754,16 @@ class AssetsErrorBoundary extends Component<
   }
 }
 
-type AssetTableProps = {
+type AssetsWorkspaceChromeProps = {
+  summaryStrip: ReactNode;
+  filterContent: ReactNode;
+  activeFilterCount: number;
+  syncDetails: string;
+  syncPending: boolean;
+  onSync: () => void;
+};
+
+type AssetTableProps = AssetsWorkspaceChromeProps & {
   groups: AssetGroup[];
   libraries: Library[];
   profiles: Profile[];
@@ -847,6 +855,12 @@ function LegacyAssetTable({ groups, libraries, profiles, audioProfiles, trackPro
 }
 
 function LibraryAssetTable({
+  summaryStrip,
+  filterContent,
+  activeFilterCount,
+  syncDetails,
+  syncPending,
+  onSync,
   groups,
   libraries,
   profiles,
@@ -866,15 +880,17 @@ function LibraryAssetTable({
   const [selectedAssetSelection, setSelectedAssetSelection] = useState({ filterIdentity, path: '' });
   const selectedAssetPath = selectedAssetSelection.filterIdentity === filterIdentity ? selectedAssetSelection.path : '';
   const setSelectedAssetPath = (path: string) => setSelectedAssetSelection({ filterIdentity, path });
+  const [bulkSelectionState, setBulkSelectionState] = useState({ filterIdentity, ids: new Set<number>() });
   const [pageSelection, setPageSelection] = useState({ filterIdentity, page: 0 });
   const requestedPage = pageSelection.filterIdentity === filterIdentity ? pageSelection.page : 0;
   const setPage = (page: number) => setPageSelection({ filterIdentity, page });
   const [rowsPerPage, setRowsPerPage] = useState(25);
-  const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
-  const selectedActions = useRef<{ path: string; actions: AssetWorkspaceActions } | null>(null);
+  const [selectedActions, setSelectedActions] = useState<{ path: string; actions: AssetWorkspaceActions } | null>(null);
   const registerActions = useCallback((path: string, actions: AssetWorkspaceActions | null) => {
-    if (actions) selectedActions.current = { path, actions };
-    else if (selectedActions.current?.path === path) selectedActions.current = null;
+    setSelectedActions((current) => {
+      if (actions) return { path, actions };
+      return current?.path === path ? null : current;
+    });
   }, []);
 
   const visibleGroups = useMemo(() => safeArray(groups).filter((group) => {
@@ -892,9 +908,43 @@ function LibraryAssetTable({
       })
       .map((asset) => ({ asset, group })));
   }, [visibleGroups]);
+  const selectableAssetIdsByGroup = useMemo(() => new Map(
+    visibleGroups.map((group) => [
+      normalizePath(group.path),
+      new Set(librarySafeBulkSelectableAssets(group).map((asset) => asset.id).filter((id): id is number => id !== undefined)),
+    ]),
+  ), [visibleGroups]);
+  const visibleSelectableAssetIds = useMemo(() => new Set(visibleAssets.flatMap(({ asset, group }) => (
+    asset.id !== undefined && selectableAssetIdsByGroup.get(normalizePath(group.path))?.has(asset.id) ? [asset.id] : []
+  ))), [selectableAssetIdsByGroup, visibleAssets]);
+  const selectedAssetIds = useMemo(() => new Set(
+    bulkSelectionState.filterIdentity === filterIdentity
+      ? Array.from(bulkSelectionState.ids).filter((id) => visibleSelectableAssetIds.has(id))
+      : [],
+  ), [bulkSelectionState, filterIdentity, visibleSelectableAssetIds]);
+  const updateLibraryAssetSelection = (assetIds: number[], selected: boolean) => {
+    const next = new Set(selectedAssetIds);
+    for (const id of assetIds) {
+      if (selected && visibleSelectableAssetIds.has(id)) next.add(id);
+      else next.delete(id);
+    }
+    setBulkSelectionState({ filterIdentity, ids: next });
+  };
   const pageCount = Math.max(1, Math.ceil(visibleAssets.length / rowsPerPage));
   const page = Math.min(requestedPage, pageCount - 1);
   const pageRows = visibleAssets.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+  const pageAssetIds = pageRows.filter(({ asset }) => !asset.missing).map(({ asset }) => asset.id).filter((id): id is number => typeof id === 'number' && id > 0);
+  const effectiveConfigurations = useQuery({
+    queryKey: ['effectiveAssetConfiguration', 'library-workspace', ...pageAssetIds],
+    queryFn: () => api.effectiveAssetConfigurations(pageAssetIds),
+    enabled: pageAssetIds.length > 0,
+    staleTime: 15_000,
+  });
+  const selectablePageAssetIds = pageRows.flatMap(({ asset, group }) => (
+    asset.id !== undefined && selectableAssetIdsByGroup.get(normalizePath(group.path))?.has(asset.id) ? [asset.id] : []
+  ));
+  const selectedSelectablePageAssetCount = selectablePageAssetIds.filter((id) => selectedAssetIds.has(id)).length;
+  const allSelectablePageAssetsSelected = selectablePageAssetIds.length > 0 && selectedSelectablePageAssetCount === selectablePageAssetIds.length;
   const selectedEntry = pageRows.find(({ asset }) => asset.path === selectedAssetPath);
   const selectedAsset = selectedEntry?.asset;
   const selectedGroup = selectedEntry?.group;
@@ -907,93 +957,84 @@ function LibraryAssetTable({
   const selectedPathGroup = treeSelection.path
     ? visibleGroups.find((group) => normalizePath(group.path) === normalizePath(treeSelection.path))
     : undefined;
+  const selectedPathAssetIds = selectedPathGroup
+    ? librarySafeBulkSelectableAssets(selectedPathGroup).flatMap((asset) => asset.id === undefined ? [] : [asset.id])
+    : [];
+  const selectedPathBulkCount = selectedPathAssetIds.filter((id) => selectedAssetIds.has(id)).length;
   const selectedLibrary = libraries.find((library) => library.id === treeSelection.libraryId);
   const selectedLibraryName = selectedLibrary?.name ?? groups.find((group) => group.libraryId === treeSelection.libraryId)?.libraryName;
   const selectedPathParts = treeSelection.path.replace(/\\/g, '/').split('/').filter(Boolean);
   const libraryRootPartCount = selectedLibrary?.destinationPath.replace(/\\/g, '/').split('/').filter(Boolean).length ?? 0;
   const libraryBreadcrumbs = treeSelection.libraryId === null && !treeSelection.path
-    ? ['Assets', 'Library', 'All Library assets']
-    : ['Assets', selectedLibraryName ?? 'Library', ...selectedPathParts.slice(libraryRootPartCount)];
+    ? ['Assets', 'Libraries', 'All Library assets']
+    : ['Assets', 'Libraries', selectedLibraryName ?? 'Library', ...selectedPathParts.slice(libraryRootPartCount)];
 
+  const selectedAssetRelativeParts = selectedAsset ? selectedAsset.relativePath.replace(/\\/g, '/').split('/').filter(Boolean) : [];
+  const selectedAssetParentPath = selectedAssetRelativeParts.at(-1) === selectedAsset?.fileName
+    ? selectedAssetRelativeParts.slice(0, -1).join('/')
+    : selectedAssetRelativeParts.join('/');
   const selectedAssetPathContext = selectedAsset && selectedGroup
-    ? `${selectedAsset.libraryName || selectedGroup.libraryName}${selectedAsset.relativePath ? ` · ${selectedAsset.relativePath}` : ''}`
+    ? selectedAssetParentPath
     : '';
-  const selectedAssetProfile = selectedAsset && selectedGroup
-    ? assignedProfileLabel(selectedAsset, selectedGroup, profileAssignments.data ?? [], profiles)
-    : 'Unavailable';
-  const selectedJob = selectedAsset ? associatedJobForCurrentPublication(selectedAsset, queueJobs) : undefined;
-  const selectedPipeline = selectedAsset ? assetPipelineState(selectedAsset, selectedJob, false) : undefined;
   const selectedSnapshotData = selectedSnapshot.data?.snapshot ?? null;
-  const selectedSubtitleSummary = selectedSnapshotData
-    ? `${selectedSnapshotData.subtitleStreams.length} ${selectedSnapshotData.subtitleStreams.length === 1 ? 'track' : 'tracks'}${selectedSnapshotData.subtitleStreams.some((stream) => stream.language) ? ` · ${Array.from(new Set(selectedSnapshotData.subtitleStreams.map((stream) => stream.language).filter(Boolean))).slice(0, 3).join(', ')}` : ''}`
-    : 'Unavailable';
-  const selectedCanAssignProfile = Boolean(selectedAsset && !hidePreConversionActionsForAsset(selectedAsset) && !selectedAsset.missing && !assetHasOpenJob(selectedAsset, queueJobs));
-  const selectedCanTestEncode = Boolean(selectedAsset && testEncodeEligibleAsset(selectedAsset, mode) && assetInfoCapability(selectedAsset, 'lab').allowed);
+  const selectedEffective = selectedAsset?.id ? effectiveConfigurations.data?.configurations[String(selectedAsset.id)] : undefined;
+  const assignedProfileLabel = effectiveConfigurations.isLoading ? 'Loading…' : effectiveVideoProfileLabel(selectedEffective?.video, profiles);
+  const selectedWorkspaceActions = selectedAsset && selectedActions?.path === selectedAsset.path ? selectedActions.actions : null;
+  const selectedPipelineState = selectedAsset
+    ? assetPipelineState(selectedAsset, associatedJobForCurrentPublication(selectedAsset, queueJobs), false)
+    : undefined;
 
   return (
-    <Box sx={{ bgcolor: 'background.default', p: { xs: 1, sm: 1.5 } }}>
-      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 1, lg: 1.5 }} alignItems="stretch" sx={{ minWidth: 0 }}>
+    <Box data-testid="assets-mode-workspace" sx={{ bgcolor: '#061525', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+      <Stack direction={{ xs: 'column', md: 'row' }} spacing={{ xs: 0.75, md: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
         {hierarchyPanel}
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ px: 0.5, pb: 1, minWidth: 0 }}>
-            <Box sx={{ minWidth: 0 }}>
-              <WorkspaceBreadcrumbs segments={libraryBreadcrumbs} label="Library location" />
-              <Typography variant="h2" sx={{ fontSize: '1rem', lineHeight: 1.3 }} noWrap>
-                {selectedPathGroup ? cleanPathLabel(selectedPathGroup.path) : treeSelection.path || treeSelection.libraryId !== null ? cleanPathLabel(treeSelection.path) || selectedLibraryName || 'Library' : 'All Library assets'}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {visibleAssets.length.toLocaleString()} {visibleAssets.length === 1 ? 'asset' : 'assets'}
-              </Typography>
-            </Box>
-          </Stack>
+        <Box data-testid="assets-content-column" sx={{ flex: 1, minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <Box data-testid="assets-summary-in-workspace" sx={{ mb: 1.1, flexShrink: 0 }}>{summaryStrip}</Box>
 
           {selectedPathGroup ? (
-            <Table size="small" aria-label={`Actions for ${selectedPathGroup.path}`} sx={{ mb: 0.75, tableLayout: 'fixed' }}>
-              <TableBody>
-                <AssetGroupRow
-                  group={selectedPathGroup}
-                  libraries={libraries}
-                  profiles={profiles}
-                  audioProfiles={audioProfiles}
-                  trackProfiles={trackProfiles}
-                  settings={settings}
-                  assetCategories={assetCategories}
-                  queueJobs={queueJobs}
-                  runningSnapshotPaths={runningSnapshotPaths}
-                  mode={mode}
-                  compactPathHeader
-                />
-              </TableBody>
-            </Table>
-          ) : null}
+            <AssetGroupRow
+              group={selectedPathGroup}
+              libraries={libraries}
+              profiles={profiles}
+              audioProfiles={audioProfiles}
+              trackProfiles={trackProfiles}
+              settings={settings}
+              assetCategories={assetCategories}
+              queueJobs={queueJobs}
+              runningSnapshotPaths={runningSnapshotPaths}
+              mode={mode}
+              v2ToolbarOnly
+              breadcrumbSegments={libraryBreadcrumbs}
+              selectedCount={selectedPathBulkCount}
+              selectedAssetIds={selectedAssetIds}
+              onAssetSelectionChange={updateLibraryAssetSelection}
+            />
+          ) : (
+            <AssetsV2PathToolbar
+              path={treeSelection.path || selectedLibraryName || 'Library'}
+              mode="library"
+              breadcrumbs={<WorkspaceBreadcrumbs segments={libraryBreadcrumbs} label="Library location" />}
+            />
+          )}
 
+          <AssetsV2InventoryControls count={visibleAssets.length} filterCount={activeFilterCount} syncDetails={syncDetails} syncPending={syncPending} onSync={onSync}>
+            {filterContent}
+          </AssetsV2InventoryControls>
+
+          <Box data-testid="assets-list-scroll" role="region" aria-label="Library asset list" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', pb: 1.25 }}>
           {visibleAssets.length ? (
-            <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', border: 1, borderColor: 'divider', borderRadius: 1.25, bgcolor: 'background.paper' }}>
-              <Table size="small" aria-label="Library assets" sx={{ width: '100%', minWidth: { xs: 640, sm: 700 }, tableLayout: 'fixed', '& th': { color: 'text.secondary', fontSize: '0.72rem', fontWeight: 700, bgcolor: 'rgba(255,255,255,0.025)', borderColor: 'divider' }, '& td': { borderColor: 'rgba(148, 163, 184, 0.12)' }, '& td, & th': { py: 0.8 } }}>
-                <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ width: '37%' }}>Name</TableCell>
-                    <TableCell sx={{ width: '13%' }}>Status</TableCell>
-                    <TableCell sx={{ width: '17%' }}>Profile</TableCell>
-                  <TableCell sx={{ width: '12%' }}>Subtitles</TableCell>
-                  <TableCell sx={{ width: '8%' }}>Duration</TableCell>
-                  <TableCell sx={{ width: '13%' }}>Modified</TableCell>
-                  <TableCell padding="checkbox" sx={{ width: 42 }} />
-                  </TableRow>
-                </TableHead>
-                <TableBody>
+            <AssetsInventoryTable
+              mode="library"
+              selectable
+              selectAll={{
+                checked: allSelectablePageAssetsSelected,
+                indeterminate: selectedSelectablePageAssetCount > 0 && !allSelectablePageAssetsSelected,
+                disabled: selectablePageAssetIds.length === 0,
+                onChange: (selected) => updateLibraryAssetSelection(selectablePageAssetIds, selected),
+              }}
+            >
                   {pageRows.map(({ asset, group }) => {
-                    const assignments = profileAssignments.data?.filter((assignment) => assignment.targetType === 'path' && normalizePath(assignment.targetPath) === normalizePath(group.path)) ?? [];
-                    const videoAssignment = assignments.find((assignment) => assignment.mediaType === 'video');
-                    const audioAssignment = assignments.find((assignment) => assignment.mediaType === 'audio');
-                    const trackAssignment = assignments.find((assignment) => assignment.mediaType === 'tracks');
-                    const rowGroupProfile = videoAssignment
-                      ? videoAssignment.selection === 'override_only'
-                        ? VIDEO_PROFILE_OVERRIDE_ONLY
-                        : videoAssignment.selection === 'audio_only' || videoAssignment.selection === 'disabled'
-                          ? VIDEO_PROFILE_AUDIO_ONLY
-                          : videoAssignment.videoProfileId ?? 0
-                      : 0;
+                    const effective = asset.id ? effectiveConfigurations.data?.configurations[String(asset.id)] : undefined;
                     return (
                       <AssetRow
                         key={asset.path}
@@ -1003,21 +1044,22 @@ function LibraryAssetTable({
                         audioProfiles={audioProfiles}
                         trackProfiles={trackProfiles}
                         srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)}
-                        pathTrackProfile={trackProfiles.find((profile) => profile.key === trackAssignment?.profileKey)}
+                        pathTrackProfile={trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey)}
                         assetCategories={assetCategories}
-                        groupCategory={firstCategory(group.pathMetadata?.categories)}
+                        groupCategory={firstCategory(group.pathMetadata?.categories) || group.libraryName || 'Unavailable'}
                         confidenceEnabled={!getDisabledConfidencePaths(settings).includes(group.path)}
-                        groupProfileId={rowGroupProfile}
-                        groupAudioProfileKey={audioAssignment?.selection === 'profile' ? audioAssignment.profileKey ?? '' : ''}
+                        groupProfileId={effective?.video.videoProfileId ?? 0}
+                        effectiveConfiguration={effective}
+                        groupAudioProfileKey={effective?.audio.profileKey ?? ''}
                         groupLibraryId={group.libraryId}
                         hasOpenJob={assetHasOpenJob(asset, queueJobs)}
                         queueJobs={queueJobs}
                         snapshotRunning={runningSnapshotPaths.has(asset.path)}
                         mode={mode}
-                        bulkSelected={false}
-                        bulkSelectionEnabled={false}
-                        bulkSelectionDisabled={asset.missing}
-                        onBulkSelectionChange={() => undefined}
+                        bulkSelected={Boolean(asset.id && selectedAssetIds.has(asset.id))}
+                        bulkSelectionEnabled
+                        bulkSelectionDisabled={asset.id === undefined || !selectableAssetIdsByGroup.get(normalizePath(group.path))?.has(asset.id)}
+                        onBulkSelectionChange={(_, selected) => { if (asset.id !== undefined) updateLibraryAssetSelection([asset.id], selected); }}
                         compactLibrary
                         selected={asset.path === selectedAssetPath}
                         onSelectAsset={() => setSelectedAssetPath(asset.path)}
@@ -1025,12 +1067,11 @@ function LibraryAssetTable({
                       />
                     );
                   })}
-                </TableBody>
-              </Table>
-            </Box>
+            </AssetsInventoryTable>
           ) : (
             <Alert severity="info" sx={{ mt: 1 }}>{emptyLabel}</Alert>
           )}
+          </Box>
 
           {visibleAssets.length ? (
             <TablePagination
@@ -1041,7 +1082,7 @@ function LibraryAssetTable({
               rowsPerPageOptions={[10, 25, 50, 100]}
               onPageChange={(_, nextPage) => { setPage(nextPage); setSelectedAssetPath(''); }}
               onRowsPerPageChange={(event) => { setRowsPerPage(Number(event.target.value)); setPage(0); setSelectedAssetPath(''); }}
-              sx={{ '& .MuiTablePagination-toolbar': { px: { xs: 0.5, sm: 1 } }, '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } } }}
+              sx={{ flexShrink: 0, '& .MuiTablePagination-toolbar': { px: { xs: 0.5, sm: 1 }, minHeight: 42 }, '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } } }}
             />
           ) : null}
 
@@ -1049,20 +1090,27 @@ function LibraryAssetTable({
             <SelectedAssetDetail
               asset={selectedAsset}
               pathContext={selectedAssetPathContext}
-              status={selectedPipeline?.label ?? statusLabel(selectedAsset.status)}
-              assignedProfile={selectedAssetProfile}
+              categoryLabel={libraryEffectiveCategory(
+                selectedEffective,
+                firstCategory(selectedAsset.metadata.categories) || selectedAsset.libraryName || selectedGroup.libraryName || 'Unavailable',
+                'Disabled',
+              ) || 'Unavailable'}
+              containerLabel={selectedSnapshotData?.container || 'Unavailable'}
               snapshot={selectedSnapshotData}
               snapshotLoading={selectedSnapshot.isLoading}
-              subtitlesSummary={selectedSubtitleSummary}
+              statusLabel={selectedPipelineState?.label ?? statusLabel(selectedAsset.status)}
+              statusColor={selectedPipelineState?.color ?? statusColor(selectedAsset.status)}
+              assignedProfileLabel={assignedProfileLabel}
               modifiedLabel={formatDate(selectedAsset.modifiedAt)}
               sizeLabel={formatBytes(selectedAsset.sizeBytes)}
-              onPlayPreview={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.playPreview()}
-              onAssignProfile={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.assignProfile()}
-              onTestEncode={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.testEncode()}
-              onMore={(anchor) => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.openMore(anchor)}
-              canAssignProfile={selectedCanAssignProfile}
-              canTestEncode={selectedCanTestEncode}
-              testEncodeDisabled={selectedAsset.missing || assetHasOpenJob(selectedAsset, queueJobs)}
+              onPlayPreview={() => selectedWorkspaceActions?.playPreview()}
+              onAssignProfile={() => selectedWorkspaceActions?.assignProfile()}
+              onTestEncode={() => selectedWorkspaceActions?.testEncode()}
+              onMore={(anchor) => selectedWorkspaceActions?.openMore(anchor)}
+              canAssignProfile={selectedWorkspaceActions?.canAssignProfile ?? false}
+              canTestEncode={selectedWorkspaceActions?.canTestEncode ?? false}
+              assignProfileUnavailableReason={selectedWorkspaceActions?.assignProfileUnavailableReason}
+              testEncodeUnavailableReason={selectedWorkspaceActions?.testEncodeUnavailableReason}
             />
           ) : null}
         </Box>
@@ -1076,18 +1124,37 @@ type AssetWorkspaceActions = {
   assignProfile: () => void;
   testEncode: () => void;
   openMore: (anchor: HTMLElement) => void;
+  canAssignProfile: boolean;
+  canTestEncode: boolean;
+  assignProfileUnavailableReason: string;
+  testEncodeUnavailableReason: string;
 };
 
-function assignedProfileLabel(asset: Asset, group: AssetGroup, assignments: ProfileAssignment[], profiles: Profile[]) {
-  const assetAssignment = assignments.find((assignment) => assignment.targetType === 'asset' && normalizePath(assignment.targetPath) === normalizePath(asset.path) && assignment.mediaType === 'video');
-  const pathAssignment = assignments.find((assignment) => assignment.targetType === 'path' && normalizePath(assignment.targetPath) === normalizePath(group.path) && assignment.mediaType === 'video');
-  const assignment = assetAssignment ?? pathAssignment;
-  if (!assignment) return 'Inherited';
-  if (assignment.selection === 'disabled') return 'Disabled';
-  if (assignment.selection === 'override_only') return 'Overrides only';
-  if (assignment.selection === 'audio_only') return 'Audio only';
-  const profile = profiles.find((candidate) => candidate.id === assignment.videoProfileId);
-  return profile?.name ?? (assignment.videoProfileId ? 'Unavailable' : 'Inherited');
+function assetGroupLifecycleFlags(group: AssetGroup, groupAssets = safeArray(group.assets)) {
+  const memberProvenances = new Set(groupAssets.map((asset) => asset.lifecycle?.provenance ?? asset.status));
+  const isMixedGroup = memberProvenances.size > 1
+    || group.status === 'mixed'
+    || (group.lifecycleSummary?.lifecycle.length ?? 0) > 1
+    || (group.lifecycleSummary?.validation.length ?? 0) > 1
+    || (group.lifecycleSummary?.publication.length ?? 0) > 1;
+  const isConvertedGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'converted' || asset.status === 'converted');
+  const isPublishedAsIsGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'published_as_is' || asset.publicationMode === 'as_is');
+  const isAcceptedGroup = group.status === 'accepted' || (!isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'imported' || asset.status === 'accepted'));
+  return { isMixedGroup, isConvertedGroup, isPublishedAsIsGroup, isAcceptedGroup };
+}
+
+function librarySafeBulkSelectableAssets(group: AssetGroup) {
+  const lifecycle = assetGroupLifecycleFlags(group);
+  if (lifecycle.isMixedGroup || lifecycle.isAcceptedGroup) return [];
+  const action = lifecycle.isPublishedAsIsGroup
+    ? 'restore'
+    : lifecycle.isConvertedGroup
+      ? 'deleteArchivedOriginal'
+      : undefined;
+  if (!action) return [];
+  return safeArray(group.assets).filter((asset) => (
+    !asset.missing && asset.id !== undefined && assetInfoCapability(asset, action).allowed
+  ));
 }
 
 type AssetCollection = {
@@ -1099,7 +1166,7 @@ type AssetCollection = {
   sizeBytes: number;
 };
 
-function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query, legacyAssetPath, selection, hierarchyPanel }: {
+function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDetails, syncPending, onSync, sourceGroups, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query, legacyAssetPath, selection, hierarchyPanel }: AssetsWorkspaceChromeProps & {
   sourceGroups: AssetSourceGroup[];
   libraries: Library[];
   profiles: Profile[];
@@ -1120,10 +1187,12 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
   const [selectedAssetPathState, setSelectedAssetPathState] = useState({ identity: '', path: '' });
   const [pageState, setPageState] = useState({ identity: '', page: 0 });
   const [rowsPerPage, setRowsPerPage] = useState(25);
-  const selectedActions = useRef<{ path: string; actions: AssetWorkspaceActions } | null>(null);
+  const [selectedActions, setSelectedActions] = useState<{ path: string; actions: AssetWorkspaceActions } | null>(null);
   const registerActions = useCallback((path: string, actions: AssetWorkspaceActions | null) => {
-    if (actions) selectedActions.current = { path, actions };
-    else if (selectedActions.current?.path === path) selectedActions.current = null;
+    setSelectedActions((current) => {
+      if (actions) return { path, actions };
+      return current?.path === path ? null : current;
+    });
   }, []);
   const cleanQuery = query.trim().toLowerCase();
   const filteredSourceGroups = useMemo(() => sourceGroups.map((sourceGroup) => ({
@@ -1168,6 +1237,9 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
   const pageCount = Math.max(1, Math.ceil(visibleAssets.length / rowsPerPage));
   const visiblePage = Math.min(page, pageCount - 1);
   const pageRows = visibleAssets.slice(visiblePage * rowsPerPage, visiblePage * rowsPerPage + rowsPerPage);
+  const selectablePageAssetIds = pageRows.flatMap(({ asset }) => !asset.missing && asset.id !== undefined ? [asset.id] : []);
+  const selectedSelectablePageAssetCount = selectablePageAssetIds.filter((id) => selectedAssetIds.has(id)).length;
+  const allSelectablePageAssetsSelected = selectablePageAssetIds.length > 0 && selectedSelectablePageAssetCount === selectablePageAssetIds.length;
   const selectedAssetPath = requestedSelectedAssetPath || pageRows[0]?.asset.path || '';
   const selectedEntry = pageRows.find(({ asset }) => normalizePath(asset.path) === normalizePath(selectedAssetPath));
   const selectedAsset = selectedEntry?.asset;
@@ -1185,25 +1257,14 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
     enabled: pageAssetIds.length > 0,
     staleTime: 15_000,
   });
-  const selectedEffective = selectedAsset?.id ? effectiveConfigurations.data?.configurations[String(selectedAsset.id)] : undefined;
-  const selectedProfileId = selectedEffective?.video.videoProfileId ?? 0;
-  const selectedProfileName = selectedProfileId ? profiles.find((profile) => profile.id === selectedProfileId)?.name ?? 'Unavailable' : 'Inherited';
-  const selectedJob = selectedAsset ? associatedJobForCurrentPublication(selectedAsset, queueJobs) : undefined;
-  const selectedPipeline = selectedAsset ? assetPipelineState(selectedAsset, selectedJob, false) : undefined;
   const selectedSnapshotData = selectedSnapshot.data?.snapshot ?? null;
-  const selectedSubtitleSummary = selectedSnapshotData
-    ? `${selectedSnapshotData.subtitleStreams.length} ${selectedSnapshotData.subtitleStreams.length === 1 ? 'track' : 'tracks'}${selectedSnapshotData.subtitleStreams.some((stream) => stream.language) ? ` · ${Array.from(new Set(selectedSnapshotData.subtitleStreams.map((stream) => stream.language).filter(Boolean))).slice(0, 3).join(', ')}` : ''}`
-    : 'Unavailable';
-  const selectedCanAssignProfile = Boolean(selectedAsset && !hidePreConversionActionsForAsset(selectedAsset) && !selectedAsset.missing && !assetHasOpenJob(selectedAsset, queueJobs));
-  const selectedCanTestEncode = Boolean(selectedAsset && testEncodeEligibleAsset(selectedAsset, 'unprocessed') && assetInfoCapability(selectedAsset, 'lab').allowed);
+  const selectedEffective = selectedAsset?.id ? effectiveConfigurations.data?.configurations[String(selectedAsset.id)] : undefined;
+  const assignedProfileLabel = effectiveConfigurations.isLoading ? 'Loading…' : effectiveVideoProfileLabel(selectedEffective?.video, profiles);
+  const selectedWorkspaceActions = selectedAsset && selectedActions?.path === selectedAsset.path ? selectedActions.actions : null;
+  const selectedPipelineState = selectedAsset
+    ? assetPipelineState(selectedAsset, associatedJobForCurrentPublication(selectedAsset, queueJobs), false)
+    : undefined;
   const selectedPathGroup = selectedPath ? assetGroupFromTreePath(selectedPath) : undefined;
-  const contextLabel = selection.kind === 'all'
-    ? 'All RAW assets'
-    : selection.kind === 'source'
-      ? sourceGroup?.name ?? 'RAW source'
-      : selection.kind === 'logical'
-      ? logicalGroup?.name ?? 'RAW title'
-      : selectedPath?.isLogicalGroupRoot ? `${logicalGroup?.name ?? 'RAW title'} · Root` : selectedPath?.displayPath || selectedPath?.name || 'RAW path';
   const rawBreadcrumbs = selection.kind === 'all'
     ? ['Assets', 'RAW', 'All RAW assets']
     : [
@@ -1227,21 +1288,30 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
   };
 
   return (
-    <Box sx={{ bgcolor: 'background.default', p: { xs: 1, sm: 1.5 } }}>
-      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={{ xs: 1, lg: 1.5 }} alignItems="stretch" sx={{ minWidth: 0 }}>
+    <Box data-testid="assets-mode-workspace" sx={{ bgcolor: '#061525', p: { xs: 0.5, sm: 0.75 }, width: '100%', height: '100%', minWidth: 0, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+      <Stack direction={{ xs: 'column', md: 'row' }} spacing={{ xs: 0.75, md: 1 }} alignItems="stretch" sx={{ minWidth: 0, minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
         {hierarchyPanel}
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <WorkspaceBreadcrumbs segments={rawBreadcrumbs} label="RAW source location" />
-          {sourceGroup ? (
-            <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: 0.5, pb: 0.75 }}>
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="h2" sx={{ fontSize: '1.05rem', lineHeight: 1.3 }} noWrap title={sourceGroup.name}>{sourceGroup.name}</Typography>
-                <Typography variant="caption" color="text.secondary">{countLabel(sourceGroup.assetCount, 'asset')} · {countLabel(sourceGroup.titleCount, 'title')} · {countLabel(sourceGroup.pathCount, 'path')} · {formatBytes(sourceGroup.totalSizeBytes)}</Typography>
-              </Box>
-              <SourceGroupConfigureButton sourceGroup={sourceGroup} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} />
-            </Stack>
-          ) : null}
-          {selection.kind === 'logical' && logicalGroup ? (
+        <Box data-testid="assets-content-column" sx={{ flex: 1, minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <Box data-testid="assets-summary-in-workspace" sx={{ mb: 1.1, flexShrink: 0 }}>{summaryStrip}</Box>
+          {selectedPathGroup ? (
+            <AssetGroupRow
+              group={selectedPathGroup}
+              libraries={libraries}
+              profiles={profiles}
+              audioProfiles={audioProfiles}
+              trackProfiles={trackProfiles}
+              settings={settings}
+              assetCategories={assetCategories}
+              queueJobs={queueJobs}
+              runningSnapshotPaths={runningSnapshotPaths}
+              mode="unprocessed"
+              v2ToolbarOnly
+              breadcrumbSegments={rawBreadcrumbs}
+              selectedCount={scopedSelectedAssets.length}
+              selectedAssetIds={selectedAssetIds}
+              onAssetSelectionChange={updateSelectedAssets}
+            />
+          ) : selection.kind === 'logical' && logicalGroup ? (
             <UnprocessedLogicalGroup
               key={logicalGroup.id}
               logicalGroup={logicalGroup}
@@ -1256,15 +1326,16 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
               assetCategories={assetCategories}
               queueJobs={queueJobs}
               runningSnapshotPaths={runningSnapshotPaths}
+              breadcrumbSegments={rawBreadcrumbs}
               headerOnly
             />
-          ) : selection.kind === 'source' ? null : (
-            <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: 0.5, pb: 0.75 }}>
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="h2" sx={{ fontSize: '1.05rem', lineHeight: 1.3 }} noWrap title={contextLabel}>{contextLabel}</Typography>
-                <Typography variant="caption" color="text.secondary">{visibleAssets.length.toLocaleString()} {visibleAssets.length === 1 ? 'asset' : 'assets'}</Typography>
-              </Box>
-            </Stack>
+          ) : (
+            <AssetsV2PathToolbar
+              path={sourceGroup?.sourcePath ?? ''}
+              mode="raw"
+              breadcrumbs={<WorkspaceBreadcrumbs segments={rawBreadcrumbs} label="RAW source location" />}
+              primaryActions={sourceGroup ? <SourceGroupConfigureButton sourceGroup={sourceGroup} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} /> : null}
+            />
           )}
           {scopedSelectedAssets.length ? (
             <UnprocessedSelectionToolbar
@@ -1279,41 +1350,21 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
               onClear={() => setSelectedAssetIdsState({ identity: selectionIdentity, ids: new Set() })}
             />
           ) : null}
-          {selectedPathGroup ? (
-            <Table size="small" aria-label={`Actions for ${selectedPathGroup.path}`} sx={{ mb: 0.75, tableLayout: 'fixed' }}>
-              <TableBody>
-                <AssetGroupRow
-                  group={selectedPathGroup}
-                  libraries={libraries}
-                  profiles={profiles}
-                  audioProfiles={audioProfiles}
-                  trackProfiles={trackProfiles}
-                  settings={settings}
-                  assetCategories={assetCategories}
-                  queueJobs={queueJobs}
-                  runningSnapshotPaths={runningSnapshotPaths}
-                  mode="unprocessed"
-                  compactPathHeader
-                />
-              </TableBody>
-            </Table>
-          ) : null}
+          <AssetsV2InventoryControls count={visibleAssets.length} filterCount={activeFilterCount} syncDetails={syncDetails} syncPending={syncPending} onSync={onSync}>
+            {filterContent}
+          </AssetsV2InventoryControls>
+          <Box data-testid="assets-list-scroll" role="region" aria-label="RAW asset list" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', pb: 1.25 }}>
           {visibleAssets.length ? (
-            <Box sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', border: 1, borderColor: 'divider', borderRadius: 1.25, bgcolor: 'background.paper' }}>
-              <Table size="small" aria-label="RAW assets" sx={{ width: '100%', minWidth: { xs: 720, sm: 760 }, tableLayout: 'fixed', '& th': { color: 'text.secondary', fontSize: '0.72rem', fontWeight: 700, bgcolor: 'rgba(255,255,255,0.025)', borderColor: 'divider' }, '& td': { borderColor: 'rgba(148, 163, 184, 0.12)' }, '& td, & th': { py: 0.8 } }}>
-                <TableHead>
-                  <TableRow>
-                    <TableCell padding="checkbox" sx={{ width: 42 }} />
-                    <TableCell sx={{ width: '35%' }}>Name</TableCell>
-                    <TableCell sx={{ width: '14%' }}>Status</TableCell>
-                    <TableCell sx={{ width: '17%' }}>Profile</TableCell>
-                    <TableCell sx={{ width: '12%' }}>Subtitles</TableCell>
-                    <TableCell sx={{ width: '9%' }}>Duration</TableCell>
-                    <TableCell sx={{ width: '13%' }}>Modified</TableCell>
-                    <TableCell padding="checkbox" sx={{ width: 42 }} />
-                  </TableRow>
-                </TableHead>
-                <TableBody>
+            <AssetsInventoryTable
+              mode="raw"
+              selectable
+              selectAll={{
+                checked: allSelectablePageAssetsSelected,
+                indeterminate: selectedSelectablePageAssetCount > 0 && !allSelectablePageAssetsSelected,
+                disabled: selectablePageAssetIds.length === 0,
+                onChange: (selected) => updateSelectedAssets(selectablePageAssetIds, selected),
+              }}
+            >
                   {pageRows.map(({ asset, path }) => {
                     const effective = asset.id ? effectiveConfigurations.data?.configurations[String(asset.id)] : undefined;
                     const track = trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey);
@@ -1336,6 +1387,7 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
                         groupCategory={effective?.category.category ?? ''}
                         confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)}
                         groupProfileId={effective?.video.videoProfileId ?? 0}
+                        effectiveConfiguration={effective}
                         groupAudioProfileKey={effective?.audio.profileKey ?? ''}
                         groupLibraryId={effective?.destination.destinationLibraryId ?? 0}
                         hasOpenJob={assetHasOpenJob(asset, queueJobs)}
@@ -1350,12 +1402,11 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
                       />
                     );
                   })}
-                </TableBody>
-              </Table>
-            </Box>
+            </AssetsInventoryTable>
           ) : (
             <Alert severity="info" sx={{ mt: 1 }}>{sourceGroups.length ? 'No RAW assets match this context or search.' : 'No RAW Source Groups found.'}</Alert>
           )}
+          </Box>
           {visibleAssets.length ? (
             <TablePagination
               component="div"
@@ -1365,27 +1416,30 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
               rowsPerPageOptions={[10, 25, 50, 100]}
               onPageChange={(_, nextPage) => { setPage(nextPage); setSelectedAssetPath(''); }}
               onRowsPerPageChange={(event) => { setRowsPerPage(Number(event.target.value)); setPage(0); setSelectedAssetPath(''); }}
-              sx={{ '& .MuiTablePagination-toolbar': { px: { xs: 0.5, sm: 1 } }, '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } } }}
+              sx={{ flexShrink: 0, '& .MuiTablePagination-toolbar': { px: { xs: 0.5, sm: 1 }, minHeight: 42 }, '& .MuiTablePagination-selectLabel': { display: { xs: 'none', sm: 'block' } } }}
             />
           ) : null}
           {selectedAsset && selectedGroup && selectedEntry ? (
             <SelectedAssetDetail
               asset={selectedAsset}
               pathContext={`${selectedEntry.sourceGroup.name} · ${selectedEntry.logicalGroup.name} · ${selectedEntry.path.isLogicalGroupRoot ? 'Root' : selectedEntry.path.displayPath || selectedEntry.path.name}`}
-              status={selectedPipeline?.label ?? statusLabel(selectedAsset.status)}
-              assignedProfile={selectedProfileName}
+              categoryLabel={selectedAsset.metadata.categories?.[0] || selectedAsset.libraryName || selectedEntry.sourceGroup.name || 'Unavailable'}
+              containerLabel={selectedSnapshotData?.container || 'Unavailable'}
               snapshot={selectedSnapshotData}
               snapshotLoading={selectedSnapshot.isLoading}
-              subtitlesSummary={selectedSubtitleSummary}
+              statusLabel={selectedPipelineState?.label ?? statusLabel(selectedAsset.status)}
+              statusColor={selectedPipelineState?.color ?? statusColor(selectedAsset.status)}
+              assignedProfileLabel={assignedProfileLabel}
               modifiedLabel={formatDate(selectedAsset.modifiedAt)}
               sizeLabel={formatBytes(selectedAsset.sizeBytes)}
-              onPlayPreview={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.playPreview()}
-              onAssignProfile={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.assignProfile()}
-              onTestEncode={() => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.testEncode()}
-              onMore={(anchor) => selectedActions.current?.path === selectedAsset.path && selectedActions.current.actions.openMore(anchor)}
-              canAssignProfile={selectedCanAssignProfile}
-              canTestEncode={selectedCanTestEncode}
-              testEncodeDisabled={selectedAsset.missing || assetHasOpenJob(selectedAsset, queueJobs)}
+              onPlayPreview={() => selectedWorkspaceActions?.playPreview()}
+              onAssignProfile={() => selectedWorkspaceActions?.assignProfile()}
+              onTestEncode={() => selectedWorkspaceActions?.testEncode()}
+              onMore={(anchor) => selectedWorkspaceActions?.openMore(anchor)}
+              canAssignProfile={selectedWorkspaceActions?.canAssignProfile ?? false}
+              canTestEncode={selectedWorkspaceActions?.canTestEncode ?? false}
+              assignProfileUnavailableReason={selectedWorkspaceActions?.assignProfileUnavailableReason}
+              testEncodeUnavailableReason={selectedWorkspaceActions?.testEncodeUnavailableReason}
             />
           ) : null}
         </Box>
@@ -1396,8 +1450,8 @@ function RawAssetsView({ sourceGroups, libraries, profiles, audioProfiles, track
 
 type PreparedSelectionQueue = QueueSelectedAssetsResponse;
 
-function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, headerOnly = false }: {
-	logicalGroup: AssetLogicalGroup; legacyAssetPath: string; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>; headerOnly?: boolean;
+function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetIds, onAssetSelectionChange, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, breadcrumbSegments, headerOnly = false }: {
+	logicalGroup: AssetLogicalGroup; legacyAssetPath: string; selectedAssetIds: Set<number>; onAssetSelectionChange: (ids: number[], selected: boolean) => void; libraries: Library[]; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; settings: AppSetting[]; assetCategories: string[]; queueJobs: QueueJob[]; runningSnapshotPaths: Set<string>; breadcrumbSegments?: string[]; headerOnly?: boolean;
 }) {
 	const queryClient = useQueryClient();
 	const targetPath = safeArray(logicalGroup.assetPaths).find((path) => safeArray(path.assets).some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)));
@@ -1475,12 +1529,60 @@ function UnprocessedLogicalGroup({ logicalGroup, legacyAssetPath, selectedAssetI
 			return <AssetRow key={`${asset.id}-${effective?.video.videoProfileId ?? 0}-${effective?.destination.destinationLibraryId ?? 0}`} asset={asset} autoOpenAssetInfo={normalizePath(asset.path) === normalizePath(legacyAssetPath)} compactUnprocessed libraries={libraries} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} pathTrackProfile={track} assetCategories={assetCategories} groupCategory={effective?.category.category ?? ''} confidenceEnabled={!getDisabledConfidencePaths(settings).includes(path.path)} groupProfileId={effective?.video.videoProfileId ?? 0} groupAudioProfileKey={effective?.audio.profileKey ?? ''} groupLibraryId={effective?.destination.destinationLibraryId ?? 0} hasOpenJob={assetHasOpenJob(asset, queueJobs)} queueJobs={queueJobs} snapshotRunning={runningSnapshotPaths.has(asset.path)} mode="unprocessed" srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)} bulkSelected={selectedAssetIds.has(asset.id as number)} bulkSelectionEnabled bulkSelectionDisabled={asset.missing} onBulkSelectionChange={(_, selected) => onAssetSelectionChange([asset.id as number], selected)} />;
 		})}</TableBody></Table></Box>;
 	};
-	return <Box sx={{ border: headerOnly ? 0 : 1, borderBottom: headerOnly ? 1 : 0, borderColor: 'divider', borderRadius: headerOnly ? 0 : 1, overflow: 'hidden', mb: headerOnly ? 1 : 0 }}>
-		<Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1} sx={{ px: headerOnly ? 0.5 : 1, py: headerOnly ? 0.5 : 1, bgcolor: headerOnly ? 'transparent' : 'rgba(255,255,255,0.035)' }}>
-			<Stack direction="row" alignItems="center" spacing={0.5}><Checkbox size="small" checked={groupSelection.checked} indeterminate={groupSelection.indeterminate} disabled={!assets.length} onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select title ${logicalGroup.name}` }} />{headerOnly ? null : <IconButton size="small" onClick={() => setExpanded((value) => !value)} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${logicalGroup.name}`}><ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'none' }} /></IconButton>}<Box><Typography variant={headerOnly ? 'h2' : 'h3'} sx={headerOnly ? { fontSize: '1.05rem', lineHeight: 1.3 } : undefined}>{logicalGroup.name}</Typography><Typography variant="body2" color="text.secondary">{countLabel(logicalGroup.assetCount, 'asset')} · {countLabel(logicalGroup.pathCount, 'path')} · {formatBytes(logicalGroup.totalSizeBytes)}</Typography></Box></Stack>
-			<Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-				<ScopeConfigureButton targetType="logical_group" scopeKey={logicalGroup.path} label="Configure title" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} readOnly={titleHasOpenJob} />
-				<Button size="small" variant="outlined" startIcon={<InfoOutlinedIcon />} onClick={() => runTitleAdvisor.mutate()} disabled={!assets.length || runTitleAdvisor.isPending}>{runTitleAdvisor.isPending ? 'Running Advisor…' : 'Run Advisor'}</Button>
+	if (headerOnly) {
+		return (
+			<>
+				<AssetsV2PathToolbar
+					path={logicalGroup.path}
+					mode="raw"
+					selectedCount={assets.filter((asset) => selectedAssetIds.has(asset.id ?? 0)).length}
+					breadcrumbs={(
+						<Stack direction="row" alignItems="center" spacing={0.45} sx={{ minWidth: 0 }}>
+							<Checkbox
+								size="small"
+								checked={groupSelection.checked}
+								indeterminate={groupSelection.indeterminate}
+								disabled={!assets.length}
+								onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)}
+								inputProps={{ 'aria-label': 'Select title ' + logicalGroup.name }}
+							/>
+							<WorkspaceBreadcrumbs segments={breadcrumbSegments ?? ['Assets', 'RAW', logicalGroup.name]} label="RAW title location" />
+						</Stack>
+					)}
+					primaryActions={(
+						<>
+							<Button size="small" variant="outlined" startIcon={<RefreshIcon />} onClick={() => setTitleSnapshotsOpen(true)} disabled={!titleSnapshotGroup || assets.every((asset) => asset.missing)}>
+								Scan
+							</Button>
+							<ScopeConfigureButton targetType="logical_group" scopeKey={logicalGroup.path} label="Configure Path" profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact readOnly={titleHasOpenJob} />
+							<Button size="small" variant="outlined" startIcon={<InfoOutlinedIcon />} onClick={() => runTitleAdvisor.mutate()} disabled={!assets.length || runTitleAdvisor.isPending}>
+								{runTitleAdvisor.isPending ? 'Running Advisor…' : 'Advisor'}
+							</Button>
+							<Button
+								size="small"
+								variant="contained"
+								startIcon={<DriveFileMoveIcon />}
+								onClick={() => publishTitleAsIs.mutate()}
+								disabled={!assets.length || titleHasOpenJob || assets.some((asset) => asset.review?.requiresReview) || publishTitleAsIs.isPending}
+							>
+								{publishTitleAsIs.isPending ? 'Moving…' : 'Move to library'}
+							</Button>
+						</>
+					)}
+				/>
+				{titleAdvisorResults.length ? <Alert severity={titleAdvisorResults.some((result) => result.error) ? 'warning' : 'success'} sx={{ mt: 0.6 }}>{titleAdvisorResults.length} asset{titleAdvisorResults.length === 1 ? '' : 's'} evaluated · {titleAdvisorResults.filter((result) => result.response?.recommendation === 'worth_it').length} comply · {titleAdvisorResults.filter((result) => result.response?.recommendation === 'maybe').length} review · {titleAdvisorResults.filter((result) => result.error).length} failed</Alert> : null}
+				{publishTitleAsIs.isSuccess ? <Alert severity="success" sx={{ mt: 0.6 }}>{publishTitleAsIs.data.message}</Alert> : null}
+				{publishTitleAsIs.isError && publishTitleAsIs.error.message !== 'Publish as-is canceled.' ? <Alert severity="warning" sx={{ mt: 0.6 }}>{publishTitleAsIs.error.message}</Alert> : null}
+				{titleSnapshotGroup ? <PathSnapshotsDialog open={titleSnapshotsOpen} group={titleSnapshotGroup} title={logicalGroup.name} pathLabels={snapshotPathLabels} runningSnapshotPaths={runningSnapshotPaths} onClose={() => setTitleSnapshotsOpen(false)} /> : null}
+			</>
+		);
+	}
+	return <Box data-testid={headerOnly ? 'assets-path-toolbar' : undefined} aria-label={headerOnly ? 'RAW title path actions' : undefined} sx={{ border: headerOnly ? 1 : 1, borderColor: '#15304a', borderRadius: headerOnly ? 1 : 1, overflow: 'hidden', mb: headerOnly ? 0.7 : 0, bgcolor: headerOnly ? '#091a2c' : 'rgba(255,255,255,0.035)' }}>
+		<Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={0.6} sx={{ px: headerOnly ? 1.25 : 1, py: headerOnly ? 0.55 : 1 }}>
+			<Stack direction="row" alignItems="center" spacing={0.45} sx={{ minWidth: 0, flex: 1 }}><Checkbox size="small" checked={groupSelection.checked} indeterminate={groupSelection.indeterminate} disabled={!assets.length} onChange={(event) => onAssetSelectionChange(assets.map((asset) => asset.id as number), event.target.checked)} inputProps={{ 'aria-label': `Select title ${logicalGroup.name}` }} />{headerOnly ? <WorkspaceBreadcrumbs segments={breadcrumbSegments ?? ['Assets', 'RAW', logicalGroup.name]} label="RAW title location" /> : <><IconButton size="small" onClick={() => setExpanded((value) => !value)} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${logicalGroup.name}`}><ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'none' }} /></IconButton><Box><Typography variant="h3">{logicalGroup.name}</Typography><Typography variant="body2" color="text.secondary">{countLabel(logicalGroup.assetCount, 'asset')} · {countLabel(logicalGroup.pathCount, 'path')} · {formatBytes(logicalGroup.totalSizeBytes)}</Typography></Box></>}</Stack>
+			<Stack direction="row" spacing={0.45} flexWrap="wrap" useFlexGap>
+				<ScopeConfigureButton targetType="logical_group" scopeKey={logicalGroup.path} label={headerOnly ? 'Configure Path' : 'Configure title'} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} compact={headerOnly} readOnly={titleHasOpenJob} />
+				<Button size="small" variant="outlined" startIcon={<InfoOutlinedIcon />} onClick={() => runTitleAdvisor.mutate()} disabled={!assets.length || runTitleAdvisor.isPending} sx={headerOnly ? { minHeight: 30, px: 0.9, fontSize: '0.8rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } } : undefined}>{runTitleAdvisor.isPending ? 'Running Advisor…' : headerOnly ? 'Advisor' : 'Run Advisor'}</Button>
 				{headerOnly ? (
 					<>
 						<Tooltip title="More title actions">
@@ -1545,7 +1647,7 @@ function assetGroupFromTreePath(path: import('../api/types').AssetPath): AssetGr
 	return { id: path.id, libraryId: assets[0]?.libraryId ?? 0, libraryName: assets[0]?.libraryName ?? 'Originals', path: path.path, relativePath: path.relativePath, status: 'unprocessed', fileCount: path.fileCount, sizeBytes: path.totalSizeBytes, modifiedAt: assets[0]?.modifiedAt ?? '', assets, review: assets[0]?.review, pathReview: assets[0]?.review, metadata: assets[0]?.metadata, pathMetadata: assets[0]?.metadata } as AssetGroup;
 }
 
-function ScopeConfigureButton({ targetType, scopeKey, label, profiles, audioProfiles, trackProfiles, libraries, categories, compact = false, readOnly = false }: { targetType: 'logical_group' | 'path' | 'asset'; scopeKey: string; label: string; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; libraries: Library[]; categories: string[]; compact?: boolean; readOnly?: boolean }) {
+function ScopeConfigureButton({ targetType, scopeKey, label, profiles, audioProfiles, trackProfiles, libraries, categories, compact = false, readOnly = false, destinationLocked = false }: { targetType: 'logical_group' | 'path' | 'asset'; scopeKey: string; label: string; profiles: Profile[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[]; libraries: Library[]; categories: string[]; compact?: boolean; readOnly?: boolean; destinationLocked?: boolean }) {
 	const queryClient = useQueryClient();
 	const [open, setOpen] = useState(false);
 	const [loading, setLoading] = useState(false);
@@ -1591,6 +1693,7 @@ function ScopeConfigureButton({ targetType, scopeKey, label, profiles, audioProf
 	const save = useMutation({
 		mutationFn: async () => {
 			if (!fields.size) throw new Error('Select at least one field to change.');
+			if (destinationLocked && fields.has('destination')) throw new Error('Library replacement keeps its current destination. Use migration to move libraries.');
 			if (fields.has('category') || fields.has('destination')) {
 				const configurations = await api.assetScopeConfigurations();
 				const current = configurations.find((item) => item.scopeType === targetType && normalizePath(item.scopeKey) === normalizePath(scopeKey));
@@ -1628,7 +1731,7 @@ function ScopeConfigureButton({ targetType, scopeKey, label, profiles, audioProf
 
   const profileScope = targetType === 'asset' ? 'asset' : 'path';
 
-	return <><Button size="small" variant={compact ? 'text' : 'outlined'} startIcon={<EditIcon />} onClick={openConfiguration}>{label}</Button><Dialog open={open} onClose={() => !save.isPending && setOpen(false)} maxWidth="md" fullWidth><DialogTitle>{label}</DialogTitle><DialogContent dividers>{loading ? <Stack spacing={1}><LinearProgress /><Typography variant="body2" color="text.secondary">Loading persisted scope configuration…</Typography></Stack> : loadError ? <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => void loadPersistedConfiguration()}>Retry</Button>}>{loadError}</Alert> : <Stack spacing={1.5}>{readOnly ? <Alert severity="warning">This scope has an active Queue job. Configuration is read-only until the job finishes.</Alert> : <Alert severity="info">Choose exactly which dimensions to change. Unchecked dimensions remain untouched.</Alert>}<FormControlLabel control={<Checkbox checked={fields.has('video')} onChange={() => toggle('video')} disabled={readOnly} />} label="Change video" /><ProfileAutocomplete profiles={profiles.filter((profile) => profile.scope === profileScope && !profile.disabled && !profile.deletedAt)} value={video} onChange={setVideo} label="Video profile" allowNone allowInherit disabled={readOnly || !fields.has('video')} /><FormControlLabel control={<Checkbox checked={fields.has('audio')} onChange={() => toggle('audio')} disabled={readOnly} />} label="Change audio" /><AudioProfileAutocomplete profiles={audioProfiles.filter((profile) => profile.scope === profileScope && !profile.disabled && !profile.deletedAt)} value={audio} onChange={setAudio} label="Audio profile" allowInherit disabled={readOnly || !fields.has('audio')} /><FormControlLabel control={<Checkbox checked={fields.has('tracks')} onChange={() => toggle('tracks')} disabled={readOnly} />} label="Change tracks" /><TrackProfileAutocomplete profiles={trackProfiles.filter((profile) => profile.scope === profileScope && !profile.disabled && !profile.deletedAt)} value={tracks} onChange={setTracks} label="Tracks profile" allowInherit disabled={readOnly || !fields.has('tracks')} /><Divider /><FormControlLabel control={<Checkbox checked={fields.has('category')} onChange={() => toggle('category')} disabled={readOnly} />} label="Change category" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Category mode" value={categoryMode} onChange={(event) => setCategoryMode(event.target.value as typeof categoryMode)} disabled={readOnly || !fields.has('category')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><AssetCategorySelect value={category} options={categories} onChange={setCategory} label="Category" disabled={readOnly || !fields.has('category') || categoryMode !== 'value'} /></Stack><FormControlLabel control={<Checkbox checked={fields.has('destination')} onChange={() => toggle('destination')} disabled={readOnly} />} label="Change destination" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Destination mode" value={destinationMode} onChange={(event) => setDestinationMode(event.target.value as typeof destinationMode)} disabled={readOnly || !fields.has('destination')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><LibraryAutocomplete libraries={libraries} value={destination} onChange={setDestination} label="Destination" disabled={readOnly || !fields.has('destination') || destinationMode !== 'value'} /></Stack>{save.isError ? <Alert severity="warning">{save.error instanceof Error ? save.error.message : 'Could not save configuration.'}</Alert> : null}</Stack>}</DialogContent><DialogActions><Button onClick={() => setOpen(false)} disabled={save.isPending}>Cancel</Button><Button variant="contained" onClick={() => save.mutate()} disabled={readOnly || loading || Boolean(loadError) || save.isPending || !fields.size || (fields.has('category') && categoryMode === 'value' && !category) || (fields.has('destination') && destinationMode === 'value' && !destination)}>Apply</Button></DialogActions></Dialog></>;
+	return <><Button size="small" variant={compact ? 'text' : 'outlined'} startIcon={<EditIcon />} onClick={openConfiguration}>{label}</Button><Dialog open={open} onClose={() => !save.isPending && setOpen(false)} maxWidth="md" fullWidth><DialogTitle>{label}</DialogTitle><DialogContent dividers>{loading ? <Stack spacing={1}><LinearProgress /><Typography variant="body2" color="text.secondary">Loading persisted scope configuration…</Typography></Stack> : loadError ? <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => void loadPersistedConfiguration()}>Retry</Button>}>{loadError}</Alert> : <Stack spacing={1.5}>{readOnly ? <Alert severity="warning">This scope has an active Queue job. Configuration is read-only until the job finishes.</Alert> : <Alert severity="info">Choose exactly which dimensions to change. Unchecked dimensions remain untouched.</Alert>}<FormControlLabel control={<Checkbox checked={fields.has('video')} onChange={() => toggle('video')} disabled={readOnly} />} label="Change video" /><ProfileAutocomplete profiles={profiles.filter((profile) => profile.scope === profileScope && !profile.disabled && !profile.deletedAt)} value={video} onChange={setVideo} label="Video profile" allowNone allowInherit disabled={readOnly || !fields.has('video')} /><FormControlLabel control={<Checkbox checked={fields.has('audio')} onChange={() => toggle('audio')} disabled={readOnly} />} label="Change audio" /><AudioProfileAutocomplete profiles={audioProfiles.filter((profile) => profile.scope === profileScope && !profile.disabled && !profile.deletedAt)} value={audio} onChange={setAudio} label="Audio profile" allowInherit disabled={readOnly || !fields.has('audio')} /><FormControlLabel control={<Checkbox checked={fields.has('tracks')} onChange={() => toggle('tracks')} disabled={readOnly} />} label="Change tracks" /><TrackProfileAutocomplete profiles={trackProfiles.filter((profile) => profile.scope === profileScope && !profile.disabled && !profile.deletedAt)} value={tracks} onChange={setTracks} label="Tracks profile" allowInherit disabled={readOnly || !fields.has('tracks')} /><Divider />{destinationLocked ? <Typography variant="caption" color="text.secondary">Library replacement preserves this Library destination. Move to another Library through migration.</Typography> : null}<FormControlLabel control={<Checkbox checked={fields.has('category')} onChange={() => toggle('category')} disabled={readOnly} />} label="Change category" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Category mode" value={categoryMode} onChange={(event) => setCategoryMode(event.target.value as typeof categoryMode)} disabled={readOnly || !fields.has('category')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><AssetCategorySelect value={category} options={categories} onChange={setCategory} label="Category" disabled={readOnly || !fields.has('category') || categoryMode !== 'value'} /></Stack><FormControlLabel control={<Checkbox checked={fields.has('destination')} onChange={() => toggle('destination')} disabled={readOnly || destinationLocked} />} label="Change destination" /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}><TextField select fullWidth label="Destination mode" value={destinationMode} onChange={(event) => setDestinationMode(event.target.value as typeof destinationMode)} disabled={readOnly || destinationLocked || !fields.has('destination')}><MenuItem value="inherit">Inherit</MenuItem><MenuItem value="value">Override</MenuItem><MenuItem value="disabled">Disabled</MenuItem></TextField><LibraryAutocomplete libraries={libraries} value={destination} onChange={setDestination} label="Destination" disabled={readOnly || destinationLocked || !fields.has('destination') || destinationMode !== 'value'} /></Stack>{save.isError ? <Alert severity="warning">{save.error instanceof Error ? save.error.message : 'Could not save configuration.'}</Alert> : null}</Stack>}</DialogContent><DialogActions><Button onClick={() => setOpen(false)} disabled={save.isPending}>Cancel</Button><Button variant="contained" onClick={() => save.mutate()} disabled={readOnly || loading || Boolean(loadError) || save.isPending || !fields.size || (fields.has('category') && categoryMode === 'value' && !category) || (fields.has('destination') && destinationMode === 'value' && !destination)}>Apply</Button></DialogActions></Dialog></>;
 }
 
 function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles, audioProfiles, trackProfiles, libraries, categories, queueJobs, onClear }: {
@@ -1724,10 +1827,39 @@ function UnprocessedSelectionToolbar({ selectedAssetIds, logicalGroups, profiles
 	const closeQueueDialog = () => { setQueuePlan(null); setQueueCommitResult(null); setQueueAssetIds([]); };
 
 	return <>
-		<Box sx={{ mt: 1.25, p: 1, border: 1, borderColor: 'primary.main', borderRadius: 1, bgcolor: 'action.selected', position: 'sticky', top: 8, zIndex: 2 }}>
-			<Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between" spacing={1}>
-				<Typography variant="body2">{countLabel(fullySelectedGroups.length, 'title')} selected · {countLabel(selectedAssets.length, 'asset')} · {formatBytes(selectedSize)}</Typography>
-				<Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Button size="small" variant="contained" startIcon={<PlaylistAddIcon />} onClick={() => prepareQueue.mutate({ assetIds: selectedAssets.map((asset) => asset.id as number), remaining: false })} disabled={prepareQueue.isPending || allSelectedAssetsHaveOpenJobs}>{prepareQueue.isPending ? 'Resolving…' : 'Queue selected'}</Button><Button size="small" variant="outlined" startIcon={<PlaylistAddIcon />} onClick={() => prepareQueue.mutate({ assetIds: remainingAssetIds, remaining: true })} disabled={prepareQueue.isPending || !remainingAssetIds.length}>{prepareQueue.isPending ? 'Resolving…' : 'Queue Remaining'}</Button><Button size="small" variant="outlined" startIcon={<EditIcon />} disabled={!fullySelectedGroups.length || selectedGroupHasOpenJob} onClick={() => { setConfigurationFields(new Set()); setConfigureOpen(true); }}>Configure selected</Button><Button size="small" onClick={onClear}>Clear</Button></Stack>
+		<Box sx={{
+			mt: 1,
+			px: 0.85,
+			py: 0.65,
+			border: 1,
+			borderColor: '#15304a',
+			borderRadius: '6px',
+			bgcolor: '#091a2c',
+			position: 'sticky',
+			top: 8,
+			zIndex: 2,
+			'& .MuiButton-root': {
+				minHeight: 28,
+				px: 1,
+				borderRadius: '5px',
+				fontSize: '0.8rem',
+				fontWeight: 600,
+				lineHeight: 1,
+				textTransform: 'none',
+				boxShadow: 'none',
+				'& .MuiButton-startIcon': { mr: 0.4 },
+				'& .MuiButton-startIcon svg': { fontSize: 14 },
+				'&.Mui-disabled': { color: '#63758a', borderColor: 'rgba(21, 48, 74, 0.56)', bgcolor: 'rgba(12, 32, 53, 0.38)', boxShadow: 'none' },
+			},
+			'& .MuiButton-contained': { bgcolor: '#31238f', border: '1px solid rgba(108, 76, 246, 0.62)', color: '#e7e0ff' },
+			'& .MuiButton-contained:hover': { bgcolor: '#3a2aa0', boxShadow: 'none' },
+			'& .MuiButton-outlined': { bgcolor: '#0c2035', borderColor: '#1f4467', color: '#9cb0c8' },
+			'& .MuiButton-outlined:hover': { bgcolor: '#112a44', borderColor: '#2b5a81', color: '#e7eef8' },
+			'& .MuiButton-text:last-child': { minWidth: 0, px: 0.7, color: '#59718b', '&:hover': { bgcolor: 'transparent', color: '#9cb0c8' } },
+		}}>
+			<Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between" spacing={0.65}>
+				<Typography variant="body2" sx={{ color: '#7890a8', fontSize: '0.75rem', fontWeight: 500 }}>{countLabel(fullySelectedGroups.length, 'title')} selected · {countLabel(selectedAssets.length, 'asset')} · {formatBytes(selectedSize)}</Typography>
+				<Stack direction="row" spacing={0.45} flexWrap="wrap" useFlexGap><Button size="small" variant="contained" startIcon={<PlayArrowIcon sx={{ color: '#b9adff' }} />} onClick={() => prepareQueue.mutate({ assetIds: selectedAssets.map((asset) => asset.id as number), remaining: false })} disabled={prepareQueue.isPending || allSelectedAssetsHaveOpenJobs}>{prepareQueue.isPending ? 'Resolving…' : 'Queue selected'}</Button><Button size="small" variant="outlined" startIcon={<PlayArrowIcon />} onClick={() => prepareQueue.mutate({ assetIds: remainingAssetIds, remaining: true })} disabled={prepareQueue.isPending || !remainingAssetIds.length}>{prepareQueue.isPending ? 'Resolving…' : 'Queue Remaining'}</Button><Button size="small" variant="outlined" startIcon={<EditIcon />} disabled={!fullySelectedGroups.length || selectedGroupHasOpenJob} onClick={() => { setConfigurationFields(new Set()); setConfigureOpen(true); }}>Configure selected</Button><Button size="small" variant="text" onClick={onClear}>Clear</Button></Stack>
 			</Stack>
 			{selectedAssetsWithOpenJobs.length ? <Alert severity="info" sx={{ mt: 1 }}>{countLabel(selectedAssetsWithOpenJobs.length, 'asset')} already locked by an active Queue job. Read-only details remain available.</Alert> : null}
 			{prepareQueue.isError ? <Alert severity="warning" sx={{ mt: 1 }}>{prepareQueue.error instanceof Error ? prepareQueue.error.message : 'Could not resolve the selected assets.'}</Alert> : null}
@@ -1937,10 +2069,6 @@ export function AssetCollectionRows({
   const queuePaths = useMutation({
     mutationFn: async () => {
       if (!selectedGroups.length) throw new Error('Select at least one path.');
-      const blockedLifecycle = selectedGroups.filter((group) => !pathCanQueue(group, mode));
-      if (blockedLifecycle.length) throw new Error(`These paths cannot be queued from ${mode}: ${blockedLifecycle.map(pathLabelForCollection).join(', ')}`);
-      const missingDestination = selectedGroups.filter((group) => !effectivePathDestination(group, destinations, mode));
-      if (missingDestination.length) throw new Error(`Select Destination for: ${missingDestination.map(pathLabelForCollection).join(', ')}`);
 		const selectedAssets = selectedGroups.flatMap((group) => safeArray(group.assets));
 		if (selectedAssets.some((asset) => typeof asset.id !== 'number' || asset.id <= 0)) {
 			throw new Error('Every asset in the selected paths needs a persisted identity before Batch Preflight. Refresh Assets and try again.');
@@ -2229,10 +2357,13 @@ function AssetGroupRow({
   onOpenPathSnapshots,
 	collectionManaged = false,
 	forceExpanded = false,
-	hidePathHeader = false,
-	compactPathHeader = false,
-	selectedAssetIds,
-	onAssetSelectionChange,
+  hidePathHeader = false,
+  compactPathHeader = false,
+	v2ToolbarOnly = false,
+	selectedCount = 0,
+  breadcrumbSegments,
+  selectedAssetIds,
+  onAssetSelectionChange,
 }: {
   group: AssetGroup;
   libraries: Library[];
@@ -2251,36 +2382,56 @@ function AssetGroupRow({
 	forceExpanded?: boolean;
 	hidePathHeader?: boolean;
 	compactPathHeader?: boolean;
+	v2ToolbarOnly?: boolean;
+	selectedCount?: number;
+  breadcrumbSegments?: string[];
 	selectedAssetIds?: Set<number>;
 	onAssetSelectionChange?: (assetIds: number[], selected: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const profileAssignments = useQuery({ queryKey: ['profileAssignments'], queryFn: api.profileAssignments });
-	const pathScopeConfiguration = useQuery({
-		queryKey: ['assetScopeConfigurations', 'path', normalizePath(group.path)],
-		queryFn: async () => (await api.assetScopeConfigurations()).find((item) => item.scopeType === 'path' && normalizePath(item.scopeKey) === normalizePath(group.path)) ?? null,
-  });
   const [expanded, setExpanded] = useState(false);
   const [pathActionsAnchor, setPathActionsAnchor] = useState<HTMLElement | null>(null);
   const pathVideoProfiles = profiles.filter((profile) => profile.scope === 'path');
   const pathAudioProfiles = audioProfiles.filter((profile) => profile.scope === 'path');
   const pathTrackProfiles = trackProfiles.filter((profile) => profile.scope === 'path');
-	const firstPathVideoProfileId = pathVideoProfiles[0]?.id ?? 0;
-  const [selectedProfileId, setSelectedProfileId] = useState<number>(pathVideoProfiles[0]?.id ?? 0);
+  const [selectedProfileId, setSelectedProfileId] = useState<number>(0);
   const [selectedAudioProfileKey, setSelectedAudioProfileKey] = useState<string>('');
   const pathTrackAssignments = getTrackProfilePathAssignments(settings);
   const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState<string>(pathTrackAssignments[normalizePath(group.path)] ?? '');
   const [selectedAssetPaths, setSelectedAssetPaths] = useState<string[]>([]);
   const groupAssets = safeArray(group.assets);
+  const pathConfigurationAssetIds = Array.from(new Set(groupAssets.filter((asset) => !asset.missing && typeof asset.id === 'number' && asset.id > 0).map((asset) => asset.id as number)));
+  const pathEffectiveConfigurations = useQuery({
+    queryKey: ['effectiveAssetConfiguration', 'path-toolbar', normalizePath(group.path), pathConfigurationAssetIds],
+    queryFn: () => api.effectiveAssetConfigurations(pathConfigurationAssetIds),
+    enabled: v2ToolbarOnly && pathConfigurationAssetIds.length > 0,
+  });
+  const effectiveConfigurationsByPath = useMemo(() => new Map(
+    Object.values(pathEffectiveConfigurations.data?.configurations ?? {}).map((configuration) => [normalizePath(configuration.assetPath), configuration]),
+  ), [pathEffectiveConfigurations.data]);
   const pathMetadata = group.pathMetadata ?? { categories: [], tags: [], updatedAt: '' };
   const inheritedPathCategory = firstCategory(pathMetadata.categories);
   const groupReview = group.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
-	const configuredPathDestination = pathScopeConfiguration.data?.destinationSelection === 'value'
-		? pathScopeConfiguration.data.destinationLibraryId ?? 0
-		: (mode === 'library' ? group.libraryId : 0);
+	const effectiveDestinationIds = Array.from(new Set(groupAssets.filter((asset) => !asset.missing).map((asset) => {
+		const destination = effectiveConfigurationsByPath.get(normalizePath(asset.path))?.destination;
+		return destination?.selection === 'value' ? destination.destinationLibraryId ?? 0 : 0;
+	}).filter((id) => id > 0)));
+	const availablePathAssetCount = groupAssets.filter((asset) => !asset.missing).length;
+	const pathHasCanonicalDestinations = availablePathAssetCount > 0 && groupAssets.filter((asset) => !asset.missing).every((asset) => {
+		const destination = effectiveConfigurationsByPath.get(normalizePath(asset.path))?.destination;
+		return destination?.selection === 'value' && (destination.destinationLibraryId ?? 0) > 0;
+	});
+	const configuredPathDestination = mode === 'library'
+		? group.libraryId ?? 0
+		: pathEffectiveConfigurations.data && effectiveDestinationIds.length === 1 &&
+			groupAssets.filter((asset) => !asset.missing).every((asset) => effectiveConfigurationsByPath.get(normalizePath(asset.path))?.destination.selection === 'value')
+			? effectiveDestinationIds[0]
+			: 0;
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(configuredPathDestination);
   const [migrationLibraryId, setMigrationLibraryId] = useState<number>(0);
   const [renamePathOpen, setRenamePathOpen] = useState(false);
+  const [pathSnapshotsOpen, setPathSnapshotsOpen] = useState(false);
   const [groupCategory, setGroupCategory] = useState<string>(inheritedPathCategory);
   const [pathAdvisorOpen, setPathAdvisorOpen] = useState(false);
   const [pathAdvisorCurrent, setPathAdvisorCurrent] = useState('');
@@ -2289,25 +2440,28 @@ function AssetGroupRow({
     response?: AdvisorResponse;
     error?: string;
   }>>([]);
-  const effectiveProfileId =
-  selectedProfileId < 0
-    ? 0
-    : selectedProfileId || pathVideoProfiles[0]?.id || 0;
+  const effectiveProfileId = v2ToolbarOnly
+    ? (groupAssets.map((asset) => effectiveConfigurationsByPath.get(normalizePath(asset.path))?.video)
+      .find((video) => video?.selection === 'profile' && (video.videoProfileId ?? 0) > 0)?.videoProfileId ?? 0)
+    : selectedProfileId > 0 ? selectedProfileId : 0;
   const representativeAsset = firstAssetForGroup(groupAssets.filter((asset) => !asset.missing));
   const lifecycleSummary = group.lifecycleSummary;
-  const memberProvenances = new Set(groupAssets.map((asset) => asset.lifecycle?.provenance ?? asset.status));
-  const isMixedGroup = memberProvenances.size > 1 || group.status === 'mixed' || (lifecycleSummary?.lifecycle.length ?? 0) > 1 || (lifecycleSummary?.validation.length ?? 0) > 1 || (lifecycleSummary?.publication.length ?? 0) > 1;
-  const isConvertedGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'converted' || asset.status === 'converted');
-  const isPublishedAsIsGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'published_as_is' || asset.publicationMode === 'as_is');
-  const isAcceptedGroup = !isMixedGroup && groupAssets.length > 0 && groupAssets.every((asset) => asset.lifecycle?.provenance === 'imported' || asset.status === 'accepted');
+  const { isMixedGroup, isConvertedGroup, isPublishedAsIsGroup, isAcceptedGroup } = assetGroupLifecycleFlags(group, groupAssets);
   const isLibraryGroup = mode === 'library' || group.status === 'unverified' || group.status === 'accepted' || group.status === 'library' || group.status === 'published_as_is';
+  const pathQueueDestinationUnavailable = v2ToolbarOnly && !isLibraryGroup
+    ? !pathHasCanonicalDestinations
+    : !selectedLibraryId;
   const isReadOnlyGroup = isMixedGroup || isConvertedGroup || isPublishedAsIsGroup || isAcceptedGroup;
   const showConfidenceColumn = mode !== 'converted';
-  const bulkSelectableAssets = isReadOnlyGroup && !isAcceptedGroup ? groupAssets.filter((asset) => !asset.missing) : [];
+  const bulkSelectableAssets = mode === 'library'
+    ? librarySafeBulkSelectableAssets(group)
+    : isReadOnlyGroup && !isAcceptedGroup ? groupAssets.filter((asset) => !asset.missing) : [];
   const hasMultipleSelectableAssets = bulkSelectableAssets.length > 1;
-	const hierarchicalSelectableAssets = selectedAssetIds ? groupAssets.filter((asset) => !asset.missing && asset.id) : bulkSelectableAssets;
+	const hierarchicalSelectableAssets = selectedAssetIds
+    ? mode === 'library' ? bulkSelectableAssets : groupAssets.filter((asset) => !asset.missing && asset.id)
+    : bulkSelectableAssets;
 	const allBulkAssetsSelected = hierarchicalSelectableAssets.length > 0 && hierarchicalSelectableAssets.every((asset) => selectedAssetIds ? selectedAssetIds.has(asset.id ?? 0) : selectedAssetPaths.includes(asset.path));
-	const someHierarchicalAssetsSelected = selectedAssetIds ? hierarchicalSelectableAssets.some((asset) => selectedAssetIds.has(asset.id ?? 0)) : selectedAssetPaths.length > 0;
+	const someHierarchicalAssetsSelected = hierarchicalSelectableAssets.some((asset) => selectedAssetIds ? selectedAssetIds.has(asset.id ?? 0) : selectedAssetPaths.includes(asset.path));
   const disabledConfidencePaths = getDisabledConfidencePaths(settings);
   const isConfidenceEnabled = !disabledConfidencePaths.includes(group.path);
   const updateSetting = useMutation({
@@ -2340,7 +2494,7 @@ function AssetGroupRow({
   );
   setSelectedAudioProfileKey(audio?.selection === 'profile' ? audio.profileKey ?? '' : '');
    setSelectedTrackProfileKey(tracks?.selection === 'profile' ? tracks.profileKey ?? '' : '');
-	}, [profileAssignments.data, group.path, firstPathVideoProfileId]);
+	}, [profileAssignments.data, group.path]);
   const updateMetadata = useMutation({
     mutationFn: api.updateAssetMetadata,
     onSuccess: async () => {
@@ -2353,7 +2507,7 @@ function AssetGroupRow({
   }, [inheritedPathCategory]);
   useEffect(() => {
     setSelectedLibraryId(configuredPathDestination);
-  }, [configuredPathDestination, group.path]);
+  }, [configuredPathDestination, group.path, pathEffectiveConfigurations.data]);
   const migratePath = useMutation({
     mutationFn: api.migrateAssetPath,
     onSuccess: async () => {
@@ -2372,24 +2526,39 @@ function AssetGroupRow({
       ]);
     },
   });
-  const advisor = useQuery({
-    queryKey: ['advisor', group.id, representativeAsset?.path, effectiveProfileId],
-    queryFn: () =>
-      api.evaluateAdvisor({
-        mediaPath: representativeAsset?.path ?? '',
-        profileId: effectiveProfileId,
-      }),
-    enabled: expanded && !isReadOnlyGroup && isConfidenceEnabled && Boolean(effectiveProfileId && representativeAsset),
-  });
+  const canPublishPathAsIs = Boolean(selectedLibraryId && !publishAsIs.isPending && groupAssets.length && !groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs)));
+  const publishPathAsIs = () => {
+    const destination = libraries.find((library) => library.id === selectedLibraryId);
+    if (!destination || !canPublishPathAsIs) return;
+    if (!window.confirm(`Publish ${groupAssets.length} original asset(s) as-is to ${destination.name}? FFmpeg will not run and the files will be moved from Raw to Library.`)) return;
+    publishAsIs.mutate({ sourcePath: group.path, destinationLibraryId: destination.id });
+  };
   const runPathAdvisor = useMutation({
     mutationFn: async () => {
       const candidates = groupAssets.filter((asset) => !asset.missing);
+      const effectiveConfigurations = v2ToolbarOnly && pathConfigurationAssetIds.length
+        ? new Map(Object.values((await api.effectiveAssetConfigurations(pathConfigurationAssetIds)).configurations)
+          .map((configuration) => [normalizePath(configuration.assetPath), configuration]))
+        : undefined;
       setPathAdvisorResults([]);
       for (const asset of candidates) {
         setPathAdvisorCurrent(asset.path);
+        const effectiveVideo = effectiveConfigurations
+          ? effectiveConfigurations.get(normalizePath(asset.path))?.video
+          : undefined;
+        const profileId = effectiveConfigurations
+          ? effectiveVideo?.selection === 'profile' ? effectiveVideo.videoProfileId ?? 0 : 0
+          : effectiveProfileId;
+        if (profileId <= 0) {
+          setPathAdvisorResults((current) => [...current, {
+            asset,
+            error: 'Advisor needs an effective video profile for this asset. Configure a profile before evaluating.',
+          }]);
+          continue;
+        }
         try {
-          const response = await api.evaluateAdvisor({ mediaPath: asset.path, profileId: effectiveProfileId });
-          queryClient.setQueryData(['advisor', 'asset-row', asset.path, effectiveProfileId], response);
+          const response = await api.evaluateAdvisor({ mediaPath: asset.path, profileId });
+          queryClient.setQueryData(['advisor', 'asset-row', asset.path, profileId], response);
           setPathAdvisorResults((current) => [...current, { asset, response }]);
         } catch (error) {
           setPathAdvisorResults((current) => [...current, {
@@ -2403,35 +2572,47 @@ function AssetGroupRow({
   });
   const queueGroup = useMutation({
     mutationFn: async () => {
-      const trackProfile = trackProfiles.find((profile) => profile.key === selectedTrackProfileKey);
-      const hasSelectedOperation = selectedProfileId > 0 || Boolean(selectedAudioProfileKey) || Boolean(trackProfile);
-      const queueProfileId = effectiveProfileId || (hasSelectedOperation ? pathVideoProfiles[0]?.id ?? profiles[0]?.id ?? 0 : 0);
-      const copyVideo = selectedProfileId < 0;
-      if (!queueProfileId || !selectedLibraryId) {
-          throw new Error('A video profile and destination library are required to queue this folder.');
-      }
-
       const batchId = createBatchId(group);
       const batchName = groupDisplayPath(group);
-      const batchJobs: QueueJobInput[] = groupAssets.map(
-      (asset) => {
-        const assignment = profileAssignments.data?.find((candidate) => candidate.targetType === 'asset' && candidate.mediaType === 'tracks' && normalizePath(candidate.targetPath) === normalizePath(asset.path));
-        const effectiveTrack = assignment?.selection === 'disabled' ? undefined : assignment?.selection === 'profile' ? trackProfiles.find((profile) => profile.key === assignment.profileKey) : trackProfile;
+      const queueAssets = groupAssets.filter((asset) => !asset.missing);
+      const freshEffectiveConfigurations = v2ToolbarOnly && queueAssets.length
+        ? new Map(Object.values((await api.effectiveAssetConfigurations(queueAssets.map((asset) => asset.id).filter((id): id is number => typeof id === 'number' && id > 0))).configurations)
+          .map((configuration) => [normalizePath(configuration.assetPath), configuration]))
+        : undefined;
+      if (v2ToolbarOnly && !freshEffectiveConfigurations) {
+        throw new Error('Effective path configuration is unavailable. Refresh Assets and try again.');
+      }
+      const batchJobs: QueueJobInput[] = queueAssets.map((asset) => {
+        const effective = freshEffectiveConfigurations
+          ? freshEffectiveConfigurations.get(normalizePath(asset.path))
+          : undefined;
+        if (v2ToolbarOnly && !effective) {
+          throw new Error(`Effective configuration is unavailable for ${asset.fileName}. Refresh Assets and try again.`);
+        }
+        const destinationLibraryId = isLibraryGroup
+          ? asset.libraryId
+          : effective?.destination.selection === 'value'
+            ? effective.destination.destinationLibraryId ?? 0
+            : v2ToolbarOnly ? 0 : selectedLibraryId;
+        if (destinationLibraryId <= 0) {
+          throw new Error(`No effective destination library is configured for ${asset.fileName}. Configure a destination before Queue / Preflight.`);
+        }
+        const video = effective?.video;
+        const audio = effective?.audio;
+        const tracks = effective?.tracks;
         return {
         mediaPath: asset.path,
         publishMode: isLibraryGroup
           ? 'replace_library_asset'
           : 'standard',
 
-        libraryId: isLibraryGroup
-          ? asset.libraryId
-          : selectedLibraryId,
+        libraryId: destinationLibraryId,
 
-        profileId: queueProfileId,
-        audioProfileKey: selectedAudioProfileKey,
-        trackProfileKey: effectiveTrack?.key ?? '',
+        profileId: video?.selection === 'profile' ? video.videoProfileId ?? 0 : v2ToolbarOnly ? 0 : effectiveProfileId,
+        audioProfileKey: audio?.selection === 'profile' ? audio.profileKey ?? '' : v2ToolbarOnly ? '' : selectedAudioProfileKey,
+        trackProfileKey: tracks?.selection === 'profile' ? tracks.profileKey ?? '' : v2ToolbarOnly ? '' : selectedTrackProfileKey,
         resolveProfileAssignments: true,
-        processingMode: copyVideo
+        processingMode: video?.selection === 'audio_only' || video?.selection === 'disabled' || (!v2ToolbarOnly && selectedProfileId < 0)
           ? 'audio_only'
           : 'full_encode',
         priority: 5,
@@ -2443,6 +2624,7 @@ function AssetGroupRow({
       };
       },
     );
+    if (!batchJobs.length) throw new Error('This path has no available assets to queue.');
 
     return api.createQueueBatchPreflight({
       batchId,
@@ -2485,9 +2667,6 @@ function AssetGroupRow({
     },
   });
   function toggleExpanded() {
-    if (!selectedProfileId && pathVideoProfiles[0]) {
-      setSelectedProfileId(pathVideoProfiles[0].id);
-    }
     setExpanded((current) => !current);
   }
 
@@ -2546,13 +2725,25 @@ function AssetGroupRow({
   }
 
   const migrationControls = (isLibraryGroup || isConvertedGroup) ? (
-    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}>
-      <Box sx={{ width: { xs: '100%', sm: 280 } }}>
+    <Stack direction="row" spacing={0.45} alignItems="center" flexWrap="wrap" useFlexGap>
+      <Box
+        data-testid="destination-library-control"
+        sx={{
+          width: { xs: 132, sm: 156 },
+          '& .MuiInputBase-root': { height: 32, fontSize: '0.75rem', borderRadius: '5px' },
+          '& .MuiOutlinedInput-input': { py: 0.45, px: 0.8 },
+          '& .MuiInputLabel-root': { fontSize: '0.75rem', transform: 'translate(12px, 8px) scale(1)' },
+          '& .MuiInputLabel-root.MuiInputLabel-shrink': { transform: 'translate(12px, -7px) scale(0.75)' },
+          '& .MuiAutocomplete-endAdornment': { right: 2 },
+          '& .MuiAutocomplete-popupIndicator': { p: 0.25 },
+          '& .MuiAutocomplete-popupIndicator svg': { fontSize: 16 },
+        }}
+      >
         <LibraryAutocomplete
           libraries={libraries.filter((library) => library.id !== group.libraryId)}
           value={migrationLibraryId}
           onChange={setMigrationLibraryId}
-          label="Move path to library"
+          label="Destination library"
           size="small"
         />
       </Box>
@@ -2566,7 +2757,7 @@ function AssetGroupRow({
           if (!destination || !window.confirm(`Move ${group.path} and all files inside it to ${destination.name}? MVForge will update inventory and publication paths.`)) return;
           migratePath.mutate({ sourcePath: group.path, destinationLibraryId: migrationLibraryId });
         }}
-        sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+        sx={{ minHeight: 30, px: 0.9, fontSize: '0.8rem', whiteSpace: 'nowrap' }}
       >
         {migratePath.isPending ? 'Moving...' : 'Move path'}
       </Button>
@@ -2576,16 +2767,136 @@ function AssetGroupRow({
         startIcon={<DriveFileRenameOutlineIcon />}
         disabled={!group.libraryId || groupAssets.some((asset) => assetHasOpenJob(asset, queueJobs))}
         onClick={() => setRenamePathOpen(true)}
-        sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
+        sx={{ minHeight: 30, px: 0.9, fontSize: '0.8rem', whiteSpace: 'nowrap' }}
       >
         Rename path
       </Button>
     </Stack>
   ) : null;
+  const v2PathToolbar = v2ToolbarOnly ? (
+    <>
+      <AssetsV2PathToolbar
+        path={group.path}
+        breadcrumbs={<WorkspaceBreadcrumbs segments={breadcrumbSegments ?? ['Assets', group.libraryName, pathLabelForCollection(group)]} label={`${mode === 'unprocessed' ? 'RAW' : 'Library'} location`} />}
+        selectedCount={selectedAssetIds
+          ? groupAssets.filter((asset) => selectedAssetIds.has(asset.id ?? 0)).length
+          : selectedCount}
+        mode={mode === 'unprocessed' ? 'raw' : 'library'}
+        primaryActions={(
+          <>
+            {mode !== 'converted' ? (
+              <Button size="small" variant="outlined" startIcon={<RefreshIcon sx={{ color: '#8ca7ff' }} />} onClick={() => setPathSnapshotsOpen(true)} disabled={groupAssets.every((asset) => asset.missing)} sx={{ minHeight: 30, px: 0.9, fontSize: '0.8rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 14 } }}>
+                Scan
+              </Button>
+            ) : null}
+            {!isReadOnlyGroup && mode !== 'converted' ? (
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<InfoOutlinedIcon />}
+                onClick={startPathAdvisor}
+                disabled={!isConfidenceEnabled || effectiveProfileId <= 0 || (v2ToolbarOnly && (pathEffectiveConfigurations.isLoading || pathEffectiveConfigurations.isError)) || groupAssets.every((asset) => asset.missing) || runPathAdvisor.isPending}
+                sx={{ minHeight: 30, px: 0.9, fontSize: '0.8rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } }}
+              >
+                Advisor
+              </Button>
+            ) : null}
+            {(mode === 'unprocessed' || isLibraryGroup) && !isReadOnlyGroup ? (
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={<PlayArrowIcon sx={{ color: '#8d7aff' }} />}
+                onClick={queuePath}
+                disabled={profileAssignments.isLoading || queueGroup.isPending || updateProfileAssignment.isPending || (v2ToolbarOnly && (pathEffectiveConfigurations.isLoading || pathEffectiveConfigurations.isError)) || pathQueueDestinationUnavailable || !groupAssets.length || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
+                sx={{ minHeight: 30, px: 0.9, fontSize: '0.8rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 15 } }}
+              >
+                Queue / Preflight
+              </Button>
+            ) : null}
+            {mode !== 'converted' && !isReadOnlyGroup ? (
+              <Tooltip title="Assign profiles and configure path-level settings">
+                <Box>
+                  <ScopeConfigureButton
+                    targetType="path"
+                    scopeKey={group.path}
+                    label="Configure Path"
+                    profiles={profiles}
+                    audioProfiles={audioProfiles}
+                    trackProfiles={trackProfiles}
+                    libraries={libraries}
+                    categories={assetCategories}
+                    compact
+                    destinationLocked={isLibraryGroup}
+                    readOnly={groupAssets.some((asset) => assetHasOpenJob(asset, queueJobs))}
+                  />
+                </Box>
+              </Tooltip>
+            ) : null}
+            {mode !== 'converted' && !isReadOnlyGroup ? (
+              <Tooltip title="Confidence controls explicit Advisor evaluation for this path. Turning it off skips Advisor; manual Queue remains available." describeChild>
+                <FormControlLabel sx={{ m: 0, '& .MuiFormControlLabel-label': { fontSize: '0.75rem' } }}
+                  label={`Confidence ${isConfidenceEnabled ? 'On' : 'Off'}`}
+                  control={<Switch size="small" checked={isConfidenceEnabled} onChange={(event) => toggleConfidence(event.target.checked)} disabled={updateSetting.isPending || groupAssets.some((asset) => assetHasOpenJob(asset, queueJobs))} />} />
+              </Tooltip>
+            ) : null}
+            {mode === 'unprocessed' && !isReadOnlyGroup ? (
+              <Tooltip title="Publish these originals as-is to the configured Library">
+                <span>
+                  <Button size="small" variant="outlined" onClick={publishPathAsIs} disabled={!canPublishPathAsIs} sx={{ minHeight: 30, px: 0.9, fontSize: '0.8rem', '& .MuiButton-startIcon': { mr: 0.35 }, '& svg': { fontSize: 14 } }}>
+                    Move to library
+                  </Button>
+                </span>
+              </Tooltip>
+            ) : null}
+          </>
+        )}
+        pathOperations={migrationControls}
+        destructiveActions={bulkSelectableAssets.length ? (close) => {
+          const selectedPaths = selectedAssetIds
+            ? bulkSelectableAssets.filter((asset) => selectedAssetIds.has(asset.id ?? 0)).map((asset) => asset.path)
+            : selectedAssetPaths;
+          const pathTargets = bulkSelectableAssets.map((asset) => asset.path);
+          return (
+            <>
+              {selectedPaths.length ? (
+                <Button size="small" color="error" variant="contained" onClick={() => { close(); runBulkAssetAction(selectedPaths); }} disabled={bulkAssetAction.isPending} sx={{ minHeight: 30, px: 0.9, fontSize: '0.8rem', whiteSpace: 'nowrap', bgcolor: '#4b1826', color: '#ff92a3', border: 1, borderColor: '#982841', boxShadow: 'none', '&:hover': { bgcolor: 'rgba(255, 78, 106, 0.2)', boxShadow: 'none' }, '& svg': { fontSize: 14 } }}>
+                  {isPublishedAsIsGroup ? 'Return selected' : 'Delete selected'}
+                </Button>
+              ) : null}
+              <Button size="small" color="error" variant="text" onClick={() => { close(); runBulkAssetAction(pathTargets); }} disabled={bulkAssetAction.isPending || bulkSelectableAssets.some((asset) => assetHasOpenJob(asset, queueJobs))} sx={{ minHeight: 30, px: 0.8, fontSize: '0.8rem', color: '#ff778d', whiteSpace: 'nowrap' }}>
+                {isPublishedAsIsGroup ? 'Return path to Raw' : 'Delete path'}
+              </Button>
+            </>
+          );
+        } : undefined}
+      />
+      <Stack spacing={0.45} sx={{ px: 0.5, pb: 0.35 }} aria-live="polite" data-testid="assets-v2-path-feedback">
+        {updateSetting.isError ? <Alert severity="error">{updateSetting.error instanceof Error ? updateSetting.error.message : 'Could not save Confidence setting.'}</Alert> : null}
+        {queueGroup.isPending ? <Alert severity="info" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.75rem' } }}>Preparing Queue / Preflight for this path…</Alert> : null}
+        {queueGroup.isSuccess ? <Alert severity="success" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.75rem' } }}>Preflight is ready. Review and confirm the candidate in Queue.</Alert> : null}
+        {queueGroup.isError ? <Alert severity="error" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.75rem' } }}>{queueGroup.error instanceof Error ? queueGroup.error.message : 'Queue / Preflight failed.'}</Alert> : null}
+        {publishAsIs.isPending ? <Alert severity="info" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.75rem' } }}>Moving originals to the Library…</Alert> : null}
+        {publishAsIs.isSuccess ? <Alert severity="success" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.75rem' } }}>{publishAsIs.data.message || `${publishAsIs.data.assetsPublished} asset(s) published as-is.`}</Alert> : null}
+        {publishAsIs.isError ? <Alert severity="error" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.75rem' } }}>{publishAsIs.error instanceof Error ? publishAsIs.error.message : 'Publish as-is failed.'}</Alert> : null}
+        {migratePath.isPending ? <Alert severity="info" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.75rem' } }}>Migrating this path…</Alert> : null}
+        {migratePath.isSuccess ? <Alert severity="success" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.75rem' } }}>{migratePath.data.assetsMoved} asset(s) moved to the destination Library.</Alert> : null}
+        {migratePath.isError ? <Alert severity="error" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.75rem' } }}>{migratePath.error instanceof Error ? migratePath.error.message : 'Path migration failed.'}</Alert> : null}
+        {bulkAssetAction.isPending ? <Alert severity="info" sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.75rem' } }}>Applying the selected path action…</Alert> : null}
+        {bulkAssetAction.isSuccess ? <Alert severity={bulkAssetAction.data.failures.length ? 'warning' : 'success'} sx={{ py: 0, '& .MuiAlert-message': { py: 0.35, fontSize: '0.75rem' } }}>{bulkAssetAction.data.completed} asset(s) completed.{bulkAssetAction.data.failures.length ? ` ${bulkAssetAction.data.failures.length} failed: ${bulkAssetAction.data.failures.join(' · ')}` : ''}</Alert> : null}
+      </Stack>
+      <PathSnapshotsDialog
+        open={pathSnapshotsOpen}
+        group={group}
+        title={pathLabelForCollection(group)}
+        runningSnapshotPaths={runningSnapshotPaths}
+        onClose={() => setPathSnapshotsOpen(false)}
+      />
+    </>
+  ) : null;
 
   return (
     <>
-      {!hidePathHeader && compactPathHeader ? (
+      {v2ToolbarOnly ? v2PathToolbar : !hidePathHeader && compactPathHeader ? (
         <TableRow
           hover
           onClick={toggleExpanded}
@@ -2769,6 +3080,7 @@ function AssetGroupRow({
           </Stack>
         </TableCell>
 	  </TableRow> : null}
+      {!v2ToolbarOnly ? (
       <TableRow>
         <TableCell colSpan={compactPathHeader ? 2 : showConfidenceColumn ? 8 : 7} sx={{ p: 0, borderBottom: (forceExpanded || expanded) ? 1 : 0, borderColor: 'divider', maxWidth: 0 }}>
 		  <Collapse in={forceExpanded || expanded} timeout="auto" unmountOnExit>
@@ -2859,7 +3171,6 @@ function AssetGroupRow({
                     Folder queue is blocked because at least one asset in this path needs review. You can still queue approved assets individually.
                   </Alert>
                 ) : null}
-                {!isReadOnlyGroup && advisor.isError && representativeAsset ? <Alert severity="warning">Could not evaluate this path: {advisor.error instanceof Error ? advisor.error.message : 'unknown error'}</Alert> : null}
                 {!representativeAsset && groupAssets.length > 0 ? <Alert severity="warning">This path has no physically available asset to evaluate. Run Sync Assets after restoring or removing stale records.</Alert> : null}
                 {queueGroup.isSuccess ? (
                   <Alert severity="success">
@@ -2888,12 +3199,8 @@ function AssetGroupRow({
                         variant="outlined"
                         color="success"
                         size="small"
-                        disabled={!selectedLibraryId || publishAsIs.isPending || groupAssets.length === 0 || groupAssets.some((asset) => asset.review?.requiresReview || assetHasOpenJob(asset, queueJobs))}
-                        onClick={() => {
-                          const destination = libraries.find((library) => library.id === selectedLibraryId);
-                          if (!destination || !window.confirm(`Publish ${groupAssets.length} original asset(s) as-is to ${destination.name}? FFmpeg will not run and the files will be moved from Raw to Library.`)) return;
-                          publishAsIs.mutate({ sourcePath: group.path, destinationLibraryId: selectedLibraryId });
-                        }}
+                        disabled={!canPublishPathAsIs}
+                        onClick={publishPathAsIs}
                         sx={{ minHeight: 40, whiteSpace: 'nowrap' }}
                       >
                         {publishAsIs.isPending ? 'Publishing...' : 'Publish as-is'}
@@ -3029,7 +3336,7 @@ function AssetGroupRow({
                           mode={mode}
 						  bulkSelected={selectedAssetIds ? selectedAssetIds.has(asset.id ?? 0) : selectedAssetPaths.includes(asset.path)}
 						  bulkSelectionEnabled={Boolean(selectedAssetIds) || (isReadOnlyGroup && hasMultipleSelectableAssets)}
-                          bulkSelectionDisabled={asset.missing || bulkAssetAction.isPending}
+						  bulkSelectionDisabled={asset.missing || bulkAssetAction.isPending || !bulkSelectableAssets.some((candidate) => candidate.path === asset.path)}
 						  onBulkSelectionChange={(path, selected) => selectedAssetIds
 							? onAssetSelectionChange?.([groupAssets.find((candidate) => candidate.path === path)?.id ?? 0], selected)
 							: toggleBulkAsset(path, selected)}
@@ -3043,6 +3350,7 @@ function AssetGroupRow({
           </Collapse>
         </TableCell>
       </TableRow>
+      ) : null}
       <LibraryPathRenameDialog
         open={renamePathOpen}
         libraryId={group.libraryId}
@@ -3345,6 +3653,7 @@ function AssetRow({
   groupCategory,
   confidenceEnabled,
   groupProfileId,
+  effectiveConfiguration,
   groupAudioProfileKey,
   groupLibraryId,
   hasOpenJob,
@@ -3374,6 +3683,7 @@ function AssetRow({
   groupCategory: string;
   confidenceEnabled: boolean;
   groupProfileId: number;
+  effectiveConfiguration?: EffectiveAssetConfiguration;
   groupAudioProfileKey: string;
   groupLibraryId: number;
   hasOpenJob: boolean;
@@ -3395,16 +3705,19 @@ function AssetRow({
   const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState<string>('__inherit__');
   const [assetDestinationMode, setAssetDestinationMode] = useState<'inherit' | 'value' | 'disabled'>('inherit');
   const [assetDestinationLibraryId, setAssetDestinationLibraryId] = useState(0);
-  const effectiveProfileId =
+  const effectiveProfileId = effectiveConfiguration ? effectiveConfiguration.video.videoProfileId ?? 0 :
     selectedProfileId === 0
       ? groupProfileId
       : selectedProfileId > 0
         ? selectedProfileId
         : 0;
-  const effectiveAudioProfileKey = selectedAudioProfileKey === '__inherit__' ? groupAudioProfileKey : selectedAudioProfileKey;
-  const effectiveTrackProfileKey = selectedTrackProfileKey === '__inherit__' ? pathTrackProfile?.key ?? '' : selectedTrackProfileKey;
+  const effectiveAudioProfileKey = effectiveConfiguration ? effectiveConfiguration.audio.profileKey ?? '' : selectedAudioProfileKey === '__inherit__' ? groupAudioProfileKey : selectedAudioProfileKey;
+  const effectiveTrackProfileKey = effectiveConfiguration ? effectiveConfiguration.tracks.profileKey ?? '' : selectedTrackProfileKey === '__inherit__' ? pathTrackProfile?.key ?? '' : selectedTrackProfileKey;
   const selectedTrackProfile = trackProfiles.find((profile) => profile.key === effectiveTrackProfileKey);
   const [selectedLibraryId, setSelectedLibraryId] = useState<number>(groupLibraryId);
+  useEffect(() => {
+    setSelectedLibraryId(groupLibraryId);
+  }, [asset.path, groupLibraryId]);
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
   type AssetInfoSection = 'overview' | 'analysis' | 'tracks' | 'execution' | 'publication' | 'validation' | 'original' | 'evidence' | 'history' | 'integration' | 'advisor' | 'conversion' | 'test-encode';
   const [snapshotTab, setSnapshotTab] = useState<AssetInfoSection>('overview');
@@ -3460,7 +3773,9 @@ function AssetRow({
     }
   }, [autoOpenAssetInfo]);
   const conversionDraft = assetEditDraft.conversion;
-  const category = firstCategory(assetEditDraft.metadata.categories) || groupCategory;
+  // Asset Info edits persisted metadata. Effective scope configuration is
+  // projected separately for the read-only Selected Asset category label.
+  const metadataCategory = firstCategory(assetEditDraft.metadata.categories) || groupCategory;
   const authoritativeAssetEdit = assetInfoEditDocument(assetMetadata, normalizeAssetConversionOverride(asset.conversion));
 
   useEffect(() => {
@@ -3676,12 +3991,14 @@ function AssetRow({
   const updateProfileAssignment = useMutation({
     mutationFn: api.updateProfileAssignment,
     onSuccess: async () => {
+      setAssetEditQueueMessage('');
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['profileAssignments'] }),
         queryClient.invalidateQueries({ queryKey: ['effectiveAssetConfiguration'] }),
         queryClient.invalidateQueries({ queryKey: ['assets'] }),
       ]);
     },
+    onError: (error) => setAssetEditQueueMessage(error instanceof Error ? error.message : 'Profile assignment could not be saved.'),
   });
   const updateAssetDestination = useMutation({
     mutationFn: async ({ selection, libraryId }: { selection: 'inherit' | 'value' | 'disabled'; libraryId: number }) => {
@@ -3784,10 +4101,11 @@ function AssetRow({
   const isPublishedAsIs = assetProvenance === 'published_as_is' || (!assetProvenance && asset.status === 'published_as_is');
   const isAccepted = assetProvenance === 'imported' || (!assetProvenance && asset.status === 'accepted');
   const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is';
+  const compactAssetsRow = compactLibrary || compactRaw;
   const canGenerateTestEncode = testEncodeEligibleAsset(asset, mode);
   const labCapability = assetInfoCapability(asset, 'lab');
   const renameCapability = assetInfoCapability(asset, 'rename');
-  const rowColumnCount = compactLibrary ? bulkSelectionEnabled ? 8 : 7 : compactUnprocessed ? 5 : isConverted
+  const rowColumnCount = compactAssetsRow ? compactRaw ? (bulkSelectionEnabled ? 11 : 10) : 12 : compactUnprocessed ? 5 : isConverted
     ? bulkSelectionEnabled ? 8 : 7
     : isAccepted ? 5 : 10;
   const associatedJob = associatedJobForCurrentPublication(asset, queueJobs);
@@ -3812,6 +4130,27 @@ function AssetRow({
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isPublishedAsIs || isAccepted;
   const renameLocked = hasOpenJob || createJob.isPending || isPublishedAsIs || isAccepted;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
+  const pipelineTone = pipelineState.label.toLowerCase().includes('queue') || pipelineState.color === 'warning'
+    ? { background: '#41320d', color: '#ffc43d' }
+    : pipelineState.color === 'success'
+      ? { background: '#063b35', color: '#00d99b' }
+      : pipelineState.color === 'primary'
+        ? { background: '#142d67', color: '#55a0ff' }
+        : pipelineState.color === 'error'
+          ? { background: '#4b1826', color: '#ff92a3' }
+          : { background: '#0c2035', color: '#9cb0c8' };
+  const cachedAdvisor = confidenceEnabled
+    ? advisor.data ?? queryClient.getQueryData<AdvisorResponse>(['advisor', 'asset-row', asset.path, effectiveProfileId])
+    : undefined;
+  const technical = asset.technical;
+  const technicalResolution = technical?.width && technical.height
+    ? `${technical.width} × ${technical.height}`
+    : 'Unavailable';
+  const technicalBitrate = technical ? formatMediaBitrate(technical.bitrate) : 'Unavailable';
+  const technicalRange = technical ? technical.hdr ? 'HDR' : 'SDR' : 'Unavailable';
+  const rawSourceCodec = [asset.extension.replace(/^\./, '').toUpperCase(), technical?.videoCodec]
+    .filter(Boolean)
+    .join(' · ') || 'Unavailable';
   const openWorkspacePreview = useCallback(() => {
     setPreviewMode('compatible');
     setShowPreviewDialog(true);
@@ -3819,31 +4158,49 @@ function AssetRow({
   const openWorkspaceAssignProfile = useCallback(() => setAssignProfileOpen(true), []);
   const openWorkspaceTestEncode = useCallback(() => setShowTestEncodeDialog(true), []);
   const openWorkspaceMore = useCallback((anchor: HTMLElement) => setAssetMenuAnchor(anchor), []);
+  const canAssignProfile = !hidePreConversionActions && (!isConverted || isLibraryReplacement) && !rowLocked && !updateProfileAssignment.isPending;
+  const testConfigurationReason = compactAssetsRow
+    ? testEncodeConfigurationReason(effectiveConfiguration?.video)
+    : effectiveProfileId > 0 ? '' : testEncodeConfigurationReason(undefined);
+  const canTestEncode = !testConfigurationReason && !updateProfileAssignment.isPending && !hidePreConversionActions && canGenerateTestEncode && labCapability.allowed && !showTestEncodeDialog;
+  const assignProfileUnavailableReason = canAssignProfile
+    ? ''
+    : hidePreConversionActions || (isConverted && !isLibraryReplacement)
+      ? 'Profile assignment is unavailable for this asset in its current Library lifecycle.'
+      : rowLocked
+        ? 'Profile assignment is unavailable while this asset has active work or a protected lifecycle state.'
+        : 'Profile assignment is already in progress.';
+  const testEncodeUnavailableReason = canTestEncode
+    ? ''
+    : hidePreConversionActions || !canGenerateTestEncode
+      ? 'Test Encode is unavailable for this asset in its current lifecycle.'
+      : !labCapability.allowed
+        ? `Test Encode unavailable: ${assetActionReasonMessage(labCapability, 'The current Lab capability does not allow Test Encode for this asset.')}`
+        : testConfigurationReason
+          ? testConfigurationReason
+          : updateProfileAssignment.isPending
+            ? 'Wait for profile assignment to finish saving.'
+        : showTestEncodeDialog
+          ? 'Test Encode is already open for this asset.'
+          : 'Test Encode is temporarily unavailable for this asset.';
   const workspaceActions = useMemo<AssetWorkspaceActions>(() => ({
     playPreview: openWorkspacePreview,
     assignProfile: openWorkspaceAssignProfile,
     testEncode: openWorkspaceTestEncode,
     openMore: openWorkspaceMore,
-  }), [openWorkspaceAssignProfile, openWorkspaceMore, openWorkspacePreview, openWorkspaceTestEncode]);
+    canAssignProfile,
+    canTestEncode,
+    assignProfileUnavailableReason,
+    testEncodeUnavailableReason,
+  }), [assignProfileUnavailableReason, canAssignProfile, canTestEncode, openWorkspaceAssignProfile, openWorkspaceMore, openWorkspacePreview, openWorkspaceTestEncode, testEncodeUnavailableReason]);
   useEffect(() => {
     if (!onRegisterWorkspaceActions) return;
-    if (compactLibrary && selected) onRegisterWorkspaceActions(asset.path, workspaceActions);
+    if (compactAssetsRow && selected) onRegisterWorkspaceActions(asset.path, workspaceActions);
     else onRegisterWorkspaceActions(asset.path, null);
     return () => onRegisterWorkspaceActions(asset.path, null);
-  }, [asset.path, compactLibrary, onRegisterWorkspaceActions, selected, workspaceActions]);
-  const isOverrideOnly =
-    selectedProfileId === VIDEO_PROFILE_OVERRIDE_ONLY;
-
-  const isAudioOnly =
+  }, [asset.path, compactAssetsRow, onRegisterWorkspaceActions, selected, workspaceActions]);
+  const isAudioOnly = effectiveConfiguration ? effectiveConfiguration.video.selection === 'audio_only' || effectiveConfiguration.video.selection === 'disabled' :
     selectedProfileId === VIDEO_PROFILE_AUDIO_ONLY;
-
-  const canQueueWithSelection =
-    effectiveProfileId > 0 ||
-    (isOverrideOnly && assetHasConversionOverride(conversionDraft)) ||
-    isAudioOnly ||
-    Boolean(effectiveAudioProfileKey) ||
-    Boolean(selectedTrackProfile) ||
-    hasTrackSelectionOverride(conversionDraft);
 
   useEffect(() => {
     if (!profileAssignments.data) return;
@@ -3884,7 +4241,7 @@ function AssetRow({
   }, [showSnapshotDialog, asset.path, assetScopeConfigurations.data, groupLibraryId, profileAssignments.data]);
 
   function selectAssetVideoProfile(id: number) {
-    setSelectedProfileId(id);
+
 
     const selection =
       id === 0
@@ -3906,12 +4263,12 @@ function AssetRow({
   }
 
   function selectAssetAudioProfile(key: string) {
-    setSelectedAudioProfileKey(key);
+
     updateProfileAssignment.mutate({ targetType: 'asset', targetPath: asset.path, mediaType: 'audio', selection: key === '__inherit__' ? 'inherit' : key ? 'profile' : 'disabled', videoProfileId: 0, profileKey: key === '__inherit__' ? '' : key });
   }
 
   function selectAssetTrackProfile(key: string) {
-    setSelectedTrackProfileKey(key);
+
     updateProfileAssignment.mutate({ targetType: 'asset', targetPath: asset.path, mediaType: 'tracks', selection: key === '__inherit__' ? 'inherit' : key ? 'profile' : 'disabled', videoProfileId: 0, profileKey: key === '__inherit__' ? '' : key });
   }
 
@@ -3981,7 +4338,6 @@ function AssetRow({
       setAssetEditDraft(discarded);
       assetEditDraftRef.current = discarded;
       saveAssetEdit.reset();
-      setAssetEditQueueMessage('');
     }
     setShowSnapshotDialog(false);
     snapshot.reset();
@@ -4083,7 +4439,12 @@ function AssetRow({
   }
 
   function openAssetTestEncode() {
+    if (!canTestEncode) return;
     setShowTestEncodeDialog(true);
+  }
+
+  function openAssetInLab() {
+    window.location.href = assetLabHref(asset.path);
   }
 
   function delay(ms: number) {
@@ -4636,7 +4997,8 @@ async function generateExternalSubtitle(
       effectiveProfileId > 0
         ? effectiveProfileId
         : 0;
-    if (!selectedLibraryId || !canQueueWithSelection) {
+    if (!selectedLibraryId) {
+      setAssetEditQueueMessage('Queue is unavailable because this asset has no effective destination library. Configure a destination before queueing.');
       return;
     }
     if (isLibraryReplacement && !window.confirm('Convert this Library asset and replace it only after validation? The current file will be moved to Originals Archive.')) {
@@ -4731,12 +5093,13 @@ async function generateExternalSubtitle(
 
   return (
     <>
-      {compactLibrary ? (
+      {compactAssetsRow ? (
         <TableRow
           hover
           selected={selected}
           aria-selected={selected}
           data-testid="asset-list-row"
+          data-row-surface="compact-asset"
           tabIndex={0}
           onClick={onSelectAsset}
           onKeyDown={(event) => {
@@ -4745,7 +5108,16 @@ async function generateExternalSubtitle(
               onSelectAsset?.();
             }
           }}
-          sx={{ cursor: 'pointer' }}
+          sx={{
+            cursor: 'pointer',
+            transition: 'background-color 120ms ease, box-shadow 120ms ease',
+            '& > td': { borderTop: '1px solid rgba(21, 48, 74, 0.62)', borderBottomColor: 'rgba(21, 48, 74, 0.62)' },
+            '&:hover > td': { backgroundColor: '#112a44' },
+            '&.Mui-selected, &.Mui-selected:hover': { background: 'linear-gradient(90deg, rgba(48, 55, 169, 0.72), rgba(31, 43, 115, 0.5))' },
+            '&.Mui-selected > td': { backgroundColor: 'transparent', borderTopColor: 'rgba(108, 76, 246, 0.56)', borderBottomColor: 'rgba(31, 68, 103, 0.8)' },
+            '&.Mui-selected > td:first-of-type': { boxShadow: 'inset 2px 0 0 #6c4cf6' },
+            '&:focus-visible': { outline: '2px solid #8265ff', outlineOffset: -2 },
+          }}
         >
           {bulkSelectionEnabled ? (
             <TableCell padding="checkbox">
@@ -4762,47 +5134,78 @@ async function generateExternalSubtitle(
           ) : null}
           <TableCell sx={{ minWidth: 0 }}>
             <Tooltip title={asset.fileName}>
-              <Typography variant="body2" fontWeight={600} noWrap sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {assetTitle(asset)}
-              </Typography>
+              <Stack direction="row" alignItems="center" spacing={0.65} sx={{ minWidth: 0 }}>
+                <InsertDriveFileOutlinedIcon sx={{ fontSize: 15, flexShrink: 0, color: selected ? '#b8a7ff' : '#8fb3d0' }} />
+                <Typography variant="body2" fontWeight={600} noWrap sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '0.8rem', color: selected ? '#e7eef8' : '#afc1d5' }}>
+                  {asset.fileName}
+                </Typography>
+              </Stack>
             </Tooltip>
-            {compactRaw ? <Typography variant="caption" color="text.secondary" noWrap title={asset.groupPath || asset.relativePath}>{asset.groupPath || asset.relativePath}</Typography> : null}
           </TableCell>
           <TableCell>
-            <Typography variant="body2" noWrap title={pipelineState.label}>{pipelineState.label}</Typography>
+            {cachedAdvisor && Number.isFinite(cachedAdvisor.score) ? (
+              <Tooltip title={cachedAdvisor.summary || `Advisor score ${cachedAdvisor.score}`}>
+                <Stack spacing={0.28} alignItems="flex-start" sx={{ width: 36 }} aria-label={`Advisor score ${cachedAdvisor.score}`}>
+                  <Typography component="span" sx={{ fontSize: '0.8rem', lineHeight: 1, fontWeight: 700, color: selected ? '#c9d3ff' : '#aebdff', fontVariantNumeric: 'tabular-nums' }}>
+                    {cachedAdvisor.score}
+                  </Typography>
+                  <Box aria-hidden="true" data-testid="advisor-score-indicator" sx={{ width: 35, height: 2, borderRadius: 2, bgcolor: '#1b3853', overflow: 'hidden' }}>
+                    <Box sx={{ width: `${Math.max(0, Math.min(100, cachedAdvisor.score))}%`, height: '100%', background: 'linear-gradient(90deg, #555cff, #24c5cb)' }} />
+                  </Box>
+                </Stack>
+              </Tooltip>
+            ) : advisor.isError ? (
+              <Typography variant="caption" aria-label="Advisor unavailable" noWrap sx={{ fontSize: '0.75rem', color: '#59718b' }}>Unavailable</Typography>
+            ) : !confidenceEnabled ? (
+              <Typography variant="caption" aria-label="Advisor off" noWrap sx={{ fontSize: '0.75rem', color: '#59718b' }}>Off</Typography>
+            ) : (
+              <Typography variant="caption" noWrap aria-label="Advisor not evaluated" sx={{ fontSize: '0.75rem', color: '#59718b' }}>
+                Not evaluated
+              </Typography>
+            )}
+          </TableCell>
+          <TableCell>
+            <Typography component="span" variant="caption" noWrap title={pipelineState.label} sx={{
+              display: 'inline-flex',
+              maxWidth: '100%',
+              alignItems: 'center',
+              gap: 0.45,
+              px: 0.7,
+              py: 0.14,
+              borderRadius: '999px',
+              bgcolor: pipelineTone.background,
+              color: pipelineTone.color,
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              lineHeight: 1.35,
+              '&::before': { content: '""', width: 4, height: 4, flexShrink: 0, borderRadius: '50%', bgcolor: 'currentColor', boxShadow: '0 0 6px currentColor' },
+            }}>{pipelineState.label}</Typography>
             {isBlockedByReview ? <Typography variant="caption" color="warning.main" noWrap>Needs review</Typography> : null}
           </TableCell>
+          {compactRaw ? (
+            <>
+              <TableCell><Typography variant="body2" noWrap title={rawSourceCodec} sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{rawSourceCodec}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technicalResolution}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{formatDurationSummary(technical?.duration)}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technicalBitrate}</Typography></TableCell>
+            </>
+          ) : (
+            <>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technical?.videoCodec || 'Unavailable'}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technicalResolution}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap title={technical?.encoder || 'Unavailable'} sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technical?.encoder || 'Unavailable'}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{formatDurationSummary(technical?.duration)}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technicalBitrate}</Typography></TableCell>
+              <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{technicalRange}</Typography></TableCell>
+            </>
+          )}
+          <TableCell><Typography variant="body2" noWrap sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{formatBytes(asset.sizeBytes)}</Typography></TableCell>
           <TableCell>
-            <Typography variant="body2" noWrap title={profiles.find((profile) => profile.id === effectiveProfileId)?.name ?? ''}>
-              {selectedProfileId === VIDEO_PROFILE_OVERRIDE_ONLY
-                ? 'Overrides only'
-                : selectedProfileId === VIDEO_PROFILE_AUDIO_ONLY
-                  ? 'Audio only'
-                  : profiles.find((profile) => profile.id === effectiveProfileId)?.name ?? (effectiveProfileId ? 'Unavailable' : 'Inherited')}
-            </Typography>
-          </TableCell>
-          <TableCell>
-            <Typography variant="body2" noWrap>
-              {selected
-                ? storedSnapshot.isLoading
-                  ? 'Loading…'
-                  : storedSnapshot.data?.snapshot
-                    ? `${storedSnapshot.data.snapshot.subtitleStreams.length} ${storedSnapshot.data.snapshot.subtitleStreams.length === 1 ? 'track' : 'tracks'}`
-                    : 'Unavailable'
-                : '—'}
-            </Typography>
-          </TableCell>
-          <TableCell>
-            <Typography variant="body2" noWrap>
-              {formatDurationSummary(storedSnapshot.data?.snapshot?.duration ?? asset.technical?.duration)}
-            </Typography>
-          </TableCell>
-          <TableCell>
-            <Typography variant="body2" noWrap title={asset.modifiedAt}>{formatDate(asset.modifiedAt)}</Typography>
+            <Typography variant="body2" noWrap title={asset.modifiedAt} sx={{ fontSize: '0.8rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{formatDate(asset.modifiedAt)}</Typography>
           </TableCell>
           <TableCell padding="checkbox" align="right" onClick={(event) => event.stopPropagation()}>
             <Tooltip title="More asset actions">
-              <IconButton size="small" aria-label={`More actions for ${asset.fileName}`} onClick={(event) => setAssetMenuAnchor(event.currentTarget)}>
+              <IconButton size="small" aria-label={`More actions for ${asset.fileName}`} onClick={(event) => setAssetMenuAnchor(event.currentTarget)} sx={{ width: 26, height: 26, p: 0.25, color: '#59718b', '&:hover': { bgcolor: '#112a44', color: '#e7eef8' } }}>
                 <MoreVertIcon fontSize="small" />
               </IconButton>
             </Tooltip>
@@ -4890,7 +5293,7 @@ async function generateExternalSubtitle(
         {mode === 'unprocessed' && !compactUnprocessed ? (
           <TableCell sx={{ minWidth: 180 }}>
             <AssetCategorySelect
-              value={category}
+              value={metadataCategory}
               options={assetCategories}
               onChange={saveAssetCategory}
               label="Category"
@@ -4999,29 +5402,33 @@ async function generateExternalSubtitle(
                 </span>
               </Tooltip>
             ) : isLibraryReplacement ? null : (
-              <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Queue asset'}>
-                <IconButton
-                  color="primary"
-                  onClick={queueAsset}
-                  disabled={!assetInfoCapability(asset, 'queue').allowed || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !canQueueWithSelection || !selectedLibraryId || isBlockedByReview || hasOpenJob}
-                  aria-label={`Queue ${asset.fileName}`}
-                  sx={actionIconSx}
-                >
-                  <PlaylistAddIcon />
-                </IconButton>
+              <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : !selectedLibraryId ? 'Queue unavailable: no effective destination library is configured.' : !assetInfoCapability(asset, 'queue').allowed ? assetActionReasonMessage(assetInfoCapability(asset, 'queue'), 'Queue is unavailable for this asset.') : 'Queue asset'}>
+                <span>
+                  <IconButton
+                    color="primary"
+                    onClick={queueAsset}
+                    disabled={!assetInfoCapability(asset, 'queue').allowed || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !selectedLibraryId || isBlockedByReview || hasOpenJob}
+                    aria-label={`Queue ${asset.fileName}`}
+                    sx={actionIconSx}
+                  >
+                    <PlaylistAddIcon />
+                  </IconButton>
+                </span>
               </Tooltip>
             )}
             {isLibraryReplacement && !isPublishedAsIs ? (
-              <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : 'Convert and safely replace this library asset'}>
-                <IconButton
-                  color="warning"
-                  onClick={queueAsset}
-                  disabled={!assetInfoCapability(asset, 'reconvert').allowed || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || !canQueueWithSelection || isBlockedByReview || hasOpenJob}
-                  aria-label={`Replace ${asset.fileName}`}
-                  sx={actionIconSx}
-                >
-                  <PlaylistAddIcon />
-                </IconButton>
+              <Tooltip title={hasOpenJob ? 'This asset already has an open job' : isBlockedByReview ? 'Resolve review before queueing' : !assetInfoCapability(asset, 'reconvert').allowed ? assetActionReasonMessage(assetInfoCapability(asset, 'reconvert'), 'Replacement is unavailable for this asset.') : 'Convert and safely replace this library asset'}>
+                <span>
+                  <IconButton
+                    color="warning"
+                    onClick={queueAsset}
+                    disabled={!assetInfoCapability(asset, 'reconvert').allowed || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending || isBlockedByReview || hasOpenJob}
+                    aria-label={`Replace ${asset.fileName}`}
+                    sx={actionIconSx}
+                  >
+                    <PlaylistAddIcon />
+                  </IconButton>
+                </span>
               </Tooltip>
             ) : null}
             {asset.status === 'unverified' ? (
@@ -5040,25 +5447,6 @@ async function generateExternalSubtitle(
               </Tooltip>
             ) : null}
           </Stack>
-          <Snackbar
-            open={createJob.isSuccess || createJob.isError}
-            autoHideDuration={createJob.isSuccess ? 4000 : 7000}
-            anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-            onClose={(_, reason) => {
-              if (reason !== 'clickaway') createJob.reset();
-            }}
-          >
-            <Alert
-              severity={createJob.isError ? 'warning' : 'success'}
-              variant="filled"
-              onClose={() => createJob.reset()}
-              sx={{ maxWidth: 520, overflowWrap: 'anywhere' }}
-            >
-              {createJob.isError
-                ? createJob.error instanceof Error ? createJob.error.message : 'Could not queue this asset.'
-                : 'Asset queued individually.'}
-            </Alert>
-          </Snackbar>
           <Snackbar
             open={deleteArchiveAsset.isSuccess || deleteArchiveAsset.isError}
             autoHideDuration={7000}
@@ -5087,9 +5475,63 @@ async function generateExternalSubtitle(
           </Snackbar>
       </TableCell>
       </TableRow>}
+      <Snackbar
+        open={Boolean(assetEditQueueMessage) || createJob.isSuccess || createJob.isError}
+        autoHideDuration={assetEditQueueMessage ? 7000 : createJob.isSuccess ? 4000 : 7000}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        onClose={(_, reason) => {
+          if (reason !== 'clickaway') {
+            setAssetEditQueueMessage('');
+            createJob.reset();
+          }
+        }}
+      >
+        <Alert
+          severity={assetEditQueueMessage ? 'warning' : createJob.isError ? 'warning' : 'success'}
+          variant="filled"
+          onClose={() => { setAssetEditQueueMessage(''); createJob.reset(); }}
+          sx={{ maxWidth: 520, overflowWrap: 'anywhere' }}
+        >
+          {assetEditQueueMessage || (createJob.isError
+            ? createJob.error instanceof Error ? createJob.error.message : 'Could not queue this asset.'
+            : 'Asset queued individually.')}
+        </Alert>
+      </Snackbar>
       <Menu anchorEl={assetMenuAnchor} open={Boolean(assetMenuAnchor)} onClose={() => setAssetMenuAnchor(null)}>
         <MenuItem onClick={() => { setAssetMenuAnchor(null); openAssetInfoDialog(); }}>Asset Info</MenuItem>
-        {!hidePreConversionActions && mode !== 'converted' ? (
+        {compactRaw ? (
+          <MenuItem
+            onClick={() => { setAssetMenuAnchor(null); refreshSnapshot(); }}
+            disabled={asset.missing || snapshotRunning || snapshot.isPending || !assetInfoCapability(asset, 'refreshAnalysis').allowed}
+          >
+            Scan / Analyze Asset
+          </MenuItem>
+        ) : null}
+        {compactAssetsRow && mode !== 'converted' ? (
+          <>
+            {!hidePreConversionActions ? (
+              <MenuItem
+                onClick={() => { setAssetMenuAnchor(null); setShowAdvisorDialog(true); }}
+                disabled={!confidenceEnabled || effectiveProfileId <= 0 || !assetInfoCapability(asset, 'refreshAnalysis').allowed}
+              >
+                Advisor
+              </MenuItem>
+            ) : null}
+            <MenuItem onClick={() => { setAssetMenuAnchor(null); openAssetInLab(); }} disabled={!labCapability.allowed}>
+              Open in Lab
+            </MenuItem>
+            {!hidePreConversionActions && (!isConverted || isLibraryReplacement) ? (
+              <MenuItem onClick={() => { setAssetMenuAnchor(null); setAssignProfileOpen(true); }} disabled={rowLocked || updateProfileAssignment.isPending}>
+                Assign Profile
+              </MenuItem>
+            ) : null}
+            {!hidePreConversionActions && canGenerateTestEncode ? (
+              <MenuItem onClick={() => { setAssetMenuAnchor(null); openAssetTestEncode(); }} disabled={!canTestEncode} title={testEncodeUnavailableReason}>
+                Test Encode
+              </MenuItem>
+            ) : null}
+          </>
+        ) : !hidePreConversionActions && mode !== 'converted' ? (
           <MenuItem onClick={() => { setAssetMenuAnchor(null); setShowAdvisorDialog(true); }} disabled={!confidenceEnabled || effectiveProfileId <= 0 || !assetInfoCapability(asset, 'refreshAnalysis').allowed}>
             Advisor
           </MenuItem>
@@ -5097,6 +5539,7 @@ async function generateExternalSubtitle(
         <MenuItem
           onClick={() => { setAssetMenuAnchor(null); queueAsset(); }}
           disabled={!assetInfoCapability(asset, isLibraryReplacement ? 'reconvert' : 'queue').allowed || rowLocked || isBlockedByReview || hasOpenJob || !selectedLibraryId || profileAssignments.isLoading || updateProfileAssignment.isPending || createJob.isPending}
+          title={!selectedLibraryId ? 'Queue is unavailable because no effective destination library is configured.' : hasOpenJob ? 'Queue is unavailable while this asset has active work.' : isBlockedByReview ? 'Resolve the review block before Queue.' : undefined}
         >
           {isLibraryReplacement ? 'Queue replacement' : 'Queue asset'}
         </MenuItem>
@@ -5119,6 +5562,7 @@ async function generateExternalSubtitle(
             {assetReview.requiresReview ? 'Clear review flag' : 'Mark for review'}
           </MenuItem>
         ) : null}
+        {isConverted || isPublishedAsIs ? <Divider component="li" /> : null}
         {isConverted ? (
           <MenuItem onClick={() => { setAssetMenuAnchor(null); safelyDeleteConvertedAsset(); }} disabled={!assetInfoCapability(asset, 'deleteArchivedOriginal').allowed || deleteConvertedAsset.isPending}>
             Safely delete and restore original
@@ -5605,7 +6049,7 @@ async function generateExternalSubtitle(
                         </Stack>
                       </Grid>
                       <Grid size={{ xs: 12, md: 6 }}>
-                        <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked || asset.missing} />
+                        <AssetCategorySelect value={metadataCategory} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked || asset.missing} />
                       </Grid>
                     </Grid>
                     {renameAsset.isError ? <Alert severity="warning">{renameAsset.error.message}</Alert> : null}
@@ -5819,11 +6263,19 @@ async function generateExternalSubtitle(
                     {!isConverted && profileSuggestion.data ? (
                       <ProfileSuggestionCard
                         suggestion={profileSuggestion.data}
-                        onSelect={(profile) => setSelectedProfileId(profile.id)}
+                        selectionPending={updateProfileAssignment.isPending}
+                        onSelect={canAssignProfile ? (profile) => {
+                          if (profile.scope !== 'asset' || profile.disabled || profile.deletedAt) {
+                            setAssetEditQueueMessage('This suggested profile cannot be assigned at Asset scope. Choose an enabled Asset profile, or configure a Path profile from Configure Path.');
+                            return;
+                          }
+                          setAssetEditQueueMessage('');
+                          selectAssetVideoProfile(profile.id);
+                        } : undefined}
                         onApplyRecommendations={
                           hasOpenJob ? undefined : applySnapshotRecommendations
                         }
-                        onReviewInLab={() => { window.location.href = `/profile-lab?assetPath=${encodeURIComponent(asset.path)}`; }}
+                        onReviewInLab={openAssetInLab}
                       />
                     ) : null}
                     {isConverted ? <Alert severity="info">This is already a converted asset. Re-processing recommendations should be evaluated from its archived original.</Alert> : null}
@@ -5875,14 +6327,14 @@ async function generateExternalSubtitle(
                     {!canGenerateTestEncode ? (
                       <Alert severity="info">{labCapability.allowed ? 'Generate Test Encode is unavailable for this asset.' : `Test Encode unavailable: ${assetActionReasonMessage(labCapability, 'Test Encode is unavailable for this asset.')}`}</Alert>
                     ) : (
-                      <Tooltip title={hasOpenJob ? 'Asset has an active Queue job' : !effectiveProfileId ? 'Select an effective video profile first' : updateProfileAssignment.isPending ? 'Saving the current asset configuration' : 'Generate a short real encode from the persisted effective asset configuration'}>
+                      <Tooltip title={testConfigurationReason || (hasOpenJob ? 'Asset has an active Queue job' : updateProfileAssignment.isPending ? 'Saving the current asset configuration' : 'Generate a short real encode from the persisted effective asset configuration')}>
                         <span style={{ alignSelf: 'flex-start' }}>
                           <Button
                             startIcon={<ScienceIcon />}
                             variant="contained"
                             color="secondary"
                             onClick={openAssetTestEncode}
-                            disabled={asset.missing || hasOpenJob || !effectiveProfileId || updateProfileAssignment.isPending || !labCapability.allowed}
+                            disabled={asset.missing || hasOpenJob || Boolean(testConfigurationReason) || updateProfileAssignment.isPending || !labCapability.allowed}
                           >
                             Generate Test Encode
                           </Button>
@@ -7935,6 +8387,12 @@ function firstCategory(categories?: string[] | null) {
   return safeArray(categories).find((category) => category.trim()) ?? '';
 }
 
+function libraryEffectiveCategory(effective: EffectiveAssetConfiguration | undefined, inheritedFallback: string, disabledLabel = '') {
+  if (effective?.category.selection === 'value') return effective.category.category ?? '';
+  if (effective?.category.selection === 'disabled') return disabledLabel;
+  return inheritedFallback;
+}
+
 function assetDisplayPath(asset: Asset, groupRelativePath: string, libraries: Library[]) {
   const relativePath = cleanRelativePath(relativeAssetPath(asset, libraries));
   const groupPrefix = groupRelativePath ? `${groupRelativePath}/` : '';
@@ -8477,12 +8935,6 @@ function cleanConversionOverride(value: AssetConversionOverrideState): AssetConv
   if (typeof value.videoToolboxPowerEfficiency === 'boolean') clean.videoToolboxPowerEfficiency = value.videoToolboxPowerEfficiency;
   if (value.hardwareQualityPreset?.trim()) clean.hardwareQualityPreset = value.hardwareQualityPreset.trim();
   return clean;
-}
-
-function hasTrackSelectionOverride(value: AssetConversionOverrideState) {
-  return Array.isArray(value.keepVideoStreams) ||
-    Array.isArray(value.keepAudioStreams) ||
-    Array.isArray(value.keepSubtitleStreams);
 }
 
 function reconciliationJobIdFromReview(review: Asset['review']) {

@@ -141,19 +141,32 @@ provenance, and validation SHALL remain authoritative.
 
 Preview, Test Encode, and Queue SHALL resolve identical effective Asset Defaults
 for equivalent inputs. Queue SHALL freeze the resolved defaults and canonical
-subtitle artifact plan in its snapshot before processing. Editing Asset Defaults
-after queue capture SHALL affect only future resolution and SHALL NOT rewrite an
-existing queued snapshot or its execution.
+subtitle artifact plan during PREPARING, after atomic claim and before processing.
+A normal individual Queue intent MUST resolve the current defaults at claim;
+edits while it remains QUEUED therefore affect that resolution. Once PREPARING
+freezes the snapshot, later edits MUST NOT rewrite that execution or its retry.
+Accepted Batch Preflight jobs continue using the exact configuration reviewed
+and accepted by the operator.
 
 #### Scenario: Preview/Test Encode/Queue parity
 
 - **WHEN** equivalent unassigned asset inputs are evaluated through Preview, Test Encode, and Queue
 - **THEN** each reports the same effective Video, Audio, Track, and subtitle artifact decisions
 
-#### Scenario: Defaults change after Queue capture
+#### Scenario: Defaults change while an individual Queue job is still queued
 
-- **WHEN** Asset Defaults are edited after a Queue job has captured its effective snapshot
-- **THEN** the queued job and any retry continue using the captured snapshot while a future job can use the new defaults
+- **WHEN** Asset Defaults change before a normal individual Queue job is claimed
+- **THEN** PREPARING resolves and freezes the current defaults
+
+#### Scenario: Defaults change after PREPARING freeze
+
+- **WHEN** Asset Defaults are edited after PREPARING freezes a Queue execution
+- **THEN** the execution and its retry continue using the frozen snapshot
+
+#### Scenario: Accepted Batch Preflight keeps its reviewed defaults
+
+- **WHEN** Asset Defaults change after a Batch Preflight plan has been accepted
+- **THEN** the accepted job continues using the exact reviewed and accepted snapshot
 
 ### Requirement: Compatibility-preserving initialization
 

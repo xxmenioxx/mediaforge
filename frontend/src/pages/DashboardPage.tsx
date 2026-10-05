@@ -30,6 +30,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { MetricCard } from '../components/MetricCard';
 import { PageHeader } from '../components/PageHeader';
+import { RuntimeStorageSummary } from '../components/RuntimeStorageSummary';
 import type { QueueJob, RuntimeState } from '../api/types';
 import { liveRuntimeStateLabel } from '../utils/runtimeStatePresentation';
 import { buildDashboardSummary } from '../utils/dashboardSummary';
@@ -295,7 +296,6 @@ export function DashboardPage() {
 }
 
 function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefresh, onAutoRefresh, onRefresh }: { snapshot?: RuntimeState; loading: boolean; error: boolean; refreshing: boolean; autoRefresh: boolean; onAutoRefresh: (enabled: boolean) => void; onRefresh: () => void }) {
-  const disks = snapshot ? Object.entries(snapshot.disks ?? {}) : [];
   const encoders = snapshot ? Object.entries(snapshot.encoders ?? {}) : [];
   const ramPercent = snapshot && snapshot.totalMemoryBytes > 0 ? Math.round((snapshot.availableMemoryBytes / snapshot.totalMemoryBytes) * 100) : 0;
   const cpuLoadPercent = snapshot && snapshot.cpuCores > 0
@@ -348,7 +348,7 @@ function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefres
             </Stack>
           </Stack>
         </Grid>
-        <Grid size={{ xs: 12, md: 4 }}><Stack spacing={0.75}><Typography fontWeight={700}>Storage</Typography>{disks.map(([role, raw]) => { const disk = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}; return <Stack direction="row" justifyContent="space-between" key={role}><Typography color="text.secondary" variant="body2">{role} · {String(disk.type ?? 'unknown')}</Typography><Typography variant="body2">{formatBytes(Number(disk.availableBytes ?? 0))} free</Typography></Stack>; })}{!disks.length ? <Typography color="text.secondary" variant="body2">No controlled disks detected.</Typography> : null}</Stack></Grid>
+        <Grid size={{ xs: 12, md: 4 }}><RuntimeStorageSummary snapshot={snapshot} loading={loading} error={error} /></Grid>
         <Grid size={{ xs: 12, md: 4 }}><Stack spacing={0.75}><Typography fontWeight={700}>FFmpeg encoders</Typography><Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>{encoders.map(([name, encoder]) => <Chip key={name} size="small" color={encoder.usable ? 'success' : 'default'} variant={encoder.usable ? 'filled' : 'outlined'} label={`${name} · ${encoder.usable ? 'usable' : encoder.listed ? 'disabled' : 'not found'}`} title={encoder.reason || (encoder.usable ? 'Passed capability check' : 'Unavailable')} />)}{!encoders.length ? <Chip size="small" color="warning" label="No encoder diagnostics available" /> : null}</Stack><Typography color="text.secondary" variant="caption">Hover an encoder to see its capability diagnostic.</Typography></Stack></Grid>
       </Grid>
       <Typography color="text.secondary" variant="caption">{liveRuntimeStateLabel(snapshot.detectedAt, formatDate)}</Typography>

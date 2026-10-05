@@ -1,6 +1,8 @@
 package runtimeinfo
 
 import (
+	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -13,6 +15,76 @@ func TestParseMemInfo(t *testing.T) {
 	total, available := parseMemInfo("MemTotal: 16384 kB\nMemAvailable: 4096 kB\n")
 	if total != 16384*1024 || available != 4096*1024 {
 		t.Fatalf("unexpected memory: %d %d", total, available)
+	}
+}
+
+func TestDiskInfoDoesNotAttributeParentFilesystemToMissingDestination(t *testing.T) {
+	parent := t.TempDir()
+	missing := filepath.Join(parent, "not-created")
+	if _, err := diskInfo(missing); err == nil {
+		t.Fatalf("diskInfo(%q) unexpectedly reported parent filesystem capacity", missing)
+	}
+}
+
+func TestDiskInfoForPathsDeduplicatesSharedVolumesAndKeepsDistinctVolumes(t *testing.T) {
+	probes := map[string]models.JSONMap{
+		"/workspace":      {"measuredPath": "/vol-a/workspace", "volumeId": "vol-a", "totalBytes": int64(1000), "availableBytes": int64(700), "type": "ssd"},
+		"/library/anime":  {"measuredPath": "/vol-a/library/anime", "volumeId": "vol-a", "totalBytes": int64(1000), "availableBytes": int64(700), "type": "ssd"},
+		"/library/movies": {"measuredPath": "/vol-b/library/movies", "volumeId": "vol-b", "totalBytes": int64(2000), "availableBytes": int64(500), "type": "hdd"},
+	}
+	got, err := diskInfoForPathsWithProbe([]string{"/workspace", "/library/anime", "/library/movies"}, func(path string) (models.JSONMap, error) {
+		return probes[path], nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filesystems, ok := got["filesystems"].(models.JSONList)
+	if !ok || len(filesystems) != 2 {
+		t.Fatalf("filesystems=%#v want two unique volumes", got["filesystems"])
+	}
+	shared := filesystems[0].(models.JSONMap)
+	if shared["volumeId"] != "vol-a" || len(shared["paths"].(models.JSONList)) != 2 {
+		t.Fatalf("shared-volume destinations were not grouped: %#v", shared)
+	}
+	if got["availableBytes"] != int64(500) {
+		t.Fatalf("scheduler summary availableBytes=%v want least-free filesystem 500", got["availableBytes"])
+	}
+}
+
+func TestDiskInfoForPathsKeepsUnavailableDestinationWithoutParentCapacity(t *testing.T) {
+	got, err := diskInfoForPathsWithProbe([]string{"/workspace", "/missing/library"}, func(path string) (models.JSONMap, error) {
+		if path == "/missing/library" {
+			return nil, errors.New("destination is not accessible")
+		}
+		return models.JSONMap{"measuredPath": "/vol-a/workspace", "volumeId": "vol-a", "totalBytes": int64(1000), "availableBytes": int64(700)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinations := got["destinations"].(models.JSONList)
+	missing := destinations[1].(models.JSONMap)
+	if missing["accessible"] != false || missing["path"] != "/missing/library" || missing["measuredPath"] != nil || missing["error"] == nil {
+		t.Fatalf("unavailable destination was misreported: %#v", missing)
+	}
+	filesystems := got["filesystems"].(models.JSONList)
+	if len(filesystems) != 1 || filesystems[0].(models.JSONMap)["volumeId"] != "vol-a" {
+		t.Fatalf("unavailable destination contributed a filesystem: %#v", filesystems)
+	}
+}
+
+func TestDiskInfoForPathsReturnsUnavailableDestinationsWhenNoneCanBeMeasured(t *testing.T) {
+	got, err := diskInfoForPathsWithProbe([]string{"/missing/a", "/missing/b"}, func(path string) (models.JSONMap, error) {
+		return nil, errors.New("unavailable")
+	})
+	if err == nil {
+		t.Fatal("expected an unavailable-filesystems error")
+	}
+	destinations := got["destinations"].(models.JSONList)
+	if len(destinations) != 2 || destinations[0].(models.JSONMap)["accessible"] != false {
+		t.Fatalf("unavailable destinations were dropped: %#v", destinations)
+	}
+	if len(got["filesystems"].(models.JSONList)) != 0 || got["availableBytes"] != nil {
+		t.Fatalf("unavailable paths received capacity data: %#v", got)
 	}
 }
 

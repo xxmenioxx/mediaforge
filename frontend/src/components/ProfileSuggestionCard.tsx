@@ -7,7 +7,7 @@ import { api } from '../api/client';
 import { SourceBitrateQualityEvidence } from './SourceBitrateQualityEvidence';
 import type { AdvisorFinding, Profile, ProfileSuggestion } from '../api/types';
 
-export function ProfileSuggestionCard({ suggestion, onSelect, onApplyRecommendations, onReviewInLab }: { suggestion: ProfileSuggestion; onSelect?: (profile: Profile) => void; onApplyRecommendations?: (findings: AdvisorFinding[]) => Promise<string>; onReviewInLab?: () => void }) {
+export function ProfileSuggestionCard({ suggestion, onSelect, onApplyRecommendations, onReviewInLab, selectionPending = false }: { suggestion: ProfileSuggestion; selectionPending?: boolean; onSelect?: (profile: Profile) => void; onApplyRecommendations?: (findings: AdvisorFinding[]) => Promise<string>; onReviewInLab?: () => void }) {
   const queryClient = useQueryClient();
   const create = useMutation({
     mutationFn: api.createProfile,
@@ -92,8 +92,8 @@ export function ProfileSuggestionCard({ suggestion, onSelect, onApplyRecommendat
                 <Chip label={existing.container.toUpperCase()} size="small" />
                 <Chip label={`${suggestion.candidates[0]?.score ?? 0}% fit`} size="small" />
               </Stack>
-              {onSelect ? <Button startIcon={<CheckCircleOutlineIcon />} variant="contained" onClick={() => onSelect(existing)} sx={{ alignSelf: 'flex-start' }}>Select suggested profile</Button> : null}
-              {suggestion.candidates.slice(0, 2).map((candidate) => candidate.profile.id === existing.id ? null : <Box key={candidate.profile.id} sx={{ p: 1, border: 1, borderColor: 'divider', borderRadius: 1 }}><Typography fontWeight={700}>{candidate.profile.name}</Typography><Typography variant="caption" color="text.secondary">Alternative · {candidate.score}% fit</Typography>{onSelect ? <Button size="small" onClick={() => onSelect(candidate.profile)}>Select alternative</Button> : null}</Box>)}
+              {onSelect ? <Button startIcon={<CheckCircleOutlineIcon />} variant="contained" disabled={selectionPending} onClick={() => onSelect(existing)} sx={{ alignSelf: 'flex-start' }}>Select suggested profile</Button> : null}
+              {suggestion.candidates.slice(0, 2).map((candidate) => candidate.profile.id === existing.id ? null : <Box key={candidate.profile.id} sx={{ p: 1, border: 1, borderColor: 'divider', borderRadius: 1 }}><Typography fontWeight={700}>{candidate.profile.name}</Typography><Typography variant="caption" color="text.secondary">Alternative · {candidate.score}% fit</Typography>{onSelect ? <Button size="small" disabled={selectionPending} onClick={() => onSelect(candidate.profile)}>Select alternative</Button> : null}</Box>)}
             </>
           ) : (
             <>
@@ -105,9 +105,9 @@ export function ProfileSuggestionCard({ suggestion, onSelect, onApplyRecommendat
                 {proposed.optimizationIntent ? <Chip label={proposed.optimizationIntent.replaceAll('_', ' ')} size="small" variant="outlined" /> : null}
               </Stack>
               <Alert severity="info">This is a draft derived from technical metadata. It is never saved or used automatically.</Alert>
-              <Button startIcon={<AddIcon />} variant="contained" disabled={create.isPending} onClick={() => create.mutate(proposed)} sx={{ alignSelf: 'flex-start' }}>Create proposed profile</Button>
-              {suggestion.candidates.slice(0, 2).map((candidate) => <Box key={candidate.profile.id} sx={{ p: 1, border: 1, borderColor: 'divider', borderRadius: 1 }}><Typography fontWeight={700}>{candidate.profile.name}</Typography><Typography variant="caption" color="text.secondary">Existing alternative · {candidate.score}% fit</Typography>{onSelect ? <Button size="small" onClick={() => onSelect(candidate.profile)}>Select alternative</Button> : null}</Box>)}
-              {create.isSuccess ? <Alert severity="success">Profile created{onSelect ? ' and selected' : ''}.</Alert> : null}
+              <Button startIcon={<AddIcon />} variant="contained" disabled={create.isPending || selectionPending} onClick={() => create.mutate(proposed)} sx={{ alignSelf: 'flex-start' }}>Create proposed profile</Button>
+              {suggestion.candidates.slice(0, 2).map((candidate) => <Box key={candidate.profile.id} sx={{ p: 1, border: 1, borderColor: 'divider', borderRadius: 1 }}><Typography fontWeight={700}>{candidate.profile.name}</Typography><Typography variant="caption" color="text.secondary">Existing alternative · {candidate.score}% fit</Typography>{onSelect ? <Button size="small" disabled={selectionPending} onClick={() => onSelect(candidate.profile)}>Select alternative</Button> : null}</Box>)}
+              {create.isSuccess ? <Alert severity="success">Profile created. Assignment status is shown separately.</Alert> : null}
               {create.isError ? <Alert severity="warning">Could not create the proposed profile. Its name may already exist.</Alert> : null}
             </>
           )}

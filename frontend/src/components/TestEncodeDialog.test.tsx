@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import type { Library, ProfileQualification, TestEncode } from '../api/types';
 import { TestEncodeDialog } from './TestEncodeDialog';
@@ -39,6 +40,8 @@ const qualification: ProfileQualification = {
   worstRuleKeys: ['metric.worst_window'], createdAt: '2026-09-29T00:00:00Z',
 };
 
+afterEach(cleanup);
+
 function renderDialog(configurationSource: 'effective_asset' | 'lab_draft' = 'effective_asset', defaultLibraryId = 2, libraries = testLibraries) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
@@ -70,6 +73,50 @@ describe('TestEncodeDialog', () => {
     vi.mocked(api.createTestEncode).mockResolvedValue(readyTest);
     vi.mocked(api.deleteTestEncode).mockResolvedValue({ id: readyTest.id, status: 'deleted' });
     vi.mocked(api.evaluateTestEncodeProfileQualification).mockResolvedValue(qualification);
+  });
+
+  it('tracks an asynchronous effective destination, preserves a manual choice, and resets it for a different source', async () => {
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const libraries = [testLibraries[0], { ...testLibraries[0], id: 3, name: 'Anime' }];
+    const ui = (sourcePath: string, destination: number) => <QueryClientProvider client={client}><TestEncodeDialog open onClose={() => undefined} sourcePath={sourcePath} libraries={libraries} defaultLibraryId={destination} request={{ configurationSource: 'effective_asset', resolveAssignments: true }} /></QueryClientProvider>;
+    const view = render(ui('/raw/first.mkv', 0));
+    expect((screen.getByRole('button', { name: 'Generate New Test Encode' }) as HTMLButtonElement).disabled).toBe(true);
+    view.rerender(ui('/raw/first.mkv', 3));
+    await user.click(screen.getByRole('button', { name: 'Generate New Test Encode' }));
+    await waitFor(() => expect(api.createTestEncode).toHaveBeenLastCalledWith(expect.objectContaining({ libraryId: 3 })));
+    await user.click(screen.getByRole('combobox', { name: /destination library/i }));
+    await user.click(screen.getByRole('option', { name: 'TV' }));
+    view.rerender(ui('/raw/first.mkv', 3));
+    await user.click(screen.getByRole('button', { name: 'Generate New Test Encode' }));
+    await waitFor(() => expect(api.createTestEncode).toHaveBeenLastCalledWith(expect.objectContaining({ libraryId: 2 })));
+    view.rerender(ui('/raw/second.mkv', 3));
+    await user.click(screen.getByRole('button', { name: 'Generate New Test Encode' }));
+    await waitFor(() => expect(api.createTestEncode).toHaveBeenLastCalledWith(expect.objectContaining({ sourcePath: '/raw/second.mkv', libraryId: 3 })));
+  });
+
+  it('resets a manual Library when the dialog closes and reopens for the same source', async () => {
+    const user = userEvent.setup();
+    const libraries = [testLibraries[0], { ...testLibraries[0], id: 3, name: 'Anime' }];
+    function ReopenableDialog() {
+      const [open, setOpen] = useState(true);
+      return <>
+        <button type="button" onClick={() => setOpen(true)}>Reopen Test Encode</button>
+        <TestEncodeDialog open={open} onClose={() => setOpen(false)} sourcePath="/raw/first.mkv" libraries={libraries} defaultLibraryId={3} request={{ configurationSource: 'effective_asset', resolveAssignments: true }} />
+      </>;
+    }
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ReopenableDialog /></QueryClientProvider>);
+
+    await user.click(screen.getByRole('combobox', { name: /destination library/i }));
+    await user.click(await screen.findByRole('option', { name: 'TV' }));
+    await user.click(screen.getByRole('button', { name: /generate new test encode/i }));
+    await waitFor(() => expect(api.createTestEncode).toHaveBeenLastCalledWith(expect.objectContaining({ libraryId: 2 })));
+
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Generate Test Encode' })).toBeNull());
+    await user.click(screen.getByRole('button', { name: 'Reopen Test Encode' }));
+    await user.click(screen.getByRole('button', { name: /generate new test encode/i }));
+    await waitFor(() => expect(api.createTestEncode).toHaveBeenLastCalledWith(expect.objectContaining({ sourcePath: '/raw/first.mkv', libraryId: 3 })));
   });
 
   it('creates an independent test with the selected window and effective Asset configuration', async () => {

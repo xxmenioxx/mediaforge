@@ -553,7 +553,7 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 			return job, fmt.Errorf("load claim-time effective configuration: %w", err)
 		}
 		effective := configurationResolver.resolve(record)
-		effective = effectiveConfigurationWithFrozenAssetDefaults(effective, job.ProfileResolution)
+		destinationLibraryID := effective.Destination.DestinationLibraryID
 		hasOperation := effective.Video.VideoProfileID > 0 ||
 			effective.Video.Selection == VideoAssignmentOverrideOnly ||
 			effective.Video.Selection == VideoAssignmentAudioOnly ||
@@ -561,10 +561,16 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 			strings.TrimSpace(effective.Audio.ProfileKey) != "" ||
 			strings.TrimSpace(effective.Tracks.ProfileKey) != "" ||
 			effective.Audio.Selection == configSelectionValue || effective.Tracks.Selection == configSelectionValue
-		if effective.Destination.Selection != configSelectionValue || effective.Destination.DestinationLibraryID == 0 || !hasOperation {
+		if effective.Destination.Selection == configSelectionInherit && record.LibraryID > 0 && job.LibraryID == record.LibraryID {
+			var library models.Library
+			if err := h.db.First(&library, record.LibraryID).Error; err == nil && pathIsInside(record.Path, library.DestinationPath) {
+				destinationLibraryID = record.LibraryID
+			}
+		}
+		if destinationLibraryID == 0 || !hasOperation || (effective.Destination.Selection != configSelectionValue && effective.Destination.Selection != configSelectionInherit) {
 			return job, fmt.Errorf("claimed asset no longer has a complete effective processing configuration")
 		}
-		input.LibraryID = effective.Destination.DestinationLibraryID
+		input.LibraryID = destinationLibraryID
 		input.ProfileID = effective.Video.VideoProfileID
 		input.AudioProfileKey = effective.Audio.ProfileKey
 		input.TrackProfileKey = effective.Tracks.ProfileKey
@@ -588,16 +594,17 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 				input.ProcessingMode = ProcessingModeAudioOnly
 			}
 		}
-		if input.ProfileID == 0 && normalizeQueueProcessingMode(input.ProcessingMode) == ProcessingModeAudioOnly {
-			var fallback models.Profile
-			if err := h.db.Where("disabled = ?", false).Order("id asc").First(&fallback).Error; err != nil {
-				return job, fmt.Errorf("resolve explicit audio-only fallback profile: %w", err)
-			}
-			input.ProfileID = fallback.ID
-		}
 		if input.ProfileID == 0 && strings.TrimSpace(input.AudioProfileKey) == "" && strings.TrimSpace(input.TrackProfileKey) == "" {
 			return job, fmt.Errorf("explicit queue intent has no processing profile")
 		}
+	}
+
+	if input.ProfileID == 0 && normalizeQueueProcessingMode(input.ProcessingMode) == ProcessingModeAudioOnly {
+		var fallback models.Profile
+		if err := h.db.Where("disabled = ?", false).Order("id asc").First(&fallback).Error; err != nil {
+			return job, fmt.Errorf("resolve audio-only fallback profile during claim preparation: %w", err)
+		}
+		input.ProfileID = fallback.ID
 	}
 
 	prepared := job
@@ -2995,6 +3002,10 @@ func workerNumberValue(value interface{}, fallback float64) float64 {
 	case int:
 		return float64(typed)
 	case int64:
+		return float64(typed)
+	case uint:
+		return float64(typed)
+	case uint64:
 		return float64(typed)
 	case json.Number:
 		parsed, err := typed.Float64()

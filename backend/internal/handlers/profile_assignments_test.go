@@ -49,6 +49,105 @@ func TestProfileAssignmentsPreferAssetOverPathPerMediaType(t *testing.T) {
 	}
 }
 
+func TestProfileAssignmentSelectionContract(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:profile-assignment-contract?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.ProfileAssignment{}); err != nil {
+		t.Fatal(err)
+	}
+	validProfile := models.Profile{Name: "Asset profile", Scope: "asset", Container: "mkv", VideoCodec: "x265", AudioCodec: "copy", QualityMode: "crf", QualityValue: 20}
+	disabledProfile := models.Profile{Name: "Disabled asset profile", Scope: "asset", Disabled: true}
+	wrongScopeProfile := models.Profile{Name: "Path profile", Scope: "path"}
+	for _, profile := range []*models.Profile{&validProfile, &disabledProfile, &wrongScopeProfile} {
+		if err := db.Create(profile).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := ProfileAssignmentInput{TargetType: "asset", TargetPath: "/media/raw/episode.mkv", MediaType: "video"}
+
+	t.Run("video profile accepted", func(t *testing.T) {
+		input := base
+		input.Selection, input.VideoProfileID = "profile", validProfile.ID
+		assignment, inherited, err := applyProfileAssignment(db, input)
+		if err != nil || inherited || assignment.Selection != "profile" || assignment.VideoProfileID != validProfile.ID {
+			t.Fatalf("apply profile = (%#v, %v, %v)", assignment, inherited, err)
+		}
+	})
+	t.Run("inherit deletes assignment", func(t *testing.T) {
+		input := base
+		input.Selection = "inherit"
+		if _, _, err := applyProfileAssignment(db, ProfileAssignmentInput{TargetType: base.TargetType, TargetPath: base.TargetPath, MediaType: base.MediaType, Selection: "disabled"}); err != nil {
+			t.Fatal(err)
+		}
+		_, inherited, err := applyProfileAssignment(db, input)
+		if err != nil || !inherited {
+			t.Fatalf("apply inherit = inherited %v, err %v", inherited, err)
+		}
+		var count int64
+		if err := db.Model(&models.ProfileAssignment{}).Where("target_type = ? AND target_path = ? AND media_type = ?", base.TargetType, base.TargetPath, base.MediaType).Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("assignment count after inherit = %d, want 0", count)
+		}
+	})
+	for _, selection := range []string{"disabled", "override_only", "audio_only"} {
+		t.Run(selection+" video accepted", func(t *testing.T) {
+			input := base
+			input.Selection = selection
+			assignment, inherited, err := applyProfileAssignment(db, input)
+			if err != nil || inherited || assignment.Selection != selection || assignment.VideoProfileID != 0 || assignment.ProfileKey != "" {
+				t.Fatalf("apply %s = (%#v, %v, %v)", selection, assignment, inherited, err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name      string
+		mediaType string
+		selection string
+	}{
+		{name: "audio override_only rejected", mediaType: "audio", selection: "override_only"},
+		{name: "tracks audio_only rejected", mediaType: "tracks", selection: "audio_only"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := base
+			input.MediaType, input.Selection = tc.mediaType, tc.selection
+			if _, _, err := applyProfileAssignment(db, input); err == nil {
+				t.Fatalf("apply %s unexpectedly succeeded", tc.name)
+			}
+		})
+	}
+	t.Run("invalid profile scope rejected", func(t *testing.T) {
+		input := base
+		input.Selection, input.VideoProfileID = "profile", wrongScopeProfile.ID
+		if _, _, err := applyProfileAssignment(db, input); err == nil || !strings.Contains(err.Error(), errProfileAssignmentScope.Error()) {
+			t.Fatalf("apply wrong-scope profile error = %v", err)
+		}
+	})
+	t.Run("disabled profile rejected", func(t *testing.T) {
+		input := base
+		input.Selection, input.VideoProfileID = "profile", disabledProfile.ID
+		if _, _, err := applyProfileAssignment(db, input); err == nil || !strings.Contains(err.Error(), errProfileAssignmentInactiveProfile.Error()) {
+			t.Fatalf("apply disabled profile error = %v", err)
+		}
+	})
+	t.Run("non-profile video selections reject profile fields", func(t *testing.T) {
+		for _, selection := range []string{"disabled", "override_only", "audio_only"} {
+			input := base
+			input.Selection, input.VideoProfileID = selection, validProfile.ID
+			if _, _, err := applyProfileAssignment(db, input); err == nil {
+				t.Errorf("%s with videoProfileId unexpectedly succeeded", selection)
+			}
+			input.VideoProfileID, input.ProfileKey = 0, "stale-key"
+			if _, _, err := applyProfileAssignment(db, input); err == nil {
+				t.Errorf("%s with profileKey unexpectedly succeeded", selection)
+			}
+		}
+	})
+}
+
 func TestQueueCapturesResolvedPathAndAssetProfileIntent(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:profile-assignment-queue?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

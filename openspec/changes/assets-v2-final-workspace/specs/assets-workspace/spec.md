@@ -1,0 +1,309 @@
+## Purpose
+
+Defines one accessible Assets workspace for browsing RAW sources and configured Libraries while preserving canonical inventory, Advisor, Queue, profile, and lifecycle behavior. The visual authority is the current Figma Make file [Update Selected Asset Workspace](https://www.figma.com/make/SPURUawBZid2U8AjG95bsn/Update-Selected-Asset-Workspace?fullscreen=1&t=19SWEXKGPLmIkECD-1&code-node-id=0-6), corroborated by `docs/design-reference/assets-v2/asstesv2.png`.
+
+## ADDED Requirements
+
+### Requirement: Shared workspace uses the current desktop composition
+
+The Assets route MUST render a full-width top row containing the Assets title, compact Search, and supported top actions. Below it, one workspace MUST place the Asset Library hierarchy at left and the right inventory workspace at right. The right side MUST order the summary strip, one breadcrumb/path-action bar, compact inventory controls, independently scrolling asset list, and selected-asset context. The hierarchy MUST NOT appear beside the top row. Search MUST retain its existing query behavior and MUST NOT be buried in a legacy filter header.
+
+#### Scenario: Render the desktop workspace
+- **WHEN** the Assets route is displayed at desktop width
+- **THEN** Assets and Search occupy the full-width top row, and the hierarchy and right workspace begin below that row
+
+#### Scenario: Keep summary and path context in the right workspace
+- **WHEN** Library or RAW inventory is displayed
+- **THEN** summary cards appear above a single compact breadcrumb/path-action bar, followed by inventory controls and rows
+
+### Requirement: One canonical hierarchy has Figma presentation grouping
+
+The Assets page MUST keep one shared workspace and one canonical hierarchy. Its visible top-level sections MUST be `RAW` and `Libraries`; configured destination Library roots MUST appear below the presentation-only `Libraries` section. RAW source groups and descendants MUST remain under RAW. The presentation wrapper MUST NOT change backend identities or context selection. The hierarchy MUST NOT expose RAW/Library tabs or add Converted, Archive, or Reports as inventory roots. The Asset Library header MAY expose the existing `/libraries` configuration route through its plus control.
+
+#### Scenario: Browse RAW and configured Libraries
+- **WHEN** the hierarchy is displayed
+- **THEN** its visible root rows are RAW and Libraries, and configured Library roots appear under Libraries
+
+#### Scenario: Select a hierarchy path
+- **WHEN** a user selects a RAW or Library root or descendant
+- **THEN** the matching inventory appears, path context is shown in the hierarchy or breadcrumb, and the canonical identity is preserved
+
+#### Scenario: Configure a Library from the hierarchy
+- **WHEN** the user activates the Asset Library plus control
+- **THEN** it opens the existing Libraries configuration route without creating a new configuration operation
+
+### Requirement: Storage summary stays at the bottom of the hierarchy
+
+The shared hierarchy MUST show the existing storage summary below its scrollable tree in both RAW and Library workspaces. It MUST reuse the existing `['runtime-state']` query/cache and `RuntimeState.disks` fields, preserve loading, error, unavailable, and known-zero values, and keep the footer reachable without covering hierarchy content. Backend disk evidence MUST identify the actual measured path and volume. Configured destinations sharing a volume MUST display one filesystem capacity entry with their roles and paths; distinct volumes MUST remain separate. Inaccessible paths MUST remain unavailable and MUST NOT inherit statistics from a parent directory. Used/free values describe filesystem capacity, not media-folder size. The behavior MUST NOT add filesystem scans or duplicate polling.
+
+#### Scenario: Show storage in both workspaces
+- **WHEN** the user browses RAW or a configured Library
+- **THEN** the hierarchy footer presents the existing storage summary while the tree scrolls independently
+
+#### Scenario: Preserve storage availability states
+- **WHEN** RuntimeState is loading, fails, omits controlled disks, or reports known zero capacity
+- **THEN** the footer presents the corresponding state and does not substitute guessed capacity
+
+#### Scenario: Count a shared filesystem once
+- **WHEN** configured Library destinations and Workspace paths resolve to the same filesystem volume
+- **THEN** the footer shows one capacity entry with both roles and does not duplicate or sum its capacity
+
+#### Scenario: Keep distinct and unavailable destinations truthful
+- **WHEN** destinations resolve to different volumes or a configured path cannot be measured
+- **THEN** each distinct volume is shown separately and the failed destination is labeled unavailable without parent-directory statistics
+
+### Requirement: The hierarchy is resizable, persistent, and keyboard accessible
+
+The hierarchy panel MUST default to approximately 262px and allow resizing from approximately 220px to 390px. Its width MUST persist locally across reloads and MUST be clamped to the supported range when a stored value is outside it. The resize control, tree selection, expansion, and collapse MUST be keyboard-operable and expose accessible names, focus, and state.
+
+#### Scenario: Resize and restore the hierarchy
+- **WHEN** a user resizes the hierarchy and reloads Assets
+- **THEN** the bounded width is restored locally without changing RAW or Library selection
+
+#### Scenario: Recover from an invalid stored width
+- **WHEN** stored hierarchy width is out of range or unreadable
+- **THEN** the hierarchy uses a supported width and remains usable
+
+#### Scenario: Navigate and resize without a pointer
+- **WHEN** a user operates the tree and separator by keyboard or assistive technology
+- **THEN** navigation, expansion, selection, resizing, and visible focus remain available
+
+### Requirement: Summary cards use canonical counts
+
+The right workspace MUST show Total Assets, Processing, Completed, and Needs Review. Counts MUST come from existing canonical inventory and lifecycle data. The summary cards MUST NOT invent trends or percentages. The separate hierarchy storage summary MUST use only valid existing RuntimeState disk totals and available byte values.
+
+#### Scenario: Show summary data
+- **WHEN** the Assets workspace is rendered
+- **THEN** the four summary cards show current supported counts without fabricated trend or percentage values
+
+### Requirement: Existing filters are compact and controls stay above the list
+
+Provenance, media area, validation, original, workflow, and attention filters MUST remain available through a compact Filter popover rather than a large legacy header. Historical or missing-sync details MUST NOT dominate the browsing workspace. The compact control row immediately above the list MUST show asset count and supported Sync and Filter actions. Sort MUST remain disabled with an explanation until safe sorting support exists.
+
+#### Scenario: Open inventory filters
+- **WHEN** the user activates Filter
+- **THEN** the existing filter controls open in a compact popover and preserve their query behavior
+
+#### Scenario: Use inventory controls
+- **WHEN** the control row is displayed
+- **THEN** count, Sync, and Filter are available, while unsupported Sort is visibly disabled
+
+### Requirement: Library and RAW inventories share a compact, filename-only table
+
+The Library inventory MUST display these columns in order: Asset, Advisor, Status, Codec, Resolution, Encoder, Duration, Bitrate, HDR/SDR, Size, Modified, Actions. The RAW inventory MUST display: Asset, Advisor, Status, Source / Codec, Resolution, Duration, Bitrate, Size, Modified, Actions. The Asset cell MUST contain the filename only; selected hierarchy and breadcrumb context provide the path. The Asset column MUST preserve identifying episode/title prefixes in long filenames and expose the complete filename through existing accessible text and title behavior. Rows MUST use compact bordered surfaces with subtle hover and selected states, thin borders, and intentional subtle vertical separation (approximately 4px). Inventory data MUST come from the existing shared inventory and persisted summaries.
+
+#### Scenario: Render Library columns
+- **WHEN** a configured Library is selected
+- **THEN** all twelve Library columns appear in the specified order
+
+#### Scenario: Render RAW columns
+- **WHEN** a RAW source or descendant is selected
+- **THEN** all ten RAW columns appear in the specified order with source/preparation semantics
+
+#### Scenario: Show filename without its path
+- **WHEN** an asset row is rendered below a nested path
+- **THEN** its Asset cell contains only the filename
+
+#### Scenario: Show missing summaries honestly
+- **WHEN** an inventory summary is absent
+- **THEN** its cell communicates the unavailable value without row-specific probing or fetching
+
+### Requirement: Inventory selection stays visible-page scoped and capability-gated
+
+When bulk selection is available, the table header MUST expose an accessible checkbox with checked, indeterminate, and disabled states. Select-all MUST operate only on visible eligible rows on the current page. RAW selection MUST preserve its existing nonmissing identified-asset rules. Library row checkboxes MUST be enabled only for assets eligible for the existing lifecycle-safe delete/return operation according to canonical provenance and `AssetInfo` action capabilities. Clicking a row MAY open its selected detail; it MUST NOT change bulk selection. Clicking a checkbox MUST change bulk selection without changing the active detail. The path toolbar selected count MUST represent checkbox-selected rows only, and its existing Safe Delete action MUST receive only those selected eligible assets.
+
+#### Scenario: Select eligible Library assets
+- **WHEN** Library inventory rows include mixed eligible and ineligible lifecycle capabilities
+- **THEN** only eligible rows can be selected, and header select-all selects the visible eligible subset
+
+#### Scenario: Keep active detail separate from bulk selection
+- **WHEN** a user opens a Library asset detail without checking its row
+- **THEN** the selected count remains zero; checking the row changes the count without replacing the active detail
+
+#### Scenario: Safely delete selected assets
+- **WHEN** the user chooses Delete selected
+- **THEN** only checkbox-selected eligible targets are passed to the existing lifecycle-safe operation
+
+### Requirement: Advisor uses canonical cached evidence and an explicit visual state
+
+The Advisor cell MUST use `AdvisorResponse.score` when that canonical result is already available. An available score MUST be shown compactly with a short subtle indicator whose fill represents that score. Not evaluated and unavailable/off states MUST use distinct neutral text and MUST NOT show a score indicator. Rendering a row, expanding a path, sorting, paginating, refreshing, or selecting a tree node MUST NOT start Advisor evaluation. Explicit path-level Advisor MAY populate the existing row cache key `['advisor', 'asset-row', asset.path, profileId]` through its existing action owner.
+
+#### Scenario: Display a cached Advisor score
+- **WHEN** an asset has a cached canonical Advisor result
+- **THEN** its score and compact indicator appear without another evaluation
+
+#### Scenario: Distinguish empty and unavailable Advisor states
+- **WHEN** no result exists or Advisor is off/unavailable
+- **THEN** restrained text identifies the actual state and no fake score bar appears
+
+#### Scenario: Keep Advisor evaluation explicit
+- **WHEN** rows render or a group expands
+- **THEN** no Advisor evaluation runs
+
+#### Scenario: Run path Advisor explicitly
+- **WHEN** the user starts the supported path Advisor action
+- **THEN** the existing workflow runs and available responses populate the existing row cache without row-level evaluation
+
+### Requirement: Path decisions use canonical effective configuration
+
+Assets V2 path Queue and explicit Advisor actions MUST use the existing batched effective-configuration resolver instead of guessing a profile or checking only direct path assignments. The resolver's Asset > Path > LogicalGroup > SourceGroup > Global/default precedence and distinct INHERIT, DISABLED, profile, and Custom states MUST remain intact. Explicit Advisor MUST evaluate only the asset's effective video profile and populate `['advisor', 'asset-row', asset.path, profileId]`. Inherited destination changes MUST refresh compact-row Queue availability through the existing configuration cache invalidation without opening Asset Info or remounting the row. Individual Queue MUST submit backend-valid Custom, override, audio, and track configurations through the existing resolver path; when a destination or capability is unavailable, the UI MUST expose an explicit existing-pattern reason and the backend MUST remain authoritative. At claim preparation, an assignment-backed individual Library job with inherited destination MAY use the asset's own Library only when the queued Library ID matches the record's Library ID and the asset path is inside that Library's configured destination. Explicit destination values take precedence; DISABLED and invalid states MUST still block. Folder Queue/Preflight keeps its existing RAW, Unprocessed eligibility and explicit effective-destination requirements.
+
+#### Scenario: Recompute inherited destination eligibility
+- **WHEN** an inherited effective destination changes
+- **THEN** compact row Queue availability updates from refreshed canonical configuration without remounting the row
+
+#### Scenario: Queue valid Custom configuration
+- **WHEN** an individual asset has a backend-valid Custom or override configuration
+- **THEN** Queue submits the canonical configuration for backend resolution instead of silently returning
+
+#### Scenario: Explain unavailable Queue
+- **WHEN** effective destination or capability evidence does not allow Queue
+- **THEN** the existing row UX explains why Queue is unavailable
+
+#### Scenario: Freeze the inherited Library destination safely
+- **WHEN** an assignment-backed individual Queue job reaches claim preparation with INHERIT destination and its queued Library matches the asset record's Library
+- **THEN** preparation uses that Library only when the asset path is inside its destination, and freezes the resolved Library into the immutable job configuration
+
+#### Scenario: Keep folder Preflight lifecycle scope
+- **WHEN** folder Queue/Preflight receives a non-Unprocessed Library record or lacks an effective destination for a RAW candidate
+- **THEN** existing lifecycle blockers and destination requirements remain in force
+
+### Requirement: Path actions share the breadcrumb bar and existing handlers
+
+Path actions MUST remain separate from the row overflow menu and MUST render with the current breadcrumb as one compact visual bar. Routine actions MUST be grouped first; supported destructive path operations MUST follow a visual separator. Selected count MUST appear only when operationally useful. The toolbar MUST reuse existing callbacks, dialogs, mutations, capability checks, and lifecycle-safe behavior rather than duplicate eligibility logic.
+
+For applicable Library paths, show supported Scan, Queue/Preflight, Move path, Rename path, Delete selected, and Delete path actions. The current migration flow targets an existing destination Library. It does not provide a distinct additional Library “Move to library” operation. For supported RAW path/title contexts, expose the existing Scan, explicit Advisor, Queue/Preflight, Configure Path, and Move to library actions when their current owners and eligibility allow them. The title/source presentation MUST NOT imply that every path action is supported at every hierarchy level. RAW path Rename is unsupported by the current path action contract and MUST NOT be fabricated. Destructive delete/return actions MUST remain capability- and lifecycle-gated.
+
+#### Scenario: Keep breadcrumb and path actions in one bar
+- **WHEN** a path or title context is selected
+- **THEN** its breadcrumb and applicable path actions appear inside one compact path toolbar
+
+#### Scenario: Use supported Library path actions
+- **WHEN** an eligible Library path is selected
+- **THEN** supported Scan, Queue/Preflight, migration, rename, selected deletion, and path deletion actions reuse current owners
+
+#### Scenario: Use supported RAW path actions
+- **WHEN** an eligible RAW path or title is selected
+- **THEN** a logical RAW title toolbar exposes its supported Scan, explicit Advisor, Configure Path, and Move to library actions, while Queue/Preflight appears only for a RAW path scope that has an existing queue owner
+
+#### Scenario: Keep destructive actions separate and safe
+- **WHEN** delete or return operations are available
+- **THEN** they are visually separated and continue to use existing confirmations, capabilities, and lifecycle protections
+
+### Requirement: V2 path action feedback remains visible
+
+Queue/Preflight, publish-as-is, migration, and bulk operations started from Assets V2 MUST show their pending and terminal success or failure feedback in the visible workspace, outside any hidden legacy action block. Bulk results MUST identify partial failure when the backend response includes per-item errors. Feedback MUST reflect actual mutation results and MUST NOT imply success before the existing action completes.
+
+#### Scenario: Report path action outcomes
+- **WHEN** Queue/Preflight, publish-as-is, or migration completes or fails
+- **THEN** its pending state and resulting success or failure are visible in the V2 workspace
+
+#### Scenario: Report partial bulk results
+- **WHEN** a bulk operation returns a mixture of successful and failed items
+- **THEN** the visible toolbar reports the partial result and failed item details
+
+### Requirement: Row overflow actions remain canonical and capability-gated
+
+Each compact Library or RAW row MUST expose supported asset operations through one accessible `(...)` menu. Library actions MAY include Open in Lab, Asset Info, Assign Profile, Test Encode, Queue/replacement, Advisor, and lifecycle-safe Delete. RAW actions MAY include Scan/Analyze, Advisor, Assign Profile, Queue, Open in Lab, Test Encode, Asset Info, and supported Delete. Each action MUST route through its existing dialog, Queue flow, capability contract, and backend eligibility owner. Unsupported actions MUST NOT be invented, and destructive actions MUST be visually separated in the menu.
+
+#### Scenario: Open compact row actions
+- **WHEN** the user opens a row overflow menu
+- **THEN** only actions supported for that asset and context are offered or enabled
+
+#### Scenario: Preserve existing action behavior
+- **WHEN** an action is selected
+- **THEN** the existing route/dialog/workflow executes and backend capability or eligibility remains authoritative
+
+#### Scenario: Route RAW selected detail actions to its asset
+- **WHEN** Play, Assign Profile, Test Encode, or More is activated from a RAW selected detail panel
+- **THEN** the existing action owner receives the active RAW asset and its lifecycle/capability gates apply
+
+### Requirement: Selected Asset context remains attached below the scrolling inventory
+
+When an asset is selected, a collapsible detail context MUST remain below the table and attached to the bottom of the Assets workspace while rows scroll. It MUST remain outside the inventory scroll region and MUST NOT become a modal or persistent right panel. The expanded desktop composition MUST match the current landscape preview (approximately 16:10) with centered Play overlay and duration badge at left; a two-line filename and caller-provided path/series context to its right; compact category/library, container, size, resolution, and codec facts; a single Status pill plus Profile, Subtitles, Duration, and Modified context; a compact technical group containing Video codec, Resolution, and Audio summary with small technical icons; and a distinct right-side action column for Assign Profile, Test Encode, and More. Thin navy separators, compact typography, and restrained action styles MUST follow the current reference. Values may repeat between quick facts, context, and technical grouping where issue #208 or the current reference calls for them. Metadata MUST come from the asset, existing profile assignment/effective configuration, and selected persisted snapshot; unavailable or unevaluated values MUST remain explicit, and known zero values MUST remain distinguishable from missing values. Actions MUST delegate to the selected row's existing action owners with their capability and eligibility gates. Play MUST remain integrated into the artwork. The panel MUST remain compact, use a subtle collapse control, and leave a compact accessible reopen affordance. Narrow layouts MUST reflow without page-level overflow.
+
+#### Scenario: Show selected asset context
+- **WHEN** the user selects a RAW or Library asset
+- **THEN** its collapsible context appears outside the inventory scroll region with filename/path, supported quick facts, state/profile/subtitle/audio context, and compact MEDIA facts
+
+#### Scenario: Delegate selected asset actions to existing owners
+- **WHEN** the user activates Assign Profile, Test Encode, or More in selected context
+- **THEN** the selected row's existing action owner opens the existing dialog or menu and its capability/eligibility gate controls whether the action is enabled
+
+#### Scenario: Keep unavailable selected detail honest
+- **WHEN** the selected snapshot or profile evidence is unavailable
+- **THEN** the context shows a loading or unavailable/inherited state without fabricating metadata or probing other rows
+
+#### Scenario: Keep context visible while rows scroll
+- **WHEN** a long inventory list scrolls
+- **THEN** selected detail remains attached below the list and does not cover its final rows
+
+#### Scenario: Collapse and reopen selected context
+- **WHEN** the user collapses the panel
+- **THEN** filename and an accessible reopen control remain visible, and reopening restores the detail panel
+
+#### Scenario: Play through artwork
+- **WHEN** the user activates the preview artwork
+- **THEN** the existing preview opens through one integrated Play control with the available duration badge
+
+### Requirement: Artwork uses only supported sources
+
+The current `Asset`/API contract and selected-detail caller expose no supported per-asset Jellyfin artwork or MVForge thumbnail URL. Until such a source reaches the caller, the selected context MUST show the generic placeholder. It MUST NOT use source-preview playback as artwork or generate artwork, preview, or row-level image requests. If a supported source is provided in a separately scoped change, the intended fallback order is Jellyfin artwork, existing MVForge artwork/thumbnail, then placeholder; this order is not implemented by the current contract.
+
+#### Scenario: Render the current artwork placeholder
+- **WHEN** no supported artwork URL exists
+- **THEN** the generic placeholder appears without generation or unrelated sample art
+
+### Requirement: Return published-as-is rechecks lifecycle before moving files
+
+The backend return-to-RAW operation MUST re-read the active Publish-as-is lifecycle record and check active Queue, scan/snapshot, and maintenance work under the existing asset mutation synchronization immediately before moving the file and sidecars. Stale UI state MUST NOT bypass this recheck. A blocked return MUST leave the published file in place.
+
+#### Scenario: Block return when active work exists
+- **WHEN** active Queue or other guarded asset work begins after a client observed eligibility
+- **THEN** the backend blocks Return Published-as-is before moving files and reports the lifecycle reason
+
+### Requirement: Legacy Analysis Decisions live under Assets Settings
+
+The main Assets browsing workspace MUST NOT render Legacy Analysis Decisions. Existing records MUST remain available in the Assets-specific Settings section and MUST NOT be deleted or rewritten as part of this visual change.
+
+#### Scenario: Browse Assets without legacy decision history
+- **WHEN** the main Assets workspace is displayed
+- **THEN** Legacy Analysis Decisions are absent from normal browsing controls
+
+#### Scenario: Reach preserved decisions from Settings
+- **WHEN** the user opens Assets Settings
+- **THEN** existing Legacy Analysis Decisions remain reachable from their collapsible section
+
+### Requirement: Sidebar branding and navigation retain the current shell
+
+The global navigation MUST use the current Figma's angular teal-to-blue-to-violet MVForge brand mark without a purple tile or Play glyph, while preserving existing routes, sections, responsive navigation, and active-state behavior. The current frame has no pin/unpin affordance; desktop hover expansion and the mobile drawer remain the current navigation behavior. The implementation MUST NOT copy the Figma Make framework or dependencies.
+
+#### Scenario: Navigate from the branded shell
+- **WHEN** the Assets route is opened from desktop or mobile navigation
+- **THEN** MVForge branding appears and existing navigation destinations and behavior remain available
+
+### Requirement: The workspace remains responsive and avoids row-specific work
+
+The hierarchy, toolbar, table, and selected context MUST remain usable at desktop, laptop, and narrow widths. Dense table columns MAY scroll horizontally inside the table surface; hierarchy and selected context MUST reflow or stack without page-level horizontal overflow. Inventory display MUST reuse existing queries and persisted evidence and MUST NOT add per-row ffprobe, filesystem scans, Advisor evaluation, snapshot generation, preview generation, duplicate inventory requests, or unbounded row-specific fetching. Deeper supported detail MAY remain lazy for the selected asset only.
+
+#### Scenario: Browse a large inventory
+- **WHEN** many assets are present
+- **THEN** only the inventory region scrolls vertically while summary, toolbar, controls, hierarchy, and selected context remain outside that scroll region
+
+#### Scenario: Load deeper selected detail
+- **WHEN** the user selects one asset with deeper persisted detail
+- **THEN** only that asset's detail may be fetched lazily
+
+#### Scenario: Use a narrow viewport
+- **WHEN** the viewport cannot fit the desktop two-column workspace
+- **THEN** hierarchy and content reflow, and all table/action/detail content remains reachable without page-level horizontal overflow
+
+## Explicit visual/action gaps
+
+- Safe sorting is not currently supported; Sort is disabled.
+- No existing per-asset artwork URL reaches the selected-detail caller; the placeholder remains until a supported source is exposed.
+- Library migration is one existing Move path operation; the current backend does not expose a separate second Library “Move to library” operation.
+- RAW path Rename has no current supported owner.
+- The running visual-review server returned pre-change storage role objects without `volumeId`, `measuredPath`, or `filesystems`; populated RAW and Library screenshots therefore could not visually confirm shared-volume merging until that server loads the current backend. Local filesystem metadata and backend tests confirm the configured Library and Workspace paths share a device.
+- The reference's account/avatar, notifications, and trend figures lack current product contracts and are not fabricated. Storage uses only existing RuntimeState disk data; it adds no scan or polling behavior.
+- Some source/title scopes do not own every path action shown by the reference; only actions with existing owners are shown.

@@ -1315,42 +1315,6 @@ func (h QueueHandler) resolveProfileAssignments(input *QueueJobInput) (models.JS
 	return resolution, nil
 }
 
-func effectiveConfigurationWithFrozenAssetDefaults(effective EffectiveAssetConfiguration, resolution models.JSONMap) EffectiveAssetConfiguration {
-	for mediaType, raw := range resolution {
-		if mediaType != "video" && mediaType != "audio" && mediaType != "tracks" {
-			continue
-		}
-		value := settingProfileObject(raw)
-		if value == nil || !strings.EqualFold(strings.TrimSpace(workerStringValue(value["source"])), assetDefaultsGlobalSource) {
-			continue
-		}
-		frozen := AssetConfigurationValue{
-			Selection:      strings.TrimSpace(workerStringValue(value["selection"])),
-			Source:         assetDefaultsGlobalSource,
-			SourceKey:      workerStringValue(value["targetPath"]),
-			SourceName:     "Asset Defaults",
-			VideoProfileID: uint(workerNumberValue(value["videoProfileId"], 0)),
-			ProfileKey:     workerStringValue(value["profileKey"]),
-			ProfileData:    models.JSONMap(settingProfileObject(value["profileData"])),
-		}
-		switch mediaType {
-		case "video":
-			if effective.Video.Source == "" || strings.EqualFold(effective.Video.Source, assetDefaultsGlobalSource) {
-				effective.Video = frozen
-			}
-		case "audio":
-			if effective.Audio.Source == "" || strings.EqualFold(effective.Audio.Source, assetDefaultsGlobalSource) {
-				effective.Audio = frozen
-			}
-		case "tracks":
-			if effective.Tracks.Source == "" || strings.EqualFold(effective.Tracks.Source, assetDefaultsGlobalSource) {
-				effective.Tracks = frozen
-			}
-		}
-	}
-	return effective
-}
-
 func resolveProfileAssignmentsFromEffective(input *QueueJobInput, effective EffectiveAssetConfiguration) models.JSONMap {
 	resolution := models.JSONMap{}
 	for mediaType, value := range map[string]AssetConfigurationValue{"video": effective.Video, "audio": effective.Audio, "tracks": effective.Tracks} {
