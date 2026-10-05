@@ -533,9 +533,29 @@ func TestAssetDefaultsQueueFreezeAndRetryIgnoreChangedSettings(t *testing.T) {
 	if err := db.Create(&library).Error; err != nil {
 		t.Fatal(err)
 	}
-	profile := authoritativeTestProfile()
-	if err := db.Create(&profile).Error; err != nil {
+	profileA := authoritativeTestProfile()
+	profileA.Name = "Global Defaults Profile A"
+	profileA.ProfileVersion = 31
+	if err := db.Create(&profileA).Error; err != nil {
 		t.Fatal(err)
+	}
+	profileB := authoritativeTestProfile()
+	profileB.Name = "Global Defaults Profile B"
+	profileB.ProfileVersion = 32
+	if err := db.Create(&profileB).Error; err != nil {
+		t.Fatal(err)
+	}
+	profileC := authoritativeTestProfile()
+	profileC.Name = "Global Defaults Profile C"
+	profileC.ProfileVersion = 33
+	if err := db.Create(&profileC).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []models.Profile{profileA, profileB, profileC} {
+		var persisted models.Profile
+		if err := db.First(&persisted, profile.ID).Error; err != nil || persisted.Disabled {
+			t.Fatalf("Global Defaults test profile must be persisted and enabled: profile=%#v persisted=%#v err=%v", profile, persisted, err)
+		}
 	}
 	record := models.AssetRecord{Path: mediaPath, SourcePath: mediaPath, LogicalGroupPath: sourceDir, FileName: filepath.Base(mediaPath), Status: "unprocessed"}
 	if err := db.Create(&record).Error; err != nil {
@@ -560,23 +580,31 @@ func TestAssetDefaultsQueueFreezeAndRetryIgnoreChangedSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldDefaults := defaultAssetDefaultsValue()
-	oldDefaults["video"].(models.JSONMap)["custom"] = models.JSONMap{"videoCodec": "copy"}
+	oldDefaults["video"].(models.JSONMap)["source"] = "profile"
+	oldDefaults["video"].(models.JSONMap)["profileId"] = profileA.ID
 	oldDefaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "eng"}
 	if err := db.Create(&models.AppSetting{Key: assetDefaultsSettingKey, Value: oldDefaults}).Error; err != nil {
 		t.Fatal(err)
 	}
+	normalizedA, warningsA, err := loadAssetDefaultsWithWarnings(db)
+	if err != nil || len(warningsA) != 0 || assetDefaultsDomain(normalizedA, "video")["profileId"] != profileA.ID {
+		t.Fatalf("Global Defaults Profile A did not normalize: defaults=%#v warnings=%v err=%v", normalizedA, warningsA, err)
+	}
 	job := createAssignmentBackedQueueIntent(t, db, mediaPath, library.ID)
-	queuedVideo := settingProfileObject(job.ProfileResolution["video"])
 	queuedAudio := settingProfileObject(job.ProfileResolution["audio"])
-	if workerStringValue(settingProfileObject(queuedVideo["profileData"])["videoCodec"]) != "copy" || workerStringValue(settingProfileObject(queuedAudio["profileData"])["preferredDefaultLanguage"]) != "eng" || queueJobFreezeComplete(job) {
+	if workerStringValue(settingProfileObject(queuedAudio["profileData"])["preferredDefaultLanguage"]) != "eng" || queueJobFreezeComplete(job) {
 		t.Fatalf("Queue did not retain lightweight defaults A as the original intent: %#v", job)
 	}
-
 	newDefaults := defaultAssetDefaultsValue()
-	newDefaults["video"].(models.JSONMap)["custom"] = models.JSONMap{"videoCodec": "copy"}
+	newDefaults["video"].(models.JSONMap)["source"] = "profile"
+	newDefaults["video"].(models.JSONMap)["profileId"] = profileB.ID
 	newDefaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "jpn"}
 	if err := db.Model(&models.AppSetting{}).Where("key = ?", assetDefaultsSettingKey).Update("value", newDefaults).Error; err != nil {
 		t.Fatal(err)
+	}
+	normalizedB, warningsB, err := loadAssetDefaultsWithWarnings(db)
+	if err != nil || len(warningsB) != 0 || assetDefaultsDomain(normalizedB, "video")["profileId"] != profileB.ID {
+		t.Fatalf("Global Defaults Profile B did not normalize before claim: defaults=%#v warnings=%v err=%v", normalizedB, warningsB, err)
 	}
 
 	markQueueJobClaimed(t, db, &job)
@@ -584,13 +612,17 @@ func TestAssetDefaultsQueueFreezeAndRetryIgnoreChangedSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	preparedVideo := settingProfileObject(prepared.ProfileResolution["video"])
 	preparedAudio := settingProfileObject(prepared.ProfileResolution["audio"])
-	if workerStringValue(settingProfileObject(preparedVideo["profileData"])["videoCodec"]) != "copy" || workerStringValue(settingProfileObject(preparedAudio["profileData"])["preferredDefaultLanguage"]) != "jpn" {
-		t.Fatalf("claim preparation did not resolve current defaults: %#v", prepared.ProfileResolution)
+	if prepared.ProfileID != profileB.ID || assetDefaultsIntSetting(prepared.ProfileSnapshot["profileId"], 0) != int(profileB.ID) || workerStringValue(prepared.ProfileSnapshot["profileName"]) != profileB.Name || workerStringValue(settingProfileObject(preparedAudio["profileData"])["preferredDefaultLanguage"]) != "jpn" {
+		t.Fatalf("claim preparation did not resolve current defaults: profileID=%d snapshot=%#v resolution=%#v", prepared.ProfileID, prepared.ProfileSnapshot, prepared.ProfileResolution["video"])
+	}
+	var frozenPlan models.ExecutionPlan
+	if prepared.ActiveExecutionPlanID == nil || db.First(&frozenPlan, *prepared.ActiveExecutionPlanID).Error != nil || frozenPlan.ProfileVersion != profileB.ProfileVersion {
+		t.Fatalf("execution plan did not use Global Defaults Profile B: plan=%#v job=%#v", frozenPlan, prepared)
 	}
 	changedDefaults := defaultAssetDefaultsValue()
-	changedDefaults["video"].(models.JSONMap)["custom"] = models.JSONMap{"videoCodec": "copy"}
+	changedDefaults["video"].(models.JSONMap)["source"] = "profile"
+	changedDefaults["video"].(models.JSONMap)["profileId"] = profileC.ID
 	changedDefaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "spa"}
 	if err := db.Model(&models.AppSetting{}).Where("key = ?", assetDefaultsSettingKey).Update("value", changedDefaults).Error; err != nil {
 		t.Fatal(err)
@@ -601,8 +633,12 @@ func TestAssetDefaultsQueueFreezeAndRetryIgnoreChangedSettings(t *testing.T) {
 	}
 	againVideo := settingProfileObject(again.ProfileResolution["video"])
 	againAudio := settingProfileObject(again.ProfileResolution["audio"])
-	if workerStringValue(settingProfileObject(againVideo["profileData"])["videoCodec"]) != "copy" || workerStringValue(settingProfileObject(againAudio["profileData"])["preferredDefaultLanguage"]) != "jpn" {
+	if again.ProfileID != profileB.ID || assetDefaultsIntSetting(again.ProfileSnapshot["profileId"], 0) != int(profileB.ID) || workerStringValue(again.ProfileSnapshot["profileName"]) != profileB.Name || workerStringValue(settingProfileObject(againAudio["profileData"])["preferredDefaultLanguage"]) != "jpn" || workerStringValue(settingProfileObject(againVideo["profileData"])["profileName"]) == profileC.Name {
 		t.Fatalf("retry changed frozen Asset Defaults resolution: %#v", again.ProfileResolution)
+	}
+	var retryPlan models.ExecutionPlan
+	if again.ActiveExecutionPlanID == nil || db.First(&retryPlan, *again.ActiveExecutionPlanID).Error != nil || retryPlan.ProfileVersion != profileB.ProfileVersion {
+		t.Fatalf("retry changed the frozen execution plan from Profile B: plan=%#v job=%#v", retryPlan, again)
 	}
 }
 

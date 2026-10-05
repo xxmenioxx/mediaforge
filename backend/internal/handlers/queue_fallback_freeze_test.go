@@ -168,7 +168,7 @@ func TestAssignmentBackedAudioOnlyQueueFreezesFallbackProfile(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			db, path, library, fallback := queueCreationFreezeFixture(t, false)
-			assignedVideoProfile := fallback
+			assignedVideoProfile := models.Profile{}
 			if test.videoSelection == "profile" {
 				assignedVideoProfile = authoritativeTestProfile()
 				assignedVideoProfile.Name = "Assignment-backed full encode profile"

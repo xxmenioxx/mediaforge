@@ -1046,7 +1046,7 @@ function LibraryAssetTable({
                         srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)}
                         pathTrackProfile={trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey)}
                         assetCategories={assetCategories}
-                        groupCategory={libraryEffectiveCategory(effective, firstCategory(group.pathMetadata?.categories))}
+                        groupCategory={firstCategory(group.pathMetadata?.categories) || group.libraryName || 'Unavailable'}
                         confidenceEnabled={!getDisabledConfidencePaths(settings).includes(group.path)}
                         groupProfileId={effective?.video.videoProfileId ?? 0}
                         effectiveConfiguration={effective}
@@ -3773,9 +3773,9 @@ function AssetRow({
     }
   }, [autoOpenAssetInfo]);
   const conversionDraft = assetEditDraft.conversion;
-  const category = mode === 'library'
-    ? libraryEffectiveCategory(effectiveConfiguration, firstCategory(assetEditDraft.metadata.categories) || groupCategory, 'Disabled')
-    : firstCategory(assetEditDraft.metadata.categories) || groupCategory;
+  // Asset Info edits persisted metadata. Effective scope configuration is
+  // projected separately for the read-only Selected Asset category label.
+  const metadataCategory = firstCategory(assetEditDraft.metadata.categories) || groupCategory;
   const authoritativeAssetEdit = assetInfoEditDocument(assetMetadata, normalizeAssetConversionOverride(asset.conversion));
 
   useEffect(() => {
@@ -5293,7 +5293,7 @@ async function generateExternalSubtitle(
         {mode === 'unprocessed' && !compactUnprocessed ? (
           <TableCell sx={{ minWidth: 180 }}>
             <AssetCategorySelect
-              value={category}
+              value={metadataCategory}
               options={assetCategories}
               onChange={saveAssetCategory}
               label="Category"
@@ -6049,7 +6049,7 @@ async function generateExternalSubtitle(
                         </Stack>
                       </Grid>
                       <Grid size={{ xs: 12, md: 6 }}>
-                        <AssetCategorySelect value={category} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked || asset.missing} />
+                        <AssetCategorySelect value={metadataCategory} options={assetCategories} onChange={saveAssetCategory} label="Category" size="small" disabled={rowLocked || asset.missing} />
                       </Grid>
                     </Grid>
                     {renameAsset.isError ? <Alert severity="warning">{renameAsset.error.message}</Alert> : null}

@@ -3003,6 +3003,10 @@ func workerNumberValue(value interface{}, fallback float64) float64 {
 		return float64(typed)
 	case int64:
 		return float64(typed)
+	case uint:
+		return float64(typed)
+	case uint64:
+		return float64(typed)
 	case json.Number:
 		parsed, err := typed.Float64()
 		if err == nil {
