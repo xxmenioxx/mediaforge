@@ -378,13 +378,20 @@ type jellyfinClient struct {
 
 var sharedJellyfinClient = jellyfinClient{http: sharedJellyfinHTTPClient}
 
+func setJellyfinAuthorization(request *http.Request, token string) {
+	if token == "" {
+		return
+	}
+	request.Header.Set("Authorization", `MediaBrowser Token="`+token+`"`)
+}
+
 func (client jellyfinClient) getJSON(ctx context.Context, settings jellyfinSettings, endpoint string, authenticated bool, output any) (*http.Response, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, settings.BaseURL+endpoint, nil)
 	if err != nil {
 		return nil, &jellyfinFailure{class: "invalid_configuration", permanent: true}
 	}
-	if authenticated && settings.APIToken != "" {
-		request.Header.Set("X-Emby-Token", settings.APIToken)
+	if authenticated {
+		setJellyfinAuthorization(request, settings.APIToken)
 	}
 	request.Header.Set("Accept", "application/json")
 	response, err := client.http.Do(request)
@@ -414,7 +421,7 @@ func (client jellyfinClient) post(ctx context.Context, settings jellyfinSettings
 	if err != nil {
 		return &jellyfinFailure{class: "invalid_configuration", permanent: true}
 	}
-	request.Header.Set("X-Emby-Token", settings.APIToken)
+	setJellyfinAuthorization(request, settings.APIToken)
 	response, err := client.http.Do(request)
 	if err != nil {
 		return classifyJellyfinError(err)

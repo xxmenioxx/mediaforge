@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -222,8 +225,16 @@ func TestJellyfinDiscoveryUsesExactIDsAndRefreshUsesExplicitBroadScan(t *testing
 	var scanRequests int
 	var itemRequests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("X-Emby-Token"); r.URL.Path != "/System/Info/Public" && got != "test-secret" {
-			t.Errorf("authorization header=%q", got)
+		if r.URL.Path == "/System/Info/Public" {
+			if r.Header.Get("Authorization") != "" || r.Header.Get("X-Emby-Token") != "" {
+				t.Errorf("public server info request was authenticated")
+			}
+		} else if r.Header.Get("Authorization") != `MediaBrowser Token="test-secret"` || r.Header.Get("X-Emby-Token") != "" {
+			t.Errorf("authenticated Jellyfin request used unexpected headers")
+			if r.URL.Path == "/Library/MediaFolders" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
 		}
 		switch r.URL.Path {
 		case "/System/Info/Public":
@@ -251,6 +262,76 @@ func TestJellyfinDiscoveryUsesExactIDsAndRefreshUsesExplicitBroadScan(t *testing
 	failure := coordinator.refreshBatch(context.Background(), settings, []models.JellyfinIntegrationOutcome{{MappedLibraryID: "Library-Exact/42"}})
 	if failure != nil || scanRequests != 1 || itemRequests != 0 {
 		t.Fatalf("failure=%v server scans=%d item refreshes=%d", failure, scanRequests, itemRequests)
+	}
+}
+
+func TestJellyfinAuthFailureRedactsSecretFromErrorsLogsAndOutcomes(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogOutput := log.Writer()
+	previousSlog := slog.Default()
+	log.SetOutput(&logs)
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer log.SetOutput(previousLogOutput)
+	defer slog.SetDefault(previousSlog)
+
+	secret := "credential-never-log-this"
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			logStart := logs.Len()
+			authorizationSeen := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/Library/MediaFolders" {
+					http.NotFound(w, r)
+					return
+				}
+				authorizationSeen = r.Header.Get("Authorization") == `MediaBrowser Token="`+secret+`"` && r.Header.Get("X-Emby-Token") == ""
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte("authorization rejected: " + secret))
+			}))
+			defer server.Close()
+			settings := defaultJellyfinSettings()
+			settings.Enabled, settings.BaseURL, settings.APIToken = true, server.URL, secret
+
+			_, failure := sharedJellyfinClient.discoverLibraries(context.Background(), settings)
+			if !authorizationSeen || failure == nil || failure.class != "invalid_credentials" {
+				t.Fatal("Jellyfin authentication failure was not classified correctly")
+			}
+			if strings.Contains(failure.Error(), secret) || strings.Contains(failure.Error(), "authorization rejected") {
+				t.Fatal("Jellyfin error exposed credentials or the remote response body")
+			}
+
+			db := jellyfinIntegrationDB(t)
+			addJellyfinLibrary(t, db, 15, t.TempDir())
+			settings.DebounceSeconds = 0
+			settings.Mappings = []jellyfinLibraryMapping{{MVForgeLibraryID: 15, JellyfinLibraryID: "library-15"}}
+			saveJellyfinSettings(t, db, settings)
+			sourceKey := testEncodeJellyfinSourceKey(jellyfinReasonTestReady, 88)
+			if err := recordJellyfinTrigger(db, jellyfinTrigger{Reason: jellyfinReasonTestReady, SourceKey: sourceKey, LibraryID: 15, TestEncodeID: 88}); err != nil {
+				t.Fatal(err)
+			}
+			coordinator := &JellyfinCoordinator{db: db}
+			coordinator.processDue()
+			if !authorizationSeen {
+				t.Fatal("Jellyfin refresh did not use the modern authorization header")
+			}
+			var outcome models.JellyfinIntegrationOutcome
+			if err := db.First(&outcome, "source_key = ?", sourceKey).Error; err != nil {
+				t.Fatal(err)
+			}
+			if outcome.Status != jellyfinStatusPermanentError || outcome.FailureClass != "invalid_credentials" {
+				t.Fatal("persisted authentication outcome was not classified correctly")
+			}
+			persisted, err := json.Marshal(outcome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(persisted), secret) || strings.Contains(string(persisted), "authorization rejected") {
+				t.Fatal("persisted Jellyfin outcome exposed credentials or the remote response body")
+			}
+			if strings.Contains(logs.String()[logStart:], secret) {
+				t.Fatal("Jellyfin authentication failure logs exposed credentials")
+			}
+		})
 	}
 }
 
