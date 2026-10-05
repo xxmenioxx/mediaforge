@@ -41,7 +41,7 @@ jobs:
           mkdir "$RUNNER_TEMP/mvforge-release-evidence"
           cp "$RUNNER_TEMP/mvforge-corresponding-source.tar.gz" "$RUNNER_TEMP/mvforge-release-evidence/"
           cp "$RUNNER_TEMP/mvforge-corresponding-source.tar.gz.sha256" "$RUNNER_TEMP/mvforge-release-evidence/"
-          cp LICENSE NOTICE LEGAL.md THIRD_PARTY_LICENSES.md "$RUNNER_TEMP/mvforge-release-evidence/"
+          cp LICENSE NOTICE LEGAL.md THIRD_PARTY_LICENSES.md THIRD_PARTY_NOTICES.md "$RUNNER_TEMP/mvforge-release-evidence/"
           cp backend/licenses/GO_MODULES.txt backend/licenses/GO_LICENSES.csv backend/licenses/GO_LICENSES.md "$RUNNER_TEMP/mvforge-release-evidence/"
           cp frontend/licenses/npm/inventory.json "$RUNNER_TEMP/mvforge-release-evidence/frontend-NPM-inventory.json"
           cp frontend/licenses/npm/THIRD_PARTY_NOTICES.txt "$RUNNER_TEMP/mvforge-release-evidence/frontend-THIRD_PARTY_NOTICES.txt"

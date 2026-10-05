@@ -55,7 +55,9 @@ entire component's licensing from package metadata alone.
   lockfile closure, versions, package-declared license fields, and notice file
   paths. `THIRD_PARTY_NOTICES.txt` bundles the discovered license and notice
   texts for those packages. The generator fails release validation when any
-  entry lacks license metadata or bundled license text.
+  entry lacks license metadata or bundled license text. The root
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) records the direct frontend
+  dependency audit and UI/template provenance policy.
 - Release images: the workflow requests BuildKit SBOM and provenance
   attestations and checks those predicates against each exact image digest.
   Current post-cleanup API lookups confirm both formerly hosted GHCR packages

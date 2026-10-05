@@ -35,7 +35,9 @@ workflows used before an asset reaches MVForge remain outside MVForge's scope.
 ## Third-party software
 
 MVForge uses and redistributes third-party software under its respective
-licenses. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+licenses. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the wider
+inventory and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the direct
+frontend dependency and UI provenance audit.
 
 The MVForge source code is licensed under the Apache License, Version 2.0.
 See [LICENSE](LICENSE).
