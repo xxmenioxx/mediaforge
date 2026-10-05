@@ -2,41 +2,34 @@ import {
   Alert,
   Box,
   Button,
-  Card,
-  CardActionArea,
-  CardContent,
   Chip,
   FormControlLabel,
   Grid,
   LinearProgress,
+  Link as MuiLink,
+  Paper,
   Stack,
   Switch,
   Table,
   TableBody,
   TableCell,
   TableHead,
+  TableContainer,
   TableRow,
   Typography,
 } from '@mui/material';
-import FolderIcon from '@mui/icons-material/Folder';
-import InventoryIcon from '@mui/icons-material/Inventory';
-import MemoryIcon from '@mui/icons-material/Memory';
-import QueueIcon from '@mui/icons-material/Queue';
-import TaskAltIcon from '@mui/icons-material/TaskAlt';
-import WarningIcon from '@mui/icons-material/Warning';
-import { useEffect, useMemo, useState } from 'react';
-import { Link as RouterLink, useNavigate } from 'react-router-dom';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { Link as RouterLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
-import { MetricCard } from '../components/MetricCard';
 import { PageContent, PageHeader } from '../components/PageHeader';
 import { RuntimeStorageSummary } from '../components/RuntimeStorageSummary';
-import type { QueueJob, RuntimeState } from '../api/types';
+import { WorkspaceFeedback } from '../components/WorkspaceFeedback';
+import type { AssetInventory, Library, Profile, QueueJob, RuntimeState } from '../api/types';
 import { liveRuntimeStateLabel } from '../utils/runtimeStatePresentation';
 import { buildDashboardSummary } from '../utils/dashboardSummary';
 
 export function DashboardPage() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [autoRefreshRuntime, setAutoRefreshRuntime] = useState(false);
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
@@ -48,8 +41,12 @@ export function DashboardPage() {
   });
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const runtime = useQuery({ queryKey: ['runtime-state'], queryFn: api.runtimeState });
-  const refreshRuntime = useMutation({ mutationFn: api.refreshRuntime, onSuccess: (state) => queryClient.setQueryData(['runtime-state'], state) });
+  const refreshRuntime = useMutation({
+    mutationFn: api.refreshRuntime,
+    onSuccess: (state) => queryClient.setQueryData(['runtime-state'], state),
+  });
   const refreshRuntimeNow = refreshRuntime.mutate;
+
   useEffect(() => {
     if (!autoRefreshRuntime) return undefined;
     const timer = window.setInterval(() => refreshRuntimeNow(), 30_000);
@@ -60,234 +57,65 @@ export function DashboardPage() {
     () => buildDashboardSummary(libraries.data ?? [], jobs.data ?? [], assets.data),
     [libraries.data, jobs.data, assets.data],
   );
+  const hasUnavailableData = libraries.isError || profiles.isError || jobs.isError || assets.isError;
 
   return (
     <>
       <PageHeader eyebrow="Operations" title="Dashboard">
-        <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 820 }}>
-          Live overview of libraries, unprocessed media, queue progress, and worker activity.
-        </Typography>
+        Live view of media processing, inventory, and host capacity.
       </PageHeader>
       <PageContent>
-        {(libraries.isError || profiles.isError || jobs.isError || assets.isError) && (
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            Some operational data is unavailable. Check the backend container and configured library paths.
+        {hasUnavailableData ? (
+          <Alert severity="warning" variant="outlined" sx={{ mb: 1.5 }}>
+            Some Dashboard data is temporarily unavailable. Available summaries are still shown.
           </Alert>
-        )}
+        ) : null}
 
-        <Grid container spacing={1.5} sx={{ mb: 1.5 }}>
-          <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-            <MetricCard label="Libraries" value={libraries.data?.length ?? 0} icon={<FolderIcon />} to="/libraries" />
-          </Grid>
-          <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-            <MetricCard label="Unprocessed Assets" value={summary.unprocessedAssets} icon={<InventoryIcon />} to="/assets" />
-          </Grid>
-          <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-            <MetricCard label="Active Jobs" value={summary.activeJobs} icon={<QueueIcon />} to="/queue?status=queued" />
-          </Grid>
-          <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-            <MetricCard label="Workers Active" value={summary.activeWorkers} icon={<MemoryIcon />} to="/workers" />
-          </Grid>
-        </Grid>
-
-        <RuntimeOverviewPanel snapshot={runtime.data} loading={runtime.isLoading} error={runtime.isError || refreshRuntime.isError} refreshing={refreshRuntime.isPending} autoRefresh={autoRefreshRuntime} onAutoRefresh={setAutoRefreshRuntime} onRefresh={() => refreshRuntime.mutate()} />
-
-        <Grid container spacing={2} sx={{ mt: 2 }}>
+        <Grid container spacing={1.5} alignItems="flex-start" data-testid="dashboard-overview-grid">
           <Grid size={{ xs: 12, lg: 7 }}>
-            <Card sx={{ height: '100%' }}>
-              <CardContent>
-                <Stack spacing={2}>
-                  <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
-                    <Stack>
-                      <Typography variant="h2">Pipeline Progress</Typography>
-                      <Typography color="text.secondary" variant="body2">
-                        Completed jobs compared with all jobs currently known by MVForge.
-                      </Typography>
-                    </Stack>
-                    <Chip label={`${summary.completedPercent}% complete`} color="success" sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }} />
-                  </Stack>
-                  <LinearProgress variant="determinate" value={summary.completedPercent} sx={{ height: 10, borderRadius: 1 }} />
-                  <Grid container spacing={1.5}>
-                    <PipelineChip label="Queued" value={summary.queuedJobs} color="warning" to="/queue?status=queued" />
-                    <PipelineChip label="Running" value={summary.runningJobs} color="primary" to="/queue?status=running" />
-                    <PipelineChip label="Completed" value={summary.completedJobs} color="success" to="/queue?status=completed" />
-                    <PipelineChip label="Failed" value={summary.failedJobs} color="error" to="/queue?status=failed" />
-                  </Grid>
-                </Stack>
-              </CardContent>
-            </Card>
+            <RuntimeOverviewPanel
+              snapshot={runtime.data}
+              loading={runtime.isLoading}
+              error={runtime.isError || refreshRuntime.isError}
+              refreshing={refreshRuntime.isPending}
+              autoRefresh={autoRefreshRuntime}
+              onAutoRefresh={setAutoRefreshRuntime}
+              onRefresh={() => refreshRuntime.mutate()}
+              workersValue={jobs.isLoading ? 'Loading' : jobs.isError ? 'Unavailable' : String(summary.activeWorkers)}
+            />
           </Grid>
 
           <Grid size={{ xs: 12, lg: 5 }}>
-            <Card sx={{ height: '100%' }}>
-              <CardContent>
-                <Stack spacing={2}>
-                  <Stack>
-                    <Typography variant="h2">Asset Coverage</Typography>
-                    <Typography color="text.secondary" variant="body2">
-                      Current filesystem inventory grouped by processing state.
-                    </Typography>
-                  </Stack>
-                  <Stack spacing={1.2}>
-                    <CoverageRow label="Library Assets" value={summary.libraryAssets} total={summary.totalAssets} color="primary" />
-                    <CoverageRow label="Converted" value={summary.convertedAssets} total={summary.libraryAssets} color="success" />
-                    <CoverageRow label="Unverified in Library" value={summary.unverifiedAssets} total={summary.libraryAssets} color="warning" />
-                    <CoverageRow label="Unprocessed" value={summary.unprocessedAssets} total={summary.totalAssets} color="warning" />
-                    <CoverageRow label="Processing" value={summary.processingAssets} total={summary.totalAssets} color="primary" />
-                    <CoverageRow label="Needs review" value={summary.needsReviewAssets} total={summary.totalAssets} color="warning" />
-                    <CoverageRow label="Validation review" value={summary.validationReviewAssets} total={summary.totalAssets} color="warning" />
-                    <CoverageRow label="Publication blocked" value={summary.publicationBlockedAssets} total={summary.libraryAssets} color="error" />
-                    <CoverageRow label="Originals archived" value={summary.originalsArchived} total={summary.libraryAssets} color="success" />
-                  </Stack>
-                </Stack>
-              </CardContent>
-            </Card>
+            <QueueSummaryPanel
+              loading={jobs.isLoading}
+              error={jobs.isError}
+              jobs={jobs.data}
+              summary={summary}
+            />
           </Grid>
-        </Grid>
 
-        <Grid container spacing={2} sx={{ mt: 1 }}>
           <Grid size={{ xs: 12, lg: 7 }}>
-            <Card>
-              <CardContent>
-                <Stack spacing={2}>
-                  <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-                    <Typography variant="h2">Recent Activity</Typography>
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <Button component={RouterLink} to="/queue" size="small" variant="outlined">
-                        View More
-                      </Button>
-                      <TaskAltIcon color="primary" />
-                    </Stack>
-                  </Stack>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Media</TableCell>
-                        <TableCell>Status</TableCell>
-                        <TableCell>Progress</TableCell>
-                        <TableCell>Updated</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {summary.recentJobs.map((job) => (
-                        <TableRow
-                          key={job.id}
-                          hover
-                          onClick={() => navigate(`/queue?status=${job.status}&job=${job.id}`)}
-                          sx={{ cursor: 'pointer' }}
-                        >
-                          <TableCell sx={{ maxWidth: 280 }}>
-                            <Typography noWrap fontWeight={700}>
-                              {fileNameFromPath(job.mediaPath)}
-                            </Typography>
-                            <Typography color="text.secondary" variant="body2" noWrap>
-                              {job.outputPath || job.mediaPath}
-                            </Typography>
-                          </TableCell>
-                          <TableCell>
-                            <Chip label={job.status} color={statusColor(job.status)} size="small" />
-                          </TableCell>
-                          <TableCell sx={{ minWidth: 140 }}>
-                            <Stack spacing={0.5}>
-                              <Typography color="text.secondary" variant="body2">
-                                {job.progress}%
-                              </Typography>
-                              <LinearProgress variant="determinate" value={job.progress} />
-                              <Typography color="text.secondary" variant="body2">
-                                {jobTiming(job).elapsed ? `Elapsed ${jobTiming(job).elapsed}` : 'Not started'}
-                                {jobTiming(job).eta ? ` · ETA ${jobTiming(job).eta}` : ''}
-                              </Typography>
-                            </Stack>
-                          </TableCell>
-                          <TableCell>{formatDate(job.updatedAt)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                  {!jobs.isLoading && summary.recentJobs.length === 0 ? (
-                    <Alert severity="info">No queue activity yet. Queue an asset from the Assets page to begin.</Alert>
-                  ) : null}
-                </Stack>
-              </CardContent>
-            </Card>
+            <AssetLibraryPanel libraries={libraries} profiles={profiles} assets={assets} summary={summary} />
           </Grid>
 
           <Grid size={{ xs: 12, lg: 5 }}>
-            <Card sx={{ mb: 2 }}>
-              <CardContent>
-                <Stack spacing={2}>
-                  <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-                    <Typography variant="h2">Batch Backlog</Typography>
-                    <QueueIcon color="primary" />
-                  </Stack>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Batch</TableCell>
-                        <TableCell>Remaining</TableCell>
-                        <TableCell>Progress</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {summary.batchSummaries.map((batch) => (
-                        <TableRow
-                          key={batch.id}
-                          hover
-                          onClick={() => navigate(`/queue?batch=${encodeURIComponent(batch.id)}`)}
-                          sx={{ cursor: 'pointer' }}
-                        >
-                          <TableCell>
-                            <Typography fontWeight={700} noWrap>
-                              {batch.name}
-                            </Typography>
-                          </TableCell>
-                          <TableCell>{batch.remaining}</TableCell>
-                          <TableCell sx={{ minWidth: 140 }}>
-                            <Stack spacing={0.5}>
-                              <Typography color="text.secondary" variant="body2">
-                                {batch.completed}/{batch.total}
-                              </Typography>
-                              <LinearProgress variant="determinate" value={batch.percent} />
-                            </Stack>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                  {summary.batchSummaries.length === 0 ? (
-                    <Typography color="text.secondary">Folder batches will appear here after queueing a folder.</Typography>
-                  ) : null}
-                </Stack>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent>
-                <Stack spacing={2}>
-                  <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-                    <Typography variant="h2">Attention</Typography>
-                    <WarningIcon color={summary.attentionItems.length ? 'warning' : 'success'} />
-                  </Stack>
-                  <Stack spacing={1}>
-                    {summary.attentionItems.map((item) => (
-                      <Alert
-                        key={item.message}
-                        severity="warning"
-                        action={
-                          <Button color="inherit" component={RouterLink} to={item.to} size="small">
-                            Open
-                          </Button>
-                        }
-                      >
-                        {item.message}
-                      </Alert>
-                    ))}
-                    {summary.attentionItems.length === 0 ? (
-                      <Alert severity="success">No immediate setup or queue issues detected.</Alert>
-                    ) : null}
-                  </Stack>
-                </Stack>
-              </CardContent>
-            </Card>
+            <RuntimeStorageSummary snapshot={runtime.data} loading={runtime.isLoading} error={runtime.isError} compact />
+          </Grid>
+
+          <Grid size={{ xs: 12, lg: 7 }}>
+            <RecentActivityPanel loading={jobs.isLoading} error={jobs.isError} jobs={jobs.data} recentJobs={summary.recentJobs} />
+          </Grid>
+
+          <Grid size={{ xs: 12, lg: 5 }}>
+            <Stack spacing={1.5}>
+              <BatchBacklogPanel loading={jobs.isLoading} error={jobs.isError} hasData={jobs.data !== undefined} batches={summary.batchSummaries} />
+              <AttentionPanel
+                loading={libraries.isLoading || jobs.isLoading || assets.isLoading}
+                error={(libraries.isError && libraries.data === undefined) || (jobs.isError && jobs.data === undefined) || (assets.isError && assets.data === undefined)}
+                items={summary.attentionItems}
+              />
+              <AdvisorPanel />
+            </Stack>
           </Grid>
         </Grid>
       </PageContent>
@@ -295,132 +123,368 @@ export function DashboardPage() {
   );
 }
 
-function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefresh, onAutoRefresh, onRefresh }: { snapshot?: RuntimeState; loading: boolean; error: boolean; refreshing: boolean; autoRefresh: boolean; onAutoRefresh: (enabled: boolean) => void; onRefresh: () => void }) {
+type DashboardSummary = ReturnType<typeof buildDashboardSummary>;
+type DashboardQueryState<T> = {
+  data: T | undefined;
+  isLoading: boolean;
+  isError: boolean;
+};
+
+function DashboardPanel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+  const headingId = 'dashboard-' + title.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-heading';
+  return (
+    <Paper component="section" aria-labelledby={headingId} variant="outlined" sx={{ minWidth: 0, p: { xs: 1.25, sm: 1.5 }, bgcolor: 'background.paper' }}>
+      <Stack spacing={1.25} sx={{ minWidth: 0 }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'flex-start', sm: 'center' }} justifyContent="space-between" spacing={0.75}>
+          <Typography id={headingId} component="h2" sx={{ fontSize: (theme) => theme.mvforge.typography.sectionHeading, fontWeight: 700, lineHeight: 1.3 }}>
+            {title}
+          </Typography>
+          {action}
+        </Stack>
+        {children}
+      </Stack>
+    </Paper>
+  );
+}
+
+function SummaryLink({ label, value, to }: { label: string; value: string; to: string }) {
+  return (
+    <Button
+      component={RouterLink}
+      to={to}
+      variant="text"
+      size="small"
+      color="inherit"
+      aria-label={label + ': ' + value}
+      sx={{ minWidth: 0, width: '100%', justifyContent: 'space-between', gap: 1, textTransform: 'none', px: 1 }}
+    >
+      <Typography variant="body2" color="text.secondary" noWrap>{label}</Typography>
+      <Typography component="span" variant="body2" fontWeight={700} sx={{ flexShrink: 0 }}>{value}</Typography>
+    </Button>
+  );
+}
+
+function StatusCount({ label, value, color }: { label: string; value: number; color: 'default' | 'primary' | 'success' | 'warning' | 'error' }) {
+  return <Chip size="small" variant="outlined" color={color} label={label + ' · ' + value} />;
+}
+
+function countValue<T>(query: DashboardQueryState<T>, count: (data: T) => number) {
+  if (query.data === undefined && query.isLoading) return 'Loading';
+  if (query.data === undefined) return 'Unavailable';
+  return String(count(query.data));
+}
+
+function QueueSummaryPanel({ loading, error, jobs, summary }: {
+  loading: boolean;
+  error: boolean;
+  jobs: QueueJob[] | undefined;
+  summary: DashboardSummary;
+}) {
+  return (
+    <DashboardPanel title="Queue" action={<Button component={RouterLink} to="/queue" size="small">Open Queue</Button>}>
+      {jobs ? (
+        <>
+          {jobs.length === 0 ? <WorkspaceFeedback kind="empty">No queue activity yet.</WorkspaceFeedback> : null}
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' }, gap: 0.75 }}>
+            {[
+              { label: 'Queued', value: summary.queuedJobs, status: 'queued', color: 'warning' as const },
+              { label: 'Running', value: summary.runningJobs, status: 'running', color: 'primary' as const },
+              { label: 'Completed', value: summary.completedJobs, status: 'completed', color: 'success' as const },
+              { label: 'Failed', value: summary.failedJobs, status: 'failed', color: 'error' as const },
+              { label: 'Canceled', value: summary.canceledJobs, status: 'canceled', color: 'inherit' as const },
+            ].map((item) => (
+              <Button
+                key={item.status}
+                component={RouterLink}
+                to={'/queue?status=' + item.status}
+                variant="outlined"
+                size="small"
+                color={item.color}
+                aria-label={item.label + ': ' + item.value + ' jobs'}
+                sx={{ minWidth: 0, justifyContent: 'space-between', textTransform: 'none', px: 1 }}
+              >
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </Button>
+            ))}
+          </Box>
+          <Stack spacing={0.5}>
+            <LinearProgress aria-label="Queue completion" variant="determinate" value={summary.completedPercent} sx={{ height: 4, borderRadius: 1 }} />
+            <Typography variant="caption" color="text.secondary">
+              {summary.completedPercent}% of {jobs.length} known jobs completed
+            </Typography>
+          </Stack>
+        </>
+      ) : loading ? <WorkspaceFeedback kind="loading">Loading queue summary…</WorkspaceFeedback> : error ? <WorkspaceFeedback kind="error">Queue data is unavailable.</WorkspaceFeedback> : <WorkspaceFeedback kind="empty">Queue summary is not available yet.</WorkspaceFeedback>}
+    </DashboardPanel>
+  );
+}
+
+function AssetLibraryPanel({ libraries, profiles, assets, summary }: {
+  libraries: DashboardQueryState<Library[]>;
+  profiles: DashboardQueryState<Profile[]>;
+  assets: DashboardQueryState<AssetInventory>;
+  summary: DashboardSummary;
+}) {
+  const assetQueryCount = (count: number) => assets.data ? String(count) : assets.isLoading ? 'Loading' : 'Unavailable';
+  return (
+    <DashboardPanel title="Assets & libraries" action={<Button component={RouterLink} to="/assets" size="small">Open Assets</Button>}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(4, minmax(0, 1fr))' }, gap: 0.5 }}>
+        <SummaryLink label="Libraries" value={countValue(libraries, (data) => data.length)} to="/libraries" />
+        <SummaryLink label="Profiles" value={countValue(profiles, (data) => data.length)} to="/profiles" />
+        <SummaryLink label="Unprocessed" value={assetQueryCount(summary.unprocessedAssets)} to="/assets" />
+        <SummaryLink label="Library assets" value={assetQueryCount(summary.libraryAssets)} to="/assets" />
+      </Box>
+
+      {assets.data ? (
+        <>
+          <Typography variant="caption" color="text.secondary">{summary.totalAssets} assets in the current inventory</Typography>
+          <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+            <StatusCount label="Converted" value={summary.convertedAssets} color="success" />
+            <StatusCount label="Unverified" value={summary.unverifiedAssets} color="warning" />
+            <StatusCount label="Processing" value={summary.processingAssets} color="primary" />
+            <StatusCount label="Needs review" value={summary.needsReviewAssets} color="warning" />
+            <StatusCount label="Validation review" value={summary.validationReviewAssets} color="warning" />
+            <StatusCount label="Publication blocked" value={summary.publicationBlockedAssets} color="error" />
+            <StatusCount label="Originals archived" value={summary.originalsArchived} color="success" />
+          </Stack>
+        </>
+      ) : assets.isLoading ? <WorkspaceFeedback kind="loading">Loading asset inventory…</WorkspaceFeedback> : assets.isError ? <WorkspaceFeedback kind="error">Asset inventory is unavailable.</WorkspaceFeedback> : <WorkspaceFeedback kind="empty">Asset inventory is not available yet.</WorkspaceFeedback>}
+    </DashboardPanel>
+  );
+}
+
+
+function RuntimeOverviewPanel({ snapshot, loading, error, refreshing, autoRefresh, onAutoRefresh, onRefresh, workersValue }: {
+  snapshot?: RuntimeState;
+  loading: boolean;
+  error: boolean;
+  refreshing: boolean;
+  autoRefresh: boolean;
+  onAutoRefresh: (enabled: boolean) => void;
+  onRefresh: () => void;
+  workersValue: string;
+}) {
   const encoders = snapshot ? Object.entries(snapshot.encoders ?? {}) : [];
-  const ramPercent = snapshot && snapshot.totalMemoryBytes > 0 ? Math.round((snapshot.availableMemoryBytes / snapshot.totalMemoryBytes) * 100) : 0;
-  const cpuLoadPercent = snapshot && snapshot.cpuCores > 0
-    ? Math.min(100, Math.round((snapshot.cpuLoad1 / snapshot.cpuCores) * 100))
-    : 0;
-  const gpuUsagePercent = snapshot?.gpuUsageAvailable ? Math.round(snapshot.gpuUsagePercent) : 0;
-  return <Card><CardContent><Stack spacing={2}>
-    <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1.5}>
-      <Stack><Typography variant="h2">Runtime & Host</Typography><Typography color="text.secondary" variant="body2">Effective scheduler policy and the host capabilities used for dispatch decisions.</Typography></Stack>
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}><FormControlLabel control={<Switch checked={autoRefresh} onChange={(event) => onAutoRefresh(event.target.checked)} />} label="Auto refresh · 30s" /><Button variant="outlined" onClick={onRefresh} disabled={refreshing}>{refreshing ? 'Detecting…' : 'Refresh host'}</Button><Button component={RouterLink} to="/settings?section=runtime" variant="contained">Runtime settings</Button></Stack>
-    </Stack>
-    {error ? <Alert severity="warning">Runtime diagnostics are temporarily unavailable.</Alert> : loading ? <Typography color="text.secondary">Loading runtime diagnostics…</Typography> : snapshot ? <>
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Chip color="primary" label={`Effective: ${snapshot.selectedProfile}`} /><Chip label={`Detected: ${snapshot.recommendedProfile}`} /><Chip label={`Preferred: ${snapshot.preferredProfile || 'auto'}`} />{snapshot.appliedOverrides.length ? <Chip color="warning" label={`${snapshot.appliedOverrides.length} overrides`} /> : null}<Chip label={`${snapshot.os}/${snapshot.architecture}`} /><Chip label={`${snapshot.cpuCores} CPU cores · load ${snapshot.cpuLoad1.toFixed(2)}`} /><Chip color={snapshot.onBattery ? 'warning' : 'default'} label={snapshot.batteryPresent ? `${snapshot.onBattery ? 'Battery' : 'AC'} ${snapshot.batteryPercent}%` : `Power ${snapshot.powerSource}`} /></Stack>
-      <Grid container spacing={2}>
-        <Grid size={{ xs: 12, md: 4 }}>
-          <Stack spacing={2}>
-            <Stack spacing={0.75}>
-              <Stack direction="row" justifyContent="space-between">
-                <Typography fontWeight={700}>Available RAM</Typography>
-                <Typography color="text.secondary">{formatBytes(snapshot.availableMemoryBytes)} / {formatBytes(snapshot.totalMemoryBytes)}</Typography>
-              </Stack>
-              <LinearProgress variant="determinate" value={ramPercent} color={ramPercent < 25 ? 'warning' : 'success'} />
-              <Typography color="text.secondary" variant="caption">{ramPercent}% available</Typography>
-            </Stack>
-            <Stack spacing={0.75}>
-              <Stack direction="row" justifyContent="space-between">
-                <Typography fontWeight={700}>CPU load</Typography>
-                <Typography color="text.secondary">{snapshot.cpuLoad1.toFixed(2)} / {snapshot.cpuCores} cores</Typography>
-              </Stack>
-              <LinearProgress variant="determinate" value={cpuLoadPercent} color={cpuLoadPercent >= 85 ? 'error' : cpuLoadPercent >= 65 ? 'warning' : 'success'} />
-              <Typography color="text.secondary" variant="caption">{cpuLoadPercent}% normalized 1-minute load</Typography>
-            </Stack>
-            <Stack spacing={0.75}>
-              <Stack direction="row" justifyContent="space-between">
-                <Typography fontWeight={700}>GPU usage</Typography>
-                <Typography color="text.secondary">
-                  {snapshot.gpuUsageAvailable ? `${gpuUsagePercent}%` : snapshot.gpuDetected ? 'Unavailable' : 'Not detected'}
-                </Typography>
-              </Stack>
-              <LinearProgress
-                variant="determinate"
-                value={gpuUsagePercent}
-                color={gpuUsagePercent >= 90 ? 'error' : gpuUsagePercent >= 70 ? 'warning' : 'success'}
-              />
-              <Typography color="text.secondary" variant="caption">
-                {snapshot.gpuUsageAvailable
-                  ? `Media ${Math.round(snapshot.gpuMediaUsagePercent)}% · Render ${Math.round(snapshot.gpuRenderUsagePercent)}%`
-                  : 'GPU engine counters are not exposed by this host/runtime.'}
-              </Typography>
+  const ramPercent = snapshot && snapshot.totalMemoryBytes > 0 ? Math.round((snapshot.availableMemoryBytes / snapshot.totalMemoryBytes) * 100) : undefined;
+  const cpuLoadPercent = snapshot && snapshot.cpuCores > 0 ? Math.min(100, Math.round((snapshot.cpuLoad1 / snapshot.cpuCores) * 100)) : undefined;
+  const gpuUsagePercent = snapshot?.gpuUsageAvailable ? Math.round(snapshot.gpuUsagePercent) : undefined;
+  const cpuColor = cpuLoadPercent === undefined ? 'primary' : cpuLoadPercent >= 85 ? 'error' : cpuLoadPercent >= 65 ? 'warning' : 'success';
+  const ramColor = ramPercent !== undefined && ramPercent < 25 ? 'warning' : 'success';
+  const gpuColor = gpuUsagePercent === undefined ? 'primary' : gpuUsagePercent >= 90 ? 'error' : gpuUsagePercent >= 70 ? 'warning' : 'success';
+
+  return (
+    <DashboardPanel
+      title="System & runtime"
+      action={
+        <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'flex-start', sm: 'center' }} spacing={0.5} useFlexGap flexWrap="wrap">
+          <FormControlLabel control={<Switch size="small" checked={autoRefresh} onChange={(event) => onAutoRefresh(event.target.checked)} />} label="Auto refresh every 30s" />
+          <Button variant="outlined" size="small" onClick={onRefresh} disabled={refreshing}>{refreshing ? 'Detecting…' : 'Refresh host'}</Button>
+          <Button component={RouterLink} to="/settings?section=runtime" size="small">Runtime settings</Button>
+        </Stack>
+      }
+    >
+      {error ? <WorkspaceFeedback kind="error">Runtime diagnostics are temporarily unavailable.</WorkspaceFeedback> : loading ? <WorkspaceFeedback kind="loading">Loading runtime diagnostics…</WorkspaceFeedback> : snapshot ? (
+        <Stack spacing={1}>
+          <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+            <Chip size="small" color="primary" label={'Effective: ' + snapshot.selectedProfile} />
+            <Chip size="small" variant="outlined" label={'Detected: ' + snapshot.recommendedProfile} />
+            <Chip size="small" variant="outlined" label={'Preferred: ' + (snapshot.preferredProfile || 'auto')} />
+            {snapshot.appliedOverrides.length ? <Chip size="small" color="warning" label={snapshot.appliedOverrides.length + ' overrides'} /> : null}
+            <Chip size="small" variant="outlined" label={snapshot.os + '/' + snapshot.architecture} />
+            <Chip size="small" variant="outlined" label={snapshot.batteryPresent ? (snapshot.onBattery ? 'Battery ' : 'AC ') + snapshot.batteryPercent + '%' : 'Power ' + snapshot.powerSource} color={snapshot.onBattery ? 'warning' : 'default'} />
+            <Button component={RouterLink} to="/workers" size="small" variant="text" color="inherit" sx={{ textTransform: 'none' }}>
+              Workers active on jobs: {workersValue}
+            </Button>
+          </Stack>
+
+          <Grid container spacing={1}>
+            <Grid size={{ xs: 12, sm: 4 }}>
+              <RuntimeMeter label="Available RAM" value={formatBytes(snapshot.availableMemoryBytes) + ' / ' + formatBytes(snapshot.totalMemoryBytes)} detail={ramPercent === undefined ? 'Capacity unavailable' : ramPercent + '% available'} percent={ramPercent} color={ramColor} />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 4 }}>
+              <RuntimeMeter label="CPU load" value={snapshot.cpuLoad1.toFixed(2) + ' / ' + snapshot.cpuCores + ' cores'} detail={cpuLoadPercent === undefined ? 'Load unavailable' : cpuLoadPercent + '% normalized 1-minute load'} percent={cpuLoadPercent} color={cpuColor} />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 4 }}>
+              <RuntimeMeter label="GPU usage" value={gpuUsagePercent === undefined ? snapshot.gpuDetected ? 'Unavailable' : 'Not detected' : gpuUsagePercent + '%'} detail={gpuUsagePercent === undefined ? 'GPU engine usage is not exposed' : 'Media ' + Math.round(snapshot.gpuMediaUsagePercent) + '% · Render ' + Math.round(snapshot.gpuRenderUsagePercent) + '%'} percent={gpuUsagePercent} color={gpuColor} />
+            </Grid>
+          </Grid>
+
+          <Stack spacing={0.5}>
+            <Typography variant="caption" fontWeight={700}>FFmpeg encoders</Typography>
+            <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+              {encoders.map(([name, encoder]) => (
+                <Chip
+                  key={name}
+                  size="small"
+                  color={encoder.usable ? 'success' : 'default'}
+                  variant={encoder.usable ? 'filled' : 'outlined'}
+                  label={name + ' · ' + (encoder.usable ? 'usable' : encoder.listed ? 'disabled' : 'not found')}
+                  title={encoder.reason || (encoder.usable ? 'Passed capability check' : 'Unavailable')}
+                />
+              ))}
+              {!encoders.length ? <Chip size="small" color="warning" label="No encoder diagnostics available" /> : null}
             </Stack>
           </Stack>
-        </Grid>
-        <Grid size={{ xs: 12, md: 4 }}><RuntimeStorageSummary snapshot={snapshot} loading={loading} error={error} /></Grid>
-        <Grid size={{ xs: 12, md: 4 }}><Stack spacing={0.75}><Typography fontWeight={700}>FFmpeg encoders</Typography><Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>{encoders.map(([name, encoder]) => <Chip key={name} size="small" color={encoder.usable ? 'success' : 'default'} variant={encoder.usable ? 'filled' : 'outlined'} label={`${name} · ${encoder.usable ? 'usable' : encoder.listed ? 'disabled' : 'not found'}`} title={encoder.reason || (encoder.usable ? 'Passed capability check' : 'Unavailable')} />)}{!encoders.length ? <Chip size="small" color="warning" label="No encoder diagnostics available" /> : null}</Stack><Typography color="text.secondary" variant="caption">Hover an encoder to see its capability diagnostic.</Typography></Stack></Grid>
-      </Grid>
-      <Typography color="text.secondary" variant="caption">{liveRuntimeStateLabel(snapshot.detectedAt, formatDate)}</Typography>
-    </> : null}
-  </Stack></CardContent></Card>;
-}
-
-function PipelineChip({
-  label,
-  value,
-  color,
-  to,
-}: {
-  label: string;
-  value: number;
-  color: 'warning' | 'primary' | 'success' | 'error';
-  to: string;
-}) {
-  const content = (
-    <Stack spacing={0.75}>
-      <Chip label={label} color={color} size="small" sx={{ alignSelf: 'flex-start' }} />
-      <Typography variant="h2">{value}</Typography>
-    </Stack>
-  );
-
-  return (
-    <Grid size={{ xs: 6, sm: 3 }}>
-      <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
-        <CardActionArea component={RouterLink} to={to} sx={{ borderRadius: 1 }}>
-          {content}
-        </CardActionArea>
-      </Box>
-    </Grid>
-  );
-}
-
-function CoverageRow({
-  label,
-  value,
-  total,
-  color,
-}: {
-  label: string;
-  value: number;
-  total: number;
-  color: 'primary' | 'success' | 'warning' | 'error';
-}) {
-  const percent = total > 0 ? Math.round((value / total) * 100) : 0;
-  return (
-    <Stack spacing={0.6}>
-      <Stack direction="row" justifyContent="space-between" spacing={1}>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Chip label={label} color={color} size="small" />
-          <Typography color="text.secondary" variant="body2">
-            {value} assets
-          </Typography>
+          <Typography variant="caption" color="text.secondary">{liveRuntimeStateLabel(snapshot.detectedAt, formatDate)}</Typography>
         </Stack>
-        <Typography color="text.secondary" variant="body2">
-          {percent}%
-        </Typography>
+      ) : <WorkspaceFeedback kind="empty">No runtime snapshot is available yet.</WorkspaceFeedback>}
+    </DashboardPanel>
+  );
+}
+
+function RuntimeMeter({ label, value, detail, percent, color }: {
+  label: string;
+  value: string;
+  detail: string;
+  percent?: number;
+  color: 'success' | 'warning' | 'error' | 'primary';
+}) {
+  return (
+    <Stack spacing={0.35} sx={{ minWidth: 0 }}>
+      <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={0.5}>
+        <Typography variant="caption" color="text.secondary">{label}</Typography>
+        <Typography variant="caption" fontWeight={700} noWrap>{value}</Typography>
       </Stack>
-      <LinearProgress variant="determinate" value={percent} color={color} />
+      {percent !== undefined ? <LinearProgress aria-label={label + ' meter'} variant="determinate" value={percent} color={color} sx={{ height: 3, borderRadius: 1 }} /> : null}
+      <Typography variant="caption" color="text.secondary">{detail}</Typography>
     </Stack>
   );
 }
 
+function RecentActivityPanel({ loading, error, jobs, recentJobs }: {
+  loading: boolean;
+  error: boolean;
+  jobs: QueueJob[] | undefined;
+  recentJobs: QueueJob[];
+}) {
+  return (
+    <DashboardPanel title="Recent activity" action={<Button component={RouterLink} to="/queue" size="small">View more</Button>}>
+      {jobs?.length ? (
+        <TableContainer sx={{ maxWidth: '100%', overflowX: 'auto' }}>
+          <Table size="small" sx={{ minWidth: 560 }}>
+            <TableHead>
+              <TableRow>
+                <TableCell>Media</TableCell>
+                <TableCell>Status</TableCell>
+                <TableCell>Progress</TableCell>
+                <TableCell>Updated</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {recentJobs.map((job) => {
+                const timing = jobTiming(job);
+                return (
+                  <TableRow key={job.id}>
+                    <TableCell sx={{ maxWidth: 260 }}>
+                      <MuiLink component={RouterLink} to={'/queue?status=' + job.status + '&job=' + job.id} underline="hover" fontWeight={700} noWrap>
+                        {fileNameFromPath(job.mediaPath)}
+                      </MuiLink>
+                      <Typography color="text.secondary" variant="caption" display="block" noWrap title={job.outputPath || job.mediaPath}>
+                        {job.outputPath || job.mediaPath}
+                      </Typography>
+                    </TableCell>
+                    <TableCell><Chip label={job.status} color={statusColor(job.status)} size="small" /></TableCell>
+                    <TableCell sx={{ minWidth: 130 }}>
+                      <Stack spacing={0.35}>
+                        <Typography variant="caption" color="text.secondary">{job.progress}%</Typography>
+                        <LinearProgress variant="determinate" value={job.progress} />
+                        <Typography variant="caption" color="text.secondary">
+                          {timing.elapsed ? 'Elapsed ' + timing.elapsed : 'Not started'}{timing.eta ? ' · ETA ' + timing.eta : ''}
+                        </Typography>
+                      </Stack>
+                    </TableCell>
+                    <TableCell><Typography variant="caption" noWrap>{formatDate(job.updatedAt)}</Typography></TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      ) : !jobs && loading ? <WorkspaceFeedback kind="loading">Loading recent queue activity…</WorkspaceFeedback> : !jobs && error ? <WorkspaceFeedback kind="error">Recent queue activity is unavailable.</WorkspaceFeedback> : <WorkspaceFeedback kind="empty" action={<Button component={RouterLink} to="/assets" size="small">Open Assets</Button>}>No queue activity yet. Queue an asset from Assets to begin.</WorkspaceFeedback>}
+    </DashboardPanel>
+  );
+}
+
+function BatchBacklogPanel({ loading, error, hasData, batches }: {
+  loading: boolean;
+  error: boolean;
+  hasData: boolean;
+  batches: DashboardSummary['batchSummaries'];
+}) {
+  return (
+    <DashboardPanel title="Batch backlog">
+      {hasData && batches.length ? (
+        <TableContainer sx={{ maxWidth: '100%', overflowX: 'auto' }}>
+          <Table size="small" sx={{ minWidth: 360 }}>
+            <TableHead>
+              <TableRow><TableCell>Batch</TableCell><TableCell>Remaining</TableCell><TableCell>Progress</TableCell></TableRow>
+            </TableHead>
+            <TableBody>
+              {batches.map((batch) => (
+                <TableRow key={batch.id}>
+                  <TableCell sx={{ maxWidth: 140 }}>
+                    <MuiLink component={RouterLink} to={'/queue?batch=' + encodeURIComponent(batch.id)} underline="hover" fontWeight={700} noWrap>
+                      {batch.name}
+                    </MuiLink>
+                  </TableCell>
+                  <TableCell>{batch.remaining}</TableCell>
+                  <TableCell sx={{ minWidth: 100 }}>
+                    <Stack spacing={0.35}>
+                      <Typography variant="caption" color="text.secondary">{batch.completed}/{batch.total}</Typography>
+                      <LinearProgress variant="determinate" value={batch.percent} />
+                    </Stack>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      ) : hasData ? <WorkspaceFeedback kind="empty">Folder batches will appear here after queueing a folder.</WorkspaceFeedback> : loading ? <WorkspaceFeedback kind="loading">Loading batch backlog…</WorkspaceFeedback> : error ? <WorkspaceFeedback kind="error">Batch backlog is unavailable.</WorkspaceFeedback> : <WorkspaceFeedback kind="empty">Folder batches will appear here after queueing a folder.</WorkspaceFeedback>}
+    </DashboardPanel>
+  );
+}
+
+function AttentionPanel({ loading, error, items }: { loading: boolean; error: boolean; items: DashboardSummary['attentionItems'] }) {
+  return (
+    <DashboardPanel title="Attention">
+      {loading ? <WorkspaceFeedback kind="loading">Loading operational checks…</WorkspaceFeedback> : error ? <WorkspaceFeedback kind="error">Attention summary is incomplete while source data is unavailable.</WorkspaceFeedback> : items.length ? (
+        <Stack spacing={0.75}>
+          {items.map((item) => (
+            <Stack key={item.message} direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'flex-start', sm: 'center' }} justifyContent="space-between" spacing={0.5}>
+              <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 0 }}>
+                <Chip label="Review" color="warning" size="small" />
+                <Typography variant="body2">{item.message}</Typography>
+              </Stack>
+              <Button component={RouterLink} to={item.to} size="small">Open</Button>
+            </Stack>
+          ))}
+        </Stack>
+      ) : <WorkspaceFeedback kind="empty">No immediate setup or queue issues detected.</WorkspaceFeedback>}
+    </DashboardPanel>
+  );
+}
+
+function AdvisorPanel() {
+  return (
+    <DashboardPanel title="Advisor">
+      <Typography variant="body2" color="text.secondary">
+        Advisor results are evaluated in an asset context. A dashboard-wide aggregate is not available.
+      </Typography>
+      <Box>
+        <Button component={RouterLink} to="/assets" size="small">Open Assets</Button>
+      </Box>
+    </DashboardPanel>
+  );
+}
 function statusColor(status: QueueJob['status']) {
   switch (status) {
     case 'completed':
       return 'success';
     case 'failed':
       return 'error';
+    case 'canceled':
+      return 'default';
     case 'running':
       return 'primary';
     default:
