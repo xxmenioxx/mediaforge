@@ -659,6 +659,84 @@ describe('Unprocessed Assets hierarchy', () => {
     }
   }, 15000);
 
+  it('keeps Asset Snapshot geometry stable while evidence loads and tabs change', async () => {
+    let resolveSnapshot: ((value: Awaited<ReturnType<typeof api.latestSnapshot>>) => void) | undefined;
+    vi.mocked(api.latestSnapshot).mockImplementation(() => new Promise((resolve) => {
+      resolveSnapshot = resolve;
+    }));
+    const user = userEvent.setup();
+    renderAssetsPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    const dialog = await openAssetInfo(user);
+    const content = dialog.querySelector('.MuiDialogContent-root');
+    expect(content).toBeTruthy();
+    const geometry = () => {
+      const style = window.getComputedStyle(dialog);
+      return {
+        height: style.height,
+        maxHeight: style.maxHeight,
+        marginTop: style.marginTop,
+        marginBottom: style.marginBottom,
+        display: style.display,
+        flexDirection: style.flexDirection,
+        overflow: style.overflow,
+      };
+    };
+    const initialGeometry = geometry();
+
+    expect(initialGeometry).toEqual({
+      height: 'calc(100dvh - 32px)',
+      maxHeight: 'calc(100dvh - 32px)',
+      marginTop: '16px',
+      marginBottom: '16px',
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden',
+    });
+    expect(content && window.getComputedStyle(content).overflowY).toBe('auto');
+    expect(content && window.getComputedStyle(content).overflowX).toBe('hidden');
+    expect(content && ['0', '0px'].includes(window.getComputedStyle(content).minHeight)).toBe(true);
+    expect(content?.contains(within(dialog).getByRole('heading', { name: 'Asset Snapshot' }))).toBe(false);
+    expect(content?.contains(within(dialog).getByRole('tablist', { name: 'Asset Info sections' }))).toBe(false);
+    expect(content?.contains(within(dialog).getByRole('tablist', { name: 'Overview sections' }))).toBe(false);
+    expect(dialog.querySelector('.MuiDialogActions-root')).toBeNull();
+    expect(dialog.classList.contains('MuiDialog-paperFullWidth')).toBe(true);
+    expect(dialog.classList.contains('MuiDialog-paperFullScreen')).toBe(false);
+    expect(document.documentElement.style.overflowX).toBe('');
+    expect(document.body.style.overflowX).toBe('');
+    expect(api.latestSnapshot).toHaveBeenCalledWith('/media/raw/movies/Akira/Akira.mkv');
+
+    await user.click(within(dialog).getByRole('tab', { name: 'Analysis' }));
+    await waitFor(() => expect(resolveSnapshot).toBeTypeOf('function'));
+    expect((await within(dialog).findAllByRole('progressbar')).length).toBeGreaterThan(0);
+    expect(geometry()).toEqual(initialGeometry);
+
+    resolveSnapshot?.({
+      found: true,
+      snapshot: testSnapshot(),
+      status: 'current',
+      requiresAnalysis: false,
+      staleComponents: [],
+      analysisEvidence: {
+        status: 'ready',
+        sourceIdentity: {
+          path: '/media/raw/movies/Akira/Akira.mkv',
+          sizeBytes: 100,
+          modifiedAtUnixNano: 1,
+          snapshotId: 1,
+          matchesCurrentSourceRevision: true,
+        },
+      },
+    });
+    await waitFor(() => expect(within(dialog).getAllByText('Ready').length).toBeGreaterThan(0));
+    expect(geometry()).toEqual(initialGeometry);
+
+    await openQuickAssetOverrides(dialog, user);
+    expect(geometry()).toEqual(initialGeometry);
+    expect(api.startSnapshotOperation).not.toHaveBeenCalled();
+  }, 15000);
+
   it('loads Suggestions from an existing snapshot without Refresh analysis', async () => {
     const snapshotState = { found: true, snapshot: testSnapshot(), status: 'current' as const, requiresAnalysis: false, staleComponents: [] };
     vi.mocked(api.latestSnapshot).mockResolvedValue(snapshotState);
