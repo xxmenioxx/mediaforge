@@ -150,11 +150,11 @@ export function RuntimeStorageSummary({ snapshot, loading, error, compact = fals
                 <Typography variant="caption" fontWeight={700} sx={{ color: '#d4dfec', fontSize: '0.75rem', flexShrink: 0 }}>{usedPercent}% used</Typography>
               ) : null}
             </Stack>
-            <Tooltip title={`Measured filesystem path: ${pathLabel}${volume.volumeId ? ` · volume ${volume.volumeId}` : ''}`} describeChild>
+            {!compact ? <Tooltip title={`Measured filesystem path: ${pathLabel}${volume.volumeId ? ` · volume ${volume.volumeId}` : ''}`} describeChild>
               <Typography variant="caption" sx={{ display: 'block', color: '#8298b1', fontSize: '0.75rem', overflowWrap: 'anywhere', lineHeight: 1.25 }}>
                 {pathLabel}{volume.volumeId ? ` · volume ${volume.volumeId}` : ''}
               </Typography>
-            </Tooltip>
+            </Tooltip> : null}
             {usedBytes !== undefined && totalBytes !== undefined ? (
               <>
                 <LinearProgress
@@ -177,7 +177,7 @@ export function RuntimeStorageSummary({ snapshot, loading, error, compact = fals
         <Tooltip key={`${destination.role}:${destination.path}:${index}`} title={destination.error || `Destination unavailable: ${destination.path}`} describeChild>
           <Box data-testid="storage-destination-unavailable" sx={{ minWidth: 0 }}>
             <Typography variant="caption" sx={{ display: 'block', color: '#a9b8cc', fontSize: '0.75rem', overflowWrap: 'anywhere' }}>
-              {displayRole(destination.role)} · {destination.path}
+              {displayRole(destination.role)}{!compact ? ` · ${destination.path}` : ''}
             </Typography>
             <Typography variant="caption" sx={{ color: '#8298b1', fontSize: '0.75rem' }}>Unavailable</Typography>
           </Box>

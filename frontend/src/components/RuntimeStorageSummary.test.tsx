@@ -33,8 +33,8 @@ describe('RuntimeStorageSummary', () => {
     expect(screen.getAllByTestId('storage-filesystem')).toHaveLength(2);
     expect(screen.getByText('Library')).toBeTruthy();
     expect(screen.getByText('Workspace')).toBeTruthy();
-    expect(screen.getByText(/\/vol\/library/)).toBeTruthy();
-    expect(screen.getByText(/\/vol\/work/)).toBeTruthy();
+    expect(screen.queryByText(/\/vol\/library/)).toBeNull();
+    expect(screen.queryByText(/\/vol\/work/)).toBeNull();
   });
 
   it('shows a configured destination as unavailable without capacity values', () => {
@@ -46,7 +46,8 @@ describe('RuntimeStorageSummary', () => {
     });
 
     expect(screen.getByTestId('storage-destination-unavailable')).toBeTruthy();
-    expect(screen.getByText(/Library · \/missing\/library/)).toBeTruthy();
+    expect(screen.getByText('Library')).toBeTruthy();
+    expect(screen.queryByText(/\/missing\/library/)).toBeNull();
     expect(screen.getByText('Unavailable')).toBeTruthy();
     expect(screen.queryByText(/used · .* free/)).toBeNull();
   });
