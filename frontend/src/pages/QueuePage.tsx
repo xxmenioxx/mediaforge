@@ -37,7 +37,7 @@ import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { canRemoveQueueBatch } from '../utils/queueBatch';
 import { JobDetailsDialog } from '../components/JobDetailsDialog';
-import { PageHeader } from '../components/PageHeader';
+import { PageContent, PageHeader } from '../components/PageHeader';
 import type { AppSetting, Asset, AssetInventory, AudioEnhancementProfile, Library, Profile, QueueJob, QueueJobInput } from '../api/types';
 import { emptyTrackProfile, getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 
@@ -234,7 +234,7 @@ export function QueuePage() {
           Jobs appear here only after the user chooses media, a destination library, and a conversion profile.
         </Typography>
       </PageHeader>
-      <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
+      <PageContent>
         {jobs.isError ? <Alert severity="warning">Unable to load queue.</Alert> : null}
         <Alert severity={workerSettings.autoWorkerEnabled ? 'success' : 'warning'} sx={{ mb: 2 }}>
           Auto worker is {workerSettings.autoWorkerEnabled ? 'enabled' : 'disabled'} in Settings.{' '}
@@ -430,7 +430,7 @@ export function QueuePage() {
             No jobs match the current filter.
           </Alert>
         ) : null}
-      </Box>
+      </PageContent>
       <JobDetailsDialog
         key={selectedJob?.id ?? 'closed'}
         job={selectedJob}

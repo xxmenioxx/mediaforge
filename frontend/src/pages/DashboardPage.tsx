@@ -29,7 +29,7 @@ import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { MetricCard } from '../components/MetricCard';
-import { PageHeader } from '../components/PageHeader';
+import { PageContent, PageHeader } from '../components/PageHeader';
 import { RuntimeStorageSummary } from '../components/RuntimeStorageSummary';
 import type { QueueJob, RuntimeState } from '../api/types';
 import { liveRuntimeStateLabel } from '../utils/runtimeStatePresentation';
@@ -68,7 +68,7 @@ export function DashboardPage() {
           Live overview of libraries, unprocessed media, queue progress, and worker activity.
         </Typography>
       </PageHeader>
-      <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
+      <PageContent>
         {(libraries.isError || profiles.isError || jobs.isError || assets.isError) && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             Some operational data is unavailable. Check the backend container and configured library paths.
@@ -290,7 +290,7 @@ export function DashboardPage() {
             </Card>
           </Grid>
         </Grid>
-      </Box>
+      </PageContent>
     </>
   );
 }
