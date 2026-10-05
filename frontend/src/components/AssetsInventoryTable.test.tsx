@@ -10,6 +10,8 @@ describe('AssetsInventoryTable', () => {
   it('shows the compact Library technical columns', () => {
     render(<AssetsInventoryTable mode="library">{null}</AssetsInventoryTable>);
 
+    expect(screen.getByRole('table', { name: 'Library assets' }).getAttribute('data-ui-selection')).toBeNull();
+
     const table = screen.getByRole('table', { name: 'Library assets' });
     const headers = screen.getAllByRole('columnheader').map((header) => header.textContent);
     expect(headers).toEqual([

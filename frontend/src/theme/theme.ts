@@ -136,22 +136,12 @@ export const theme = createTheme({
     },
   },
   components: {
-    MuiCard: {
+    MuiButtonBase: {
       styleOverrides: {
         root: {
-          backgroundImage: 'none',
-          backgroundColor: mvforgeTokens.colors.surface,
-          border: `1px solid ${mvforgeTokens.colors.border.subtle}`,
-          boxShadow: 'none',
-        },
-      },
-    },
-    MuiCardActionArea: {
-      styleOverrides: {
-        root: {
-          height: '100%',
-          '&:hover': {
-            backgroundColor: mvforgeTokens.interaction.hoverBackground,
+          '&.Mui-focusVisible': {
+            outline: `2px solid ${mvforgeTokens.interaction.focus}`,
+            outlineOffset: 2,
           },
         },
       },
@@ -163,35 +153,361 @@ export const theme = createTheme({
           minHeight: 40,
           paddingLeft: 18,
           paddingRight: 18,
+          textTransform: 'none',
+          '&:hover': { boxShadow: 'none' },
+          '&.Mui-focusVisible': {
+            outline: `2px solid ${mvforgeTokens.interaction.focus}`,
+            outlineOffset: 2,
+          },
+          '[data-ui-density="compact"] &': {
+            minHeight: mvforgeTokens.density.controlHeight.compact,
+            paddingLeft: 10,
+            paddingRight: 10,
+            fontSize: mvforgeTokens.typography.compactBody,
+            fontWeight: 600,
+          },
+          '&.MuiButton-sizeSmall .MuiButton-startIcon': { marginRight: 4 },
+          '&.MuiButton-sizeSmall .MuiButton-startIcon > *': { fontSize: 16 },
+          '[data-ui-density="compact"] & .MuiButton-startIcon': { marginRight: 4 },
+          '[data-ui-density="compact"] & .MuiButton-startIcon > *': { fontSize: 16 },
         },
-        containedPrimary: ({ theme: muiTheme }) => ({
-          color: mvforgeTokens.colors.canvas,
-          backgroundColor: muiTheme.palette.primary.main,
+        sizeSmall: {
+          minHeight: mvforgeTokens.density.controlHeight.compact,
+          paddingLeft: 10,
+          paddingRight: 10,
+          fontSize: mvforgeTokens.typography.compactBody,
+          fontWeight: 600,
+        },
+        contained: {
           boxShadow: 'none',
+          '&:hover': { boxShadow: 'none' },
+        },
+        containedPrimary: {
+          color: mvforgeTokens.colors.canvas,
+          backgroundColor: mvforgeTokens.colors.accent.primary,
           '&:hover': {
-            filter: 'brightness(1.1)',
-            boxShadow: 'none',
+            backgroundColor: mvforgeTokens.colors.accent.primary,
+            filter: 'brightness(1.08)',
           },
           '&.Mui-disabled': {
-            backgroundColor: alpha(muiTheme.palette.primary.main, 0.22),
+            color: mvforgeTokens.colors.text.disabled,
+            backgroundColor: alpha(mvforgeTokens.colors.accent.primary, 0.22),
           },
-        }),
-        outlinedPrimary: ({ theme: muiTheme }) => ({
-          borderColor: alpha(muiTheme.palette.primary.main, 0.55),
-          color: muiTheme.palette.primary.main,
+        },
+        containedSecondary: {
+          color: mvforgeTokens.colors.canvas,
+          backgroundColor: mvforgeTokens.colors.accent.secondary,
           '&:hover': {
-            borderColor: muiTheme.palette.primary.main,
-            backgroundColor: alpha(muiTheme.palette.primary.main, 0.08),
+            backgroundColor: mvforgeTokens.colors.accent.secondary,
+            filter: 'brightness(1.06)',
           },
-        }),
+          '&.Mui-disabled': {
+            color: mvforgeTokens.colors.text.disabled,
+            backgroundColor: alpha(mvforgeTokens.colors.accent.secondary, 0.22),
+          },
+        },
+        containedError: {
+          color: mvforgeTokens.colors.status.error,
+          backgroundColor: mvforgeTokens.colors.status.errorSurface,
+          '&:hover': {
+            backgroundColor: mvforgeTokens.colors.status.errorSurface,
+            filter: 'brightness(1.15)',
+          },
+        },
+        outlined: {
+          borderColor: mvforgeTokens.colors.border.default,
+          color: mvforgeTokens.colors.text.secondary,
+          '&:hover': {
+            borderColor: mvforgeTokens.interaction.hoverBorder,
+            backgroundColor: mvforgeTokens.interaction.hoverBackground,
+          },
+          '&.Mui-disabled': { borderColor: mvforgeTokens.colors.border.subtle },
+        },
+        outlinedPrimary: {
+          borderColor: alpha(mvforgeTokens.colors.accent.primary, 0.55),
+          color: mvforgeTokens.colors.accent.primary,
+          '&:hover': {
+            borderColor: mvforgeTokens.colors.accent.primary,
+            backgroundColor: alpha(mvforgeTokens.colors.accent.primary, 0.08),
+          },
+        },
+        outlinedSecondary: {
+          borderColor: alpha(mvforgeTokens.colors.accent.secondary, 0.55),
+          color: mvforgeTokens.colors.accent.secondary,
+          '&:hover': {
+            borderColor: mvforgeTokens.colors.accent.secondary,
+            backgroundColor: alpha(mvforgeTokens.colors.accent.secondary, 0.08),
+          },
+        },
+        outlinedError: {
+          borderColor: alpha(mvforgeTokens.colors.status.error, 0.55),
+          color: mvforgeTokens.colors.status.error,
+          '&:hover': {
+            borderColor: mvforgeTokens.colors.status.error,
+            backgroundColor: mvforgeTokens.colors.status.errorSurface,
+          },
+        },
+        textError: { color: mvforgeTokens.colors.status.error },
+        text: {
+          '&:hover': { backgroundColor: mvforgeTokens.interaction.hoverBackground },
+        },
+      },
+    },
+    MuiIconButton: {
+      styleOverrides: {
+        root: {
+          borderRadius: 6,
+          color: mvforgeTokens.colors.text.secondary,
+          '&:hover': { backgroundColor: mvforgeTokens.interaction.hoverBackground },
+          '&.Mui-focusVisible': {
+            outline: `2px solid ${mvforgeTokens.interaction.focus}`,
+            outlineOffset: 2,
+          },
+          '&.Mui-disabled': { color: mvforgeTokens.colors.text.disabled },
+          '[data-ui-density="compact"] &': {
+            minWidth: 40,
+            minHeight: 40,
+            padding: 8,
+          },
+        },
+        sizeSmall: {
+          minWidth: 40,
+          minHeight: 40,
+          padding: 8,
+        },
+      },
+    },
+    MuiInputBase: {
+      styleOverrides: {
+        root: {
+          color: mvforgeTokens.colors.text.primary,
+          fontSize: mvforgeTokens.typography.body,
+        },
+        input: {
+          '&::placeholder': {
+            color: mvforgeTokens.colors.text.muted,
+            opacity: 1,
+          },
+          '&.Mui-disabled': {
+            WebkitTextFillColor: mvforgeTokens.colors.text.disabled,
+          },
+        },
+      },
+    },
+    MuiOutlinedInput: {
+      styleOverrides: {
+        root: {
+          borderRadius: 6,
+          backgroundColor: mvforgeTokens.colors.surface,
+          '& .MuiOutlinedInput-notchedOutline': {
+            borderColor: mvforgeTokens.colors.border.default,
+          },
+          '&:hover .MuiOutlinedInput-notchedOutline': {
+            borderColor: mvforgeTokens.interaction.hoverBorder,
+          },
+          '&.Mui-focused': {
+            outline: `2px solid ${alpha(mvforgeTokens.interaction.focus, 0.28)}`,
+            outlineOffset: 1,
+          },
+          '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+            borderColor: mvforgeTokens.interaction.focus,
+            borderWidth: 2,
+          },
+          '&.Mui-error .MuiOutlinedInput-notchedOutline': {
+            borderColor: mvforgeTokens.colors.status.error,
+          },
+          '&.Mui-error.Mui-focused .MuiOutlinedInput-notchedOutline': {
+            borderWidth: 2,
+          },
+          '&.Mui-disabled': {
+            backgroundColor: alpha(mvforgeTokens.colors.surfaceRaised, 0.48),
+          },
+          '&.Mui-disabled .MuiOutlinedInput-notchedOutline': {
+            borderColor: mvforgeTokens.colors.border.subtle,
+          },
+          '&.MuiInputBase-sizeSmall': {
+            minHeight: mvforgeTokens.density.controlHeight.compact,
+          },
+          '[data-ui-density="compact"] &': {
+            minHeight: mvforgeTokens.density.controlHeight.compact,
+          },
+          '&.MuiInputBase-sizeSmall .MuiOutlinedInput-input': {
+            padding: '5px 10px',
+            fontSize: mvforgeTokens.typography.compactBody,
+          },
+          '[data-ui-density="compact"] & .MuiOutlinedInput-input': {
+            padding: '5px 10px',
+            fontSize: mvforgeTokens.typography.compactBody,
+          },
+        },
+      },
+    },
+    MuiInputLabel: {
+      styleOverrides: {
+        root: {
+          color: mvforgeTokens.colors.text.secondary,
+          '&.Mui-focused': { color: mvforgeTokens.colors.accent.primary },
+          '&.Mui-error': { color: mvforgeTokens.colors.status.error },
+          '&.Mui-disabled': { color: mvforgeTokens.colors.text.disabled },
+        },
+      },
+    },
+    MuiFormHelperText: {
+      styleOverrides: {
+        root: {
+          color: mvforgeTokens.colors.text.muted,
+          fontSize: mvforgeTokens.typography.supporting,
+          '&.Mui-error': { color: mvforgeTokens.colors.status.error },
+          '&.Mui-disabled': { color: mvforgeTokens.colors.text.disabled },
+        },
+      },
+    },
+    MuiSelect: {
+      styleOverrides: {
+        icon: { color: mvforgeTokens.colors.text.secondary },
+        select: {
+          '&.Mui-disabled': { WebkitTextFillColor: mvforgeTokens.colors.text.disabled },
+        },
+      },
+    },
+    MuiAutocomplete: {
+      styleOverrides: {
+        inputRoot: {
+          '&.MuiInputBase-sizeSmall': {
+            minHeight: mvforgeTokens.density.controlHeight.compact,
+          },
+          '[data-ui-density="compact"] &': {
+            minHeight: mvforgeTokens.density.controlHeight.compact,
+          },
+        },
+        paper: {
+          backgroundColor: mvforgeTokens.colors.surfaceRaised,
+          border: `1px solid ${mvforgeTokens.colors.border.subtle}`,
+        },
+        option: {
+          minHeight: mvforgeTokens.density.controlHeight.compact,
+          color: mvforgeTokens.colors.text.primary,
+          '&.Mui-focused': { backgroundColor: mvforgeTokens.interaction.hoverBackground },
+          '&[aria-selected="true"]': { backgroundColor: mvforgeTokens.colors.surfaceSelected },
+          '&[aria-selected="true"].Mui-focused': {
+            backgroundColor: mvforgeTokens.interaction.selectedBackground,
+          },
+        },
+      },
+    },
+    MuiCard: {
+      styleOverrides: {
+        root: {
+          backgroundImage: 'none',
+          backgroundColor: mvforgeTokens.colors.surface,
+          border: `1px solid ${mvforgeTokens.colors.border.subtle}`,
+          borderRadius: 8,
+          boxShadow: 'none',
+        },
+      },
+    },
+    MuiCardActionArea: {
+      styleOverrides: {
+        root: {
+          height: '100%',
+          '&:hover': {
+            backgroundColor: mvforgeTokens.colors.surfaceInteractive,
+          },
+          '&.Mui-focusVisible': {
+            outline: `2px solid ${mvforgeTokens.interaction.focus}`,
+            outlineOffset: 2,
+          },
+          '&.Mui-selected': { background: mvforgeTokens.interaction.selectedBackground },
+        },
+      },
+    },
+    MuiPaper: {
+      styleOverrides: {
+        root: {
+          backgroundImage: 'none',
+          backgroundColor: mvforgeTokens.colors.surface,
+          '&.MuiPaper-outlined': { borderColor: mvforgeTokens.colors.border.default },
+        },
+      },
+    },
+    MuiMenu: {
+      styleOverrides: {
+        paper: { backgroundColor: mvforgeTokens.colors.surfaceRaised },
+      },
+    },
+    MuiPopover: {
+      styleOverrides: {
+        paper: {
+          backgroundColor: mvforgeTokens.colors.surfaceRaised,
+          border: `1px solid ${mvforgeTokens.colors.border.subtle}`,
+          borderRadius: 8,
+        },
       },
     },
     MuiDialog: {
       styleOverrides: {
         paper: {
           backgroundImage: 'none',
-          backgroundColor: mvforgeTokens.colors.surface,
+          backgroundColor: mvforgeTokens.colors.surfaceRaised,
           border: `1px solid ${mvforgeTokens.colors.border.subtle}`,
+          borderRadius: 8,
+        },
+      },
+    },
+    MuiDialogTitle: {
+      styleOverrides: {
+        root: {
+          color: mvforgeTokens.colors.text.primary,
+          fontSize: mvforgeTokens.typography.pageHeading,
+          fontWeight: 700,
+        },
+      },
+    },
+    MuiDialogContent: {
+      styleOverrides: {
+        dividers: { borderColor: mvforgeTokens.colors.border.subtle },
+      },
+    },
+    MuiDialogActions: {
+      styleOverrides: {
+        root: {
+          borderTop: `1px solid ${mvforgeTokens.colors.border.subtle}`,
+          padding: '8px 16px',
+        },
+      },
+    },
+    MuiAlert: {
+      styleOverrides: {
+        root: {
+          borderRadius: 6,
+          fontSize: mvforgeTokens.typography.compactBody,
+          '&.MuiAlert-standardSuccess': {
+            color: mvforgeTokens.colors.status.success,
+            backgroundColor: mvforgeTokens.colors.status.successSurface,
+          },
+          '&.MuiAlert-standardWarning': {
+            color: mvforgeTokens.colors.status.warning,
+            backgroundColor: mvforgeTokens.colors.status.warningSurface,
+          },
+          '&.MuiAlert-standardError': {
+            color: mvforgeTokens.colors.status.error,
+            backgroundColor: mvforgeTokens.colors.status.errorSurface,
+          },
+          '&.MuiAlert-standardInfo': {
+            color: mvforgeTokens.colors.status.info,
+            backgroundColor: mvforgeTokens.colors.status.infoSurface,
+          },
+        },
+      },
+    },
+    MuiToolbar: {
+      styleOverrides: {
+        root: {
+          '&.MuiToolbar-dense': {
+            minHeight: mvforgeTokens.density.controlHeight.normal,
+            flexWrap: 'wrap',
+            gap: 8,
+          },
         },
       },
     },
@@ -199,11 +515,27 @@ export const theme = createTheme({
       styleOverrides: {
         root: {
           borderColor: mvforgeTokens.colors.border.subtle,
+          color: mvforgeTokens.colors.text.primary,
+          '&.MuiTableCell-sizeSmall': {
+            fontSize: mvforgeTokens.typography.compactBody,
+          },
+          'tbody tr:not(.Mui-selected) &': {
+            backgroundColor: mvforgeTokens.colors.surface,
+          },
+          'table[data-ui-selection="tinted"] tr.Mui-selected &': {
+            backgroundColor: mvforgeTokens.colors.surfaceSelected,
+          },
+          'tr.MuiTableRow-hover:hover &': {
+            backgroundColor: mvforgeTokens.colors.surfaceInteractive,
+          },
+          'table[data-ui-selection="tinted"] tr.Mui-selected.MuiTableRow-hover:hover &': {
+            backgroundColor: mvforgeTokens.colors.surfaceSelected,
+          },
         },
         head: {
           color: mvforgeTokens.colors.text.secondary,
           fontWeight: 700,
-          backgroundColor: 'rgba(255,255,255,0.02)',
+          backgroundColor: mvforgeTokens.colors.surfaceRaised,
         },
       },
     },
@@ -211,7 +543,13 @@ export const theme = createTheme({
       styleOverrides: {
         root: {
           '&.MuiTableRow-hover:hover': {
-            backgroundColor: mvforgeTokens.interaction.hoverBackground,
+            backgroundColor: mvforgeTokens.colors.surfaceInteractive,
+          },
+          'table[data-ui-selection="tinted"] &.Mui-selected': {
+            backgroundColor: mvforgeTokens.colors.surfaceSelected,
+          },
+          'table[data-ui-selection="tinted"] &.Mui-selected.MuiTableRow-hover:hover': {
+            backgroundColor: mvforgeTokens.colors.surfaceSelected,
           },
         },
       },
@@ -219,7 +557,43 @@ export const theme = createTheme({
     MuiChip: {
       styleOverrides: {
         root: {
-          fontWeight: 700,
+          borderRadius: 6,
+          border: `1px solid ${mvforgeTokens.colors.border.subtle}`,
+          backgroundColor: mvforgeTokens.colors.surfaceRaised,
+          color: mvforgeTokens.colors.text.secondary,
+          fontWeight: 600,
+          '&.MuiChip-sizeSmall': { height: 24 },
+          '&.MuiChip-colorPrimary': {
+            color: mvforgeTokens.colors.status.info,
+            backgroundColor: mvforgeTokens.colors.status.infoSurface,
+            borderColor: alpha(mvforgeTokens.colors.status.info, 0.28),
+          },
+          '&.MuiChip-colorSecondary': {
+            color: mvforgeTokens.colors.accent.secondary,
+            backgroundColor: mvforgeTokens.colors.accent.secondarySurface,
+            borderColor: alpha(mvforgeTokens.colors.accent.secondary, 0.28),
+          },
+          '&.MuiChip-colorSuccess': {
+            color: mvforgeTokens.colors.status.success,
+            backgroundColor: mvforgeTokens.colors.status.successSurface,
+            borderColor: alpha(mvforgeTokens.colors.status.success, 0.28),
+          },
+          '&.MuiChip-colorWarning': {
+            color: mvforgeTokens.colors.status.warning,
+            backgroundColor: mvforgeTokens.colors.status.warningSurface,
+            borderColor: alpha(mvforgeTokens.colors.status.warning, 0.28),
+          },
+          '&.MuiChip-colorError': {
+            color: mvforgeTokens.colors.status.error,
+            backgroundColor: mvforgeTokens.colors.status.errorSurface,
+            borderColor: alpha(mvforgeTokens.colors.status.error, 0.28),
+          },
+          '&.MuiChip-colorInfo': {
+            color: mvforgeTokens.colors.status.info,
+            backgroundColor: mvforgeTokens.colors.status.infoSurface,
+            borderColor: alpha(mvforgeTokens.colors.status.info, 0.28),
+          },
+          '&.MuiChip-outlined': { backgroundColor: 'transparent' },
         },
       },
     },

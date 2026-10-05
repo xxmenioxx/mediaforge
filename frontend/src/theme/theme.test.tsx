@@ -1,8 +1,26 @@
 // @vitest-environment jsdom
 
 import { ThemeProvider } from '@mui/material/styles';
+import {
+  Button,
+  Card,
+  Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  IconButton,
+  Paper,
+  Table,
+  TableBody,
+  TableCell,
+  TableRow,
+  TextField,
+} from '@mui/material';
 import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
+import { CompactActionGroup } from '../components/CompactActionGroup';
 import { AssetsSummaryStrip } from '../components/AssetsWorkspace';
 import { mvforgeTokens, theme } from './theme';
 
@@ -100,5 +118,88 @@ describe('MVForge UI V2 theme', () => {
     expect(getComputedStyle(value).color).toBe('rgb(231, 238, 248)');
     expect(card).not.toBeNull();
     expect(getComputedStyle(card as HTMLElement).backgroundImage).toContain('linear-gradient');
+  });
+
+  it('keeps normal controls intact and applies compact, disabled, and focus-visible behavior', async () => {
+    const user = userEvent.setup();
+    render(
+      <ThemeProvider theme={theme}>
+        <Button data-testid="normal-button">Normal action</Button>
+        <CompactActionGroup role="group" aria-label="Workspace actions">
+          <Button data-testid="compact-button">Compact action</Button>
+          <Button data-testid="disabled-button" size="small" variant="contained" color="secondary" disabled>
+            Disabled action
+          </Button>
+          <IconButton aria-label="Workspace options"><span aria-hidden="true">⋯</span></IconButton>
+        </CompactActionGroup>
+        <TextField size="small" label="Compact filter" helperText="Filter by name" />
+        <TextField size="small" label="Invalid field" error helperText="Required field" />
+      </ThemeProvider>,
+    );
+
+    const normalButton = screen.getByTestId('normal-button');
+    const compactButton = screen.getByTestId('compact-button');
+    const disabledButton = screen.getByTestId('disabled-button');
+    const iconButton = screen.getByRole('button', { name: 'Workspace options' });
+    const compactField = screen.getByLabelText('Compact filter').closest('.MuiOutlinedInput-root');
+    const invalidField = screen.getByLabelText('Invalid field').closest('.MuiOutlinedInput-root');
+    const invalidOutline = invalidField?.querySelector('.MuiOutlinedInput-notchedOutline');
+
+    expect(getComputedStyle(normalButton).minHeight).toBe('40px');
+    expect(getComputedStyle(compactButton).minHeight).toBe('32px');
+    expect(disabledButton.hasAttribute('disabled')).toBe(true);
+    expect(getComputedStyle(disabledButton).backgroundColor).not.toBe('rgb(167, 139, 250)');
+    expect(getComputedStyle(iconButton).minHeight).toBe('40px');
+    expect(getComputedStyle(iconButton).minWidth).toBe('40px');
+    expect(getComputedStyle(compactField as HTMLElement).minHeight).toBe('32px');
+    expect(screen.queryByText('Filter by name')).not.toBeNull();
+    expect(screen.queryByText('Required field')).not.toBeNull();
+    expect(getComputedStyle(invalidOutline as HTMLElement).borderColor).toBe('rgb(255, 78, 106)');
+
+    await user.tab();
+    await user.tab();
+    expect(document.activeElement).toBe(compactButton);
+    const focusStyles = Array.from(document.querySelectorAll('style[data-emotion]'))
+      .map((style) => style.textContent ?? '')
+      .join('\n');
+    expect(focusStyles).toContain('Mui-focusVisible{outline:2px solid #6c4cf6;outline-offset:2px;}');
+  });
+
+  it('applies semantic status, surface, table, and dialog treatments', () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <Chip label="Ready" color="success" data-testid="success-chip" />
+        <Card data-testid="surface-card">Summary</Card>
+        <Paper data-testid="outlined-paper" variant="outlined">Details</Paper>
+        <Table data-ui-selection="tinted">
+          <TableBody>
+            <TableRow hover selected>
+              <TableCell data-testid="selected-cell">Selected row</TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+        <Dialog open onClose={() => undefined}>
+          <DialogTitle>Dialog heading</DialogTitle>
+          <DialogContent dividers>Dialog content</DialogContent>
+          <DialogActions><Button>Close</Button></DialogActions>
+        </Dialog>
+      </ThemeProvider>,
+    );
+
+    expect(getComputedStyle(screen.getByTestId('success-chip')).color).toBe('rgb(0, 217, 155)');
+    expect(getComputedStyle(screen.getByTestId('success-chip')).backgroundColor).toBe('rgb(7, 61, 53)');
+    expect(getComputedStyle(screen.getByTestId('surface-card')).backgroundColor).toBe('rgb(9, 26, 44)');
+    expect(getComputedStyle(screen.getByTestId('outlined-paper')).borderColor).toBe('rgb(21, 48, 74)');
+    expect(getComputedStyle(screen.getByTestId('selected-cell')).backgroundColor).toBe('rgba(58, 43, 164, 0.56)');
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.classList.contains('MuiDialog-paper')).toBe(true);
+    expect(getComputedStyle(dialog).backgroundColor).toBe('rgb(12, 32, 53)');
+    expect(dialog.querySelector('.MuiDialogActions-root')).not.toBeNull();
+
+    const generatedStyles = Array.from(document.querySelectorAll('style[data-emotion]'))
+      .map((style) => style.textContent ?? '')
+      .join('\n');
+    expect(generatedStyles).toContain('.MuiTableRow-hover:hover');
+    expect(generatedStyles).toContain(mvforgeTokens.colors.surfaceInteractive);
   });
 });

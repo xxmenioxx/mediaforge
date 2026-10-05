@@ -1,8 +1,11 @@
-import { Box, Button, Popover, Stack, Tooltip, Typography } from '@mui/material';
+import { Box, Button, Popover, Tooltip, Typography } from '@mui/material';
 import FilterListOutlinedIcon from '@mui/icons-material/FilterListOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import SwapVertOutlinedIcon from '@mui/icons-material/SwapVertOutlined';
+import { useTheme } from '@mui/material/styles';
 import { useState, type ReactNode } from 'react';
+import { CompactActionGroup } from './CompactActionGroup';
+import { mvforgeTokens } from '../theme/theme';
 
 export function AssetsV2InventoryControls({
   count,
@@ -20,6 +23,7 @@ export function AssetsV2InventoryControls({
   children: ReactNode;
 }) {
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
+  const tokens = useTheme().mvforge ?? mvforgeTokens;
 
   return (
     <Box
@@ -35,24 +39,24 @@ export function AssetsV2InventoryControls({
         justifyContent: 'space-between',
         gap: 1,
         borderBottom: 1,
-        borderColor: '#15304a',
-        color: '#9cb0c8',
-        bgcolor: '#071727',
+        borderColor: tokens.colors.border.default,
+        color: tokens.colors.text.secondary,
+        bgcolor: tokens.colors.workspace,
       }}
     >
-      <Typography variant="caption" aria-label={`${count.toLocaleString()} assets`} sx={{ fontSize: '0.75rem', color: '#9cb0c8', whiteSpace: 'nowrap' }}>
+      <Typography variant="caption" aria-label={`${count.toLocaleString()} assets`} sx={{ fontSize: tokens.typography.supporting, color: tokens.colors.text.secondary, whiteSpace: 'nowrap' }}>
         {count.toLocaleString()} {count === 1 ? 'asset' : 'assets'}
       </Typography>
-      <Stack direction="row" alignItems="center" spacing={0.5}>
+      <CompactActionGroup role="group" aria-label="Asset list actions" justifyContent="flex-end">
         <Tooltip title={syncDetails}>
           <span>
             <Button
               size="small"
               variant="contained"
+              color="secondary"
               startIcon={<RefreshOutlinedIcon />}
               onClick={onSync}
               disabled={syncPending}
-              sx={{ minHeight: 30, px: 1.1, borderRadius: '5px', border: '1px solid #6c4cf6', fontSize: '0.8rem', fontWeight: 600, textTransform: 'none', bgcolor: '#6c4cf6', color: '#f3f0ff', boxShadow: 'none', '&:hover': { borderColor: '#8772ff', bgcolor: '#755cf8', color: '#fff', boxShadow: 'none' }, '&.Mui-disabled': { borderColor: '#15304a', bgcolor: '#0c2035', color: '#526981' }, '& .MuiButton-startIcon': { mr: 0.45 }, '& svg': { fontSize: 14 } }}
             >
               Sync
             </Button>
@@ -61,12 +65,12 @@ export function AssetsV2InventoryControls({
         <Button
           size="small"
           variant="outlined"
+          color="inherit"
           startIcon={<FilterListOutlinedIcon />}
           onClick={(event) => setFilterAnchor(event.currentTarget)}
           aria-label={filterCount ? `Filter assets, ${filterCount} active` : 'Filter assets'}
           aria-expanded={Boolean(filterAnchor)}
           aria-controls="assets-filter-popover"
-          sx={{ minHeight: 30, px: 1, borderRadius: '5px', fontSize: '0.8rem', fontWeight: 600, textTransform: 'none', borderColor: '#15304a', bgcolor: '#0c2035', color: '#9cb0c8', '&:hover': { borderColor: '#1f4467', bgcolor: '#112a44', color: '#e7eef8' }, '& .MuiButton-startIcon': { mr: 0.45 }, '& svg': { fontSize: 14 } }}
         >
           Filter{filterCount ? ` · ${filterCount}` : ''}
         </Button>
@@ -75,16 +79,16 @@ export function AssetsV2InventoryControls({
             <Button
               size="small"
               variant="outlined"
+              color="inherit"
               startIcon={<SwapVertOutlinedIcon />}
               disabled
               aria-label="Sort assets (unavailable)"
-              sx={{ minHeight: 30, px: 1, borderRadius: '5px', fontSize: '0.8rem', fontWeight: 600, textTransform: 'none', borderColor: '#15304a', color: '#526981', bgcolor: 'rgba(12, 32, 53, 0.38)', '& .MuiButton-startIcon': { mr: 0.45 }, '& svg': { fontSize: 14 } }}
             >
               Sort
             </Button>
           </span>
         </Tooltip>
-      </Stack>
+      </CompactActionGroup>
       <Popover
         id="assets-filter-popover"
         open={Boolean(filterAnchor)}
@@ -92,7 +96,7 @@ export function AssetsV2InventoryControls({
         onClose={() => setFilterAnchor(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-        PaperProps={{ sx: { mt: 0.75, p: 1.5, width: { xs: 'calc(100vw - 32px)', sm: 620 }, maxWidth: 'calc(100vw - 24px)', bgcolor: '#091a2c', border: 1, borderColor: '#15304a', borderRadius: 1.25 } }}
+        PaperProps={{ sx: { mt: 0.75, p: 1.5, width: { xs: 'calc(100vw - 32px)', sm: 620 }, maxWidth: 'calc(100vw - 24px)' } }}
       >
         <Box data-testid="assets-filter-popover-content">{children}</Box>
       </Popover>
