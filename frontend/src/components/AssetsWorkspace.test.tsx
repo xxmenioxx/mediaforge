@@ -310,6 +310,41 @@ describe('Assets workspace presentation', () => {
     expect(screen.queryByRole('img', { name: 'Episode 01.mkv artwork' })).toBeNull();
   });
 
+  it('shows the supported thumbnail and falls back after a failed image without retrying', () => {
+    const props = { fileName: 'Episode 01.mkv', thumbnailUrl: '/api/assets/1/thumbnail' };
+    const view = render(<SelectedAssetArtwork {...props} />);
+    const image = screen.getByRole('img', { name: 'Episode 01.mkv artwork' });
+    expect(image.getAttribute('src')).toBe('/api/assets/1/thumbnail');
+    expect(image.getAttribute('data-artwork-source')).toBe('thumbnail');
+    fireEvent.error(image);
+    view.rerender(<SelectedAssetArtwork {...props} />);
+    expect(screen.getByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'Episode 01.mkv artwork' })).toBeNull();
+
+    view.rerender(<SelectedAssetArtwork fileName="映画 02.mkv" thumbnailUrl="/api/assets/2/thumbnail" />);
+    expect(screen.getByRole('img', { name: '映画 02.mkv artwork' }).getAttribute('src')).toBe('/api/assets/2/thumbnail');
+  });
+
+  it('keeps Play and duration over the thumbnail and its error placeholder', () => {
+    render(<SelectedAssetDetail {...selectedAssetDetailProps()} />);
+    const preview = screen.getByTestId('selected-asset-preview');
+    expect(within(preview).getByRole('img', { name: 'Episode 01.mkv artwork' }).getAttribute('src')).toBe('/api/assets/1/thumbnail');
+    expect(preview.getAttribute('aria-label')).toBe('Play preview of Episode 01.mkv');
+    expect(preview.querySelector('svg')).toBeTruthy();
+    const duration = preview.textContent;
+    expect(duration).toContain('23m 40s');
+    fireEvent.error(within(preview).getByRole('img'));
+    expect(within(preview).getByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
+    expect(preview.querySelector('svg')).toBeTruthy();
+    expect(preview.textContent).toContain('23m 40s');
+  });
+
+  it.each([{ missing: true }, { id: undefined }])('does not request artwork for missing or unidentified assets: %j', (overrides) => {
+    render(<SelectedAssetDetail {...selectedAssetDetailProps({ asset: makeAsset(overrides) })} />);
+    expect(screen.getByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'Episode 01.mkv artwork' })).toBeNull();
+  });
+
   it('keeps four selected asset zones with vertical context and technical actions', async () => {
     const user = userEvent.setup();
     const play = vi.fn();
@@ -391,7 +426,7 @@ describe('Assets workspace presentation', () => {
     expect(within(details).getByRole('button', { name: 'Assign Profile' })).toBeTruthy();
     expect(within(details).getByRole('button', { name: 'Test Encode' })).toBeTruthy();
     const moreButton = within(details).getByRole('button', { name: 'More actions for Episode 01.mkv' });
-    expect(within(details).queryByRole('img', { name: 'MVForge artwork placeholder for Episode 01.mkv' })).toBeTruthy();
+    expect(within(details).getByRole('img', { name: 'Episode 01.mkv artwork' }).getAttribute('src')).toBe('/api/assets/1/thumbnail');
     expect(within(details).getAllByText('23m 40s')).toHaveLength(2);
     expect(details.contains(actions)).toBe(true);
     expect(contextTechnical.contains(actions)).toBe(false);

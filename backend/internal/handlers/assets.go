@@ -5869,19 +5869,26 @@ func (h AssetHandler) resolveMediaPath(mediaPath string) (string, error) {
 }
 
 func (h AssetHandler) pathBelongsToLibrary(mediaPath string) (bool, error) {
+	root, err := h.mediaRootForPath(mediaPath)
+	return root != "", err
+}
+
+// mediaRootForPath uses the same configured ownership authority for RAW,
+// source paths and Library destinations.
+func (h AssetHandler) mediaRootForPath(mediaPath string) (string, error) {
 	mediaAbs, err := filepath.Abs(mediaPath)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 
 	var libraries []models.Library
 	if err := h.db.Find(&libraries).Error; err != nil {
-		return false, err
+		return "", err
 	}
 
 	rawRoot, err := settingPath(h.db, "rawRoot", "/media/raw")
 	if err != nil {
-		return false, err
+		return "", err
 	}
 
 	allowedRoots := []string{rawRoot}
@@ -5908,11 +5915,11 @@ func (h AssetHandler) pathBelongsToLibrary(mediaPath string) (bool, error) {
 		}
 
 		if relative == "." || (!strings.HasPrefix(relative, ".."+string(os.PathSeparator)) && relative != "..") {
-			return true, nil
+			return root, nil
 		}
 	}
 
-	return false, nil
+	return "", nil
 }
 
 func (h AssetHandler) pathBelongsToReadableMediaRoot(mediaPath string) (bool, error) {
