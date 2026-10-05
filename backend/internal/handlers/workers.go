@@ -553,7 +553,6 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 			return job, fmt.Errorf("load claim-time effective configuration: %w", err)
 		}
 		effective := configurationResolver.resolve(record)
-		effective = effectiveConfigurationWithFrozenAssetDefaults(effective, job.ProfileResolution)
 		destinationLibraryID := effective.Destination.DestinationLibraryID
 		hasOperation := effective.Video.VideoProfileID > 0 ||
 			effective.Video.Selection == VideoAssignmentOverrideOnly ||
@@ -595,16 +594,17 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 				input.ProcessingMode = ProcessingModeAudioOnly
 			}
 		}
-		if input.ProfileID == 0 && normalizeQueueProcessingMode(input.ProcessingMode) == ProcessingModeAudioOnly {
-			var fallback models.Profile
-			if err := h.db.Where("disabled = ?", false).Order("id asc").First(&fallback).Error; err != nil {
-				return job, fmt.Errorf("resolve explicit audio-only fallback profile: %w", err)
-			}
-			input.ProfileID = fallback.ID
-		}
 		if input.ProfileID == 0 && strings.TrimSpace(input.AudioProfileKey) == "" && strings.TrimSpace(input.TrackProfileKey) == "" {
 			return job, fmt.Errorf("explicit queue intent has no processing profile")
 		}
+	}
+
+	if input.ProfileID == 0 && normalizeQueueProcessingMode(input.ProcessingMode) == ProcessingModeAudioOnly {
+		var fallback models.Profile
+		if err := h.db.Where("disabled = ?", false).Order("id asc").First(&fallback).Error; err != nil {
+			return job, fmt.Errorf("resolve audio-only fallback profile during claim preparation: %w", err)
+		}
+		input.ProfileID = fallback.ID
 	}
 
 	prepared := job

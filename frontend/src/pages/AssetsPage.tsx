@@ -1046,7 +1046,7 @@ function LibraryAssetTable({
                         srtFallbackEnabled={subtitleSRTFallbackEnabled(settings)}
                         pathTrackProfile={trackProfiles.find((profile) => profile.key === effective?.tracks.profileKey)}
                         assetCategories={assetCategories}
-                        groupCategory={firstCategory(group.pathMetadata?.categories)}
+                        groupCategory={libraryEffectiveCategory(effective, firstCategory(group.pathMetadata?.categories))}
                         confidenceEnabled={!getDisabledConfidencePaths(settings).includes(group.path)}
                         groupProfileId={effective?.video.videoProfileId ?? 0}
                         effectiveConfiguration={effective}
@@ -1090,7 +1090,11 @@ function LibraryAssetTable({
             <SelectedAssetDetail
               asset={selectedAsset}
               pathContext={selectedAssetPathContext}
-              categoryLabel={selectedAsset.metadata.categories?.[0] || selectedAsset.libraryName || selectedGroup.libraryName || 'Unavailable'}
+              categoryLabel={libraryEffectiveCategory(
+                selectedEffective,
+                firstCategory(selectedAsset.metadata.categories) || selectedAsset.libraryName || selectedGroup.libraryName || 'Unavailable',
+                'Disabled',
+              ) || 'Unavailable'}
               containerLabel={selectedSnapshotData?.container || 'Unavailable'}
               snapshot={selectedSnapshotData}
               snapshotLoading={selectedSnapshot.isLoading}
@@ -3769,7 +3773,9 @@ function AssetRow({
     }
   }, [autoOpenAssetInfo]);
   const conversionDraft = assetEditDraft.conversion;
-  const category = firstCategory(assetEditDraft.metadata.categories) || groupCategory;
+  const category = mode === 'library'
+    ? libraryEffectiveCategory(effectiveConfiguration, firstCategory(assetEditDraft.metadata.categories) || groupCategory, 'Disabled')
+    : firstCategory(assetEditDraft.metadata.categories) || groupCategory;
   const authoritativeAssetEdit = assetInfoEditDocument(assetMetadata, normalizeAssetConversionOverride(asset.conversion));
 
   useEffect(() => {
@@ -8379,6 +8385,12 @@ function statusColor(status: Asset['status']): 'default' | 'success' | 'warning'
 
 function firstCategory(categories?: string[] | null) {
   return safeArray(categories).find((category) => category.trim()) ?? '';
+}
+
+function libraryEffectiveCategory(effective: EffectiveAssetConfiguration | undefined, inheritedFallback: string, disabledLabel = '') {
+  if (effective?.category.selection === 'value') return effective.category.category ?? '';
+  if (effective?.category.selection === 'disabled') return disabledLabel;
+  return inheritedFallback;
 }
 
 function assetDisplayPath(asset: Asset, groupRelativePath: string, libraries: Library[]) {

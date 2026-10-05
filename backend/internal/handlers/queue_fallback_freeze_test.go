@@ -152,6 +152,202 @@ func TestExplicitQueueIntentPreservesProfileWhenClaimAssignmentDiffers(t *testin
 	}
 }
 
+func TestAssignmentBackedAudioOnlyQueueFreezesFallbackProfile(t *testing.T) {
+	tests := []struct {
+		name            string
+		videoSelection  string
+		workMediaType   string
+		workSelection   string
+		wantWorkProfile string
+		wantMode        string
+	}{
+		{name: "audio_only video with audio profile", videoSelection: VideoAssignmentAudioOnly, workMediaType: "audio", workSelection: "profile", wantWorkProfile: "audio-job", wantMode: ProcessingModeAudioOnly},
+		{name: "disabled video with track work", videoSelection: "disabled", workMediaType: "tracks", workSelection: "profile", wantWorkProfile: "tracks", wantMode: ProcessingModeAudioOnly},
+		{name: "full encode profile", videoSelection: "profile", workMediaType: "tracks", workSelection: "profile", wantWorkProfile: "tracks", wantMode: ProcessingModeFullEncode},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db, path, library, fallback := queueCreationFreezeFixture(t, false)
+			assignedVideoProfile := fallback
+			if test.videoSelection == "profile" {
+				assignedVideoProfile = authoritativeTestProfile()
+				assignedVideoProfile.Name = "Assignment-backed full encode profile"
+				if err := db.Create(&assignedVideoProfile).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			var record models.AssetRecord
+			if err := db.Where("path = ?", path).First(&record).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&models.AssetScopeConfiguration{
+				ScopeType: assetScopeLogicalGroup, ScopeKey: record.LogicalGroupPath,
+				DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&models.ProfileAssignment{
+				TargetType: assetScopeLogicalGroup, TargetPath: record.LogicalGroupPath,
+				MediaType: "video", Selection: test.videoSelection, VideoProfileID: assignedVideoProfile.ID,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if test.workMediaType == "audio" {
+				if err := db.Create(&models.AppSetting{Key: "audioEnhancementProfiles", Value: models.JSONMap{"profiles": models.JSONList{
+					models.JSONMap{"key": test.wantWorkProfile, "scope": "path", "filters": "volume=0.9"},
+				}}}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.Create(&models.ProfileAssignment{
+				TargetType: assetScopeLogicalGroup, TargetPath: record.LogicalGroupPath,
+				MediaType: test.workMediaType, Selection: test.workSelection, ProfileKey: test.wantWorkProfile,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+
+			job := createAssignmentBackedQueueIntent(t, db, path, library.ID)
+			if job.Status != JobStatusQueued || (test.videoSelection != "profile" && job.ProfileID != 0) || queueJobFreezeComplete(job) {
+				t.Fatalf("individual Queue intent was not lightweight: %#v", job)
+			}
+			videoResolution := settingProfileObject(job.ProfileResolution["video"])
+			if workerStringValue(videoResolution["selection"]) != test.videoSelection {
+				t.Fatalf("Queue intent lost effective video selection: %#v", job.ProfileResolution)
+			}
+			markQueueJobClaimed(t, db, &job)
+			prepared, err := NewWorkerHandler(db).prepareClaimedQueueJob(job)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantProfileID := fallback.ID
+			if test.videoSelection == "profile" {
+				wantProfileID = assignedVideoProfile.ID
+			}
+			if prepared.ProfileID != wantProfileID || prepared.ProcessingMode != test.wantMode || !queueJobFreezeComplete(prepared) || prepared.ActiveExecutionPlanID == nil {
+				t.Fatalf("assignment-backed job did not freeze with the expected profile and plan: %#v", prepared)
+			}
+			frozenVideo := settingProfileObject(prepared.ProfileResolution["video"])
+			if workerStringValue(frozenVideo["selection"]) != test.videoSelection {
+				t.Fatalf("fallback changed the effective user video selection: %#v", prepared.ProfileResolution["video"])
+			}
+			var plan models.ExecutionPlan
+			if err := db.First(&plan, *prepared.ActiveExecutionPlanID).Error; err != nil || plan.JobID != prepared.ID {
+				t.Fatalf("claim freeze did not create its execution plan: plan=%#v err=%v", plan, err)
+			}
+			if prepared.ProfileSnapshot == nil || prepared.AudioProfileSnapshot == nil || prepared.TrackProfileSnapshot == nil {
+				t.Fatalf("claim freeze omitted a profile snapshot: %#v", prepared)
+			}
+		})
+	}
+}
+
+func TestAssignmentBackedAudioOnlyQueueFailsWithoutFallbackProfile(t *testing.T) {
+	db, path, library, fallback := queueCreationFreezeFixture(t, false)
+	if err := db.Model(&fallback).Update("disabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	var record models.AssetRecord
+	if err := db.Where("path = ?", path).First(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetScopeConfiguration{
+		ScopeType: assetScopeLogicalGroup, ScopeKey: record.LogicalGroupPath,
+		DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProfileAssignment{
+		TargetType: assetScopeLogicalGroup, TargetPath: record.LogicalGroupPath,
+		MediaType: "video", Selection: VideoAssignmentAudioOnly,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "audioEnhancementProfiles", Value: models.JSONMap{"profiles": models.JSONList{
+		models.JSONMap{"key": "audio-job", "scope": "path", "filters": "volume=0.9"},
+	}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProfileAssignment{
+		TargetType: assetScopeLogicalGroup, TargetPath: record.LogicalGroupPath,
+		MediaType: "audio", Selection: "profile", ProfileKey: "audio-job",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := createAssignmentBackedQueueIntent(t, db, path, library.ID)
+	markQueueJobClaimed(t, db, &job)
+	if _, err := NewWorkerHandler(db).prepareClaimedQueueJob(job); err == nil || !strings.Contains(err.Error(), "audio-only fallback profile") {
+		t.Fatalf("missing fallback did not fail clearly during preparation: %v", err)
+	}
+	var current models.QueueJob
+	if err := db.First(&current, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var plans int64
+	if err := db.Model(&models.ExecutionPlan{}).Where("job_id = ?", job.ID).Count(&plans).Error; err != nil {
+		t.Fatal(err)
+	}
+	if queueJobFreezeComplete(current) || current.ActiveExecutionPlanID != nil || current.Status != JobStatusRunning || plans != 0 {
+		t.Fatalf("failed preparation entered execution with an incomplete freeze: job=%#v plans=%d", current, plans)
+	}
+}
+
+func TestAssignmentBackedOverrideOnlyQueueDoesNotUseAudioOnlyFallback(t *testing.T) {
+	db, path, library, _ := queueCreationFreezeFixture(t, false)
+	var record models.AssetRecord
+	if err := db.Where("path = ?", path).First(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetScopeConfiguration{
+		ScopeType: assetScopeLogicalGroup, ScopeKey: record.LogicalGroupPath,
+		DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProfileAssignment{
+		TargetType: assetScopeLogicalGroup, TargetPath: record.LogicalGroupPath,
+		MediaType: "video", Selection: VideoAssignmentOverrideOnly,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
+		path: {VideoEncoder: "libx265", GlobalQuality: 20},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	job := createAssignmentBackedQueueIntent(t, db, path, library.ID)
+	markQueueJobClaimed(t, db, &job)
+	prepared, err := NewWorkerHandler(db).prepareClaimedQueueJob(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.ProfileID != 0 || prepared.ProcessingMode != ProcessingModeFullEncode || !queueUsesOverrideOnlyVideo(prepared.ProfileResolution) || !queueJobFreezeComplete(prepared) || prepared.ActiveExecutionPlanID == nil {
+		t.Fatalf("override-only assignment changed to audio-only fallback semantics: %#v", prepared)
+	}
+	if prepared.ProfileSnapshot[assetConversionOverrideSnapshotKey] == nil {
+		t.Fatalf("override-only assignment did not freeze the asset conversion override: %#v", prepared.ProfileSnapshot)
+	}
+}
+
+func createAssignmentBackedQueueIntent(t *testing.T, db *gorm.DB, path string, libraryID uint) models.QueueJob {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/queue/jobs", NewQueueHandler(db).Create)
+	body := fmt.Sprintf(`{"mediaPath":%q,"libraryId":%d,"resolveProfileAssignments":true}`, path, libraryID)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("Queue create status=%d body=%s", response.Code, response.Body.String())
+	}
+	var job models.QueueJob
+	if err := db.First(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
 func TestAssignmentBackedLibraryQueueUsesAssetLibraryWhenDestinationInherits(t *testing.T) {
 	db, path, library, profile := queueCreationFreezeFixture(t, false)
 	library.DestinationPath = filepath.Dir(path)

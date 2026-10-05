@@ -2514,6 +2514,11 @@ func TestAcceptedSelectedQueueJobFreezesReviewedConfigurationOnce(t *testing.T) 
 	if err := db.Create(&models.RuntimeState{SingletonKey: models.RuntimeStateSingletonKey, DetectedAt: time.Now(), SelectedProfile: "test", Encoders: models.JSONMap{"libx265": models.JSONMap{"listed": true, "usable": true}}, StableFingerprint: "queue-test", FingerprintVersion: "v1"}).Error; err != nil {
 		t.Fatal(err)
 	}
+	acceptedDefaults := defaultAssetDefaultsValue()
+	acceptedDefaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "eng"}
+	if err := db.Create(&models.AppSetting{Key: assetDefaultsSettingKey, Value: acceptedDefaults}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	candidate := createQueueSelectedAssetsPreflight(t, db, []uint{record.ID})
 	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightReady || candidate.Assets[0].Plan == nil {
@@ -2546,6 +2551,15 @@ func TestAcceptedSelectedQueueJobFreezesReviewedConfigurationOnce(t *testing.T) 
 	job := accepted.Jobs[0]
 	if !queueJobFreezeComplete(job) || job.ActiveExecutionPlanID == nil || job.ProfileID != first.ID || snapshotQualityValue(job.ProfileSnapshot) != 18 || !reflect.DeepEqual(job.ProfileSnapshot, reviewedProfile) || !reflect.DeepEqual(job.TrackProfileSnapshot, reviewedTracks) {
 		t.Fatalf("Accept did not freeze the exact reviewed Queue plan: %#v", job)
+	}
+	changedDefaults := defaultAssetDefaultsValue()
+	changedDefaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "jpn"}
+	if err := db.Model(&models.AppSetting{}).Where("key = ?", assetDefaultsSettingKey).Update("value", changedDefaults).Error; err != nil {
+		t.Fatal(err)
+	}
+	acceptedAudio := settingProfileObject(job.ProfileResolution["audio"])
+	if workerStringValue(settingProfileObject(acceptedAudio["profileData"])["preferredDefaultLanguage"]) != "eng" {
+		t.Fatalf("accepted Batch Preflight did not retain its reviewed Global Asset Defaults: %#v", job.ProfileResolution["audio"])
 	}
 	now := time.Now()
 	if err := db.Model(&job).Updates(map[string]any{"status": JobStatusRunning, "stage": JobStageClaimed, "worker_name": "test-worker", "started_at": &now}).Error; err != nil {

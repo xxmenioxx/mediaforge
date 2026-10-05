@@ -78,8 +78,14 @@ func applyProfileAssignment(db *gorm.DB, input ProfileAssignmentInput) (models.P
 	}
 	if !validateAssetScopeType(input.TargetType) || input.TargetPath == "." ||
 		(input.MediaType != "video" && input.MediaType != "audio" && input.MediaType != "tracks") ||
-		(input.Selection != "profile" && input.Selection != "disabled" && input.Selection != "inherit") {
+		(input.Selection != "profile" && input.Selection != "disabled" && input.Selection != "inherit" &&
+			(input.MediaType != "video" || (input.Selection != "override_only" && input.Selection != "audio_only"))) {
 		return assignment, false, &profileAssignmentInputError{message: "invalid profile assignment"}
+	}
+	if input.Selection == "disabled" || input.Selection == "override_only" || input.Selection == "audio_only" {
+		if input.VideoProfileID != 0 || input.ProfileKey != "" {
+			return assignment, false, &profileAssignmentInputError{message: "selection does not accept a profile"}
+		}
 	}
 	if input.Selection == "inherit" {
 		err := db.Where("target_type = ? AND target_path = ? AND media_type = ?", input.TargetType, input.TargetPath, input.MediaType).Delete(&models.ProfileAssignment{}).Error
@@ -90,7 +96,7 @@ func applyProfileAssignment(db *gorm.DB, input ProfileAssignmentInput) (models.P
 			return assignment, false, &profileAssignmentInputError{message: err.Error()}
 		}
 	}
-	if input.Selection == "disabled" {
+	if input.Selection == "disabled" || input.Selection == "override_only" || input.Selection == "audio_only" {
 		assignment.VideoProfileID = 0
 		assignment.ProfileKey = ""
 	}

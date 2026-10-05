@@ -522,22 +522,6 @@ func assetDefaultsVideoParityDecision(profile models.Profile) models.JSONMap {
 	return decision
 }
 
-func TestAssetDefaultsQueueResolutionRemainsFrozenAfterSettingEdit(t *testing.T) {
-	old := models.JSONMap{
-		"video": models.JSONMap{"source": assetDefaultsGlobalSource, "selection": configSelectionValue, "profileData": models.JSONMap{"videoCodec": "copy"}},
-		"audio": models.JSONMap{"source": assetDefaultsGlobalSource, "selection": configSelectionValue, "profileData": models.JSONMap{"preferredDefaultLanguage": "eng"}},
-	}
-	current := EffectiveAssetConfiguration{
-		Video:  AssetConfigurationValue{Selection: configSelectionValue, Source: assetDefaultsGlobalSource, ProfileData: models.JSONMap{"videoCodec": "x265"}},
-		Audio:  AssetConfigurationValue{Selection: configSelectionValue, Source: assetDefaultsGlobalSource, ProfileData: models.JSONMap{"preferredDefaultLanguage": "jpn"}},
-		Tracks: AssetConfigurationValue{Selection: configSelectionValue, Source: assetDefaultsGlobalSource, ProfileData: models.JSONMap{"subtitleDisposition": "remove"}},
-	}
-	frozen := effectiveConfigurationWithFrozenAssetDefaults(current, old)
-	if workerStringValue(frozen.Video.ProfileData["videoCodec"]) != "copy" || workerStringValue(frozen.Audio.ProfileData["preferredDefaultLanguage"]) != "eng" {
-		t.Fatalf("queue resolution changed after defaults edit: %#v", frozen)
-	}
-}
-
 func TestAssetDefaultsQueueFreezeAndRetryIgnoreChangedSettings(t *testing.T) {
 	db := queueSelectedAssetsTestDB(t)
 	sourceDir := t.TempDir()
@@ -576,38 +560,40 @@ func TestAssetDefaultsQueueFreezeAndRetryIgnoreChangedSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldDefaults := defaultAssetDefaultsValue()
+	oldDefaults["video"].(models.JSONMap)["custom"] = models.JSONMap{"videoCodec": "copy"}
 	oldDefaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "eng"}
 	if err := db.Create(&models.AppSetting{Key: assetDefaultsSettingKey, Value: oldDefaults}).Error; err != nil {
 		t.Fatal(err)
 	}
+	job := createAssignmentBackedQueueIntent(t, db, mediaPath, library.ID)
+	queuedVideo := settingProfileObject(job.ProfileResolution["video"])
+	queuedAudio := settingProfileObject(job.ProfileResolution["audio"])
+	if workerStringValue(settingProfileObject(queuedVideo["profileData"])["videoCodec"]) != "copy" || workerStringValue(settingProfileObject(queuedAudio["profileData"])["preferredDefaultLanguage"]) != "eng" || queueJobFreezeComplete(job) {
+		t.Fatalf("Queue did not retain lightweight defaults A as the original intent: %#v", job)
+	}
+
 	newDefaults := defaultAssetDefaultsValue()
-	newDefaults["video"].(models.JSONMap)["custom"] = models.JSONMap{"videoCodec": "x265"}
+	newDefaults["video"].(models.JSONMap)["custom"] = models.JSONMap{"videoCodec": "copy"}
 	newDefaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "jpn"}
 	if err := db.Model(&models.AppSetting{}).Where("key = ?", assetDefaultsSettingKey).Update("value", newDefaults).Error; err != nil {
 		t.Fatal(err)
 	}
 
-	now := time.Now()
-	job := models.QueueJob{
-		MediaPath: mediaPath, LibraryID: library.ID, Status: JobStatusRunning, Stage: JobStageClaimed,
-		WorkerName: "test-worker", StartedAt: &now, ProcessingMode: ProcessingModeAudioOnly,
-		ProfileResolution: models.JSONMap{
-			"video":  models.JSONMap{"source": assetDefaultsGlobalSource, "selection": configSelectionValue, "profileData": models.JSONMap{"videoCodec": "copy"}},
-			"audio":  models.JSONMap{"source": assetDefaultsGlobalSource, "selection": configSelectionValue, "profileData": models.JSONMap{"preferredDefaultLanguage": "eng"}},
-			"tracks": models.JSONMap{"source": assetDefaultsGlobalSource, "selection": configSelectionValue, "profileData": models.JSONMap{"subtitleDisposition": "keep"}},
-		},
-	}
-	if err := db.Create(&job).Error; err != nil {
-		t.Fatal(err)
-	}
+	markQueueJobClaimed(t, db, &job)
 	prepared, err := NewWorkerHandler(db).prepareClaimedQueueJob(job)
 	if err != nil {
 		t.Fatal(err)
 	}
 	preparedVideo := settingProfileObject(prepared.ProfileResolution["video"])
 	preparedAudio := settingProfileObject(prepared.ProfileResolution["audio"])
-	if workerStringValue(settingProfileObject(preparedVideo["profileData"])["videoCodec"]) != "copy" || workerStringValue(settingProfileObject(preparedAudio["profileData"])["preferredDefaultLanguage"]) != "eng" {
-		t.Fatalf("claim preparation re-resolved changed defaults: %#v", prepared.ProfileResolution)
+	if workerStringValue(settingProfileObject(preparedVideo["profileData"])["videoCodec"]) != "copy" || workerStringValue(settingProfileObject(preparedAudio["profileData"])["preferredDefaultLanguage"]) != "jpn" {
+		t.Fatalf("claim preparation did not resolve current defaults: %#v", prepared.ProfileResolution)
+	}
+	changedDefaults := defaultAssetDefaultsValue()
+	changedDefaults["video"].(models.JSONMap)["custom"] = models.JSONMap{"videoCodec": "copy"}
+	changedDefaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "spa"}
+	if err := db.Model(&models.AppSetting{}).Where("key = ?", assetDefaultsSettingKey).Update("value", changedDefaults).Error; err != nil {
+		t.Fatal(err)
 	}
 	again, err := NewWorkerHandler(db).prepareClaimedQueueJob(prepared)
 	if err != nil {
@@ -615,7 +601,7 @@ func TestAssetDefaultsQueueFreezeAndRetryIgnoreChangedSettings(t *testing.T) {
 	}
 	againVideo := settingProfileObject(again.ProfileResolution["video"])
 	againAudio := settingProfileObject(again.ProfileResolution["audio"])
-	if workerStringValue(settingProfileObject(againVideo["profileData"])["videoCodec"]) != "copy" || workerStringValue(settingProfileObject(againAudio["profileData"])["preferredDefaultLanguage"]) != "eng" {
+	if workerStringValue(settingProfileObject(againVideo["profileData"])["videoCodec"]) != "copy" || workerStringValue(settingProfileObject(againAudio["profileData"])["preferredDefaultLanguage"]) != "jpn" {
 		t.Fatalf("retry changed frozen Asset Defaults resolution: %#v", again.ProfileResolution)
 	}
 }

@@ -305,6 +305,81 @@ describe('Library Assets workspace', () => {
     await waitFor(() => expect(details.textContent).toContain('Asset HEVC'));
   });
 
+  it('shows the effective Path category in Library V2 rows and Selected Asset detail', async () => {
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (ids) => {
+      const result = effectiveConfigurationsForIds(ids);
+      result.configurations['1'].category = { selection: 'value', category: 'Path Drama', source: 'path' } as never;
+      return result as never;
+    });
+    const user = userEvent.setup();
+    renderLibraryPage();
+    const filename = 'A Very Long Episode Filename That Should Stay Inside Its Column.mkv';
+    await user.click(await screen.findByText(filename));
+    const details = await screen.findByTestId('selected-asset-detail');
+    expect(within(details).getByLabelText('Category / Library: Path Drama')).toBeTruthy();
+    const row = within(screen.getByRole('region', { name: 'Library asset list' })).getByText(filename).closest('tr')!;
+    await user.click(within(row).getByRole('button', { name: `More actions for ${filename}` }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Asset Info' }));
+    expect((await screen.findByRole('combobox', { name: 'Category' }) as HTMLInputElement).value).toBe('Path Drama');
+  });
+
+  it('shows the effective Asset category over a Path category in Library V2', async () => {
+    const libraryInventory = inventory([
+      asset(1, 'A Very Long Episode Filename That Should Stay Inside Its Column.mkv', ['TV']),
+      asset(2, 'Episode 02.mkv'),
+    ]);
+    libraryInventory.libraryGroups[0].pathMetadata = { categories: ['Path Drama'], tags: [], updatedAt: '' };
+    vi.mocked(api.assets).mockResolvedValue(libraryInventory);
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (ids) => {
+      const result = effectiveConfigurationsForIds(ids);
+      result.configurations['1'].category = { selection: 'value', category: 'Asset Mystery', source: 'asset' } as never;
+      return result as never;
+    });
+    const user = userEvent.setup();
+    renderLibraryPage();
+    await user.click(await screen.findByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv'));
+    const details = await screen.findByTestId('selected-asset-detail');
+    expect(within(details).getByLabelText('Category / Library: Asset Mystery')).toBeTruthy();
+    expect(within(details).queryByLabelText('Category / Library: Path Drama')).toBeNull();
+    const filename = 'A Very Long Episode Filename That Should Stay Inside Its Column.mkv';
+    const row = within(screen.getByRole('region', { name: 'Library asset list' })).getByText(filename).closest('tr')!;
+    await user.click(within(row).getByRole('button', { name: `More actions for ${filename}` }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Asset Info' }));
+    expect((await screen.findByRole('combobox', { name: 'Category' }) as HTMLInputElement).value).toBe('Asset Mystery');
+  });
+
+  it('shows disabled effective category instead of stale Library metadata', async () => {
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (ids) => {
+      const result = effectiveConfigurationsForIds(ids);
+      result.configurations['1'].category = { selection: 'disabled', source: 'path' } as never;
+      return result as never;
+    });
+    const user = userEvent.setup();
+    renderLibraryPage();
+    await user.click(await screen.findByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv'));
+    const details = await screen.findByTestId('selected-asset-detail');
+    expect(within(details).getByLabelText('Category / Library: Disabled')).toBeTruthy();
+    expect(within(details).queryByLabelText('Category / Library: Anime')).toBeNull();
+    const filename = 'A Very Long Episode Filename That Should Stay Inside Its Column.mkv';
+    const row = within(screen.getByRole('region', { name: 'Library asset list' })).getByText(filename).closest('tr')!;
+    await user.click(within(row).getByRole('button', { name: `More actions for ${filename}` }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Asset Info' }));
+    expect((await screen.findByRole('combobox', { name: 'Category' }) as HTMLInputElement).value).toBe('Disabled');
+  });
+
+  it('uses existing metadata fallback when effective Library category inherits', async () => {
+    const user = userEvent.setup();
+    renderLibraryPage();
+    const filename = 'A Very Long Episode Filename That Should Stay Inside Its Column.mkv';
+    await user.click(await screen.findByText(filename));
+    const details = await screen.findByTestId('selected-asset-detail');
+    expect(within(details).getByLabelText('Category / Library: Anime')).toBeTruthy();
+    const row = within(screen.getByRole('region', { name: 'Library asset list' })).getByText(filename).closest('tr')!;
+    await user.click(within(row).getByRole('button', { name: `More actions for ${filename}` }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Asset Info' }));
+    expect((await screen.findByRole('combobox', { name: 'Category' }) as HTMLInputElement).value).toBe('Anime');
+  });
+
   it.each([
     { selection: 'inherit', label: 'Inherit · no effective profile' },
     { selection: 'disabled', label: 'Disabled' },
