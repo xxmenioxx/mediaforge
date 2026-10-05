@@ -5750,8 +5750,24 @@ async function generateExternalSubtitle(
           </Stack>
         </DialogContent>
       </Dialog>
-      <Dialog open={showSnapshotDialog} onClose={closeSnapshotDialog} maxWidth="lg" fullWidth>
-        <DialogTitle sx={{ pb: 0.75 }}>
+      <Dialog
+        open={showSnapshotDialog}
+        onClose={closeSnapshotDialog}
+        maxWidth="lg"
+        fullWidth
+        PaperProps={{
+          sx: (theme) => ({
+            height: `calc(100dvh - ${theme.spacing(4)})`,
+            maxHeight: `calc(100dvh - ${theme.spacing(4)})`,
+            margin: theme.spacing(2),
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+            overflow: 'hidden',
+          }),
+        }}
+      >
+        <DialogTitle sx={{ pb: 0.75, flex: '0 0 auto' }}>
           <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'flex-start' }} spacing={1}>
             <Stack sx={{ minWidth: 0 }}>
               <Typography variant="h2">Asset Snapshot</Typography>
@@ -5766,7 +5782,55 @@ async function generateExternalSubtitle(
             ) : null}
           </Stack>
         </DialogTitle>
-        <DialogContent sx={{ pt: 1 }}>
+        <Box sx={{ px: 3, flex: '0 0 auto' }}>
+          <Tabs
+            aria-label="Asset Info sections"
+            value={assetInfoMainTab}
+            onChange={(_, value: 'overview' | 'tracks' | 'job-information') => {
+              if (value === 'job-information') setSnapshotTab(isJobInformationTab ? snapshotTab : 'execution');
+              else setSnapshotTab(value);
+            }}
+            variant="scrollable"
+            allowScrollButtonsMobile
+          >
+            <Tab value="overview" label="Overview" onClick={() => setSnapshotTab('overview')} />
+            <Tab value="tracks" label="Tracks" />
+            <Tab value="job-information" label="Job Information" />
+          </Tabs>
+          {assetInfoMainTab === 'overview' ? (
+            <Tabs
+              aria-label="Overview sections"
+              value={snapshotTab}
+              onChange={(_, value: AssetInfoSection) => setSnapshotTab(value)}
+              variant="scrollable"
+              allowScrollButtonsMobile
+            >
+              <Tab value="overview" label="Summary" />
+              <Tab value="analysis" label="Analysis" />
+              {!hidePreConversionActions ? <Tab value="advisor" label="MVForge Suggestions" /> : null}
+              <Tab value="conversion" label="Quick Asset Overrides" />
+              {canGenerateTestEncode && !hidePreConversionActions ? <Tab value="test-encode" label="Test Encode" /> : null}
+            </Tabs>
+          ) : null}
+          {assetInfoMainTab === 'job-information' ? (
+            <Tabs
+              aria-label="Job Information sections"
+              value={snapshotTab}
+              onChange={(_, value: AssetInfoSection) => setSnapshotTab(value)}
+              variant="scrollable"
+              allowScrollButtonsMobile
+            >
+              <Tab value="execution" label="Execution / Result" />
+              <Tab value="validation" label="Validation" />
+              <Tab value="original" label="Original" />
+              <Tab value="evidence" label="Evidence" />
+              <Tab value="history" label="History" />
+              <Tab value="publication" label="Current publication" />
+              <Tab value="integration" label="Integration evidence" />
+            </Tabs>
+          ) : null}
+        </Box>
+        <DialogContent sx={{ pt: 1, flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
           <Stack spacing={1.25}>
             <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
               <Stack sx={{ minWidth: 0 }}>
@@ -5814,52 +5878,6 @@ async function generateExternalSubtitle(
               </Alert>
             ) : null}
             <>
-                <Tabs
-                  aria-label="Asset Info sections"
-                  value={assetInfoMainTab}
-                  onChange={(_, value: 'overview' | 'tracks' | 'job-information') => {
-                    if (value === 'job-information') setSnapshotTab(isJobInformationTab ? snapshotTab : 'execution');
-                    else setSnapshotTab(value);
-                  }}
-                  variant="scrollable"
-                  allowScrollButtonsMobile
-                >
-                  <Tab value="overview" label="Overview" onClick={() => setSnapshotTab('overview')} />
-                  <Tab value="tracks" label="Tracks" />
-                  <Tab value="job-information" label="Job Information" />
-                </Tabs>
-                {assetInfoMainTab === 'overview' ? (
-                  <Tabs
-                    aria-label="Overview sections"
-                    value={snapshotTab}
-                    onChange={(_, value: AssetInfoSection) => setSnapshotTab(value)}
-                    variant="scrollable"
-                    allowScrollButtonsMobile
-                  >
-                    <Tab value="overview" label="Summary" />
-                    <Tab value="analysis" label="Analysis" />
-                    {!hidePreConversionActions ? <Tab value="advisor" label="MVForge Suggestions" /> : null}
-                    <Tab value="conversion" label="Quick Asset Overrides" />
-                    {canGenerateTestEncode && !hidePreConversionActions ? <Tab value="test-encode" label="Test Encode" /> : null}
-                  </Tabs>
-                ) : null}
-                {assetInfoMainTab === 'job-information' ? (
-                  <Tabs
-                    aria-label="Job Information sections"
-                    value={snapshotTab}
-                    onChange={(_, value: AssetInfoSection) => setSnapshotTab(value)}
-                    variant="scrollable"
-                    allowScrollButtonsMobile
-                  >
-                    <Tab value="execution" label="Execution / Result" />
-                    <Tab value="validation" label="Validation" />
-                    <Tab value="original" label="Original" />
-                    <Tab value="evidence" label="Evidence" />
-                    <Tab value="history" label="History" />
-                    <Tab value="publication" label="Current publication" />
-                    <Tab value="integration" label="Integration evidence" />
-                  </Tabs>
-                ) : null}
                 {snapshotTab === 'analysis' ? <Box>
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     <Stack direction="row" alignItems="center" spacing={1}>
