@@ -143,15 +143,15 @@ export function RuntimeStorageSummary({ snapshot, loading, error, compact = fals
         return (
           <Box key={volume.key} data-testid="storage-filesystem" sx={{ minWidth: 0 }}>
             <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={0.5}>
-              <Typography variant="caption" fontWeight={700} sx={{ minWidth: 0, color: '#b5c6da', fontSize: '0.64rem' }}>
+              <Typography variant="caption" fontWeight={700} sx={{ minWidth: 0, color: '#b5c6da', fontSize: '0.75rem' }}>
                 {roleLabel || 'Storage'}
               </Typography>
               {usedPercent !== undefined ? (
-                <Typography variant="caption" fontWeight={700} sx={{ color: '#d4dfec', fontSize: '0.61rem', flexShrink: 0 }}>{usedPercent}% used</Typography>
+                <Typography variant="caption" fontWeight={700} sx={{ color: '#d4dfec', fontSize: '0.75rem', flexShrink: 0 }}>{usedPercent}% used</Typography>
               ) : null}
             </Stack>
             <Tooltip title={`Measured filesystem path: ${pathLabel}${volume.volumeId ? ` · volume ${volume.volumeId}` : ''}`} describeChild>
-              <Typography variant="caption" sx={{ display: 'block', color: '#8298b1', fontSize: '0.57rem', overflowWrap: 'anywhere', lineHeight: 1.25 }}>
+              <Typography variant="caption" sx={{ display: 'block', color: '#8298b1', fontSize: '0.75rem', overflowWrap: 'anywhere', lineHeight: 1.25 }}>
                 {pathLabel}{volume.volumeId ? ` · volume ${volume.volumeId}` : ''}
               </Typography>
             </Tooltip>
@@ -163,12 +163,12 @@ export function RuntimeStorageSummary({ snapshot, loading, error, compact = fals
                   value={usedPercent ?? 0}
                   sx={{ height: 3, borderRadius: 99, my: 0.3, bgcolor: 'rgba(63, 88, 119, 0.46)', '& .MuiLinearProgress-bar': { background: 'linear-gradient(90deg, #5865d8, #38b9cb)' } }}
                 />
-                <Typography variant="caption" sx={{ display: 'block', color: '#93a7bd', fontSize: '0.59rem', lineHeight: 1.25, overflowWrap: 'anywhere' }}>
+                <Typography variant="caption" sx={{ display: 'block', color: '#93a7bd', fontSize: '0.75rem', lineHeight: 1.25, overflowWrap: 'anywhere' }}>
                   {formatBytes(usedBytes)} of {formatBytes(totalBytes)} used · {formatBytes(availableBytes)} free
                 </Typography>
               </>
             ) : (
-              <Typography variant="caption" sx={{ display: 'block', color: '#8298b1', fontSize: '0.59rem' }}>Capacity unavailable</Typography>
+              <Typography variant="caption" sx={{ display: 'block', color: '#8298b1', fontSize: '0.75rem' }}>Capacity unavailable</Typography>
             )}
           </Box>
         );
@@ -176,10 +176,10 @@ export function RuntimeStorageSummary({ snapshot, loading, error, compact = fals
       {!loading && !error ? unavailable.map((destination, index) => (
         <Tooltip key={`${destination.role}:${destination.path}:${index}`} title={destination.error || `Destination unavailable: ${destination.path}`} describeChild>
           <Box data-testid="storage-destination-unavailable" sx={{ minWidth: 0 }}>
-            <Typography variant="caption" sx={{ display: 'block', color: '#a9b8cc', fontSize: '0.62rem', overflowWrap: 'anywhere' }}>
+            <Typography variant="caption" sx={{ display: 'block', color: '#a9b8cc', fontSize: '0.75rem', overflowWrap: 'anywhere' }}>
               {displayRole(destination.role)} · {destination.path}
             </Typography>
-            <Typography variant="caption" sx={{ color: '#8298b1', fontSize: '0.59rem' }}>Unavailable</Typography>
+            <Typography variant="caption" sx={{ color: '#8298b1', fontSize: '0.75rem' }}>Unavailable</Typography>
           </Box>
         </Tooltip>
       )) : null}
@@ -201,9 +201,9 @@ export function RuntimeStorageSummary({ snapshot, loading, error, compact = fals
           <Stack direction="row" alignItems="center" justifyContent="space-between">
             <Stack direction="row" alignItems="center" spacing={0.65}>
               <StorageOutlinedIcon sx={{ fontSize: 14, color: '#8ca5bf' }} />
-              <Typography variant="caption" fontWeight={700} sx={{ color: '#b0c1d4', letterSpacing: '0.02em', fontSize: '0.66rem' }}>Storage</Typography>
+              <Typography variant="caption" fontWeight={700} sx={{ color: '#b0c1d4', letterSpacing: '0.02em', fontSize: '0.75rem' }}>Storage</Typography>
             </Stack>
-            <Typography variant="caption" sx={{ color: '#7188a1', fontSize: '0.56rem' }}>Filesystem capacity</Typography>
+            <Typography variant="caption" sx={{ color: '#7188a1', fontSize: '0.75rem' }}>Filesystem capacity</Typography>
           </Stack>
           <Box sx={{ maxHeight: 144, overflowY: volumes.length + unavailable.length > 3 ? 'auto' : 'visible', pr: volumes.length + unavailable.length > 3 ? 0.35 : 0 }}>
             {content}

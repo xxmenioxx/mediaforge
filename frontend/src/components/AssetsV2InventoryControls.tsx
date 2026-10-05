@@ -40,7 +40,7 @@ export function AssetsV2InventoryControls({
         bgcolor: '#071727',
       }}
     >
-      <Typography variant="caption" aria-label={`${count.toLocaleString()} assets`} sx={{ fontSize: '0.66rem', color: '#9cb0c8', whiteSpace: 'nowrap' }}>
+      <Typography variant="caption" aria-label={`${count.toLocaleString()} assets`} sx={{ fontSize: '0.75rem', color: '#9cb0c8', whiteSpace: 'nowrap' }}>
         {count.toLocaleString()} {count === 1 ? 'asset' : 'assets'}
       </Typography>
       <Stack direction="row" alignItems="center" spacing={0.5}>
@@ -52,7 +52,7 @@ export function AssetsV2InventoryControls({
               startIcon={<RefreshOutlinedIcon />}
               onClick={onSync}
               disabled={syncPending}
-              sx={{ minHeight: 30, px: 1.1, borderRadius: '5px', border: '1px solid #6c4cf6', fontSize: '0.64rem', fontWeight: 600, textTransform: 'none', bgcolor: '#6c4cf6', color: '#f3f0ff', boxShadow: 'none', '&:hover': { borderColor: '#8772ff', bgcolor: '#755cf8', color: '#fff', boxShadow: 'none' }, '&.Mui-disabled': { borderColor: '#15304a', bgcolor: '#0c2035', color: '#526981' }, '& .MuiButton-startIcon': { mr: 0.45 }, '& svg': { fontSize: 14 } }}
+              sx={{ minHeight: 30, px: 1.1, borderRadius: '5px', border: '1px solid #6c4cf6', fontSize: '0.8rem', fontWeight: 600, textTransform: 'none', bgcolor: '#6c4cf6', color: '#f3f0ff', boxShadow: 'none', '&:hover': { borderColor: '#8772ff', bgcolor: '#755cf8', color: '#fff', boxShadow: 'none' }, '&.Mui-disabled': { borderColor: '#15304a', bgcolor: '#0c2035', color: '#526981' }, '& .MuiButton-startIcon': { mr: 0.45 }, '& svg': { fontSize: 14 } }}
             >
               Sync
             </Button>
@@ -66,7 +66,7 @@ export function AssetsV2InventoryControls({
           aria-label={filterCount ? `Filter assets, ${filterCount} active` : 'Filter assets'}
           aria-expanded={Boolean(filterAnchor)}
           aria-controls="assets-filter-popover"
-          sx={{ minHeight: 30, px: 1, borderRadius: '5px', fontSize: '0.64rem', fontWeight: 600, textTransform: 'none', borderColor: '#15304a', bgcolor: '#0c2035', color: '#9cb0c8', '&:hover': { borderColor: '#1f4467', bgcolor: '#112a44', color: '#e7eef8' }, '& .MuiButton-startIcon': { mr: 0.45 }, '& svg': { fontSize: 14 } }}
+          sx={{ minHeight: 30, px: 1, borderRadius: '5px', fontSize: '0.8rem', fontWeight: 600, textTransform: 'none', borderColor: '#15304a', bgcolor: '#0c2035', color: '#9cb0c8', '&:hover': { borderColor: '#1f4467', bgcolor: '#112a44', color: '#e7eef8' }, '& .MuiButton-startIcon': { mr: 0.45 }, '& svg': { fontSize: 14 } }}
         >
           Filter{filterCount ? ` · ${filterCount}` : ''}
         </Button>
@@ -78,7 +78,7 @@ export function AssetsV2InventoryControls({
               startIcon={<SwapVertOutlinedIcon />}
               disabled
               aria-label="Sort assets (unavailable)"
-              sx={{ minHeight: 30, px: 1, borderRadius: '5px', fontSize: '0.64rem', fontWeight: 600, textTransform: 'none', borderColor: '#15304a', color: '#526981', bgcolor: 'rgba(12, 32, 53, 0.38)', '& .MuiButton-startIcon': { mr: 0.45 }, '& svg': { fontSize: 14 } }}
+              sx={{ minHeight: 30, px: 1, borderRadius: '5px', fontSize: '0.8rem', fontWeight: 600, textTransform: 'none', borderColor: '#15304a', color: '#526981', bgcolor: 'rgba(12, 32, 53, 0.38)', '& .MuiButton-startIcon': { mr: 0.45 }, '& svg': { fontSize: 14 } }}
             >
               Sort
             </Button>

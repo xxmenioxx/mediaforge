@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -263,6 +263,80 @@ describe('Library Assets workspace', () => {
     vi.mocked(api.createQueueBatchPreflight).mockResolvedValue({ id: 'candidate-1' } as never);
   });
 
+  it('uses the batched global effective profile for Library labels, Advisor keys, and Test Encode', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.profileAssignments).mockResolvedValue([]);
+    const globalProfile = { ...profile, id: 7, name: 'Global HEVC' };
+    vi.mocked(api.profiles).mockResolvedValue([globalProfile] as never);
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (ids) => {
+      const result = effectiveConfigurationsForIds(ids);
+      Object.values(result.configurations).forEach((config) => { config.video = { selection: 'profile', videoProfileId: 7, source: 'global' } as never; });
+      return result as never;
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['advisor', 'asset-row', `${path}/Episode 02.mkv`, 7], { score: 94 });
+    renderLibraryPage(client);
+    const row = (await screen.findByText('Episode 02.mkv')).closest('tr')!;
+    await user.click(row);
+    const details = await screen.findByTestId('selected-asset-detail');
+    expect(details.textContent).toContain('Global HEVC');
+    expect(within(row).getByText('94')).toBeTruthy();
+    await user.click(within(details).getByRole('button', { name: 'Test Encode' }));
+    expect(await screen.findByRole('dialog', { name: 'Generate Test Encode' })).toBeTruthy();
+    expect(api.effectiveAssetConfigurations).toHaveBeenCalledWith([1, 2]);
+  });
+
+  it('uses the effective Asset profile instead of a stale Path assignment in Library V2', async () => {
+    const assetProfile = { ...profile, id: 8, name: 'Asset HEVC', scope: 'asset' };
+    vi.mocked(api.profiles).mockResolvedValue([profile, assetProfile] as never);
+    vi.mocked(api.profileAssignments).mockResolvedValue([
+      pathAssignment,
+      { ...pathAssignment, id: 2, targetType: 'asset', targetPath: `${path}/A Very Long Episode Filename That Should Stay Inside Its Column.mkv`, videoProfileId: 8 },
+    ] as never);
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (ids) => {
+      const result = effectiveConfigurationsForIds(ids);
+      result.configurations['1'].video = { selection: 'profile', videoProfileId: 8, source: 'asset' } as never;
+      return result as never;
+    });
+    const user = userEvent.setup();
+    renderLibraryPage();
+    await user.click(await screen.findByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv'));
+    const details = await screen.findByTestId('selected-asset-detail');
+    await waitFor(() => expect(details.textContent).toContain('Asset HEVC'));
+  });
+
+  it.each([
+    { selection: 'inherit', label: 'Inherit · no effective profile' },
+    { selection: 'disabled', label: 'Disabled' },
+  ])('preserves Library effective video state $selection', async ({ selection, label }) => {
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (ids) => {
+      const result = effectiveConfigurationsForIds(ids);
+      result.configurations['1'].video = { selection, videoProfileId: 0, source: 'path' } as never;
+      return result as never;
+    });
+    const user = userEvent.setup();
+    renderLibraryPage();
+    await user.click(await screen.findByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv'));
+    const details = await screen.findByTestId('selected-asset-detail');
+    await waitFor(() => expect(details.textContent).toContain(label));
+    expect((within(details).getByRole('button', { name: 'Test Encode' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('allows Global Custom Test Encode in Library V2 only when effective profile data exists', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (ids) => {
+      const result = effectiveConfigurationsForIds(ids);
+      result.configurations['1'].video = { selection: 'value', source: 'global', profileData: { videoCodec: 'libx265' } } as never;
+      return result as never;
+    });
+    renderLibraryPage();
+    await user.click(await screen.findByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv'));
+    const details = await screen.findByTestId('selected-asset-detail');
+    await waitFor(() => expect(details.textContent).toContain('Custom'));
+    await user.click(within(details).getByRole('button', { name: 'Test Encode' }));
+    expect(await screen.findByRole('dialog', { name: 'Generate Test Encode' })).toBeTruthy();
+  });
+
   it('renders Library technical columns, compact counts, and a path-filtered accessible hierarchy', async () => {
     const user = userEvent.setup();
     renderLibraryPage();
@@ -490,6 +564,13 @@ describe('Library Assets workspace', () => {
     expect(within(toolbar).getByRole('navigation', { name: 'Library location' })).toBeTruthy();
     expect(screen.queryByRole('table', { name: `Actions for ${path}` })).toBeNull();
     expect(evaluateAdvisor).not.toHaveBeenCalled();
+    expect(within(toolbar).getByRole('switch', { name: 'Confidence On' })).toBeTruthy();
+    await user.click(within(toolbar).getByRole('button', { name: 'Configure Path' }));
+    const configure = await screen.findByRole('dialog', { name: 'Configure Path' });
+    await waitFor(() => expect(within(configure).getByRole('checkbox', { name: 'Change video' })).toBeTruthy());
+    expect((within(configure).getByRole('checkbox', { name: 'Change destination' }) as HTMLInputElement).disabled).toBe(true);
+    await user.click(within(configure).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Configure Path' })).toBeNull());
 
     await user.click(within(toolbar).getByRole('button', { name: 'Advisor' }));
     await waitFor(() => expect(evaluateAdvisor).toHaveBeenCalledTimes(2));
@@ -509,7 +590,7 @@ describe('Library Assets workspace', () => {
     const table = await screen.findByRole('table', { name: 'Library assets' });
     const cachedRow = screen.getByText('A Very Long Episode Filename That Should Stay Inside Its Column.mkv').closest('tr');
     expect(cachedRow).toBeTruthy();
-    expect(within(cachedRow!).getByText('87')).toBeTruthy();
+    expect(await within(cachedRow!).findByText('87')).toBeTruthy();
     expect(within(cachedRow!).getByTestId('advisor-score-indicator')).toBeTruthy();
     expect(within(table).getAllByText('Not evaluated')).toHaveLength(1);
     const unevaluatedRow = screen.getByText('Episode 02.mkv').closest('tr')!;
@@ -811,6 +892,116 @@ describe('RAW Assets workspace', () => {
     expect(screen.getByRole('menuitem', { name: 'Queue asset' })).toBeTruthy();
   });
 
+  it('persists a suggested Asset profile, reports failure, and resolves saved configuration for Queue and Test Encode', async () => {
+    const user = userEvent.setup();
+    const suggested = { ...profile, id: 8, name: 'Suggested Asset HEVC', scope: 'asset', container: 'mkv', videoCodec: 'hevc', qualityValue: 21 };
+    vi.mocked(api.profiles).mockResolvedValue([profile, suggested] as never);
+    const suggest = vi.spyOn(api, 'suggestProfile').mockResolvedValue({ matchType: 'existing', summary: 'Suggested from persisted evidence', scan: persistedSnapshot('/media/raw/anime/Attack on Titan/S01E01.mkv'), suggestedProfile: suggested, candidates: [], insights: {}, findings: [] } as never);
+    const assign = vi.spyOn(api, 'updateProfileAssignment').mockRejectedValueOnce(new Error('Profile save rejected')).mockImplementation(async (input) => {
+      vi.mocked(api.profileAssignments).mockResolvedValue([{ ...input, id: 99 }] as never);
+      vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (ids) => {
+        const result = effectiveConfigurationsForIds(ids);
+        Object.values(result.configurations).forEach((config) => { config.video = { selection: 'profile', videoProfileId: 8 }; });
+        return result as never;
+      });
+      return input as never;
+    });
+    const createTest = vi.spyOn(api, 'createTestEncode').mockResolvedValue({ id: 30 } as never);
+    renderRawPage('/assets?location=raw&sourceGroup=7&logicalGroup=%2Fmedia%2Fraw%2Fanime%2FAttack%20on%20Titan');
+    const details = await screen.findByTestId('selected-asset-detail');
+    await user.click(within(details).getByRole('button', { name: 'More actions for S01E01.mkv' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Asset Info' }));
+    await user.click(await screen.findByRole('tab', { name: 'MVForge Suggestions' }));
+    await user.click(await screen.findByRole('button', { name: 'Select suggested profile' }));
+    expect(await within(await screen.findByRole('dialog')).findByText('Profile save rejected')).toBeTruthy();
+    expect(details.textContent).not.toContain('Suggested Asset HEVC');
+    await user.click(screen.getByRole('button', { name: 'Select suggested profile' }));
+    await waitFor(() => expect(details.textContent).toContain('Suggested Asset HEVC'));
+    expect(assign.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ targetType: 'asset', mediaType: 'video', selection: 'profile', videoProfileId: 8 }));
+    const discardDraft = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const assetInfoDialog = screen.getByRole('dialog');
+    await user.click(assetInfoDialog.parentElement!);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const refreshedDetails = await screen.findByTestId('selected-asset-detail');
+    await waitFor(() => expect((within(refreshedDetails).getByRole('button', { name: 'Test Encode' }) as HTMLButtonElement).disabled).toBe(false));
+    await user.click(within(refreshedDetails).getByRole('button', { name: 'Test Encode' }));
+    await user.click(await screen.findByRole('button', { name: 'Generate New Test Encode' }));
+    await waitFor(() => expect(createTest).toHaveBeenCalledWith(expect.objectContaining({ profileId: 8, resolveAssignments: true, libraryId: 1 })));
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await user.click(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'More actions for S01E01.mkv' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Queue asset' }));
+    await waitFor(() => expect(api.createQueueJob).toHaveBeenCalledWith(expect.objectContaining({ profileId: 8, resolveProfileAssignments: true, libraryId: 1 })));
+    discardDraft.mockRestore();
+    suggest.mockRestore(); assign.mockRestore(); createTest.mockRestore();
+  });
+
+  it('shows compact individual Queue failure feedback outside Asset Info', async () => {
+    const user = userEvent.setup();
+    let rejectQueue!: (reason: Error) => void;
+    vi.mocked(api.createQueueJob).mockImplementation(() => new Promise((_, reject) => { rejectQueue = reject; }));
+    renderRawPage('/assets?location=raw&sourceGroup=7&logicalGroup=%2Fmedia%2Fraw%2Fanime%2FAttack%20on%20Titan');
+    const details = await screen.findByTestId('selected-asset-detail');
+    await user.click(within(details).getByRole('button', { name: 'More actions for S01E01.mkv' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Queue asset' }));
+    await act(async () => rejectQueue(new Error('Destination is unavailable')));
+    expect(await screen.findByText('Destination is unavailable')).toBeTruthy();
+    expect(screen.queryByRole('dialog', { name: /Asset Info/ })).toBeNull();
+  });
+
+  it('keeps the dirty Asset Info Queue warning visible after the dialog closes', async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderRawPage('/assets?location=raw&sourceGroup=7&logicalGroup=%2Fmedia%2Fraw%2Fanime%2FAttack%20on%20Titan');
+    const table = await screen.findByRole('table', { name: 'RAW assets' });
+    await user.click(within(table).getByRole('button', { name: 'More actions for S01E01.mkv' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Asset Info' }));
+    await user.click(await screen.findByRole('combobox', { name: 'Category' }));
+    await user.click(await screen.findByRole('option', { name: 'anime' }));
+
+    fireEvent.click(within(table).getByRole('button', { name: 'More actions for S01E01.mkv', hidden: true }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Queue asset', hidden: true }));
+    const queueWarning = 'Save Asset Info changes before Queue. Unsaved changes are not queued.';
+    expect((await screen.findAllByText(queueWarning)).length).toBeGreaterThan(0);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByText(queueWarning)).toBeTruthy();
+    confirm.mockRestore();
+  });
+
+  it.each(['audio_only', 'override_only', 'disabled'])('explains unsupported %s Test Encode configuration', async (selection) => {
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (ids) => {
+      const result = effectiveConfigurationsForIds(ids);
+      Object.values(result.configurations).forEach((config) => { config.video = { selection, videoProfileId: 0 }; });
+      return result as never;
+    });
+    renderRawPage('/assets?location=raw&sourceGroup=7&logicalGroup=%2Fmedia%2Fraw%2Fanime%2FAttack%20on%20Titan');
+    const details = await screen.findByTestId('selected-asset-detail');
+    await waitFor(() => expect((within(details).getByRole('button', { name: 'Test Encode' }) as HTMLButtonElement).disabled).toBe(true));
+    expect(details.textContent).toContain(selection === 'audio_only' ? 'Audio only' : selection === 'disabled' ? 'Disabled' : 'Overrides only');
+  });
+
+  it('keeps Test Encode disabled with a truthful reason while effective configuration is missing', async () => {
+    vi.mocked(api.effectiveAssetConfigurations).mockResolvedValue({ configurations: {}, missingAssetIds: [11, 12] } as never);
+    renderRawPage('/assets?location=raw&sourceGroup=7&logicalGroup=%2Fmedia%2Fraw%2Fanime%2FAttack%20on%20Titan');
+    const details = await screen.findByTestId('selected-asset-detail');
+    await waitFor(() => expect((within(details).getByRole('button', { name: 'Test Encode' }) as HTMLButtonElement).disabled).toBe(true));
+    expect(within(details).getByLabelText(/Effective video configuration is loading or unavailable/i)).toBeTruthy();
+  });
+
+  it('keeps global Custom Test Encode enabled with the effective destination', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (ids) => {
+      const result = effectiveConfigurationsForIds(ids);
+      Object.values(result.configurations).forEach((config) => { config.video = { selection: 'value', source: 'global', profileData: { videoCodec: 'libx265' } } as never; });
+      return result as never;
+    });
+    renderRawPage('/assets?location=raw&sourceGroup=7&logicalGroup=%2Fmedia%2Fraw%2Fanime%2FAttack%20on%20Titan');
+    const details = await screen.findByTestId('selected-asset-detail');
+    await user.click(within(details).getByRole('button', { name: 'Test Encode' }));
+    expect(await screen.findByRole('dialog', { name: 'Generate Test Encode' })).toBeTruthy();
+  });
+
   it('reacts to an inherited destination update without opening Asset Info or remounting the RAW row', async () => {
     const user = userEvent.setup();
     rawDestinationLibraryId = 0;
@@ -851,6 +1042,7 @@ describe('RAW Assets workspace', () => {
     await user.click(within(row).getByRole('button', { name: 'More actions for S01E01.mkv' }));
     await user.click(screen.getByRole('menuitem', { name: 'Queue asset' }));
     await waitFor(() => expect(api.createQueueJob).toHaveBeenCalledOnce());
+    expect(await screen.findByText('Asset queued individually.')).toBeTruthy();
     expect(api.createQueueJob).toHaveBeenCalledWith(expect.objectContaining({
       mediaPath: '/media/raw/anime/Attack on Titan/S01E01.mkv',
       libraryId: 1,

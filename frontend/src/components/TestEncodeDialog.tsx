@@ -19,7 +19,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { Library, TestEncode, TestEncodeInput } from '../api/types';
 import { AVTimingSummary } from './AVTimingSummary';
@@ -35,7 +35,10 @@ type Props = {
 
 export function TestEncodeDialog({ open, onClose, sourcePath, libraries, defaultLibraryId = 0, request }: Props) {
   const queryClient = useQueryClient();
-  const [libraryId, setLibraryId] = useState(defaultLibraryId || libraries[0]?.id || 0);
+  const [manualDestination, setManualDestination] = useState<{ sourcePath: string; libraryId: number } | null>(null);
+  useEffect(() => {
+    setManualDestination(null);
+  }, [open, sourcePath]);
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings, enabled: open });
   const policy = settings.data?.find((item) => item.key === 'testEncodePolicy')?.value;
   const configuredStartMode = policy?.defaultStartMode === 'beginning' || policy?.defaultStartMode === 'middle' || policy?.defaultStartMode === 'representative'
@@ -49,7 +52,8 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
   const [details, setDetails] = useState<TestEncode | null>(null);
   const [detailsTab, setDetailsTab] = useState(0);
   const [qualificationWindowFocus, setQualificationWindowFocus] = useState('');
-  const selectedLibraryId = libraryId || defaultLibraryId || libraries[0]?.id || 0;
+  const destinationId = manualDestination?.sourcePath === sourcePath ? manualDestination.libraryId : defaultLibraryId;
+  const selectedLibraryId = libraries.some((library) => library.id === destinationId) ? destinationId : 0;
   const tests = useQuery({
     queryKey: ['testEncodes', sourcePath],
     queryFn: () => api.testEncodes(sourcePath),
@@ -109,7 +113,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
             {request.configurationSource === 'lab_draft' ? <Alert severity="warning">Uses the current Lab configuration, including unsaved changes.</Alert> : null}
             <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{sourcePath}</Typography>
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
-              <TextField select size="small" label="Destination library" value={selectedLibraryId || ''} onChange={(event) => setLibraryId(Number(event.target.value))} fullWidth>
+              <TextField select size="small" label="Destination library" value={selectedLibraryId || ''} onChange={(event) => setManualDestination({ sourcePath, libraryId: Number(event.target.value) })} fullWidth>
                 {libraries.map((library) => <MenuItem key={library.id} value={library.id}>{library.name}</MenuItem>)}
               </TextField>
               <TextField select size="small" label="Sample position" value={startMode} onChange={(event) => setStartModeOverride(event.target.value as TestEncodeInput['startMode'])} fullWidth>
@@ -121,6 +125,7 @@ export function TestEncodeDialog({ open, onClose, sourcePath, libraries, default
               {startMode === 'custom' ? <TextField size="small" type="number" label="Start seconds" value={startSeconds} inputProps={{ min: 0, step: 1 }} onChange={(event) => setStartSeconds(Math.max(0, Number(event.target.value) || 0))} fullWidth /> : null}
               <TextField size="small" type="number" label="Duration" value={durationSeconds} inputProps={{ min: 5, max: 120 }} onChange={(event) => setDurationSecondsOverride(Math.min(120, Math.max(5, Number(event.target.value) || 20)))} fullWidth />
             </Stack>
+            {!selectedLibraryId ? <Alert severity="info">No effective destination is available. Select a destination library to generate this test.</Alert> : null}
             <Button variant="contained" disabled={!selectedLibraryId || create.isPending} onClick={() => create.mutate()}>
               {create.isPending ? 'Preparing…' : 'Generate New Test Encode'}
             </Button>

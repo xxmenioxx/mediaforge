@@ -44,7 +44,7 @@ export function AssetsV2PathToolbar({
           borderColor: '#15304a',
           bgcolor: '#0c2035',
           color: '#9cb0c8',
-          fontSize: '0.64rem',
+          fontSize: '0.8rem',
           fontWeight: 600,
           lineHeight: 1,
           textTransform: 'none',
@@ -56,9 +56,9 @@ export function AssetsV2PathToolbar({
           '& .MuiButton-startIcon svg': { fontSize: 14 },
         },
         '& .MuiAutocomplete-root': { flex: '0 0 auto' },
-        '& .MuiAutocomplete-root .MuiInputBase-root': { minHeight: 32, height: 32, fontSize: '0.66rem', borderRadius: '5px' },
-        '& .MuiAutocomplete-root .MuiAutocomplete-input': { py: '4px !important', px: '8px !important', fontSize: '0.66rem' },
-        '& .MuiAutocomplete-root .MuiInputLabel-root': { fontSize: '0.66rem', transform: 'translate(12px, 8px) scale(1)' },
+        '& .MuiAutocomplete-root .MuiInputBase-root': { minHeight: 32, height: 32, fontSize: '0.75rem', borderRadius: '5px' },
+        '& .MuiAutocomplete-root .MuiAutocomplete-input': { py: '4px !important', px: '8px !important', fontSize: '0.75rem' },
+        '& .MuiAutocomplete-root .MuiInputLabel-root': { fontSize: '0.75rem', transform: 'translate(12px, 8px) scale(1)' },
         '& .MuiAutocomplete-root .MuiInputLabel-root.MuiInputLabel-shrink': { transform: 'translate(12px, -7px) scale(0.75)' },
         '& .MuiAutocomplete-root .MuiAutocomplete-endAdornment': { right: 2 },
         '& .MuiAutocomplete-root .MuiAutocomplete-popupIndicator': { p: 0.25 },
@@ -96,7 +96,7 @@ export function AssetsV2PathToolbar({
           </>
         ) : null}
         {selectedCount > 0 ? (
-          <Typography variant="caption" aria-label={`${selectedCount} selected`} sx={{ pl: 0.45, pr: 0.15, color: '#59718b', fontSize: '0.58rem', lineHeight: 1.2, whiteSpace: 'nowrap' }}>
+          <Typography variant="caption" aria-label={`${selectedCount} selected`} sx={{ pl: 0.45, pr: 0.15, color: '#59718b', fontSize: '0.75rem', lineHeight: 1.2, whiteSpace: 'nowrap' }}>
             {selectedCount} selected
           </Typography>
         ) : null}

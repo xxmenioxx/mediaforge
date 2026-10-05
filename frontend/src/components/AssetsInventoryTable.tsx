@@ -68,7 +68,7 @@ export function AssetsInventoryTable({ mode, selectable = false, selectAll, chil
           tableLayout: 'fixed',
           borderCollapse: 'separate',
           borderSpacing: '0 4px',
-          '& th': { height: 33, color: '#7890aa', fontSize: '0.61rem', fontWeight: 600, bgcolor: '#081a2b', borderColor: 'rgba(25, 56, 83, 0.68)', whiteSpace: 'nowrap', letterSpacing: '0.015em' },
+          '& th': { height: 33, color: '#7890aa', fontSize: '0.75rem', fontWeight: 600, bgcolor: '#081a2b', borderColor: 'rgba(25, 56, 83, 0.68)', whiteSpace: 'nowrap', letterSpacing: '0.015em' },
           '& td': { borderColor: 'rgba(25, 56, 83, 0.62)', color: '#a9bbd0' },
           '& td, & th': { py: 0.48, px: 0.72 },
           '& tbody td': { height: 39 },
