@@ -18,7 +18,7 @@ const (
 	ollamaTranslationHTTPTimeout     = 60 * time.Second
 	ollamaTranslationMaxRequestBody  = 2 * 1024 * 1024
 	ollamaTranslationMaxResponseBody = 2 * 1024 * 1024
-	ollamaReadinessMaxResponseBody   = 64 * 1024
+	ollamaReadinessMaxResponseBody   = 256 * 1024
 )
 
 type ollamaTranslationProvider struct {
@@ -49,6 +49,14 @@ type ollamaChatResponse struct {
 	PromptEvalCount int   `json:"prompt_eval_count"`
 	EvalCount       int   `json:"eval_count"`
 	TotalDuration   int64 `json:"total_duration"`
+}
+
+type ollamaResponseBodyLimitError struct {
+	maximum int
+}
+
+func (err *ollamaResponseBodyLimitError) Error() string {
+	return fmt.Sprintf("Ollama response exceeds %d-byte adapter limit", err.maximum)
 }
 
 func newOllamaTranslationProvider(settings translationSettings) (*ollamaTranslationProvider, error) {
@@ -184,6 +192,11 @@ func ollamaReadinessForRequestError(ctx context.Context, err error) TranslationP
 		diagnostic = "Ollama readiness request timed out"
 	case translationProviderErrorCancelled:
 		diagnostic = "Ollama readiness request was cancelled"
+	default:
+		var limitErr *ollamaResponseBodyLimitError
+		if errors.As(err, &limitErr) {
+			diagnostic = fmt.Sprintf("Ollama readiness response exceeds %d-byte adapter limit", limitErr.maximum)
+		}
 	}
 	return TranslationProviderReadiness{State: translationReadinessUnavailable, Diagnostic: diagnostic}
 }
@@ -308,7 +321,7 @@ func readBoundedOllamaBody(ctx context.Context, body io.Reader, maximum int) ([]
 		return nil, err
 	}
 	if len(encoded) > maximum {
-		return nil, fmt.Errorf("Ollama response exceeds %d-byte adapter limit", maximum)
+		return nil, &ollamaResponseBodyLimitError{maximum: maximum}
 	}
 	return encoded, nil
 }
