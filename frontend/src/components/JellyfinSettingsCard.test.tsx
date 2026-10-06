@@ -145,6 +145,10 @@ describe('JellyfinSettingsCard', () => {
     renderCard();
 
     expect(await screen.findByText(/jellyfin library unavailable \(id jellyfin-exact-44\) · needs remap/i)).toBeTruthy();
+    const manualButton = screen.getByRole('button', { name: /request manual refresh/i }) as HTMLButtonElement;
+    expect(manualButton.disabled).toBe(true);
+    fireEvent.click(manualButton);
+    expect(manualRefresh).not.toHaveBeenCalled();
   });
 
   it('revalidates persisted state after navigating away and back', async () => {

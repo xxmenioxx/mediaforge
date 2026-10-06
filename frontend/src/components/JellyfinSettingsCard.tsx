@@ -146,6 +146,9 @@ export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props
   const effectiveManualLibraryId = draft.mappings.some((mapping) => mapping.mvforgeLibraryId === manualLibraryId)
     ? manualLibraryId
     : draft.mappings[0]?.mvforgeLibraryId ?? '';
+  const manualMapping = draft.mappings.find((mapping) => mapping.mvforgeLibraryId === effectiveManualLibraryId);
+  const persistedManualMapping = integrationState.data?.mappings.find((mapping) => mapping.mvforgeLibraryId === effectiveManualLibraryId);
+  const manualMappingNeedsRemap = persistedManualMapping?.needsRemap ?? manualMapping?.needsRemap === true;
 
   return (
     <Card>
@@ -247,7 +250,7 @@ export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props
             <TextField select size="small" label="Manual refresh target" value={effectiveManualLibraryId} onChange={(event) => setManualLibraryId(Number(event.target.value))} sx={{ minWidth: { sm: 300 } }}>
               {draft.mappings.map((mapping) => <MenuItem key={mapping.mvforgeLibraryId} value={mapping.mvforgeLibraryId}>{libraries.find((library) => library.id === mapping.mvforgeLibraryId)?.name ?? `Library ${mapping.mvforgeLibraryId}`}</MenuItem>)}
             </TextField>
-            <Button variant="outlined" disabled={!effectiveManualLibraryId || settingsDirty || manualRefresh.isPending} onClick={() => manualRefresh.mutate(Number(effectiveManualLibraryId))}>Request manual refresh</Button>
+            <Button variant="outlined" disabled={!effectiveManualLibraryId || settingsDirty || manualRefresh.isPending || manualMappingNeedsRemap} onClick={() => manualRefresh.mutate(Number(effectiveManualLibraryId))}>Request manual refresh</Button>
             {latestOutcome ? <Typography variant="body2" color="text.secondary">Last outcome: {statusLabel(latestOutcome)} · {new Date(latestOutcome.updatedAt).toLocaleString()}</Typography> : <Typography variant="body2" color="text.secondary">No refresh outcomes yet.</Typography>}
           </Stack>
           {manualRefresh.isError ? <Alert severity="warning">Unable to record manual refresh request.</Alert> : null}
