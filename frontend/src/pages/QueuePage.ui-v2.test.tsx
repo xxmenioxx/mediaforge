@@ -181,6 +181,26 @@ describe('Queue V2 workspace', () => {
     expect(dismiss).not.toHaveBeenCalled();
   });
 
+  it('keeps job identity, status, and actions available in the narrow-screen structure', async () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    window.dispatchEvent(new Event('resize'));
+    mockQueueApi([job(1, 'queued')]);
+    renderQueue();
+
+    try {
+      const row = await screen.findByRole('listitem');
+      expect(row.getAttribute('data-testid')).toBe('queue-job-1');
+      expect(within(row).getByLabelText('Queue status: Queued')).toBeTruthy();
+      expect(within(row).getByRole('button', { name: 'Details for Job #1' })).toBeTruthy();
+      expect(within(row).getByRole('button', { name: 'Cancel Job #1' })).toBeTruthy();
+      expect(within(row).getByRole('button', { name: 'Remove Job #1' })).toBeTruthy();
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
+      window.dispatchEvent(new Event('resize'));
+    }
+  });
+
   it('distinguishes an empty Queue from a filter with no matches', async () => {
     mockQueueApi([]);
     const empty = renderQueue();
