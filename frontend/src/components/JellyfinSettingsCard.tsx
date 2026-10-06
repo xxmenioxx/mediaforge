@@ -18,9 +18,9 @@ import SaveIcon from '@mui/icons-material/Save';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api/client';
-import type { JellyfinIntegrationOutcome, Library } from '../api/types';
+import type { JellyfinIntegrationOutcome, JellyfinIntegrationState, JellyfinLibrary, Library } from '../api/types';
 
-type Mapping = { mvforgeLibraryId: number; jellyfinLibraryId: string; jellyfinName?: string };
+type Mapping = { mvforgeLibraryId: number; jellyfinLibraryId: string; jellyfinName?: string; jellyfinServerId?: string; needsRemap?: boolean; remap?: boolean };
 type Draft = {
   enabled: boolean;
   baseUrl: string;
@@ -44,7 +44,7 @@ function jellyfinDraft(value?: Record<string, unknown>): Draft {
         if (typeof raw !== 'object' || raw === null) return [];
         const item = raw as Record<string, unknown>;
         return typeof item.mvforgeLibraryId === 'number' && typeof item.jellyfinLibraryId === 'string'
-          ? [{ mvforgeLibraryId: item.mvforgeLibraryId, jellyfinLibraryId: item.jellyfinLibraryId, jellyfinName: typeof item.jellyfinName === 'string' ? item.jellyfinName : undefined }]
+          ? [{ mvforgeLibraryId: item.mvforgeLibraryId, jellyfinLibraryId: item.jellyfinLibraryId, jellyfinName: typeof item.jellyfinName === 'string' ? item.jellyfinName : undefined, jellyfinServerId: typeof item.jellyfinServerId === 'string' ? item.jellyfinServerId : undefined, needsRemap: item.needsRemap === true }]
           : [];
       })
     : [];
@@ -57,6 +57,16 @@ function jellyfinDraft(value?: Record<string, unknown>): Draft {
     debounceSeconds: typeof value?.debounceSeconds === 'number' ? Math.max(0, Math.min(60, value.debounceSeconds)) : 10,
     mappings,
   };
+}
+
+function persistedJellyfinLibraries(value: unknown): JellyfinLibrary[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw): JellyfinLibrary[] => {
+    if (typeof raw !== 'object' || raw === null) return [];
+    const library = raw as Record<string, unknown>;
+    if (typeof library.id !== 'string' || typeof library.name !== 'string') return [];
+    return [{ id: library.id, name: library.name, ...(typeof library.collectionType === 'string' ? { collectionType: library.collectionType } : {}) }];
+  });
 }
 
 function statusLabel(outcome: JellyfinIntegrationOutcome) {
@@ -77,16 +87,30 @@ export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props
   const [selectedJellyfinLibrary, setSelectedJellyfinLibrary] = useState('');
   const [manualLibraryId, setManualLibraryId] = useState<number | ''>('');
   const outcomes = useQuery({ queryKey: ['jellyfinOutcomes'], queryFn: api.jellyfinOutcomes, refetchInterval: 5000 });
-  const connection = useMutation({ mutationFn: api.testJellyfinConnection });
+  const integrationState = useQuery<JellyfinIntegrationState>({
+    queryKey: ['jellyfinIntegrationState', value?.connectionConfigRevision, value?.baseUrl],
+    queryFn: api.jellyfinIntegrationState,
+    refetchOnMount: 'always',
+  });
+  const connection = useMutation({
+    mutationFn: api.testJellyfinConnection,
+    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['jellyfinIntegrationState'] }),
+  });
   const manualRefresh = useMutation({
     mutationFn: api.manualJellyfinRefresh,
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['jellyfinOutcomes'] }),
   });
-  const discoveredLibraries = connection.data?.libraries ?? [];
+  const discoveredLibraries = integrationState.data?.libraries ?? persistedJellyfinLibraries(value?.libraries);
   const latestOutcome = outcomes.data?.[0];
-  const canAddMapping = selectedMVForgeLibrary !== '' && selectedJellyfinLibrary !== '' && !draft.mappings.some((mapping) => mapping.jellyfinLibraryId === selectedJellyfinLibrary && mapping.mvforgeLibraryId !== selectedMVForgeLibrary);
+  const librariesLoaded = integrationState.data?.librariesLoaded ?? value?.librariesLoaded === true;
+  const configurationNeedsRevalidation = integrationState.data?.configurationNeedsRevalidation ?? value?.configurationNeedsRevalidation === true;
+  const lastConnectionSuccessful = integrationState.data?.lastConnectionSuccessful ?? value?.lastConnectionSuccessful === true;
+  const lastSuccessfulConnectionAt = integrationState.data?.lastSuccessfulConnectionAt ?? (typeof value?.lastSuccessfulConnectionAt === 'string' ? value.lastSuccessfulConnectionAt : undefined);
+  const liveReachability = integrationState.data?.liveReachability ?? 'unknown';
+  const configurationValid = integrationState.data?.configurationValid ?? (value?.configurationValid === true || (Boolean(persistedBaseline.baseUrl.trim()) && persistedBaseline.credentialConfigured));
+  const canAddMapping = librariesLoaded && !configurationNeedsRevalidation && selectedMVForgeLibrary !== '' && selectedJellyfinLibrary !== '' && !draft.mappings.some((mapping) => mapping.jellyfinLibraryId === selectedJellyfinLibrary && mapping.mvforgeLibraryId !== selectedMVForgeLibrary);
   const mappingIdentity = (mappings: Mapping[]) => mappings
-    .map(({ mvforgeLibraryId, jellyfinLibraryId }) => `${mvforgeLibraryId}:${jellyfinLibraryId}`)
+    .map(({ mvforgeLibraryId, jellyfinLibraryId, jellyfinServerId, needsRemap }) => `${mvforgeLibraryId}:${jellyfinLibraryId}:${jellyfinServerId ?? ''}:${needsRemap === true}`)
     .sort()
     .join('|');
   const settingsDirty = draft.enabled !== persistedBaseline.enabled
@@ -104,7 +128,7 @@ export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props
 
   const save = () => onSave({
     ...draft,
-    mappings: draft.mappings,
+    mappings: draft.mappings.map(({ mvforgeLibraryId, jellyfinLibraryId, jellyfinName, remap }) => ({ mvforgeLibraryId, jellyfinLibraryId, jellyfinName, ...(remap ? { remap: true } : {}) })),
     ...(credentialDraft ? { apiToken: credentialDraft } : {}),
     ...(clearCredential ? { clearCredential: true } : {}),
   });
@@ -112,7 +136,7 @@ export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props
   const addMapping = () => {
     if (selectedMVForgeLibrary === '' || !selectedJellyfinLibrary) return;
     const selected = discoveredLibraries.find((library) => library.id === selectedJellyfinLibrary);
-    const mapping = { mvforgeLibraryId: selectedMVForgeLibrary, jellyfinLibraryId: selectedJellyfinLibrary, jellyfinName: selected?.name };
+    const mapping = { mvforgeLibraryId: selectedMVForgeLibrary, jellyfinLibraryId: selectedJellyfinLibrary, jellyfinName: selected?.name, jellyfinServerId: integrationState.data?.serverId, needsRemap: false, remap: true };
     setDraft((current) => ({
       ...current,
       mappings: [...current.mappings.filter((item) => item.mvforgeLibraryId !== selectedMVForgeLibrary), mapping],
@@ -178,6 +202,15 @@ export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props
             </Alert>
           ) : null}
           {connection.isError ? <Alert severity="warning">Connection test failed.</Alert> : null}
+          {configurationNeedsRevalidation ? <Alert severity="info">Jellyfin connection settings changed. Libraries and mappings need successful revalidation.</Alert> : null}
+          <Alert severity={liveReachability === 'unavailable' ? 'warning' : lastConnectionSuccessful ? 'success' : 'info'}>
+            {`Integration ${draft.enabled ? 'enabled' : 'disabled'} · Credential ${integrationState.data?.credentialConfigured ?? persistedBaseline.credentialConfigured ? 'configured' : 'missing'} · Configuration ${configurationValid ? 'valid' : 'incomplete'} · `}
+            {lastConnectionSuccessful
+              ? `Last connection succeeded${lastSuccessfulConnectionAt ? ` ${new Date(lastSuccessfulConnectionAt).toLocaleString()}` : ''}`
+              : 'No successful connection recorded'}
+            {` · Live reachability: ${liveReachability} · Libraries loaded: ${librariesLoaded ? 'yes' : 'no'}`}
+          </Alert>
+          {integrationState.isError ? <Alert severity="warning">Unable to refresh Jellyfin state; showing saved discovery data.</Alert> : null}
           <Typography variant="h4">Library ID mappings</Typography>
           <Typography color="text.secondary" variant="body2">Mappings bind MVForge Library IDs to the exact IDs returned by Jellyfin. Display names can change without changing the mapping.</Typography>
           <Grid container spacing={1.5} alignItems="center">
@@ -191,16 +224,18 @@ export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props
                 {discoveredLibraries.map((library) => <MenuItem key={library.id} value={library.id}>{library.name} · ID {library.id}</MenuItem>)}
               </TextField>
             </Grid>
-            <Grid size={{ xs: 12, md: 3 }}><Button fullWidth startIcon={<AddIcon />} disabled={!canAddMapping} onClick={addMapping}>Add mapping</Button></Grid>
+            <Grid size={{ xs: 12, md: 3 }}><Button fullWidth startIcon={<AddIcon />} disabled={!canAddMapping} onClick={addMapping}>{draft.mappings.some((mapping) => mapping.mvforgeLibraryId === selectedMVForgeLibrary) ? 'Add mapping / remap' : 'Add mapping'}</Button></Grid>
           </Grid>
           <Stack spacing={0.5}>
             {draft.mappings.map((mapping) => {
               const local = libraries.find((library) => library.id === mapping.mvforgeLibraryId);
               const discovered = discoveredLibraries.find((library) => library.id === mapping.jellyfinLibraryId);
+              const persistedMapping = integrationState.data?.mappings.find((item) => item.mvforgeLibraryId === mapping.mvforgeLibraryId);
+              const needsRemap = persistedMapping?.needsRemap ?? mapping.needsRemap === true;
               return (
                 <Stack key={`${mapping.mvforgeLibraryId}:${mapping.jellyfinLibraryId}`} direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
                   <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>
-                    {local?.name ?? `MVForge Library ${mapping.mvforgeLibraryId}`} (ID {mapping.mvforgeLibraryId}) → {discovered?.name ?? mapping.jellyfinName ?? 'Jellyfin Library'} (ID {mapping.jellyfinLibraryId})
+                    {local?.name ?? `MVForge Library ${mapping.mvforgeLibraryId}`} (ID {mapping.mvforgeLibraryId}) → {needsRemap ? 'Jellyfin Library unavailable' : discovered?.name ?? mapping.jellyfinName ?? 'Jellyfin Library'} (ID {mapping.jellyfinLibraryId}){needsRemap ? ' · Needs remap' : ''}
                   </Typography>
                   <IconButton aria-label="Remove mapping" size="small" onClick={() => setDraft((current) => ({ ...current, mappings: current.mappings.filter((item) => item.mvforgeLibraryId !== mapping.mvforgeLibraryId) }))}><DeleteIcon fontSize="small" /></IconButton>
                 </Stack>

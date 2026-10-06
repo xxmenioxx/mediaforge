@@ -950,3 +950,214 @@ func TestJellyfinStaleMixedReasonBatchChecksConfigurationRevisionFirst(t *testin
 		t.Errorf("Test Encode lifecycle evidence changed: before=%#v after=%#v", testEncode, afterTestEncode)
 	}
 }
+
+func jellyfinPersistenceRouter(db *gorm.DB) *gin.Engine {
+	settings := NewSettingsHandler(db)
+	router := gin.New()
+	router.GET("/api/settings/jellyfin/state", settings.JellyfinIntegrationState)
+	router.POST("/api/settings/jellyfin/test-connection", settings.TestJellyfinConnection)
+	router.GET("/api/settings", settings.List)
+	router.POST("/api/settings/:key", settings.Update)
+	return router
+}
+
+func jellyfinPersistenceRequest(t *testing.T, router http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	return response
+}
+
+func jellyfinJSONMap(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	var value map[string]any
+	if err := json.Unmarshal(body, &value); err != nil {
+		t.Fatalf("decode response: %v; body=%s", err, body)
+	}
+	return value
+}
+
+func TestJellyfinConnectionStatePersistsAndSurvivesRestartAndOutage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/System/Info/Public":
+			_, _ = w.Write([]byte(`{"Id":"jellyfin-server-a","ServerName":"Home","Version":"10.10.0"}`))
+		case "/Library/MediaFolders":
+			_, _ = w.Write([]byte(`{"Items":[{"Id":"jellyfin-library-44","Name":"Anime","CollectionType":"tvshows"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	db := jellyfinIntegrationDB(t)
+	addJellyfinLibrary(t, db, 7, t.TempDir())
+	settings := defaultJellyfinSettings()
+	settings.Enabled, settings.BaseURL, settings.APIToken = true, server.URL, "stored-secret-for-redaction"
+	settings.Mappings = []jellyfinLibraryMapping{{MVForgeLibraryID: 7, JellyfinLibraryID: "jellyfin-library-44", JellyfinName: "Anime"}}
+	saveJellyfinSettings(t, db, settings)
+
+	response := jellyfinPersistenceRequest(t, jellyfinPersistenceRouter(db), http.MethodPost, "/api/settings/jellyfin/test-connection", `{}`)
+	result := jellyfinJSONMap(t, response.Body.Bytes())
+	if response.Code != http.StatusOK || result["authenticated"] != true || result["serverId"] != "jellyfin-server-a" {
+		t.Fatalf("test connection status=%d result=%#v", response.Code, result)
+	}
+	if strings.Contains(response.Body.String(), "stored-secret-for-redaction") {
+		t.Fatal("connection response exposed the stored API token")
+	}
+
+	// A newly constructed handler represents a browser reload or backend restart.
+	restored, revision, err := loadJellyfinSettingsChecked(db)
+	if err != nil || restored.LastSuccessfulConnectionAt == "" || restored.LastSuccessfulConfigRevision != restored.ConnectionConfigRevision || restored.ServerID != "jellyfin-server-a" || len(restored.DiscoveredLibraries) != 1 || restored.Mappings[0].JellyfinLibraryID != "jellyfin-library-44" || restored.Mappings[0].JellyfinServerID != "jellyfin-server-a" || revision == 0 {
+		t.Fatalf("persisted connection state not restored: settings=%#v revision=%d err=%v", restored, revision, err)
+	}
+
+	server.Close()
+	restartedRouter := jellyfinPersistenceRouter(db)
+	stateResponse := jellyfinPersistenceRequest(t, restartedRouter, http.MethodGet, "/api/settings/jellyfin/state", "")
+	state := jellyfinJSONMap(t, stateResponse.Body.Bytes())
+	if stateResponse.Code != http.StatusOK || state["enabled"] != true || state["credentialConfigured"] != true || state["configurationValid"] != true || state["lastConnectionSuccessful"] != true || state["liveReachability"] != "unavailable" || state["librariesLoaded"] != true {
+		t.Fatalf("outage lost persisted integration semantics: status=%d state=%#v", stateResponse.Code, state)
+	}
+	mappings, ok := state["mappings"].([]any)
+	if !ok || len(mappings) != 1 || mappings[0].(map[string]any)["jellyfinLibraryId"] != "jellyfin-library-44" || mappings[0].(map[string]any)["needsRemap"] != false {
+		t.Fatalf("mapping did not survive outage: %#v", state["mappings"])
+	}
+	listed := jellyfinPersistenceRequest(t, restartedRouter, http.MethodGet, "/api/settings", "")
+	if strings.Contains(listed.Body.String(), "stored-secret-for-redaction") || !strings.Contains(listed.Body.String(), `"lastConnectionSuccessful":true`) || !strings.Contains(listed.Body.String(), `"credentialConfigured":true`) {
+		t.Fatalf("settings hydration lost saved state or exposed the secret: %s", listed.Body.String())
+	}
+}
+
+func TestJellyfinSettingsLoadAutomaticallyRediscoversLibraries(t *testing.T) {
+	var discoveryCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			_, _ = w.Write([]byte(`{"Id":"jellyfin-server-auto","Version":"10.10.0"}`))
+			return
+		}
+		if r.URL.Path == "/Library/MediaFolders" {
+			discoveryCalls.Add(1)
+			_, _ = w.Write([]byte(`{"Items":[{"Id":"library-auto-1","Name":"Movies","CollectionType":"movies"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	db := jellyfinIntegrationDB(t)
+	addJellyfinLibrary(t, db, 8, t.TempDir())
+	if err := (gormProtectedSecretSource{}).Put(db, jellyfinAPITokenCredentialRef, "auto-discovery-secret"); err != nil {
+		t.Fatal(err)
+	}
+	legacySettings := models.AppSetting{
+		Key: jellyfinSettingsKey,
+		Value: models.JSONMap{
+			"enabled": true, "baseUrl": server.URL, "credentialRef": string(jellyfinAPITokenCredentialRef),
+			"refreshAfterPublish": true, "refreshTestEncode": true, "debounceSeconds": 10,
+			"mappings": models.JSONList{models.JSONMap{"mvforgeLibraryId": 8, "jellyfinLibraryId": "library-auto-1", "jellyfinName": "Movies"}},
+		},
+	}
+	if err := db.Create(&legacySettings).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := jellyfinPersistenceRequest(t, jellyfinPersistenceRouter(db), http.MethodGet, "/api/settings/jellyfin/state", "")
+	state := jellyfinJSONMap(t, response.Body.Bytes())
+	libraries, ok := state["libraries"].([]any)
+	if response.Code != http.StatusOK || !ok || len(libraries) != 1 || libraries[0].(map[string]any)["id"] != "library-auto-1" || discoveryCalls.Load() != 1 {
+		t.Fatalf("settings hydration did not rediscover Jellyfin Libraries: status=%d calls=%d state=%#v", response.Code, discoveryCalls.Load(), state)
+	}
+	if strings.Contains(response.Body.String(), "auto-discovery-secret") {
+		t.Fatal("automatic discovery response exposed the API token")
+	}
+	loaded, _ := loadJellyfinSettings(db)
+	if loaded.ConnectionConfigRevision != 1 || loaded.Mappings[0].JellyfinLibraryID != "library-auto-1" || loaded.Mappings[0].JellyfinServerID != "jellyfin-server-auto" {
+		t.Fatalf("legacy settings or mapping did not hydrate with persisted discovery metadata: %#v", loaded)
+	}
+}
+
+func TestJellyfinSettingsChangesRequireRevalidationAndPreserveMappings(t *testing.T) {
+	db := jellyfinIntegrationDB(t)
+	addJellyfinLibrary(t, db, 7, t.TempDir())
+	settings := defaultJellyfinSettings()
+	settings.Enabled, settings.BaseURL, settings.APIToken = true, "http://jellyfin-old:8096", "old-secret"
+	settings.LastSuccessfulConnectionAt = time.Now().UTC().Format(time.RFC3339Nano)
+	settings.LastSuccessfulConfigRevision = settings.ConnectionConfigRevision
+	settings.ServerID, settings.ServerVersion = "server-old", "10.10.0"
+	settings.DiscoveredLibraries = []jellyfinLibrary{{ID: "library-old", Name: "Anime"}}
+	settings.LibrariesDiscoveredAt = settings.LastSuccessfulConnectionAt
+	settings.LibrariesConfigRevision = settings.ConnectionConfigRevision
+	settings.Mappings = []jellyfinLibraryMapping{{MVForgeLibraryID: 7, JellyfinLibraryID: "library-old", JellyfinServerID: "server-old"}}
+	saveJellyfinSettings(t, db, settings)
+	router := jellyfinPersistenceRouter(db)
+
+	changeURL := `{"value":{"enabled":true,"baseUrl":"http://jellyfin-new:8096","apiToken":"old-secret","mappings":[{"mvforgeLibraryId":7,"jellyfinLibraryId":"library-old"}]}}`
+	response := jellyfinPersistenceRequest(t, router, http.MethodPost, "/api/settings/jellyfin", changeURL)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "old-secret") {
+		t.Fatalf("base URL update status=%d response=%s", response.Code, response.Body.String())
+	}
+	updated, _ := loadJellyfinSettings(db)
+	if updated.ConnectionConfigRevision != settings.ConnectionConfigRevision+1 || updated.Mappings[0].JellyfinLibraryID != "library-old" || updated.ServerID != "server-old" {
+		t.Fatalf("base URL change cleared or failed to invalidate mapping state: %#v", updated)
+	}
+	projection := jellyfinSettingsProjection(updated)
+	if projection["configurationNeedsRevalidation"] != true || projection["librariesLoaded"] != false {
+		t.Fatalf("base URL change was not exposed as requiring revalidation: %#v", projection)
+	}
+
+	changeCredential := `{"value":{"enabled":true,"baseUrl":"http://jellyfin-new:8096","apiToken":"new-secret","mappings":[{"mvforgeLibraryId":7,"jellyfinLibraryId":"library-old"}]}}`
+	response = jellyfinPersistenceRequest(t, router, http.MethodPost, "/api/settings/jellyfin", changeCredential)
+	updated, _ = loadJellyfinSettings(db)
+	if response.Code != http.StatusOK || updated.APIToken != "new-secret" || updated.ConnectionConfigRevision != settings.ConnectionConfigRevision+2 || updated.Mappings[0].JellyfinLibraryID != "library-old" {
+		t.Fatalf("credential change did not invalidate while preserving mapping: status=%d settings=%#v", response.Code, updated)
+	}
+	listed := jellyfinPersistenceRequest(t, router, http.MethodGet, "/api/settings", "")
+	if strings.Contains(listed.Body.String(), "new-secret") {
+		t.Fatal("updated credential was returned by settings hydration")
+	}
+}
+
+func TestJellyfinRediscoveryMarksMissingAndForeignServerMappingsStale(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/System/Info/Public" {
+			_, _ = w.Write([]byte(`{"Id":"server-new","Version":"10.10.0"}`))
+			return
+		}
+		if r.URL.Path == "/Library/MediaFolders" {
+			_, _ = w.Write([]byte(`{"Items":[{"Id":"different-library","Name":"Anime"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	db := jellyfinIntegrationDB(t)
+	addJellyfinLibrary(t, db, 7, t.TempDir())
+	settings := defaultJellyfinSettings()
+	settings.Enabled, settings.BaseURL, settings.APIToken = true, server.URL, "secret"
+	settings.ServerID, settings.Mappings = "server-old", []jellyfinLibraryMapping{{MVForgeLibraryID: 7, JellyfinLibraryID: "missing-library", JellyfinName: "Anime", JellyfinServerID: "server-old"}}
+	saveJellyfinSettings(t, db, settings)
+
+	response := jellyfinPersistenceRequest(t, jellyfinPersistenceRouter(db), http.MethodGet, "/api/settings/jellyfin/state", "")
+	state := jellyfinJSONMap(t, response.Body.Bytes())
+	mappings, ok := state["mappings"].([]any)
+	if response.Code != http.StatusOK || !ok || len(mappings) != 1 {
+		t.Fatalf("state response status=%d body=%s", response.Code, response.Body.String())
+	}
+	mapping := mappings[0].(map[string]any)
+	if mapping["jellyfinLibraryId"] != "missing-library" || mapping["needsRemap"] != true || state["serverId"] != "server-new" {
+		t.Fatalf("foreign/missing mapping was not retained and marked stale: state=%#v", state)
+	}
+	loaded, _ := loadJellyfinSettings(db)
+	if len(loaded.Mappings) != 1 || loaded.Mappings[0].JellyfinLibraryID != "missing-library" {
+		t.Fatalf("rediscovery silently deleted stale mapping: %#v", loaded.Mappings)
+	}
+	remapBody := fmt.Sprintf(`{"value":{"enabled":true,"baseUrl":%q,"mappings":[{"mvforgeLibraryId":7,"jellyfinLibraryId":"different-library","remap":true}]}}`, server.URL)
+	remapped := jellyfinPersistenceRequest(t, jellyfinPersistenceRouter(db), http.MethodPost, "/api/settings/jellyfin", remapBody)
+	loaded, _ = loadJellyfinSettings(db)
+	projectedMappings := jellyfinSettingsProjection(loaded)["mappings"].(models.JSONList)
+	if remapped.Code != http.StatusOK || loaded.Mappings[0].JellyfinLibraryID != "different-library" || loaded.Mappings[0].JellyfinServerID != "server-new" || projectedMappings[0].(models.JSONMap)["needsRemap"] != false {
+		t.Fatalf("explicit remap was not bound to rediscovered server identity: status=%d mapping=%#v", remapped.Code, loaded.Mappings[0])
+	}
+}

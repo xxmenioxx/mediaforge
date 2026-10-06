@@ -1190,10 +1190,36 @@ export type JellyfinLibrary = {
 export type JellyfinConnectionResult = {
   reachable: boolean;
   authenticated: boolean;
+  serverId?: string;
+  serverName?: string;
   serverVersion?: string;
   versionAvailable: boolean;
   libraries: JellyfinLibrary[];
   failureClass?: string;
+};
+
+export type JellyfinIntegrationState = {
+  enabled: boolean;
+  credentialConfigured: boolean;
+  configurationValid: boolean;
+  configurationNeedsRevalidation: boolean;
+  lastConnectionSuccessful: boolean;
+  lastSuccessfulConnectionAt?: string;
+  liveReachability: 'unknown' | 'reachable' | 'unavailable';
+  liveFailureClass?: string;
+  serverId?: string;
+  serverName?: string;
+  serverVersion?: string;
+  librariesLoaded: boolean;
+  librariesDiscoveredAt?: string;
+  libraries: JellyfinLibrary[];
+  mappings: Array<{
+    mvforgeLibraryId: number;
+    jellyfinLibraryId: string;
+    jellyfinName?: string;
+    jellyfinServerId?: string;
+    needsRemap: boolean;
+  }>;
 };
 
 export type JellyfinIntegrationOutcome = {
