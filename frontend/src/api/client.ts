@@ -741,6 +741,7 @@ export const api = {
     }),
   settings: () => request<AppSetting[]>('/api/settings'),
   testJellyfinConnection: () => request<import('./types').JellyfinConnectionResult>('/api/settings/jellyfin/test-connection', { method: 'POST', body: JSON.stringify({}) }),
+  jellyfinIntegrationState: () => request<import('./types').JellyfinIntegrationState>('/api/settings/jellyfin/state'),
   jellyfinOutcomes: () => request<import('./types').JellyfinIntegrationOutcome[]>('/api/jellyfin/outcomes'),
   manualJellyfinRefresh: (libraryId: number) => request<import('./types').JellyfinIntegrationOutcome>('/api/jellyfin/manual-refresh', { method: 'POST', body: JSON.stringify({ libraryId }) }),
   retryJellyfinOutcome: (id: number) => request<import('./types').JellyfinIntegrationOutcome>(`/api/jellyfin/outcomes/${id}/retry`, { method: 'POST', body: JSON.stringify({}) }),

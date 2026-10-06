@@ -48,17 +48,28 @@ type jellyfinLibraryMapping struct {
 	MVForgeLibraryID  uint   `json:"mvforgeLibraryId"`
 	JellyfinLibraryID string `json:"jellyfinLibraryId"`
 	JellyfinName      string `json:"jellyfinName,omitempty"`
+	JellyfinServerID  string `json:"jellyfinServerId,omitempty"`
+	RemapConfirmed    bool   `json:"-"`
 }
 
 type jellyfinSettings struct {
-	Enabled             bool                     `json:"enabled"`
-	BaseURL             string                   `json:"baseUrl"`
-	APIToken            string                   `json:"apiToken,omitempty"`
-	CredentialRef       CredentialRef            `json:"credentialRef,omitempty"`
-	RefreshAfterPublish bool                     `json:"refreshAfterPublish"`
-	RefreshTestEncode   bool                     `json:"refreshTestEncode"`
-	DebounceSeconds     int                      `json:"debounceSeconds"`
-	Mappings            []jellyfinLibraryMapping `json:"mappings"`
+	Enabled                      bool                     `json:"enabled"`
+	BaseURL                      string                   `json:"baseUrl"`
+	APIToken                     string                   `json:"apiToken,omitempty"`
+	CredentialRef                CredentialRef            `json:"credentialRef,omitempty"`
+	RefreshAfterPublish          bool                     `json:"refreshAfterPublish"`
+	RefreshTestEncode            bool                     `json:"refreshTestEncode"`
+	DebounceSeconds              int                      `json:"debounceSeconds"`
+	Mappings                     []jellyfinLibraryMapping `json:"mappings"`
+	ConnectionConfigRevision     int64                    `json:"connectionConfigRevision"`
+	LastSuccessfulConnectionAt   string                   `json:"lastSuccessfulConnectionAt,omitempty"`
+	LastSuccessfulConfigRevision int64                    `json:"lastSuccessfulConfigRevision"`
+	ServerID                     string                   `json:"serverId,omitempty"`
+	ServerName                   string                   `json:"serverName,omitempty"`
+	ServerVersion                string                   `json:"serverVersion,omitempty"`
+	DiscoveredLibraries          []jellyfinLibrary        `json:"discoveredLibraries"`
+	LibrariesDiscoveredAt        string                   `json:"librariesDiscoveredAt,omitempty"`
+	LibrariesConfigRevision      int64                    `json:"librariesConfigRevision"`
 }
 
 type jellyfinLibrary struct {
@@ -70,6 +81,8 @@ type jellyfinLibrary struct {
 type jellyfinConnectionResult struct {
 	Reachable        bool              `json:"reachable"`
 	Authenticated    bool              `json:"authenticated"`
+	ServerID         string            `json:"serverId,omitempty"`
+	ServerName       string            `json:"serverName,omitempty"`
 	ServerVersion    string            `json:"serverVersion,omitempty"`
 	VersionAvailable bool              `json:"versionAvailable"`
 	Libraries        []jellyfinLibrary `json:"libraries"`
@@ -92,7 +105,7 @@ type jellyfinOutcomeView struct {
 }
 
 func defaultJellyfinSettings() jellyfinSettings {
-	return jellyfinSettings{CredentialRef: jellyfinAPITokenCredentialRef, RefreshAfterPublish: true, RefreshTestEncode: true, DebounceSeconds: 10, Mappings: []jellyfinLibraryMapping{}}
+	return jellyfinSettings{CredentialRef: jellyfinAPITokenCredentialRef, RefreshAfterPublish: true, RefreshTestEncode: true, DebounceSeconds: 10, Mappings: []jellyfinLibraryMapping{}, ConnectionConfigRevision: 1, DiscoveredLibraries: []jellyfinLibrary{}}
 }
 
 func loadJellyfinSettingsChecked(db *gorm.DB) (jellyfinSettings, int64, error) {
@@ -143,6 +156,48 @@ func jellyfinSettingsFromValue(value models.JSONMap, strict bool) (jellyfinSetti
 		if !valid || (ref != "" && CredentialRef(ref) != jellyfinAPITokenCredentialRef) {
 			return jellyfinSettingsValueError(strict, "credentialRef is invalid", settings)
 		}
+	}
+	for key, destination := range map[string]*int64{
+		"connectionConfigRevision":     &settings.ConnectionConfigRevision,
+		"lastSuccessfulConfigRevision": &settings.LastSuccessfulConfigRevision,
+		"librariesConfigRevision":      &settings.LibrariesConfigRevision,
+	} {
+		if raw, ok := value[key]; ok {
+			parsed, valid := jellyfinInteger(raw)
+			minimum := 0
+			if key == "connectionConfigRevision" {
+				minimum = 1
+			}
+			if !valid || parsed < minimum {
+				return jellyfinSettingsValueError(strict, key+" is invalid", settings)
+			}
+			*destination = int64(parsed)
+		}
+	}
+	for key, destination := range map[string]*string{
+		"lastSuccessfulConnectionAt": &settings.LastSuccessfulConnectionAt,
+		"librariesDiscoveredAt":      &settings.LibrariesDiscoveredAt,
+		"serverId":                   &settings.ServerID,
+		"serverName":                 &settings.ServerName,
+		"serverVersion":              &settings.ServerVersion,
+	} {
+		if raw, ok := value[key]; ok {
+			parsed, valid := raw.(string)
+			if !valid || len(parsed) > 256 {
+				return jellyfinSettingsValueError(strict, key+" is invalid", settings)
+			}
+			if (key == "lastSuccessfulConnectionAt" || key == "librariesDiscoveredAt") && parsed != "" && !validJellyfinTimestamp(parsed) {
+				return jellyfinSettingsValueError(strict, key+" is invalid", settings)
+			}
+			*destination = parsed
+		}
+	}
+	if raw, ok := value["discoveredLibraries"]; ok {
+		libraries, valid := jellyfinLibrariesFromValue(raw)
+		if !valid {
+			return jellyfinSettingsValueError(strict, "discoveredLibraries is invalid", settings)
+		}
+		settings.DiscoveredLibraries = libraries
 	}
 	if raw, ok := value["enabled"]; ok {
 		parsed, valid := raw.(bool)
@@ -207,7 +262,7 @@ func jellyfinSettingsFromValue(value models.JSONMap, strict bool) (jellyfinSetti
 			if !valid || mapping.MVForgeLibraryID == 0 || strings.TrimSpace(mapping.JellyfinLibraryID) == "" || mapping.JellyfinLibraryID != strings.TrimSpace(mapping.JellyfinLibraryID) {
 				return jellyfinSettingsValueError(strict, "each mapping must contain stable MVForge and Jellyfin Library IDs", settings)
 			}
-			if len(mapping.JellyfinLibraryID) > 256 || len(mapping.JellyfinName) > 512 {
+			if len(mapping.JellyfinLibraryID) > 256 || len(mapping.JellyfinName) > 512 || len(mapping.JellyfinServerID) > 256 {
 				return jellyfinSettingsValueError(strict, "mapping values are too long", settings)
 			}
 			settings.Mappings = append(settings.Mappings, mapping)
@@ -215,6 +270,9 @@ func jellyfinSettingsFromValue(value models.JSONMap, strict bool) (jellyfinSetti
 	}
 	if settings.DebounceSeconds < 0 || settings.DebounceSeconds > 60 {
 		return jellyfinSettingsValueError(strict, "debounceSeconds must be between 0 and 60", settings)
+	}
+	if settings.ConnectionConfigRevision < 1 {
+		settings.ConnectionConfigRevision = 1
 	}
 	if settings.BaseURL != "" {
 		parsed, err := url.Parse(settings.BaseURL)
@@ -235,6 +293,14 @@ func jellyfinSettingsFromValue(value models.JSONMap, strict bool) (jellyfinSetti
 		seenMVForge[mapping.MVForgeLibraryID], seenJellyfin[mapping.JellyfinLibraryID] = true, true
 	}
 	return settings, nil
+}
+
+func validJellyfinTimestamp(value string) bool {
+	if len(value) > 64 {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339Nano, value)
+	return err == nil
 }
 
 func jellyfinSettingsValueError(strict bool, message string, defaults jellyfinSettings) (jellyfinSettings, error) {
@@ -282,34 +348,122 @@ func jellyfinMapping(value any) (jellyfinLibraryMapping, bool) {
 		return jellyfinLibraryMapping{}, false
 	}
 	name, _ := object["jellyfinName"].(string)
-	return jellyfinLibraryMapping{MVForgeLibraryID: uint(libraryID), JellyfinLibraryID: jellyfinID, JellyfinName: name}, true
+	serverID, _ := object["jellyfinServerId"].(string)
+	remapConfirmed, _ := object["remap"].(bool)
+	return jellyfinLibraryMapping{MVForgeLibraryID: uint(libraryID), JellyfinLibraryID: jellyfinID, JellyfinName: name, JellyfinServerID: serverID, RemapConfirmed: remapConfirmed}, true
+}
+
+func jellyfinMappingNeedsRemap(settings jellyfinSettings, mapping jellyfinLibraryMapping) bool {
+	if mapping.JellyfinLibraryID == "" {
+		return true
+	}
+	if mapping.JellyfinServerID != "" && settings.ServerID != "" && mapping.JellyfinServerID != settings.ServerID {
+		return true
+	}
+	if settings.LibrariesDiscoveredAt != "" && settings.LibrariesConfigRevision == settings.ConnectionConfigRevision {
+		for _, library := range settings.DiscoveredLibraries {
+			if library.ID == mapping.JellyfinLibraryID {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func jellyfinMappingForLibrary(settings jellyfinSettings, libraryID uint) (jellyfinLibraryMapping, bool) {
+	for _, mapping := range settings.Mappings {
+		if mapping.MVForgeLibraryID == libraryID {
+			return mapping, true
+		}
+	}
+	return jellyfinLibraryMapping{}, false
+}
+
+func jellyfinLibrariesFromValue(value any) ([]jellyfinLibrary, bool) {
+	entries, ok := value.([]any)
+	if !ok {
+		if typed, typedOK := value.(models.JSONList); typedOK {
+			entries, ok = []any(typed), true
+		}
+	}
+	if !ok || len(entries) > 500 {
+		return nil, false
+	}
+	libraries := make([]jellyfinLibrary, 0, len(entries))
+	for _, entry := range entries {
+		object, valid := entry.(map[string]any)
+		if !valid {
+			if typed, typedOK := entry.(models.JSONMap); typedOK {
+				object, valid = map[string]any(typed), true
+			}
+		}
+		if !valid {
+			return nil, false
+		}
+		id, idOK := object["id"].(string)
+		name, _ := object["name"].(string)
+		collectionType, _ := object["collectionType"].(string)
+		if !idOK || strings.TrimSpace(id) == "" || len(id) > 256 || len(name) > 512 || len(collectionType) > 128 {
+			return nil, false
+		}
+		libraries = append(libraries, jellyfinLibrary{ID: id, Name: name, CollectionType: collectionType})
+	}
+	return libraries, true
 }
 
 func jellyfinSettingsStoredValue(settings jellyfinSettings) models.JSONMap {
 	mappings := make(models.JSONList, 0, len(settings.Mappings))
 	for _, mapping := range settings.Mappings {
-		mappings = append(mappings, models.JSONMap{"mvforgeLibraryId": mapping.MVForgeLibraryID, "jellyfinLibraryId": mapping.JellyfinLibraryID, "jellyfinName": mapping.JellyfinName})
+		mappings = append(mappings, models.JSONMap{"mvforgeLibraryId": mapping.MVForgeLibraryID, "jellyfinLibraryId": mapping.JellyfinLibraryID, "jellyfinName": mapping.JellyfinName, "jellyfinServerId": mapping.JellyfinServerID})
+	}
+	libraries := make(models.JSONList, 0, len(settings.DiscoveredLibraries))
+	for _, library := range settings.DiscoveredLibraries {
+		libraries = append(libraries, models.JSONMap{"id": library.ID, "name": library.Name, "collectionType": library.CollectionType})
 	}
 	return models.JSONMap{
 		"enabled": settings.Enabled, "baseUrl": settings.BaseURL, "credentialRef": string(jellyfinAPITokenCredentialRef),
 		"refreshAfterPublish": settings.RefreshAfterPublish, "refreshTestEncode": settings.RefreshTestEncode,
 		"debounceSeconds": settings.DebounceSeconds, "mappings": mappings,
+		"connectionConfigRevision":     settings.ConnectionConfigRevision,
+		"lastSuccessfulConnectionAt":   settings.LastSuccessfulConnectionAt,
+		"lastSuccessfulConfigRevision": settings.LastSuccessfulConfigRevision,
+		"serverId":                     settings.ServerID, "serverName": settings.ServerName, "serverVersion": settings.ServerVersion,
+		"discoveredLibraries": libraries, "librariesDiscoveredAt": settings.LibrariesDiscoveredAt,
+		"librariesConfigRevision": settings.LibrariesConfigRevision,
 	}
 }
 
 func jellyfinSettingsProjection(settings jellyfinSettings) models.JSONMap {
 	mappings := make(models.JSONList, 0, len(settings.Mappings))
 	for _, mapping := range settings.Mappings {
-		entry := models.JSONMap{"mvforgeLibraryId": mapping.MVForgeLibraryID, "jellyfinLibraryId": mapping.JellyfinLibraryID}
+		needsRemap := jellyfinMappingNeedsRemap(settings, mapping)
+		entry := models.JSONMap{"mvforgeLibraryId": mapping.MVForgeLibraryID, "jellyfinLibraryId": mapping.JellyfinLibraryID, "needsRemap": needsRemap}
 		if mapping.JellyfinName != "" {
 			entry["jellyfinName"] = mapping.JellyfinName
 		}
+		if mapping.JellyfinServerID != "" {
+			entry["jellyfinServerId"] = mapping.JellyfinServerID
+		}
 		mappings = append(mappings, entry)
+	}
+	libraries := make(models.JSONList, 0, len(settings.DiscoveredLibraries))
+	for _, library := range settings.DiscoveredLibraries {
+		libraries = append(libraries, models.JSONMap{"id": library.ID, "name": library.Name, "collectionType": library.CollectionType})
 	}
 	return models.JSONMap{
 		"enabled": settings.Enabled, "baseUrl": settings.BaseURL,
-		"credentialConfigured": settings.APIToken != "", "refreshAfterPublish": settings.RefreshAfterPublish,
-		"refreshTestEncode": settings.RefreshTestEncode, "debounceSeconds": settings.DebounceSeconds, "mappings": mappings,
+		"credentialConfigured": settings.APIToken != "", "configurationValid": settings.BaseURL != "" && settings.APIToken != "",
+		"configurationNeedsRevalidation": settings.BaseURL != "" && settings.APIToken != "" && (settings.LastSuccessfulConnectionAt == "" || settings.ConnectionConfigRevision != settings.LastSuccessfulConfigRevision),
+		"lastConnectionSuccessful":       settings.LastSuccessfulConnectionAt != "",
+		"lastSuccessfulConnectionAt":     settings.LastSuccessfulConnectionAt,
+		"lastSuccessfulConfigRevision":   settings.LastSuccessfulConfigRevision,
+		"connectionConfigRevision":       settings.ConnectionConfigRevision,
+		"liveReachability":               "unknown", "serverId": settings.ServerID, "serverName": settings.ServerName, "serverVersion": settings.ServerVersion,
+		"librariesLoaded":       settings.LibrariesDiscoveredAt != "" && settings.LibrariesConfigRevision == settings.ConnectionConfigRevision,
+		"librariesDiscoveredAt": settings.LibrariesDiscoveredAt, "libraries": libraries,
+		"refreshAfterPublish": settings.RefreshAfterPublish, "refreshTestEncode": settings.RefreshTestEncode,
+		"debounceSeconds": settings.DebounceSeconds, "mappings": mappings,
 	}
 }
 
@@ -326,6 +480,13 @@ func jellyfinSettingsForUpdateWithSecrets(db *gorm.DB, input models.JSONMap, sec
 	if err != nil {
 		return nil, err
 	}
+	settings.ConnectionConfigRevision = previous.ConnectionConfigRevision
+	settings.LastSuccessfulConnectionAt = previous.LastSuccessfulConnectionAt
+	settings.LastSuccessfulConfigRevision = previous.LastSuccessfulConfigRevision
+	settings.ServerID, settings.ServerName, settings.ServerVersion = previous.ServerID, previous.ServerName, previous.ServerVersion
+	settings.DiscoveredLibraries = append([]jellyfinLibrary(nil), previous.DiscoveredLibraries...)
+	settings.LibrariesDiscoveredAt = previous.LibrariesDiscoveredAt
+	settings.LibrariesConfigRevision = previous.LibrariesConfigRevision
 	if raw, present := input["apiToken"]; present {
 		token, ok := raw.(string)
 		if !ok {
@@ -356,6 +517,23 @@ func jellyfinSettingsForUpdateWithSecrets(db *gorm.DB, input models.JSONMap, sec
 		if err := secrets.Put(db, jellyfinAPITokenCredentialRef, settings.APIToken); err != nil {
 			return nil, fmt.Errorf("unable to save Jellyfin credential")
 		}
+	}
+	previousMappings := make(map[uint]jellyfinLibraryMapping, len(previous.Mappings))
+	for _, mapping := range previous.Mappings {
+		previousMappings[mapping.MVForgeLibraryID] = mapping
+	}
+	for index := range settings.Mappings {
+		mapping := &settings.Mappings[index]
+		if mapping.RemapConfirmed && previous.LibrariesConfigRevision == previous.ConnectionConfigRevision {
+			mapping.JellyfinServerID = previous.ServerID
+		} else if old, exists := previousMappings[mapping.MVForgeLibraryID]; exists && old.JellyfinLibraryID == mapping.JellyfinLibraryID {
+			mapping.JellyfinServerID = old.JellyfinServerID
+		} else if previous.ServerID != "" && previous.LibrariesConfigRevision == previous.ConnectionConfigRevision {
+			mapping.JellyfinServerID = previous.ServerID
+		}
+	}
+	if settings.BaseURL != previous.BaseURL || settings.APIToken != previous.APIToken {
+		settings.ConnectionConfigRevision++
 	}
 	seenMVForge := map[uint]bool{}
 	seenJellyfin := map[string]bool{}
@@ -496,11 +674,15 @@ func jellyfinRetryAfter(value string) time.Duration {
 func (client jellyfinClient) testConnection(ctx context.Context, settings jellyfinSettings) jellyfinConnectionResult {
 	result := jellyfinConnectionResult{Libraries: []jellyfinLibrary{}}
 	var serverInfo struct {
-		Version string `json:"Version"`
+		ID         string `json:"Id"`
+		ServerName string `json:"ServerName"`
+		Version    string `json:"Version"`
 	}
 	if response, err := client.getJSON(ctx, settings, "/System/Info/Public", false, &serverInfo); response != nil {
 		result.Reachable = true
 		if err == nil {
+			result.ServerID = strings.TrimSpace(serverInfo.ID)
+			result.ServerName = strings.TrimSpace(serverInfo.ServerName)
 			result.ServerVersion = strings.TrimSpace(serverInfo.Version)
 			result.VersionAvailable = result.ServerVersion != ""
 		}
@@ -530,14 +712,65 @@ func (client jellyfinClient) discoverLibraries(ctx context.Context, settings jel
 		}
 		return nil, failure
 	}
+	if len(response.Items) > 500 {
+		return nil, &jellyfinFailure{class: "unexpected_response", permanent: true}
+	}
 	libraries := make([]jellyfinLibrary, 0, len(response.Items))
+	seen := make(map[string]bool, len(response.Items))
 	for _, item := range response.Items {
-		if item.ID == "" {
+		if item.ID == "" || len(item.ID) > 256 || len(item.Name) > 512 || len(item.CollectionType) > 128 || seen[item.ID] {
 			return nil, &jellyfinFailure{class: "unexpected_response", permanent: true}
 		}
+		seen[item.ID] = true
 		libraries = append(libraries, jellyfinLibrary{ID: item.ID, Name: item.Name, CollectionType: item.CollectionType})
 	}
 	return libraries, nil
+}
+
+func persistJellyfinConnectionSuccess(db *gorm.DB, secrets ProtectedSecretSource, basis jellyfinSettings, result jellyfinConnectionResult) error {
+	if db == nil || !result.Authenticated {
+		return nil
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		current, _, err := loadJellyfinSettingsCheckedWithSecrets(tx, secrets)
+		if err != nil {
+			return err
+		}
+		if current.ConnectionConfigRevision != basis.ConnectionConfigRevision || current.BaseURL != basis.BaseURL {
+			return nil
+		}
+		current.LastSuccessfulConnectionAt = time.Now().UTC().Format(time.RFC3339Nano)
+		current.LastSuccessfulConfigRevision = current.ConnectionConfigRevision
+		if result.ServerID != "" {
+			current.ServerID = result.ServerID
+		}
+		if result.ServerName != "" {
+			current.ServerName = result.ServerName
+		}
+		if result.ServerVersion != "" {
+			current.ServerVersion = result.ServerVersion
+		}
+		current.DiscoveredLibraries = append([]jellyfinLibrary(nil), result.Libraries...)
+		current.LibrariesDiscoveredAt = current.LastSuccessfulConnectionAt
+		current.LibrariesConfigRevision = current.ConnectionConfigRevision
+		for index := range current.Mappings {
+			if current.Mappings[index].JellyfinServerID == "" && current.ServerID != "" {
+				current.Mappings[index].JellyfinServerID = current.ServerID
+			}
+		}
+		var stored models.AppSetting
+		query := tx.First(&stored, "key = ?", jellyfinSettingsKey)
+		if query.Error != nil && !errors.Is(query.Error, gorm.ErrRecordNotFound) {
+			return query.Error
+		}
+		stored.Key, stored.Value = jellyfinSettingsKey, jellyfinSettingsStoredValue(current)
+		if errors.Is(query.Error, gorm.ErrRecordNotFound) {
+			return tx.Create(&stored).Error
+		}
+		// AppSetting.UpdatedAt is the Jellyfin ledger's configuration revision.
+		// Connection and discovery metadata must not invalidate already queued work.
+		return tx.Model(&models.AppSetting{}).Where("key = ?", jellyfinSettingsKey).UpdateColumn("value", stored.Value).Error
+	})
 }
 
 type jellyfinTrigger struct {
@@ -559,18 +792,19 @@ func recordJellyfinTrigger(db *gorm.DB, trigger jellyfinTrigger) error {
 	}
 	status := jellyfinStatusPending
 	var mappedID string
+	failureClass := ""
 	enabledForReason := jellyfinSettingsEnabledForReason(settings, trigger.Reason)
 	if !enabledForReason {
 		status = jellyfinStatusSkippedDisabled
 	} else {
-		for _, mapping := range settings.Mappings {
-			if mapping.MVForgeLibraryID == trigger.LibraryID {
-				mappedID = mapping.JellyfinLibraryID
-				break
-			}
-		}
-		if mappedID == "" {
+		mapping, exists := jellyfinMappingForLibrary(settings, trigger.LibraryID)
+		if !exists || mapping.JellyfinLibraryID == "" {
 			status = jellyfinStatusSkippedUnmapped
+		} else {
+			mappedID = mapping.JellyfinLibraryID
+			if jellyfinMappingNeedsRemap(settings, mapping) {
+				status, failureClass = jellyfinStatusPermanentError, "stale_mapping"
+			}
 		}
 	}
 	now := time.Now().UTC()
@@ -623,7 +857,7 @@ func recordJellyfinTrigger(db *gorm.DB, trigger jellyfinTrigger) error {
 		outcome := models.JellyfinIntegrationOutcome{
 			SourceKey: trigger.SourceKey, Reason: trigger.Reason, PublicationID: trigger.PublicationID,
 			TestEncodeID: trigger.TestEncodeID, LibraryID: trigger.LibraryID, MappedLibraryID: mappedID,
-			EffectiveTarget: target, ConfigRevision: revision, Status: status,
+			EffectiveTarget: target, ConfigRevision: revision, Status: status, FailureClass: failureClass,
 			FirstTriggeredAt: first, DueAt: due, CreatedAt: now, UpdatedAt: now,
 		}
 		if status != jellyfinStatusPending {
@@ -635,7 +869,7 @@ func recordJellyfinTrigger(db *gorm.DB, trigger jellyfinTrigger) error {
 				"reason": outcome.Reason, "publication_id": outcome.PublicationID, "test_encode_id": outcome.TestEncodeID,
 				"library_id": outcome.LibraryID, "mapped_library_id": outcome.MappedLibraryID,
 				"effective_target": outcome.EffectiveTarget, "config_revision": outcome.ConfigRevision,
-				"status": outcome.Status, "failure_class": "", "duration_millis": 0,
+				"status": outcome.Status, "failure_class": outcome.FailureClass, "duration_millis": 0,
 				"first_triggered_at": outcome.FirstTriggeredAt, "due_at": outcome.DueAt,
 				"next_attempt_at": nil, "updated_at": now,
 			}).Error; err != nil {
@@ -957,16 +1191,30 @@ func (coordinator *JellyfinCoordinator) refreshBatch(ctx context.Context, settin
 		return &jellyfinFailure{class: "invalid_configuration", permanent: true}
 	}
 	client := sharedJellyfinClient
+	var serverInfo struct {
+		ID string `json:"Id"`
+	}
+	_, _ = client.getJSON(ctx, settings, "/System/Info/Public", false, &serverInfo)
 	libraries, failure := client.discoverLibraries(ctx, settings)
 	if failure != nil {
 		return failure
 	}
-	available := make(map[string]bool, len(libraries))
-	for _, library := range libraries {
-		available[library.ID] = true
+	connection := jellyfinConnectionResult{
+		Reachable: true, Authenticated: true, ServerID: strings.TrimSpace(serverInfo.ID), Libraries: libraries,
 	}
+	if err := persistJellyfinConnectionSuccess(coordinator.db, gormProtectedSecretSource{}, settings, connection); err != nil {
+		return &jellyfinFailure{class: "settings_persistence_failed", permanent: true}
+	}
+	validatedSettings := settings
+	if connection.ServerID != "" {
+		validatedSettings.ServerID = connection.ServerID
+	}
+	validatedSettings.DiscoveredLibraries = libraries
+	validatedSettings.LibrariesDiscoveredAt = time.Now().UTC().Format(time.RFC3339Nano)
+	validatedSettings.LibrariesConfigRevision = validatedSettings.ConnectionConfigRevision
 	for _, outcome := range batch {
-		if outcome.MappedLibraryID == "" || !available[outcome.MappedLibraryID] {
+		mapping, exists := jellyfinMappingForLibrary(validatedSettings, outcome.LibraryID)
+		if !exists || mapping.JellyfinLibraryID != outcome.MappedLibraryID || jellyfinMappingNeedsRemap(validatedSettings, mapping) {
 			return &jellyfinFailure{class: "stale_mapping", permanent: true}
 		}
 	}
@@ -1000,7 +1248,7 @@ func (coordinator *JellyfinCoordinator) finishBatch(batch []models.JellyfinInteg
 }
 
 func (handler SettingsHandler) TestJellyfinConnection(c *gin.Context) {
-	settings, _, err := loadJellyfinSettingsChecked(handler.db)
+	settings, _, err := loadJellyfinSettingsCheckedWithSecrets(handler.db, handler.secretSource())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, jellyfinConnectionResult{Libraries: []jellyfinLibrary{}, FailureClass: "integration_state_unavailable"})
 		return
@@ -1011,7 +1259,51 @@ func (handler SettingsHandler) TestJellyfinConnection(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), jellyfinRequestTimeout)
 	defer cancel()
-	c.JSON(http.StatusOK, sharedJellyfinClient.testConnection(ctx, settings))
+	result := sharedJellyfinClient.testConnection(ctx, settings)
+	if result.Authenticated {
+		if err := persistJellyfinConnectionSuccess(handler.db, handler.secretSource(), settings, result); err != nil {
+			c.JSON(http.StatusInternalServerError, jellyfinConnectionResult{Libraries: []jellyfinLibrary{}, FailureClass: "integration_state_unavailable"})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (handler SettingsHandler) JellyfinIntegrationState(c *gin.Context) {
+	settings, _, err := loadJellyfinSettingsCheckedWithSecrets(handler.db, handler.secretSource())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Jellyfin integration state unavailable"})
+		return
+	}
+	state := jellyfinSettingsProjection(settings)
+	if settings.BaseURL == "" || settings.APIToken == "" {
+		c.JSON(http.StatusOK, state)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), jellyfinRequestTimeout)
+	defer cancel()
+	result := sharedJellyfinClient.testConnection(ctx, settings)
+	if result.Authenticated {
+		if err := persistJellyfinConnectionSuccess(handler.db, handler.secretSource(), settings, result); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Jellyfin integration state unavailable"})
+			return
+		}
+		settings, _, err = loadJellyfinSettingsCheckedWithSecrets(handler.db, handler.secretSource())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Jellyfin integration state unavailable"})
+			return
+		}
+	}
+	state = jellyfinSettingsProjection(settings)
+	if result.Reachable {
+		state["liveReachability"] = "reachable"
+	} else {
+		state["liveReachability"] = "unavailable"
+	}
+	if result.FailureClass != "" {
+		state["liveFailureClass"] = result.FailureClass
+	}
+	c.JSON(http.StatusOK, state)
 }
 
 type JellyfinHandler struct {
@@ -1051,6 +1343,15 @@ func (handler JellyfinHandler) ManualRefresh(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "libraryId is required"})
 		return
 	}
+	settings, _, settingsErr := loadJellyfinSettingsChecked(handler.db)
+	if settingsErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "unable to load Jellyfin integration settings"})
+		return
+	}
+	if mapping, exists := jellyfinMappingForLibrary(settings, input.LibraryID); exists && jellyfinMappingNeedsRemap(settings, mapping) {
+		c.JSON(http.StatusConflict, gin.H{"error": "Jellyfin Library mapping needs remap"})
+		return
+	}
 	now := time.Now().UTC()
 	key := "manual:" + strconv.FormatInt(now.UnixNano(), 10)
 	if err := recordJellyfinTrigger(handler.db, jellyfinTrigger{Reason: jellyfinReasonManual, SourceKey: key, LibraryID: input.LibraryID}); err != nil {
@@ -1085,17 +1386,12 @@ func (handler JellyfinHandler) Retry(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "Jellyfin settings are not ready"})
 		return
 	}
-	mappedLibraryID := ""
-	for _, mapping := range settings.Mappings {
-		if mapping.MVForgeLibraryID == outcome.LibraryID {
-			mappedLibraryID = mapping.JellyfinLibraryID
-			break
-		}
-	}
-	if mappedLibraryID == "" {
+	mapping, mapped := jellyfinMappingForLibrary(settings, outcome.LibraryID)
+	if !mapped || mapping.JellyfinLibraryID == "" || jellyfinMappingNeedsRemap(settings, mapping) {
 		c.JSON(http.StatusConflict, gin.H{"error": "no Jellyfin Library mapping is configured for this outcome"})
 		return
 	}
+	mappedLibraryID := mapping.JellyfinLibraryID
 	now := time.Now().UTC()
 	var updated models.JellyfinIntegrationOutcome
 	err = handler.db.Transaction(func(tx *gorm.DB) error {
@@ -1128,14 +1424,8 @@ func jellyfinOutcomeRetryEligible(outcome models.JellyfinIntegrationOutcome, set
 	if !jellyfinSettingsEnabledForReason(settings, outcome.Reason) || settings.APIToken == "" || settings.BaseURL == "" {
 		return false
 	}
-	mapped := false
-	for _, mapping := range settings.Mappings {
-		if mapping.MVForgeLibraryID == outcome.LibraryID {
-			mapped = mapping.JellyfinLibraryID != ""
-			break
-		}
-	}
-	if !mapped {
+	mapping, mapped := jellyfinMappingForLibrary(settings, outcome.LibraryID)
+	if !mapped || mapping.JellyfinLibraryID == "" || jellyfinMappingNeedsRemap(settings, mapping) {
 		return false
 	}
 	if outcome.Status == jellyfinStatusRetryableFailure {

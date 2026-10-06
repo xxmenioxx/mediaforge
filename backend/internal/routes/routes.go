@@ -202,6 +202,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/settings/batch", settings.BatchUpdate)
 		api.POST("/settings/:key", settings.Update)
 		api.POST("/settings/jellyfin/test-connection", settings.TestJellyfinConnection)
+		api.GET("/settings/jellyfin/state", settings.JellyfinIntegrationState)
 		api.GET("/jellyfin/outcomes", jellyfin.Outcomes)
 		api.POST("/jellyfin/manual-refresh", jellyfin.ManualRefresh)
 		api.POST("/jellyfin/outcomes/:id/retry", jellyfin.Retry)
