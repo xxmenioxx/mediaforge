@@ -10,6 +10,7 @@ import {
   Divider,
   FormControlLabel,
   Grid,
+  LinearProgress,
   Stack,
   Tab,
   Tabs,
@@ -24,6 +25,10 @@ import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { api } from '../api/client';
 import type { QueueJob } from '../api/types';
+import { CompactActionGroup } from './CompactActionGroup';
+import { WorkspaceFeedback } from './WorkspaceFeedback';
+import { getMVForgeTokens } from '../theme/theme';
+import { hasDeterminateQueueProgress, queueStagePresentation, queueStatusColor, queueStatusLabel } from '../utils/queuePresentation';
 import { AVTimingSummary } from './AVTimingSummary';
 
 type JobDetailsDialogProps = {
@@ -82,30 +87,50 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
   const directPlayPlan = activePlan ? objectValue(activePlan.evaluation, 'directPlay') : undefined;
   const outputEstimate = activePlan ? objectValue(activePlan.evaluation, 'outputEstimate') : undefined;
   const encoderRecommendation = activePlan ? objectValue(activePlan.evaluation, 'encoderRecommendation') : undefined;
+  const stagePresentation = queueStagePresentation(job);
+  const hasDeterminateProgress = hasDeterminateQueueProgress(job.progress);
 
   return (
-    <Dialog open={Boolean(job)} onClose={onClose} maxWidth="lg" fullWidth>
-      <DialogTitle>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Typography variant="h3">{job.executionNumber ? `Job #${job.executionNumber}` : 'Pending Queue Item'}</Typography>
-          <Chip label={job.status} color={statusColor(job.status)} size="small" />
-          {job.stage ? <Chip label={job.stage.replaceAll('_', ' ')} color="primary" variant="outlined" size="small" /> : null}
-          <Chip label={`${job.progress}%`} color="primary" size="small" variant="outlined" />
-          {job.workerName ? <Chip label={job.workerName} size="small" /> : null}
+    <Dialog
+      open={Boolean(job)}
+      onClose={onClose}
+      maxWidth="lg"
+      fullWidth
+      PaperProps={{ sx: { m: { xs: 0, sm: 2 }, width: { xs: '100%', sm: 'calc(100% - 32px)' }, maxHeight: { xs: '100%', sm: 'calc(100% - 32px)' }, borderRadius: { xs: 0, sm: 1 } } }}
+    >
+      <DialogTitle sx={{ pb: 1 }}>
+        <Stack spacing={0.75}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75} alignItems={{ xs: 'flex-start', sm: 'center' }} justifyContent="space-between">
+            <Typography component="h2" variant="h3">{job.executionNumber ? `Job #${job.executionNumber}` : 'Pending Queue Item'}</Typography>
+            <CompactActionGroup aria-label="Job status and progress">
+              <Chip label={queueStatusLabel(job.status)} color={queueStatusColor(job.status)} size="small" aria-label={`Queue status: ${queueStatusLabel(job.status)}`} />
+              <Chip label={stagePresentation.label} color={stagePresentation.color} variant="outlined" size="small" aria-label={`Queue stage: ${stagePresentation.label}`} />
+              {hasDeterminateProgress ? <Chip label={`Progress ${job.progress}%`} color={job.status === 'running' ? 'info' : 'default'} size="small" variant="outlined" /> : null}
+              {job.validationStatus === 'warning' ? <Chip label="Validation warning" color="warning" size="small" /> : null}
+              {job.validationStatus === 'failed' ? <Chip label="Validation failed" color="error" size="small" /> : null}
+              {job.workerName ? <Chip label={job.workerName} size="small" variant="outlined" /> : null}
+            </CompactActionGroup>
+          </Stack>
+          <Stack spacing={0.15} sx={{ minWidth: 0 }}>
+            <Typography variant="body2" fontWeight={700} noWrap title={fileNameFromPath(job.mediaPath)}>{fileNameFromPath(job.mediaPath)}</Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>{job.mediaPath}</Typography>
+          </Stack>
+          {!hasDeterminateProgress && job.status === 'running' ? (
+            <LinearProgress variant="indeterminate" aria-label={`Indeterminate progress: ${stagePresentation.label}`} sx={{ height: 4, borderRadius: 1 }} />
+          ) : null}
         </Stack>
       </DialogTitle>
-      <DialogContent dividers>
-        <Stack spacing={2}>
-          <Stack spacing={0.5}>
-            <Typography fontWeight={700}>{fileNameFromPath(job.mediaPath)}</Typography>
-            <Typography color="text.secondary" sx={{ wordBreak: 'break-all' }}>
-              {job.mediaPath}
-            </Typography>
-          </Stack>
+      <DialogContent dividers sx={{ pt: 1.25 }}>
+        <Stack spacing={1.25}>
           {artifacts.data?.warnings?.length ? (
             <Alert severity="warning">{artifacts.data.warnings.join(' ')}</Alert>
           ) : null}
-          {artifacts.isLoading ? <Alert severity="info">Loading job artifacts...</Alert> : null}
+          {artifacts.isLoading ? <WorkspaceFeedback kind="loading">Loading job artifacts…</WorkspaceFeedback> : null}
+          {artifacts.isError ? (
+            <WorkspaceFeedback kind="error" action={<Button size="small" onClick={() => void artifacts.refetch()} disabled={artifacts.isFetching}>Retry</Button>}>
+              Unable to load job artifacts.
+            </WorkspaceFeedback>
+          ) : null}
           <Tabs value={tab} onChange={(_, value) => setTab(value)} variant="scrollable">
             <Tab label="Pipeline" />
             <Tab label="Original snapshot" />
@@ -175,8 +200,13 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
             </Stack>
           ) : tab === 3 ? (
             <Stack spacing={2}>
-              {executionPlans.isLoading ? <Alert severity="info">Loading execution plans...</Alert> : null}
-              {!activePlan && !executionPlans.isLoading ? <Alert severity="info">No execution plan has been generated for this job.</Alert> : null}
+              {executionPlans.isLoading ? <WorkspaceFeedback kind="loading">Loading execution plans…</WorkspaceFeedback> : null}
+              {executionPlans.isError ? (
+                <WorkspaceFeedback kind="error" action={<Button size="small" onClick={() => void executionPlans.refetch()} disabled={executionPlans.isFetching}>Retry</Button>}>
+                  Unable to load execution plans.
+                </WorkspaceFeedback>
+              ) : null}
+              {!activePlan && !executionPlans.isLoading && !executionPlans.isError ? <WorkspaceFeedback kind="empty">No execution plan has been generated for this job.</WorkspaceFeedback> : null}
               {activePlan ? (
                 <>
                   <SummaryGrid
@@ -224,7 +254,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
             </Stack>
           ) : (
             <Stack spacing={1.5}>
-              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <CompactActionGroup aria-label="Job log actions">
                 <Button size="small" onClick={() => void jobLog.refetch()} disabled={jobLog.isFetching}>Refresh</Button>
                 <Button size="small" onClick={() => void (async () => {
                   setCopyError('');
@@ -235,10 +265,10 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                   }
                 })()} disabled={!jobLog.data?.available}>Copy</Button>
                 <FormControlLabel control={<Checkbox size="small" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />} label="Auto-scroll" />
-              </Stack>
-              {jobLog.isLoading ? <Alert severity="info">Loading job log...</Alert> : null}
-              {jobLog.isError ? <Alert severity="warning">Unable to load job log: {jobLog.error instanceof Error ? jobLog.error.message : 'Unknown error.'}</Alert> : null}
-              {jobLog.data && !jobLog.data.available ? <Alert severity="info">No persisted log is available for this job yet.</Alert> : null}
+              </CompactActionGroup>
+              {jobLog.isLoading ? <WorkspaceFeedback kind="loading">Loading job log…</WorkspaceFeedback> : null}
+              {jobLog.isError ? <WorkspaceFeedback kind="error">Unable to load job log: {jobLog.error instanceof Error ? jobLog.error.message : 'Unknown error.'}</WorkspaceFeedback> : null}
+              {jobLog.data && !jobLog.data.available ? <WorkspaceFeedback kind="empty">No persisted log is available for this job yet.</WorkspaceFeedback> : null}
               {copyError ? <Alert severity="warning">{copyError}</Alert> : null}
               {jobLog.data?.available ? (
                 <Box
@@ -287,14 +317,25 @@ function PipelineStages({ job }: { job: QueueJob }) {
         const event = history.find((item) => item.stage === stage);
         const state = pipelineStageState(job, stage, index, currentIndex, Boolean(event), terminal, failedStage);
         return (
-          <Box key={stage} sx={{ display: 'grid', gridTemplateColumns: '28px minmax(180px, 1fr) minmax(90px, auto) minmax(100px, auto)', gap: 1, alignItems: 'center', border: 1, borderColor: state === 'active' ? 'primary.main' : 'divider', borderRadius: 1, px: 1.25, py: 1, bgcolor: state === 'active' ? 'rgba(79,179,255,0.08)' : 'transparent' }}>
+          <Box key={stage} sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: '24px minmax(0, 1fr)', md: '28px minmax(180px, 1fr) minmax(90px, auto) minmax(100px, auto)' },
+            gap: 0.75,
+            alignItems: 'center',
+            border: 1,
+            borderColor: state === 'active' ? 'info.main' : 'divider',
+            borderRadius: 1,
+            px: 1,
+            py: 0.7,
+            bgcolor: state === 'active' ? (theme) => getMVForgeTokens(theme).colors.status.infoSurface : 'background.paper',
+          }}>
             {pipelineStageIcon(state)}
             <Stack spacing={0.1}>
               <Typography fontWeight={state === 'active' ? 700 : 500}>{stage.replaceAll('_', ' ')}</Typography>
               {event?.at ? <Typography variant="caption" color="text.secondary">{new Date(event.at).toLocaleString()}</Typography> : null}
             </Stack>
-            <Chip size="small" color={pipelineStageColor(state)} variant={state === 'active' ? 'filled' : 'outlined'} label={state} />
-            <Typography variant="body2" color="text.secondary" align="right">{event ? stageDuration(history, event, job) : '—'}</Typography>
+            <Chip size="small" color={pipelineStageColor(state)} variant={state === 'active' ? 'filled' : 'outlined'} label={state} sx={{ gridColumn: { xs: '2', md: 'auto' }, justifySelf: 'start' }} />
+            <Typography variant="caption" color="text.secondary" align="right" sx={{ gridColumn: { xs: '2', md: 'auto' } }}>{event ? stageDuration(history, event, job) : '—'}</Typography>
 			{stage === 'preparing_subtitles' && job.subtitleArtifacts?.length ? <SubtitleArtifactStages artifacts={job.subtitleArtifacts} /> : null}
           </Box>
         );
@@ -366,8 +407,8 @@ function pipelineStageIcon(state: PipelineStageState) {
   return <RadioButtonUncheckedIcon color="disabled" fontSize="small" />;
 }
 
-function pipelineStageColor(state: PipelineStageState): 'default' | 'primary' | 'success' | 'warning' | 'error' {
-  if (state === 'active') return 'primary';
+function pipelineStageColor(state: PipelineStageState): 'default' | 'info' | 'success' | 'warning' | 'error' {
+  if (state === 'active') return 'info';
   if (state === 'success') return 'success';
   if (state === 'warning') return 'warning';
   if (state === 'error') return 'error';
@@ -397,14 +438,14 @@ function formatBitrate(value: number) {
 
 function SummaryGrid({ items }: { items: Array<[string, string]> }) {
   return (
-    <Grid container spacing={1.25}>
+    <Grid container spacing={0.75}>
       {items.map(([label, value]) => (
         <Grid key={label} size={{ xs: 12, sm: 6, md: 3 }}>
-          <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.25, height: '100%' }}>
-            <Typography color="text.secondary" variant="body2">
+          <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 0.9, height: '100%', bgcolor: 'background.paper' }}>
+            <Typography color="text.secondary" variant="caption">
               {label}
             </Typography>
-            <Typography sx={{ mt: 0.5, wordBreak: 'break-word' }}>{value || 'Unknown'}</Typography>
+            <Typography variant="body2" sx={{ mt: 0.25, wordBreak: 'break-word' }}>{value || 'Unknown'}</Typography>
           </Box>
         </Grid>
       ))}
@@ -457,9 +498,9 @@ function InfoBlock({ title, value }: { title: string; value?: string }) {
           border: 1,
           borderColor: 'divider',
           borderRadius: 1,
-          bgcolor: 'rgba(255,255,255,0.03)',
+          bgcolor: 'background.default',
           m: 0,
-          p: 1.5,
+          p: 1.1,
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
           maxHeight: 220,
@@ -719,19 +760,4 @@ function formatBytes(bytes: number) {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / 1024 ** index).toFixed(index >= 3 ? 1 : 0)} ${units[index]}`;
-}
-
-function statusColor(status: QueueJob['status']) {
-  switch (status) {
-    case 'completed':
-      return 'success';
-    case 'failed':
-      return 'error';
-    case 'running':
-      return 'primary';
-    case 'canceled':
-      return 'default';
-    default:
-      return 'warning';
-  }
 }
