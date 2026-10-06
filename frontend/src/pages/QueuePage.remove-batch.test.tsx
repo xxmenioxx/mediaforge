@@ -58,11 +58,11 @@ function group(jobs: QueueJob[]) {
     jobs,
     isBatch: true,
     batchId: 'batch-1',
-    progress: Math.round(jobs.reduce((total, item) => total + item.progress, 0) / jobs.length),
     completed: jobs.filter((item) => item.status === 'completed').length,
     failed: jobs.filter((item) => item.status === 'failed').length,
     running: jobs.filter((item) => item.status === 'running').length,
     queued: jobs.filter((item) => item.status === 'queued').length,
+    canceled: jobs.filter((item) => item.status === 'canceled').length,
   };
 }
 

@@ -36,8 +36,12 @@ import { DragEvent, FormEvent, useMemo, useState } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { canRemoveQueueBatch } from '../utils/queueBatch';
+import { hasDeterminateQueueProgress, queueStagePresentation, queueStatusColor, queueStatusLabel } from '../utils/queuePresentation';
+import { CompactActionGroup } from '../components/CompactActionGroup';
 import { JobDetailsDialog } from '../components/JobDetailsDialog';
 import { PageContent, PageHeader } from '../components/PageHeader';
+import { WorkspaceFeedback } from '../components/WorkspaceFeedback';
+import { getMVForgeTokens } from '../theme/theme';
 import type { AppSetting, Asset, AssetInventory, AudioEnhancementProfile, Library, Profile, QueueJob, QueueJobInput } from '../api/types';
 import { emptyTrackProfile, getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 
@@ -229,27 +233,32 @@ export function QueuePage() {
 
   return (
     <>
-      <PageHeader title="Queue" eyebrow="Manual approval">
-        <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 760 }}>
-          Jobs appear here only after the user chooses media, a destination library, and a conversion profile.
+      <PageHeader
+        title="Queue"
+        eyebrow="Operations"
+        actions={<Button startIcon={<PlaylistAddIcon />} variant="contained" onClick={openCreateJobDialog}>Queue Job</Button>}
+      >
+        <Typography color="text.secondary" sx={{ mt: 0.5, maxWidth: 760 }}>
+          Review queued work and monitor each job through processing.
         </Typography>
       </PageHeader>
       <PageContent>
-        {jobs.isError ? <Alert severity="warning">Unable to load queue.</Alert> : null}
-        <Alert severity={workerSettings.autoWorkerEnabled ? 'success' : 'warning'} sx={{ mb: 2 }}>
-          Auto worker is {workerSettings.autoWorkerEnabled ? 'enabled' : 'disabled'} in Settings.{' '}
-          <Button component={RouterLink} to="/settings" size="small" color="inherit">
-            Open Settings
-          </Button>
-        </Alert>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" justifyContent="space-between" useFlexGap sx={{ mb: 2 }}>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ width: { xs: '100%', sm: 'auto' }, '& .MuiButton-root': { flex: { xs: '1 1 calc(50% - 8px)', sm: '0 0 auto' } } }}>
+        {jobs.isError ? (
+          <Box sx={{ mb: 1.25 }}>
+            <WorkspaceFeedback kind="error" action={<Button size="small" onClick={() => void jobs.refetch()}>Retry</Button>}>
+              Unable to load Queue.
+            </WorkspaceFeedback>
+          </Box>
+        ) : null}
+        <QueueSummaryStrip counts={jobs.data ? statusCounts : undefined} autoWorkerEnabled={workerSettings.autoWorkerEnabled} />
+        <CompactActionGroup role="group" aria-label="Filter Queue by status" sx={{ mb: 1.25 }}>
             {(['all', 'running', 'queued', 'completed', 'failed', 'canceled'] as const).map((status) => (
               <Button
                 key={status}
                 variant={statusFilter === status ? 'contained' : 'outlined'}
                 color={status === 'failed' ? 'error' : 'primary'}
                 size="small"
+                aria-pressed={statusFilter === status}
                 onClick={() => {
                   const nextParams = new URLSearchParams();
                   nextParams.set('status', status);
@@ -262,24 +271,21 @@ export function QueuePage() {
                   setSearchParams(nextParams);
                 }}
               >
-                {statusLabel(status)} {statusCounts[status]}
+                {statusLabel(status)}
               </Button>
             ))}
             {batchFilter || pathFilter || workerFilter !== 'all' ? (
-              <Button color="warning" size="small" variant="outlined" onClick={() => setSearchParams(statusFilter === 'all' ? {} : { status: statusFilter })}>
+              <Button size="small" variant="outlined" onClick={() => setSearchParams(statusFilter === 'all' ? {} : { status: statusFilter })}>
                 Clear focus
               </Button>
             ) : null}
-          </Stack>
-          <Button startIcon={<PlaylistAddIcon />} variant="contained" onClick={openCreateJobDialog} sx={{ width: { xs: '100%', sm: 'auto' } }}>
-            Queue Job
-          </Button>
-        </Stack>
-        <Card sx={{ mb: 2 }}>
-          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-            <Grid container spacing={1.5} alignItems="center">
+        </CompactActionGroup>
+        <Card variant="outlined" sx={{ mb: 1.25 }}>
+          <CardContent sx={{ p: 1, '&:last-child': { pb: 1 } }}>
+            <Grid container spacing={1} alignItems="center">
               <Grid size={{ xs: 12, md: 4 }}>
                 <TextField
+                  size="small"
                   label="Search jobs"
                   value={jobSearch}
                   onChange={(event) => { setJobSearch(event.target.value); setJobPage(1); }}
@@ -287,27 +293,31 @@ export function QueuePage() {
                   fullWidth
                 />
               </Grid>
-              <Grid size={{ xs: 12, md: 4 }}>
-                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                  {['all', ...workerOptions].map((worker) => (
-                    <Chip
-                      key={worker}
-                      clickable
-                      color={workerFilter === worker ? 'primary' : 'default'}
-                      variant={workerFilter === worker ? 'filled' : 'outlined'}
-                      label={worker === 'all' ? 'All workers' : worker === 'unassigned' ? 'Unassigned' : worker}
-                      onClick={() => {
-                        const nextParams = new URLSearchParams(searchParams);
-                        if (worker === 'all') nextParams.delete('worker');
-                        else nextParams.set('worker', worker);
-                        setSearchParams(nextParams);
-                      }}
-                    />
+              <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                <TextField
+                  size="small"
+                  select
+                  label="Worker"
+                  value={workerFilter}
+                  fullWidth
+                  onChange={(event) => {
+                    const worker = event.target.value;
+                    const nextParams = new URLSearchParams(searchParams);
+                    if (worker === 'all') nextParams.delete('worker');
+                    else nextParams.set('worker', worker);
+                    setSearchParams(nextParams);
+                  }}
+                >
+                  {['all', ...new Set([...workerOptions, ...(workerFilter === 'all' ? [] : [workerFilter])])].map((worker) => (
+                    <MenuItem key={worker} value={worker}>
+                      {worker === 'all' ? 'All workers' : worker === 'unassigned' ? 'Unassigned' : worker}
+                    </MenuItem>
                   ))}
-                </Stack>
+                </TextField>
               </Grid>
               <Grid size={{ xs: 6, md: 2 }}>
                 <TextField
+                  size="small"
                   label="Jobs per page"
                   value={jobsPerPage}
                   onChange={(event) => { setJobsPerPage(Number(event.target.value)); setJobPage(1); }}
@@ -322,17 +332,19 @@ export function QueuePage() {
                 </TextField>
               </Grid>
               <Grid size={{ xs: 12 }}>
-                <Stack direction="row" spacing={1} justifyContent={{ xs: 'stretch', md: 'flex-end' }} sx={{ '& > button': { flex: { xs: 1, md: 'initial' } } }}>
-                  <Button variant="outlined" disabled={safeJobPage <= 1} onClick={() => setJobPage((current) => Math.max(1, current - 1))}>
-                    Prev
-                  </Button>
-                  <Button variant="outlined" disabled={safeJobPage >= totalJobPages} onClick={() => setJobPage((current) => Math.min(totalJobPages, current + 1))}>
-                    Next
-                  </Button>
+                <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={0.75}>
+                  <Typography color="text.secondary" variant="caption" aria-live="polite">
+                    Page {safeJobPage} of {totalJobPages} · {filteredJobs.length} matching jobs
+                  </Typography>
+                  <CompactActionGroup>
+                    <Button size="small" variant="outlined" disabled={safeJobPage <= 1} onClick={() => setJobPage((current) => Math.max(1, current - 1))}>
+                      Previous
+                    </Button>
+                    <Button size="small" variant="outlined" disabled={safeJobPage >= totalJobPages} onClick={() => setJobPage((current) => Math.min(totalJobPages, current + 1))}>
+                      Next
+                    </Button>
+                  </CompactActionGroup>
                 </Stack>
-                <Typography color="text.secondary" variant="body2" align="right" sx={{ mt: 0.5 }}>
-                  Page {safeJobPage} / {totalJobPages}
-                </Typography>
               </Grid>
             </Grid>
           </CardContent>
@@ -421,14 +433,13 @@ export function QueuePage() {
             </DialogActions>
           </Box>
         </Dialog>
-        <QueueFlatList jobs={pagedJobs} onEditJob={openEditJobDialog} />
+        <QueueFlatList jobs={pagedJobs} selectedJobId={selectedJobId} onEditJob={openEditJobDialog} />
+        {jobs.isLoading ? <WorkspaceFeedback kind="loading">Loading Queue…</WorkspaceFeedback> : null}
         {!jobs.isLoading && jobs.data?.length === 0 ? (
-          <Alert severity="info">No conversion jobs have been queued yet.</Alert>
+          <WorkspaceFeedback kind="empty">No conversion jobs have been queued yet.</WorkspaceFeedback>
         ) : null}
         {!jobs.isLoading && allJobs.length > 0 && filteredJobs.length === 0 ? (
-          <Alert severity="info" sx={{ mt: 2 }}>
-            No jobs match the current filter.
-          </Alert>
+          <WorkspaceFeedback kind="empty">No jobs match the current filter.</WorkspaceFeedback>
         ) : null}
       </PageContent>
       <JobDetailsDialog
@@ -444,11 +455,88 @@ export function QueuePage() {
   );
 }
 
-function QueueFlatList({ jobs, onEditJob }: { jobs: QueueJob[]; onEditJob: (job: QueueJob) => void }) {
+function QueueSummaryStrip({ counts, autoWorkerEnabled }: {
+  counts?: QueueStatusCounts;
+  autoWorkerEnabled: boolean;
+}) {
+  const items = [
+    { label: 'All jobs', value: counts?.all, color: 'text.primary' },
+    { label: 'Queued', value: counts?.queued, color: 'text.secondary' },
+    { label: 'Running', value: counts?.running, color: 'info.main' },
+    { label: 'Completed', value: counts?.completed, color: 'success.main' },
+    { label: 'Failed', value: counts?.failed, color: 'error.main' },
+    { label: 'Canceled', value: counts?.canceled, color: 'text.secondary' },
+  ] as const;
+
+  return (
+    <Box component="section" aria-label="Queue summary">
+      <Card variant="outlined">
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: 'repeat(3, minmax(0, 1fr))', sm: 'repeat(6, minmax(0, 1fr)) auto' },
+            alignItems: 'center',
+          }}
+        >
+          {items.map(({ label, value, color }, index) => (
+            <Box
+              key={label}
+              data-testid={`queue-summary-${label.toLowerCase().replaceAll(' ', '-')}`}
+              sx={{
+                minWidth: 0,
+                px: { xs: 0.9, sm: 1.1 },
+                py: 0.75,
+                borderRight: { xs: index % 3 === 2 ? 0 : 1, sm: index === items.length - 1 ? 0 : 1 },
+                borderBottom: { xs: index < 3 ? 1 : 0, sm: 0 },
+                borderColor: 'divider',
+              }}
+            >
+              <Typography variant="caption" color="text.secondary" noWrap>{label}</Typography>
+              <Typography variant="body2" fontWeight={700} sx={{ color }}>
+                {value ?? '—'}
+              </Typography>
+            </Box>
+          ))}
+          <Stack
+            direction="row"
+            alignItems="center"
+            justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}
+            spacing={0.75}
+            sx={{ gridColumn: { xs: '1 / -1', sm: 'auto' }, p: 0.75, borderTop: { xs: 1, sm: 0 }, borderColor: 'divider' }}
+          >
+            <Chip
+              label={`Auto worker ${autoWorkerEnabled ? 'enabled' : 'disabled'}`}
+              color={autoWorkerEnabled ? 'info' : 'warning'}
+              size="small"
+              variant="outlined"
+            />
+            <Button component={RouterLink} to="/settings" size="small">Settings</Button>
+          </Stack>
+        </Box>
+      </Card>
+    </Box>
+  );
+}
+
+function QueueFlatList({ jobs, selectedJobId, onEditJob }: {
+  jobs: QueueJob[];
+  selectedJobId: number;
+  onEditJob: (job: QueueJob) => void;
+}) {
   const queryClient = useQueryClient();
   const [, setSearchParams] = useSearchParams();
   const [draggedJobID, setDraggedJobID] = useState<number | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: number; placement: 'before' | 'after' } | null>(null);
+  const groups = useMemo(() => {
+    const jobOrder = new Map(jobs.map((job, index) => [job.id, index]));
+    const groupOrder = (group: QueueJobGroup) => Math.min(...group.jobs.map((job) => jobOrder.get(job.id) ?? Number.MAX_SAFE_INTEGER));
+    return buildJobGroups(jobs, 'asc')
+      .map((group) => ({
+        ...group,
+        jobs: [...group.jobs].sort((left, right) => (jobOrder.get(left.id) ?? 0) - (jobOrder.get(right.id) ?? 0)),
+      }))
+      .sort((left, right) => groupOrder(left) - groupOrder(right));
+  }, [jobs]);
   const updateJob = useMutation({
     mutationFn: api.updateQueueJob,
     onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
@@ -511,38 +599,71 @@ function QueueFlatList({ jobs, onEditJob }: { jobs: QueueJob[]; onEditJob: (job:
       <Typography variant="body2" color="text.secondary">
         Drag queued jobs by the handle to set their exact execution order. Running and historical jobs are locked.
       </Typography>
-      {jobs.map((job) => (
-        <FlatJobRow
-          key={job.id}
-          job={job}
-          isUpdating={isUpdating}
-          isDragging={draggedJobID === job.id}
-          dropPlacement={dropTarget?.id === job.id ? dropTarget.placement : undefined}
-          onDragStart={(event) => {
-            if (job.status !== 'queued' || isUpdating) return;
-            event.dataTransfer.effectAllowed = 'move';
-            event.dataTransfer.setData('text/plain', String(job.id));
-            setDraggedJobID(job.id);
-          }}
-          onDragEnd={() => { setDraggedJobID(null); setDropTarget(null); }}
-          onDragOver={(event) => handleDragOver(event, job)}
-          onDrop={(event) => handleDrop(event, job)}
-          onDetails={() => openDetails(job)}
-          onEdit={() => onEditJob(job)}
-          onCancel={() => updateJob.mutate({ jobId: job.id, status: 'canceled' })}
-          onRequeue={() => updateJob.mutate({ jobId: job.id, status: 'queued' })}
-          onRemove={() => removeJob(job)}
-        />
+      {groups.map((group) => (
+        <Box
+          component="section"
+          key={group.id}
+          aria-label={`${group.isBatch ? 'Batch' : 'Path group'}: ${group.name}`}
+          sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden', bgcolor: 'background.default' }}
+        >
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            alignItems={{ xs: 'stretch', sm: 'center' }}
+            justifyContent="space-between"
+            spacing={0.5}
+            sx={{ px: 1, py: 0.75, borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}
+          >
+            <Stack direction="row" alignItems="center" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
+              <Chip label={group.isBatch ? 'Batch' : group.jobs.length > 1 ? 'Path group' : 'Single job'} size="small" variant="outlined" />
+              <Typography variant="body2" fontWeight={700} noWrap title={group.name}>{group.name}</Typography>
+              <Typography variant="caption" color="text.secondary">{group.jobs.length} {group.jobs.length === 1 ? 'job' : 'jobs'}</Typography>
+            </Stack>
+            <CompactActionGroup aria-label={`Status counts for ${group.name}`}>
+              {group.running ? <Typography variant="caption" color="info.main">{group.running} running</Typography> : null}
+              {group.queued ? <Typography variant="caption" color="text.secondary">{group.queued} queued</Typography> : null}
+              {group.completed ? <Typography variant="caption" color="success.main">{group.completed} completed</Typography> : null}
+              {group.failed ? <Typography variant="caption" color="error.main">{group.failed} failed</Typography> : null}
+              {group.canceled ? <Typography variant="caption" color="text.secondary">{group.canceled} canceled</Typography> : null}
+            </CompactActionGroup>
+          </Stack>
+          <Stack role="list" aria-label={`Jobs in ${group.name}`} spacing={0.5} sx={{ p: 0.75 }}>
+            {group.jobs.map((job) => (
+              <FlatJobRow
+                key={job.id}
+                job={job}
+                isSelected={selectedJobId === job.id}
+                isUpdating={isUpdating}
+                isDragging={draggedJobID === job.id}
+                dropPlacement={dropTarget?.id === job.id ? dropTarget.placement : undefined}
+                onDragStart={(event) => {
+                  if (job.status !== 'queued' || isUpdating) return;
+                  event.dataTransfer.effectAllowed = 'move';
+                  event.dataTransfer.setData('text/plain', String(job.id));
+                  setDraggedJobID(job.id);
+                }}
+                onDragEnd={() => { setDraggedJobID(null); setDropTarget(null); }}
+                onDragOver={(event) => handleDragOver(event, job)}
+                onDrop={(event) => handleDrop(event, job)}
+                onDetails={() => openDetails(job)}
+                onEdit={() => onEditJob(job)}
+                onCancel={() => updateJob.mutate({ jobId: job.id, status: 'canceled' })}
+                onRequeue={() => updateJob.mutate({ jobId: job.id, status: 'queued' })}
+                onRemove={() => removeJob(job)}
+              />
+            ))}
+          </Stack>
+        </Box>
       ))}
     </Stack>
   );
 }
 
 function FlatJobRow({
-  job, isUpdating, isDragging, dropPlacement, onDragStart, onDragEnd, onDragOver, onDrop,
+  job, isSelected, isUpdating, isDragging, dropPlacement, onDragStart, onDragEnd, onDragOver, onDrop,
   onDetails, onEdit, onCancel, onRequeue, onRemove,
 }: {
   job: QueueJob;
+  isSelected: boolean;
   isUpdating: boolean;
   isDragging: boolean;
   dropPlacement?: 'before' | 'after';
@@ -556,60 +677,103 @@ function FlatJobRow({
   onRequeue: () => void;
   onRemove: () => void;
 }) {
-  const stage = pipelineStage(job);
+  const stage = queueStagePresentation(job);
   const timing = jobTiming(job);
   const canEdit = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
   const canCancel = job.status === 'queued' || job.status === 'running';
   const canRequeue = job.status === 'failed' || job.status === 'canceled';
   const canRemove = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
   const nextAction = nextPipelineAction(job);
+  const hasDeterminateProgress = hasDeterminateQueueProgress(job.progress);
+  const jobLabel = job.executionNumber ? `Job #${job.executionNumber}` : `Pending job ${job.id}`;
+  const mediaName = fileNameFromPath(job.mediaPath);
   return (
     <Box
+      component="article"
+      role="listitem"
+      aria-label={`${jobLabel}: ${mediaName}`}
+      aria-current={isSelected ? 'true' : undefined}
+      data-testid={`queue-job-${job.id}`}
+      data-selected={isSelected ? 'true' : 'false'}
+      data-running={job.status === 'running' ? 'true' : 'false'}
       onDragOver={onDragOver}
       onDrop={onDrop}
       sx={{
-        position: 'relative', border: 1, borderColor: 'divider', borderRadius: 1, p: { xs: 0.75, sm: 1 },
-        bgcolor: isDragging ? 'action.selected' : 'rgba(255,255,255,0.018)', opacity: isDragging ? 0.55 : 1,
+        position: 'relative',
+        border: 1,
+        borderLeftWidth: isSelected || job.status === 'running' ? 3 : 1,
+        borderColor: (theme) => isSelected
+          ? getMVForgeTokens(theme).interaction.selectedBorder
+          : job.status === 'running'
+            ? getMVForgeTokens(theme).colors.status.info
+            : 'divider',
+        borderRadius: 1,
+        p: { xs: 0.75, sm: 1 },
+        bgcolor: isSelected ? undefined : job.status === 'running' ? (theme) => getMVForgeTokens(theme).colors.status.infoSurface : 'background.paper',
+        background: isSelected ? (theme) => getMVForgeTokens(theme).interaction.selectedBackground : undefined,
+        opacity: isDragging ? 0.55 : 1,
+        '&:hover': { borderColor: (theme) => getMVForgeTokens(theme).interaction.hoverBorder },
         '&::before': dropPlacement === 'before' ? dropIndicator('top') : undefined,
         '&::after': dropPlacement === 'after' ? dropIndicator('bottom') : undefined,
       }}
     >
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '32px minmax(0, 1fr)', lg: '32px minmax(260px, 1fr) 160px 145px minmax(190px, 0.7fr) 120px auto' }, gap: 1, alignItems: 'center' }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '32px minmax(0, 1fr)', lg: '32px minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(130px, 0.7fr) auto' }, gap: { xs: 0.75, sm: 1 }, alignItems: 'center' }}>
         <Tooltip title={job.status === 'queued' ? 'Drag to reorder' : 'Only queued jobs can be reordered'}>
           <span>
-            <IconButton draggable={job.status === 'queued' && !isUpdating} onDragStart={onDragStart} onDragEnd={onDragEnd} disabled={job.status !== 'queued' || isUpdating} size="small" aria-label={`Reorder ${fileNameFromPath(job.mediaPath)}`} sx={{ cursor: job.status === 'queued' ? 'grab' : 'default' }}>
+            <IconButton draggable={job.status === 'queued' && !isUpdating} onDragStart={onDragStart} onDragEnd={onDragEnd} disabled={job.status !== 'queued' || isUpdating} size="small" aria-label={`Reorder ${mediaName}`} sx={{ cursor: job.status === 'queued' ? 'grab' : 'default' }}>
               <DragIndicatorIcon fontSize="small" />
             </IconButton>
           </span>
         </Tooltip>
-        <Stack spacing={0.25} sx={{ minWidth: 0 }}>
-          <Typography fontWeight={700} noWrap title={fileNameFromPath(job.mediaPath)}>
-            {job.executionNumber ? `#${job.executionNumber} · ` : ''}{fileNameFromPath(job.mediaPath)}
+        <Stack spacing={0.4} sx={{ minWidth: 0 }}>
+          <Typography fontWeight={700} variant="body2" noWrap title={mediaName}>
+            {job.executionNumber ? `#${job.executionNumber} · ` : ''}{mediaName}
           </Typography>
-          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-            {job.batchName || job.batchId ? <Chip size="small" variant="outlined" label={job.batchName || `Batch ${job.batchId}`} /> : null}
+          <Typography variant="caption" color="text.secondary" noWrap title={job.mediaPath}>
+            {compactPath(job.mediaPath)}
+          </Typography>
+        </Stack>
+        <Stack spacing={0.35} sx={{ minWidth: 0, gridColumn: { xs: '1 / -1', lg: 'auto' } }}>
+          <CompactActionGroup aria-label={`Status for ${jobLabel}`}>
+            <Chip label={queueStatusLabel(job.status)} color={queueStatusColor(job.status)} size="small" aria-label={`Queue status: ${queueStatusLabel(job.status)}`} />
+            <Chip label={stage.label} color={stage.color} size="small" variant="outlined" aria-label={`Queue stage: ${stage.label}`} />
+            {job.validationStatus === 'warning' ? <Chip label="Validation warning" color="warning" size="small" /> : null}
+            {job.validationStatus === 'failed' ? <Chip label="Validation failed" color="error" size="small" /> : null}
+          </CompactActionGroup>
+          <CompactActionGroup aria-label={`Operational details for ${jobLabel}`}>
             {job.status === 'queued' ? <Typography variant="caption" color="text.secondary">Queue {job.queuePosition || 'pending'}</Typography> : null}
-            <Typography variant="caption" color="text.secondary">{job.workerName || 'Unassigned'}</Typography>
-          </Stack>
+            <Typography variant="caption" color="text.secondary">Worker: {job.workerName || 'Unassigned'}</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Library #{job.libraryId} · {job.processingMode === 'audio_only' ? 'Audio only' : `Video profile #${job.profileId}`}
+            </Typography>
+            {job.audioProfileKey ? <Typography variant="caption" color="text.secondary">Audio: {job.audioProfileKey}</Typography> : null}
+            {job.trackProfileKey ? <Typography variant="caption" color="text.secondary">Tracks: {job.trackProfileKey}</Typography> : null}
+          </CompactActionGroup>
         </Stack>
-        <Chip label={stage.label} color={stage.color} size="small" variant="outlined" sx={{ gridColumn: { xs: '2', lg: 'auto' }, justifySelf: 'start' }} />
-        <Stack spacing={0.1} sx={{ gridColumn: { xs: '2', lg: 'auto' } }}>
-          <Typography variant="caption" color="text.secondary">Elapsed {timing.elapsed || '—'}</Typography>
-          <Typography variant="caption" color="text.secondary">ETA {timing.eta || '—'}</Typography>
+        <Stack spacing={0.35} sx={{ minWidth: 0, gridColumn: { xs: '1 / -1', lg: 'auto' } }}>
+          {timing.elapsed ? <Typography variant="caption" color="text.secondary">Elapsed {timing.elapsed}</Typography> : null}
+          {timing.eta ? <Typography variant="caption" color="text.secondary">ETA {timing.eta}</Typography> : null}
+          {job.status === 'running' ? (
+            <Stack spacing={0.2} aria-label={`Progress for ${jobLabel}`}>
+              <Typography variant="caption" color="text.secondary">
+                {hasDeterminateProgress ? `Progress ${job.progress}%` : stage.label}
+              </Typography>
+              <LinearProgress
+                variant={hasDeterminateProgress ? 'determinate' : 'indeterminate'}
+                value={hasDeterminateProgress ? job.progress : undefined}
+                sx={{ height: 4, borderRadius: 1 }}
+              />
+            </Stack>
+          ) : null}
         </Stack>
-        <Stack spacing={0.35} sx={{ gridColumn: { xs: '2', lg: 'auto' }, minWidth: 0 }}>
-          <Stack direction="row" justifyContent="space-between"><Typography variant="caption">Progress</Typography><Typography variant="caption">{job.progress}%</Typography></Stack>
-          <LinearProgress variant="determinate" value={job.progress} sx={{ height: 7, borderRadius: 1 }} />
-        </Stack>
-        <Chip label={job.status} color={statusColor(job.status)} size="small" sx={{ gridColumn: { xs: '2', lg: 'auto' }, justifySelf: 'start' }} />
-        <Stack direction="row" spacing={0.25} justifyContent="flex-end" flexWrap="wrap" useFlexGap sx={{ gridColumn: { xs: '1 / -1', lg: 'auto' }, borderTop: { xs: 1, lg: 0 }, borderColor: 'divider', pt: { xs: 0.5, lg: 0 } }}>
-          {nextAction ? <Tooltip title={nextAction.label}><IconButton component={RouterLink} to={nextAction.to} size="small" color="primary"><OpenInNewIcon fontSize="small" /></IconButton></Tooltip> : null}
-          <Tooltip title="Details"><IconButton size="small" color={job.status === 'failed' ? 'error' : 'primary'} onClick={onDetails}><ErrorOutlineIcon fontSize="small" /></IconButton></Tooltip>
-          <Tooltip title="Edit"><span><IconButton size="small" disabled={isUpdating || !canEdit} onClick={onEdit}><EditIcon fontSize="small" /></IconButton></span></Tooltip>
-          <Tooltip title="Cancel"><span><IconButton size="small" color="warning" disabled={isUpdating || !canCancel} onClick={onCancel}><CancelIcon fontSize="small" /></IconButton></span></Tooltip>
-          <Tooltip title="Requeue"><span><IconButton size="small" color="primary" disabled={isUpdating || !canRequeue} onClick={onRequeue}><ReplayIcon fontSize="small" /></IconButton></span></Tooltip>
-          <Tooltip title="Remove"><span><IconButton size="small" color="error" disabled={isUpdating || !canRemove} onClick={onRemove}><RemoveCircleOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
-        </Stack>
+        <CompactActionGroup aria-label={`Actions for ${jobLabel}`} justifyContent={{ xs: 'flex-start', lg: 'flex-end' }} sx={{ gridColumn: { xs: '1 / -1', lg: 'auto' }, borderTop: { xs: 1, lg: 0 }, borderColor: 'divider', pt: { xs: 0.5, lg: 0 } }}>
+          {nextAction ? <Tooltip title={nextAction.label}><IconButton component={RouterLink} to={nextAction.to} size="small" color="primary" aria-label={`${nextAction.label} for ${jobLabel}`}><OpenInNewIcon fontSize="small" /></IconButton></Tooltip> : null}
+          <Tooltip title="Details"><IconButton size="small" color={job.status === 'failed' ? 'error' : 'primary'} onClick={onDetails} aria-label={`Details for ${jobLabel}`}><ErrorOutlineIcon fontSize="small" /></IconButton></Tooltip>
+          <Tooltip title="Edit"><span><IconButton size="small" disabled={isUpdating || !canEdit} onClick={onEdit} aria-label={`Edit ${jobLabel}`}><EditIcon fontSize="small" /></IconButton></span></Tooltip>
+          <Tooltip title="Cancel"><span><IconButton size="small" color="warning" disabled={isUpdating || !canCancel} onClick={onCancel} aria-label={`Cancel ${jobLabel}`}><CancelIcon fontSize="small" /></IconButton></span></Tooltip>
+          <Tooltip title="Requeue"><span><IconButton size="small" color="primary" disabled={isUpdating || !canRequeue} onClick={onRequeue} aria-label={`Requeue ${jobLabel}`}><ReplayIcon fontSize="small" /></IconButton></span></Tooltip>
+          <Tooltip title="Remove"><span><IconButton size="small" color="error" disabled={isUpdating || !canRemove} onClick={onRemove} aria-label={`Remove ${jobLabel}`}><RemoveCircleOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
+        </CompactActionGroup>
       </Box>
       {job.errorMessage ? <Alert severity={job.status === 'failed' ? 'error' : 'warning'} sx={{ mt: 0.75 }}>{shortText(job.errorMessage, 180)}</Alert> : null}
     </Box>
@@ -638,11 +802,11 @@ type QueueJobGroup = {
   jobs: QueueJob[];
   isBatch: boolean;
   batchId: string;
-  progress: number;
   completed: number;
   failed: number;
   running: number;
   queued: number;
+  canceled: number;
 };
 
 function AssetAutocomplete({ assets, value, onChange }: { assets: Asset[]; value: string; onChange: (path: string) => void }) {
@@ -927,10 +1091,10 @@ export function QueueGroupCard({
               </Typography>
               <Chip label={group.isBatch ? 'Batch' : group.jobs.length > 1 ? 'Path group' : 'Single job'} color={group.isBatch ? 'primary' : 'default'} size="small" />
               <Chip label={`${group.completed}/${group.jobs.length} completed`} color="success" size="small" />
-              <Chip label={`${group.queued} queued`} color="warning" size="small" />
-              <Chip label={`${group.running} running`} color="primary" size="small" />
-              <Chip label={`${group.progress}%`} color="primary" size="small" variant="outlined" />
+              <Chip label={`${group.queued} queued`} color="default" size="small" />
+              <Chip label={`${group.running} running`} color="info" size="small" />
               {group.failed ? <Chip label={`${group.failed} failed`} color="error" size="small" /> : null}
+              {group.canceled ? <Chip label={`${group.canceled} canceled`} color="default" size="small" /> : null}
             </Stack>
             <Stack
               direction={{ xs: 'column', sm: 'row' }}
@@ -992,7 +1156,6 @@ export function QueueGroupCard({
               </IconButton>
             </Stack>
           </Stack>
-          <LinearProgress variant="determinate" value={group.progress} sx={{ height: 5, borderRadius: 1 }} />
           <Collapse in={expanded} timeout="auto" unmountOnExit>
             <Stack spacing={1.25} sx={{ pt: 1 }}>
               {visibleJobs.map((job) => (
@@ -1042,11 +1205,11 @@ function JobRow({
   const canRequeue = job.status === 'failed' || job.status === 'canceled';
   const canEdit = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
   const canRemove = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
-  const stage = pipelineStage(job);
+  const stage = queueStagePresentation(job);
   const timing = jobTiming(job);
 
   return (
-    <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.1, bgcolor: 'rgba(255,255,255,0.018)' }}>
+    <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 0.9, bgcolor: 'background.paper' }}>
       <Stack spacing={0.9}>
         <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}>
           <Stack spacing={0.4} sx={{ minWidth: 0 }}>
@@ -1142,7 +1305,7 @@ function JobRow({
           </Stack>
         </Stack>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Chip label={job.status} color={statusColor(job.status)} size="small" />
+          <Chip label={queueStatusLabel(job.status)} color={queueStatusColor(job.status)} size="small" />
           <Chip label={stage.label} color={stage.color} size="small" variant="outlined" />
           <Typography color="text.secondary" variant="body2">
             {job.workerName || 'Unclaimed'}
@@ -1211,11 +1374,11 @@ function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc') {
         jobs: [],
         isBatch: Boolean(job.batchId),
         batchId: job.batchId || '',
-        progress: 0,
         completed: 0,
         failed: 0,
         running: 0,
         queued: 0,
+        canceled: 0,
       } satisfies QueueJobGroup);
 
     group.jobs.push(job);
@@ -1232,18 +1395,14 @@ function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc') {
     const failed = group.jobs.filter((job) => job.status === 'failed').length;
     const running = group.jobs.filter((job) => job.status === 'running').length;
     const queued = group.jobs.filter((job) => job.status === 'queued').length;
-    const progress =
-      group.jobs.length > 0
-        ? Math.round(group.jobs.reduce((total, job) => total + job.progress, 0) / group.jobs.length)
-        : 0;
-
+    const canceled = group.jobs.filter((job) => job.status === 'canceled').length;
     return {
       ...group,
       completed,
       failed,
       running,
       queued,
-      progress,
+      canceled,
     };
   }).sort((left, right) => {
     if (left.running !== right.running) {
@@ -1255,9 +1414,6 @@ function buildJobGroups(jobs: QueueJob[], sortDirection: 'asc' | 'desc') {
     return order || left.name.localeCompare(right.name);
   });
 }
-
-// Kept temporarily for compatibility with imports from older local UI builds.
-void buildJobGroups;
 
 function latestJobsByAsset(jobs: QueueJob[]) {
   const latest = new Map<string, QueueJob>();
@@ -1354,35 +1510,6 @@ function normalizePath(value: string) {
   return value.replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
-function pipelineStage(job: QueueJob): { label: string; color: 'default' | 'primary' | 'success' | 'warning' | 'error' } {
-  if (job.stage) {
-    const color = job.stage === 'completed' ? 'success' : job.stage === 'failed' ? 'error' : job.stage === 'canceled' ? 'default' : job.stage === 'queued' ? 'warning' : 'primary';
-    return { label: job.stage.replaceAll('_', ' '), color };
-  }
-  if (job.publishedAt) {
-    return { label: 'Publisher: published', color: 'success' };
-  }
-  if (job.validationStatus === 'passed' || job.validationStatus === 'warning') {
-    return { label: 'Publisher: ready', color: 'primary' };
-  }
-  if (job.status === 'completed') {
-    return { label: 'Analysis/Validation: waiting', color: 'primary' };
-  }
-  if (job.status === 'running') {
-    return { label: 'Workers: running', color: 'primary' };
-  }
-  if (job.status === 'queued') {
-    return { label: 'Queue: waiting', color: 'warning' };
-  }
-  if (job.status === 'failed') {
-    return { label: 'Review: failed', color: 'error' };
-  }
-  if (job.status === 'canceled') {
-    return { label: 'Queue: canceled', color: 'default' };
-  }
-  return { label: 'Assets: queued', color: 'default' };
-}
-
 function nextPipelineAction(job: QueueJob): { label: string; to: string } | null {
   if (job.publishedAt) {
     return null;
@@ -1427,19 +1554,6 @@ function shortText(value: string, maxLength: number) {
   return `${compact.slice(0, maxLength - 1)}...`;
 }
 
-function statusColor(status: string) {
-  switch (status) {
-    case 'completed':
-      return 'success';
-    case 'failed':
-      return 'error';
-    case 'running':
-      return 'primary';
-    default:
-      return 'warning';
-  }
-}
-
 type QueueStatusCounts = Record<QueueJob['status'] | 'all', number>;
 
 function summarizeStatusCounts(jobs: QueueJob[]): QueueStatusCounts {
@@ -1456,7 +1570,7 @@ function normalizeStatusFilter(value: string | null): QueueJob['status'] | 'all'
 }
 
 function statusLabel(status: QueueJob['status'] | 'all') {
-  return status === 'all' ? 'All' : status[0].toUpperCase() + status.slice(1);
+  return status === 'all' ? 'All' : queueStatusLabel(status);
 }
 
 function getWorkerSettings(settings?: AppSetting[]) {
