@@ -51,7 +51,7 @@ import { AssetDefaultsCard } from '../components/AssetDefaultsCard';
 import { JellyfinSettingsCard } from '../components/JellyfinSettingsCard';
 import { TestEncodeSettingsDomain } from './TestEncodeSettingsDomain';
 import { LegacyAnalysisRecords } from '../components/LegacyAnalysisRecords';
-import type { HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
+import type { AppSetting, HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
 import { defaultMVForgePreferences, getMVForgePreferences } from '../mvforgePreferences';
 import { encoderNamesForWorker } from '../utils/workerEncoders';
 import { liveRuntimeStateLabel, runtimeRefreshSuccessMessage } from '../utils/runtimeStatePresentation';
@@ -319,7 +319,10 @@ export function SettingsPage() {
 
   const updateSetting = useMutation({
     mutationFn: api.updateSetting,
-    onSuccess: async () => {
+    onSuccess: async (savedSetting) => {
+      queryClient.setQueryData<AppSetting[]>(['settings'], (current) => current?.map((setting) => (
+        setting.key === savedSetting.key ? savedSetting : setting
+      )));
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
       await queryClient.invalidateQueries({ queryKey: ['libraries'] });
       await queryClient.invalidateQueries({ queryKey: ['runtime-profiles'] });
@@ -677,6 +680,9 @@ export function SettingsPage() {
                 value={settings.data?.find((item) => item.key === 'jellyfin')?.value}
                 libraries={libraries.data ?? []}
                 saving={updateSetting.isPending}
+                saveError={updateSetting.isError && updateSetting.variables?.key === 'jellyfin'
+                  ? updateSetting.error instanceof Error ? updateSetting.error.message : 'Please try again.'
+                  : undefined}
                 onSave={(value) => updateSetting.mutate({ key: 'jellyfin', value })}
               />
             ) : null}
@@ -1212,10 +1218,11 @@ function GeneralSettingsDomain({ value, availableEncoders, saving, onSave }: {
   );
 }
 
-function ProvidersIntegrationsSettingsDomain({ value, libraries, saving, onSave }: {
+function ProvidersIntegrationsSettingsDomain({ value, libraries, saving, saveError, onSave }: {
   value: Record<string, unknown> | undefined;
   libraries: Parameters<typeof JellyfinSettingsCard>[0]['libraries'];
   saving: boolean;
+  saveError?: string;
   onSave: (value: Record<string, unknown>) => void;
 }) {
   return (
@@ -1226,6 +1233,7 @@ function ProvidersIntegrationsSettingsDomain({ value, libraries, saving, onSave 
           value={value}
           libraries={libraries}
           saving={saving}
+          saveError={saveError}
           onSave={onSave}
         />
       </Grid>

@@ -769,7 +769,17 @@ func persistJellyfinConnectionSuccess(db *gorm.DB, secrets ProtectedSecretSource
 		}
 		// AppSetting.UpdatedAt is the Jellyfin ledger's configuration revision.
 		// Connection and discovery metadata must not invalidate already queued work.
-		return tx.Model(&models.AppSetting{}).Where("key = ?", jellyfinSettingsKey).UpdateColumn("value", stored.Value).Error
+		// Guard the write with the revision read above so a concurrent settings save
+		// cannot be replaced by this older connection/discovery snapshot.
+		result := tx.Model(&models.AppSetting{}).
+			Where("key = ? AND updated_at = ?", jellyfinSettingsKey, stored.UpdatedAt).
+			UpdateColumn("value", stored.Value)
+		if result.Error != nil {
+			return result.Error
+		}
+		// A newer settings write won the race. Its complete value, including
+		// mappings, remains authoritative; discovery can be refreshed next time.
+		return nil
 	})
 }
 

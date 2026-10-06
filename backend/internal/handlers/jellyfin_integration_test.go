@@ -1267,3 +1267,173 @@ func TestJellyfinRediscoveryMarksMissingAndForeignServerMappingsStale(t *testing
 		t.Fatalf("explicit remap did not restore manual refresh eligibility: status=%d body=%s", manual.Code, manual.Body.String())
 	}
 }
+
+func TestJellyfinMappingSaveSurvivesSettingsStateAndHandlerReload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/System/Info/Public":
+			_, _ = w.Write([]byte(`{"Id":"mapping-server","ServerName":"Home","Version":"10.10.0"}`))
+		case "/Library/MediaFolders":
+			_, _ = w.Write([]byte(`{"Items":[{"Id":"jf-library-exact-44","Name":"Anime","CollectionType":"tvshows"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	db := jellyfinIntegrationDB(t)
+	addJellyfinLibrary(t, db, 4, t.TempDir())
+	settings := defaultJellyfinSettings()
+	settings.Enabled, settings.BaseURL, settings.APIToken = true, server.URL, "mapping-save-secret"
+	saveJellyfinSettings(t, db, settings)
+	router := jellyfinPersistenceRouter(db)
+
+	initialState := jellyfinPersistenceRequest(t, router, http.MethodGet, "/api/settings/jellyfin/state", "")
+	initial := jellyfinJSONMap(t, initialState.Body.Bytes())
+	if initialState.Code != http.StatusOK || len(initial["libraries"].([]any)) != 1 || len(initial["mappings"].([]any)) != 0 {
+		t.Fatalf("initial Jellyfin discovery did not match the unmapped setup: status=%d state=%#v", initialState.Code, initial)
+	}
+
+	posted := jellyfinPersistenceRequest(t, router, http.MethodPost, "/api/settings/jellyfin", `{"value":{"enabled":true,"baseUrl":"`+server.URL+`","credentialConfigured":true,"refreshAfterPublish":true,"refreshTestEncode":true,"debounceSeconds":10,"mappings":[{"mvforgeLibraryId":4,"jellyfinLibraryId":"jf-library-exact-44","jellyfinName":"Anime","remap":true}]}}`)
+	if posted.Code != http.StatusOK || strings.Contains(posted.Body.String(), "mapping-save-secret") {
+		t.Fatalf("mapping save status=%d body=%s", posted.Code, posted.Body.String())
+	}
+
+	assertMapping := func(label string, raw any) {
+		t.Helper()
+		mappings, ok := raw.([]any)
+		if !ok || len(mappings) != 1 {
+			t.Fatalf("%s did not return one stable-ID mapping: %#v", label, raw)
+		}
+		mapping, ok := mappings[0].(map[string]any)
+		if !ok || mapping["mvforgeLibraryId"] != float64(4) || mapping["jellyfinLibraryId"] != "jf-library-exact-44" {
+			t.Fatalf("%s changed mapping identity: %#v", label, mappings)
+		}
+	}
+	assertMapping("POST response", jellyfinJSONMap(t, posted.Body.Bytes())["value"].(map[string]any)["mappings"])
+
+	listed := jellyfinPersistenceRequest(t, router, http.MethodGet, "/api/settings", "")
+	if listed.Code != http.StatusOK || strings.Contains(listed.Body.String(), "mapping-save-secret") {
+		t.Fatalf("settings list status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	var appSettings []struct {
+		Key   string         `json:"key"`
+		Value map[string]any `json:"value"`
+	}
+	if err := json.Unmarshal(listed.Body.Bytes(), &appSettings); err != nil {
+		t.Fatal(err)
+	}
+	var jellyfinSetting map[string]any
+	for _, item := range appSettings {
+		if item.Key == jellyfinSettingsKey {
+			jellyfinSetting = item.Value
+			break
+		}
+	}
+	if jellyfinSetting == nil {
+		t.Fatalf("GET /api/settings did not include the Jellyfin AppSetting: %#v", appSettings)
+	}
+	assertMapping("GET /api/settings", jellyfinSetting["mappings"])
+
+	state := jellyfinPersistenceRequest(t, router, http.MethodGet, "/api/settings/jellyfin/state", "")
+	if state.Code != http.StatusOK {
+		t.Fatalf("Jellyfin state status=%d body=%s", state.Code, state.Body.String())
+	}
+	assertMapping("GET /api/settings/jellyfin/state", jellyfinJSONMap(t, state.Body.Bytes())["mappings"])
+
+	// A new router and SettingsHandler model a backend restart and a browser reload.
+	reloadedRouter := jellyfinPersistenceRouter(db)
+	reloadedSettings := jellyfinPersistenceRequest(t, reloadedRouter, http.MethodGet, "/api/settings", "")
+	if reloadedSettings.Code != http.StatusOK {
+		t.Fatalf("reloaded settings status=%d body=%s", reloadedSettings.Code, reloadedSettings.Body.String())
+	}
+	if err := json.Unmarshal(reloadedSettings.Body.Bytes(), &appSettings); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range appSettings {
+		if item.Key == jellyfinSettingsKey {
+			jellyfinSetting = item.Value
+			break
+		}
+	}
+	assertMapping("reloaded GET /api/settings", jellyfinSetting["mappings"])
+	reloadedState := jellyfinPersistenceRequest(t, reloadedRouter, http.MethodGet, "/api/settings/jellyfin/state", "")
+	if reloadedState.Code != http.StatusOK {
+		t.Fatalf("reloaded Jellyfin state status=%d body=%s", reloadedState.Code, reloadedState.Body.String())
+	}
+	assertMapping("reloaded GET /api/settings/jellyfin/state", jellyfinJSONMap(t, reloadedState.Body.Bytes())["mappings"])
+}
+
+func TestJellyfinStateHydrationCannotRestorePreSaveMappings(t *testing.T) {
+	discoveryStarted := make(chan struct{}, 1)
+	releaseDiscovery := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseDiscovery)
+		}
+	}()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/System/Info/Public":
+			_, _ = w.Write([]byte(`{"Id":"mapping-race-server","ServerName":"Home","Version":"10.10.0"}`))
+		case "/Library/MediaFolders":
+			discoveryStarted <- struct{}{}
+			<-releaseDiscovery
+			_, _ = w.Write([]byte(`{"Items":[{"Id":"jf-library-race-4","Name":"Anime"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	db := jellyfinIntegrationDB(t)
+	addJellyfinLibrary(t, db, 4, t.TempDir())
+	settings := defaultJellyfinSettings()
+	settings.Enabled, settings.BaseURL, settings.APIToken = true, server.URL, "mapping-race-secret"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	settings.ServerID = "mapping-race-server"
+	settings.LastSuccessfulConnectionAt, settings.LastSuccessfulConfigRevision = now, settings.ConnectionConfigRevision
+	settings.DiscoveredLibraries, settings.LibrariesDiscoveredAt, settings.LibrariesConfigRevision = []jellyfinLibrary{{ID: "jf-library-race-4", Name: "Anime"}}, now, settings.ConnectionConfigRevision
+	saveJellyfinSettings(t, db, settings)
+	router := jellyfinPersistenceRouter(db)
+
+	stateDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		stateDone <- jellyfinPersistenceRequest(t, router, http.MethodGet, "/api/settings/jellyfin/state", "")
+	}()
+	select {
+	case <-discoveryStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("state hydration did not reach library discovery")
+	}
+
+	posted := jellyfinPersistenceRequest(t, router, http.MethodPost, "/api/settings/jellyfin", `{"value":{"enabled":true,"baseUrl":"`+server.URL+`","refreshAfterPublish":true,"refreshTestEncode":true,"debounceSeconds":10,"mappings":[{"mvforgeLibraryId":4,"jellyfinLibraryId":"jf-library-race-4","remap":true}]}}`)
+	if posted.Code != http.StatusOK {
+		t.Fatalf("concurrent mapping save status=%d body=%s", posted.Code, posted.Body.String())
+	}
+	close(releaseDiscovery)
+	released = true
+
+	var state *httptest.ResponseRecorder
+	select {
+	case state = <-stateDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("state hydration did not finish after discovery was released")
+	}
+	if state.Code != http.StatusOK {
+		t.Fatalf("concurrent state hydration status=%d body=%s", state.Code, state.Body.String())
+	}
+	mappings, ok := jellyfinJSONMap(t, state.Body.Bytes())["mappings"].([]any)
+	if !ok || len(mappings) != 1 {
+		t.Fatalf("state hydration restored the pre-save mapping snapshot: %#v", state.Body.String())
+	}
+	mapping := mappings[0].(map[string]any)
+	if mapping["mvforgeLibraryId"] != float64(4) || mapping["jellyfinLibraryId"] != "jf-library-race-4" {
+		t.Fatalf("state hydration changed the mapping identity: %#v", mapping)
+	}
+	reloaded, _ := loadJellyfinSettings(db)
+	if len(reloaded.Mappings) != 1 || reloaded.Mappings[0].MVForgeLibraryID != 4 || reloaded.Mappings[0].JellyfinLibraryID != "jf-library-race-4" {
+		t.Fatalf("state hydration replaced the saved mapping in AppSetting: %#v", reloaded.Mappings)
+	}
+}
