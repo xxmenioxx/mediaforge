@@ -16,6 +16,7 @@ export function buildDashboardSummary(libraries: Library[], jobs: QueueJob[], as
   const runningJobs = jobs.filter((job) => job.status === 'running').length;
   const completedJobs = jobs.filter((job) => job.status === 'completed').length;
   const failedJobs = jobs.filter((job) => job.status === 'failed').length;
+  const canceledJobs = jobs.filter((job) => job.status === 'canceled').length;
   const activeJobs = queuedJobs + runningJobs;
   const terminalJobs = completedJobs + failedJobs + jobs.filter((job) => job.status === 'canceled').length;
   const completedPercent = jobs.length > 0 ? Math.round((completedJobs / jobs.length) * 100) : 0;
@@ -38,7 +39,7 @@ export function buildDashboardSummary(libraries: Library[], jobs: QueueJob[], as
   return {
     unprocessedAssets, libraryAssets, convertedAssets, unverifiedAssets, processingAssets,
     needsReviewAssets, validationReviewAssets, publicationBlockedAssets, originalsArchived,
-    totalAssets, queuedJobs, runningJobs, completedJobs, failedJobs, activeJobs, activeWorkers,
+    totalAssets, queuedJobs, runningJobs, completedJobs, failedJobs, canceledJobs, activeJobs, activeWorkers,
     completedPercent, recentJobs, batchSummaries, attentionItems,
   };
 }
