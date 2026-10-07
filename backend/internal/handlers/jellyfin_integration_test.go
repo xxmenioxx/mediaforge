@@ -1364,6 +1364,150 @@ func TestJellyfinMappingSaveSurvivesSettingsStateAndHandlerReload(t *testing.T) 
 	assertMapping("reloaded GET /api/settings/jellyfin/state", jellyfinJSONMap(t, reloadedState.Body.Bytes())["mappings"])
 }
 
+func TestJellyfinConnectionPersistenceCannotOverwriteMappingSavedAfterSnapshot(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/System/Info/Public":
+			_, _ = w.Write([]byte(`{"Id":"mapping-race-server","ServerName":"Home","Version":"10.10.0"}`))
+		case "/Library/MediaFolders":
+			_, _ = w.Write([]byte(`{"Items":[{"Id":"jf-library-race-4","Name":"Anime","CollectionType":"tvshows"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	db := jellyfinIntegrationDB(t)
+	addJellyfinLibrary(t, db, 4, t.TempDir())
+	settings := defaultJellyfinSettings()
+	settings.Enabled, settings.BaseURL, settings.APIToken = true, server.URL, "mapping-race-secret"
+	settings.ServerID, settings.ServerName = "mapping-race-server", "Home"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	settings.LastSuccessfulConnectionAt, settings.LastSuccessfulConfigRevision = now, settings.ConnectionConfigRevision
+	settings.DiscoveredLibraries = []jellyfinLibrary{{ID: "jf-library-race-4", Name: "Anime", CollectionType: "tvshows"}}
+	settings.LibrariesDiscoveredAt, settings.LibrariesConfigRevision = now, settings.ConnectionConfigRevision
+	saveJellyfinSettings(t, db, settings)
+
+	basis, initialRevision, err := loadJellyfinSettingsChecked(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type capturedSnapshot struct {
+		settings jellyfinSettings
+		revision int64
+	}
+	snapshotReady := make(chan capturedSnapshot, 1)
+	releaseSnapshot := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseSnapshot)
+		}
+	}()
+	persistDone := make(chan error, 1)
+	connection := jellyfinConnectionResult{
+		Authenticated: true,
+		Reachable:     true,
+		ServerID:      "mapping-race-server",
+		ServerName:    "Hydrated Home",
+		ServerVersion: "10.10.1",
+		Libraries:     []jellyfinLibrary{{ID: "jf-library-race-4", Name: "Anime", CollectionType: "tvshows"}},
+	}
+	go func() {
+		persistDone <- persistJellyfinConnectionSuccessWithSnapshotHook(db, gormProtectedSecretSource{}, basis, connection, func(snapshot jellyfinSettings, revision int64) {
+			snapshotReady <- capturedSnapshot{settings: snapshot, revision: revision}
+			<-releaseSnapshot
+		})
+	}()
+
+	var captured capturedSnapshot
+	select {
+	case captured = <-snapshotReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("operational persistence did not capture its settings snapshot")
+	}
+	if captured.revision != initialRevision || len(captured.settings.Mappings) != 0 {
+		t.Fatalf("unexpected operational snapshot: revision=%d mappings=%#v", captured.revision, captured.settings.Mappings)
+	}
+
+	router := jellyfinPersistenceRouter(db)
+	posted := jellyfinPersistenceRequest(t, router, http.MethodPost, "/api/settings/jellyfin", `{"value":{"enabled":true,"baseUrl":"`+server.URL+`","credentialConfigured":true,"refreshAfterPublish":true,"refreshTestEncode":true,"debounceSeconds":10,"mappings":[{"mvforgeLibraryId":4,"jellyfinLibraryId":"jf-library-race-4","jellyfinName":"Anime","remap":true}]}}`)
+	if posted.Code != http.StatusOK || strings.Contains(posted.Body.String(), "mapping-race-secret") {
+		t.Fatalf("concurrent mapping save status=%d body=%s", posted.Code, posted.Body.String())
+	}
+	afterSave, savedRevision, err := loadJellyfinSettingsChecked(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterSave.Mappings) != 1 || afterSave.Mappings[0].MVForgeLibraryID != 4 || afterSave.Mappings[0].JellyfinLibraryID != "jf-library-race-4" {
+		t.Fatalf("POST did not persist the new mapping before operational persistence resumed: %#v", afterSave.Mappings)
+	}
+	if savedRevision == initialRevision {
+		t.Fatalf("mapping save did not advance AppSetting.UpdatedAt revision: before=%d after=%d", initialRevision, savedRevision)
+	}
+
+	close(releaseSnapshot)
+	released = true
+	select {
+	case err := <-persistDone:
+		if err != nil {
+			t.Fatalf("operational persistence failed after release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("operational persistence did not finish after release")
+	}
+	afterPersistence, persistedRevision, err := loadJellyfinSettingsChecked(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMapping := func(label string, raw any) {
+		t.Helper()
+		mappings, ok := raw.([]any)
+		if !ok || len(mappings) != 1 {
+			t.Fatalf("%s did not return exactly one mapping: %#v", label, raw)
+		}
+		mapping, ok := mappings[0].(map[string]any)
+		if !ok || mapping["mvforgeLibraryId"] != float64(4) || mapping["jellyfinLibraryId"] != "jf-library-race-4" {
+			t.Fatalf("%s changed mapping identity: %#v", label, mappings)
+		}
+	}
+	if len(afterPersistence.Mappings) != 1 || afterPersistence.Mappings[0].MVForgeLibraryID != 4 || afterPersistence.Mappings[0].JellyfinLibraryID != "jf-library-race-4" {
+		t.Fatalf("operational persistence overwrote the newer mapping: %#v", afterPersistence.Mappings)
+	}
+	if persistedRevision != savedRevision {
+		t.Fatalf("operational persistence advanced or replaced the settings revision: saved=%d persisted=%d", savedRevision, persistedRevision)
+	}
+
+	listed := jellyfinPersistenceRequest(t, router, http.MethodGet, "/api/settings", "")
+	if listed.Code != http.StatusOK || strings.Contains(listed.Body.String(), "mapping-race-secret") {
+		t.Fatalf("GET /api/settings status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	var appSettings []struct {
+		Key   string         `json:"key"`
+		Value map[string]any `json:"value"`
+	}
+	if err := json.Unmarshal(listed.Body.Bytes(), &appSettings); err != nil {
+		t.Fatal(err)
+	}
+	listedSettingFound := false
+	for _, item := range appSettings {
+		if item.Key == jellyfinSettingsKey {
+			listedSettingFound = true
+			assertMapping("GET /api/settings", item.Value["mappings"])
+		}
+	}
+	if !listedSettingFound {
+		t.Fatal("GET /api/settings did not include the Jellyfin AppSetting")
+	}
+
+	state := jellyfinPersistenceRequest(t, router, http.MethodGet, "/api/settings/jellyfin/state", "")
+	if state.Code != http.StatusOK {
+		t.Fatalf("GET /api/settings/jellyfin/state status=%d body=%s", state.Code, state.Body.String())
+	}
+	assertMapping("GET /api/settings/jellyfin/state", jellyfinJSONMap(t, state.Body.Bytes())["mappings"])
+}
+
 func TestJellyfinStateHydrationCannotRestorePreSaveMappings(t *testing.T) {
 	discoveryStarted := make(chan struct{}, 1)
 	releaseDiscovery := make(chan struct{})
