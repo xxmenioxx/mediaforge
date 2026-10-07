@@ -113,32 +113,37 @@ func loadJellyfinSettingsChecked(db *gorm.DB) (jellyfinSettings, int64, error) {
 }
 
 func loadJellyfinSettingsCheckedWithSecrets(db *gorm.DB, secrets ProtectedSecretSource) (jellyfinSettings, int64, error) {
+	settings, revision, _, err := loadJellyfinSettingsSnapshotCheckedWithSecrets(db, secrets)
+	return settings, revision, err
+}
+
+func loadJellyfinSettingsSnapshotCheckedWithSecrets(db *gorm.DB, secrets ProtectedSecretSource) (jellyfinSettings, int64, time.Time, error) {
 	settings := defaultJellyfinSettings()
 	if db == nil {
-		return settings, 0, nil
+		return settings, 0, time.Time{}, nil
 	}
 	var stored models.AppSetting
 	err := db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)}).First(&stored, "key = ?", jellyfinSettingsKey).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return settings, 0, nil
+		return settings, 0, time.Time{}, nil
 	}
 	if err != nil {
-		return settings, 0, err
+		return settings, 0, time.Time{}, err
 	}
 	loaded, err := jellyfinSettingsFromValue(stored.Value, false)
 	if err != nil {
-		return loaded, stored.UpdatedAt.UnixNano(), err
+		return loaded, stored.UpdatedAt.UnixNano(), stored.UpdatedAt, err
 	}
 	if loaded.APIToken == "" && secrets != nil {
 		secret, found, err := secrets.Get(db, loaded.CredentialRef)
 		if err != nil {
-			return loaded, stored.UpdatedAt.UnixNano(), err
+			return loaded, stored.UpdatedAt.UnixNano(), stored.UpdatedAt, err
 		}
 		if found {
 			loaded.APIToken = secret
 		}
 	}
-	return loaded, stored.UpdatedAt.UnixNano(), nil
+	return loaded, stored.UpdatedAt.UnixNano(), stored.UpdatedAt, nil
 }
 
 func loadJellyfinSettings(db *gorm.DB) (jellyfinSettings, int64) {
@@ -728,59 +733,62 @@ func (client jellyfinClient) discoverLibraries(ctx context.Context, settings jel
 }
 
 func persistJellyfinConnectionSuccess(db *gorm.DB, secrets ProtectedSecretSource, basis jellyfinSettings, result jellyfinConnectionResult) error {
+	return persistJellyfinConnectionSuccessWithSnapshotHook(db, secrets, basis, result, nil)
+}
+
+// persistJellyfinConnectionSuccessWithSnapshotHook keeps the snapshot barrier
+// injectable for deterministic concurrency tests. Production callers pass no hook.
+func persistJellyfinConnectionSuccessWithSnapshotHook(db *gorm.DB, secrets ProtectedSecretSource, basis jellyfinSettings, result jellyfinConnectionResult, afterSnapshot func(jellyfinSettings, int64)) error {
 	if db == nil || !result.Authenticated {
 		return nil
 	}
-	return db.Transaction(func(tx *gorm.DB) error {
-		current, _, err := loadJellyfinSettingsCheckedWithSecrets(tx, secrets)
-		if err != nil {
-			return err
-		}
-		if current.ConnectionConfigRevision != basis.ConnectionConfigRevision || current.BaseURL != basis.BaseURL {
-			return nil
-		}
-		current.LastSuccessfulConnectionAt = time.Now().UTC().Format(time.RFC3339Nano)
-		current.LastSuccessfulConfigRevision = current.ConnectionConfigRevision
-		if result.ServerID != "" {
-			current.ServerID = result.ServerID
-		}
-		if result.ServerName != "" {
-			current.ServerName = result.ServerName
-		}
-		if result.ServerVersion != "" {
-			current.ServerVersion = result.ServerVersion
-		}
-		current.DiscoveredLibraries = append([]jellyfinLibrary(nil), result.Libraries...)
-		current.LibrariesDiscoveredAt = current.LastSuccessfulConnectionAt
-		current.LibrariesConfigRevision = current.ConnectionConfigRevision
-		for index := range current.Mappings {
-			if current.Mappings[index].JellyfinServerID == "" && current.ServerID != "" {
-				current.Mappings[index].JellyfinServerID = current.ServerID
-			}
-		}
-		var stored models.AppSetting
-		query := tx.First(&stored, "key = ?", jellyfinSettingsKey)
-		if query.Error != nil && !errors.Is(query.Error, gorm.ErrRecordNotFound) {
-			return query.Error
-		}
-		stored.Key, stored.Value = jellyfinSettingsKey, jellyfinSettingsStoredValue(current)
-		if errors.Is(query.Error, gorm.ErrRecordNotFound) {
-			return tx.Create(&stored).Error
-		}
-		// AppSetting.UpdatedAt is the Jellyfin ledger's configuration revision.
-		// Connection and discovery metadata must not invalidate already queued work.
-		// Guard the write with the revision read above so a concurrent settings save
-		// cannot be replaced by this older connection/discovery snapshot.
-		result := tx.Model(&models.AppSetting{}).
-			Where("key = ? AND updated_at = ?", jellyfinSettingsKey, stored.UpdatedAt).
-			UpdateColumn("value", stored.Value)
-		if result.Error != nil {
-			return result.Error
-		}
-		// A newer settings write won the race. Its complete value, including
-		// mappings, remains authoritative; discovery can be refreshed next time.
+	current, currentRevision, currentUpdatedAt, err := loadJellyfinSettingsSnapshotCheckedWithSecrets(db, secrets)
+	if err != nil {
+		return err
+	}
+	if afterSnapshot != nil {
+		afterSnapshot(current, currentRevision)
+	}
+	if current.ConnectionConfigRevision != basis.ConnectionConfigRevision || current.BaseURL != basis.BaseURL {
 		return nil
-	})
+	}
+	current.LastSuccessfulConnectionAt = time.Now().UTC().Format(time.RFC3339Nano)
+	current.LastSuccessfulConfigRevision = current.ConnectionConfigRevision
+	if result.ServerID != "" {
+		current.ServerID = result.ServerID
+	}
+	if result.ServerName != "" {
+		current.ServerName = result.ServerName
+	}
+	if result.ServerVersion != "" {
+		current.ServerVersion = result.ServerVersion
+	}
+	current.DiscoveredLibraries = append([]jellyfinLibrary(nil), result.Libraries...)
+	current.LibrariesDiscoveredAt = current.LastSuccessfulConnectionAt
+	current.LibrariesConfigRevision = current.ConnectionConfigRevision
+	for index := range current.Mappings {
+		if current.Mappings[index].JellyfinServerID == "" && current.ServerID != "" {
+			current.Mappings[index].JellyfinServerID = current.ServerID
+		}
+	}
+	stored := models.AppSetting{Key: jellyfinSettingsKey, Value: jellyfinSettingsStoredValue(current)}
+	if currentRevision == 0 {
+		// If a settings save creates this row after the snapshot, it remains
+		// authoritative. Operational persistence only creates when still absent.
+		return db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoNothing: true}).Create(&stored).Error
+	}
+	// AppSetting.UpdatedAt is the Jellyfin configuration revision ledger.
+	// Use the timestamp from the same read as current; a later read could pair an
+	// older settings snapshot with a newer revision and erase a user save.
+	// UpdateColumn preserves that revision when only connection/discovery metadata changes.
+	writeResult := db.Model(&models.AppSetting{}).
+		Where("key = ? AND updated_at = ?", jellyfinSettingsKey, currentUpdatedAt).
+		UpdateColumn("value", stored.Value)
+	if writeResult.Error != nil {
+		return writeResult.Error
+	}
+	// A zero-row CAS means a newer complete settings value won the race.
+	return nil
 }
 
 type jellyfinTrigger struct {
