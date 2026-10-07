@@ -35,6 +35,7 @@ type Props = {
   value?: Record<string, unknown>;
   libraries: Library[];
   saving: boolean;
+  saveError?: string;
   onSave: (value: Record<string, unknown>) => void;
 };
 
@@ -77,7 +78,7 @@ function statusLabel(outcome: JellyfinIntegrationOutcome) {
   return 'Pending';
 }
 
-export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props) {
+export function JellyfinSettingsCard({ value, libraries, saving, saveError, onSave }: Props) {
   const queryClient = useQueryClient();
   const [persistedBaseline] = useState(() => jellyfinDraft(value));
   const [draft, setDraft] = useState<Draft>(() => jellyfinDraft(value));
@@ -196,6 +197,7 @@ export function JellyfinSettingsCard({ value, libraries, saving, onSave }: Props
               {connection.isPending ? 'Testing…' : 'Test connection and discover libraries'}
             </Button>
           </Stack>
+          {saveError ? <Alert severity="error">Jellyfin settings could not be saved: {saveError}. The mapping is still an unsaved draft.</Alert> : null}
           {settingsDirty ? <Alert severity="info">Save Jellyfin settings before testing the connection or requesting a manual refresh.</Alert> : null}
           {connection.data ? (
             <Alert severity={connection.data.authenticated ? 'success' : 'warning'}>
