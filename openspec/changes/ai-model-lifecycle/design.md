@@ -1,112 +1,105 @@
 ## Context
 
-See [proposal.md](proposal.md) for motivation and scope. The merged #261 shared-provider change owns the canonical Ollama endpoint, installed catalog (`/api/tags`), and metadata readiness (`/api/show`); it deliberately does not own residency, warmup, or inference scheduling. Extend that provider seam for lifecycle calls rather than adding another endpoint resolver or provider record.
+See proposal.md for motivation and scope.
 
-Queue already persists `ExecutionPlan.Status` and `WaitingState`; the planner reevaluates waiting plans and the worker claim path activates a reservation and changes the Queue job to running. A model wait therefore belongs before an active FFmpeg reservation or at a checkpoint that has released it. Translation already captures a bounded operation request with exact model and source revision and rechecks source revision before atomic publication, but `subtitleExtractionOperations` is currently process-local. Host `RuntimeState` and immutable `RuntimeSnapshot` describe hardware and encoder environment, not Ollama model residency.
+The merged #261 provider owns the canonical Ollama endpoint, installed catalog, and metadata readiness. Its API client currently performs bounded GET requests for version, tags, and show; it has no /api/ps or /api/generate operation. Lifecycle transport extends that same owner and must not add another endpoint resolver or HTTP client. Translation keeps its feature-owned /api/chat cue contract.
 
-The Ollama API supports an optional prompt, a `keep_alive` request field on both generate and chat operations, and `/api/ps` fields for running model identity and expiry. See the [generate API](https://docs.ollama.com/api/generate), [chat API](https://docs.ollama.com/api/chat), and [running models API](https://docs.ollama.com/api/ps).
+Queue currently has a persisted ExecutionPlan with Status, WaitingState, Evaluation, and Reservation. Job stages are defined in backend/internal/handlers/job_lifecycle.go; they cover claim, workspace, media analysis, subtitle preparation, conversion, validation, publication, and cleanup. None is an Ollama or Translation stage. The scheduler planner reevaluates schedule, workspace, and worker/resource waiters. claimNextJob selects queued jobs with ready plans, activates a SchedulerReservation and sets the job running in one transaction, then prepares and freezes the execution plan. A plan that is not ready is returned to the queue. The normal pre-claim path does not currently wait for a model. Existing subtitle preparation is part of media processing and does not call Translation.
+
+Explicit Asset Info Translation already captures a request with a source identity/reference/revision, selected provider/model, language, and output options, then rechecks source revision before publishing. The operation registry in subtitleExtractionOperations is process-local. Publication stages files, promotes them, may commit SQLite metadata, and signals publication completion in process memory. Filesystem changes and SQLite cannot share one atomic transaction.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Give all MVForge AI consumers one on-demand lifecycle manager while keeping each consumer's operation and provenance authority intact.
-- Report installed, resident, and MVForge-in-use models from their respective canonical sources.
-- Make readiness waits bounded and cancellable, and resume only from a persisted pre-inference checkpoint whose source, model, and cancellation state still match.
-- Keep Queue model waits out of FFmpeg reservations and preserve normal scheduling for unrelated jobs.
-- Keep runtime and settings integration backend-authoritative and bounded for a resource-constrained NAS.
+- Keep #261 as the sole Ollama endpoint and transport owner.
+- Make admission a mandatory gate for all model-affecting requests, including inference against an already resident model.
+- Ship explicit Translation as the only current consumer of the V1 wait/recovery path.
+- Resume a waiting Translation operation under its original identity only from a complete, durable pre-inference checkpoint.
+- Define a future Queue contract that uses existing plan waiting state and releases active FFmpeg reservations before waiting.
 
 **Non-Goals:**
 
-- Replacing #261 provider configuration/catalog/readiness or changing model-role/fallback policy owned by #223.
-- Implementing resource admission thresholds, inference concurrency policy, or resource priority owned by #265.
-- Implementing the #266 Settings UI, or the feature workflows owned by #224 and #263.
-- Pulling models, managing Ollama configuration, restarting its container, or force-unloading a model.
+- Implementing #265 admission policy, thresholds, fairness, or capacity estimates in #264.
+- Adding an AI stage or Translation behavior to current Queue processing.
+- Moving workflow state into the lifecycle manager or creating a general-purpose AI operation store.
+- Owning model roles, feature selectors, Settings UI, OCR, or Copilot workflows.
 
 ## Decisions
 
-### Keep provider transport in the #261 owner
+### Extend the #261 provider owner
 
-Extend the #261 provider adapter with bounded `POST /api/generate` warmup and `GET /api/ps` residency operations. Reuse its endpoint validation, request context, HTTP client, timeout, bounded body handling, sanitized error classification, and shared endpoint lookup. The existing Translation provider remains responsible for its `/api/chat` cue contract; its request carries the lifecycle keep-alive value through the same shared provider transport. The lifecycle manager receives an exact model ID and provider identity and never persists an endpoint or chooses a model.
+Add bounded GET /api/ps discovery and POST /api/generate warmup to the #261 adapter. Reuse its validated shared endpoint, request contexts, HTTP client, timeouts, response-size limits, and sanitized diagnostics. Translation continues to own prompts and /api/chat translation requests; it passes the same keep_alive value on inference. Warmup sends the exact selected model, stream:false, keep_alive, and no prompt field. A successful bounded warmup plus an exact /api/ps residency match is required before reporting the model ready. Installed catalog membership or /api/show success is not residency evidence.
 
-The warmup body contains the selected model, omits `prompt`, sets `stream:false`, and supplies `keep_alive`. A bounded successful response plus an exact matching `/api/ps` entry is required before the manager treats an unloaded model as ready. An installed catalog entry or `/api/show` success alone is insufficient. No prompt, source cue, response text, or raw Ollama error body enters lifecycle records or status responses.
+The lifecycle manager accepts a provider configuration identity and exact model ID, never an endpoint or model choice. Keep residency as a live projection of /api/ps, and keep MVForge use as active operation leases. Do not add residency to RuntimeState or RuntimeSnapshot, which remain host and encoder authorities. Distinguish a valid empty /api/ps response from provider unavailability or malformed data.
 
-**Alternative rejected:** add a lifecycle-owned Ollama client or endpoint setting. That would create a second connection authority and diverge from #261's network and diagnostic bounds.
+### Make #265 admission a required, acyclic port
 
-### Treat residency as a projection and busy as MVForge operation state
+#265 owns the provider-neutral resource-admission interface and its implementation. The narrow contract accepts an opaque shared-provider/configuration identity, exact model ID, stable consumer/workflow ID, and purpose (model load or inference). It returns an opaque lease plus one of ADMITTED, WAITING, DENIED, or UNAVAILABLE, with only a bounded reason code and optional retry guidance. It exposes release of an opaque lease. The exact package/API is finalized by #265; it must not import lifecycle types or call back into #264.
 
-Keep the lifecycle state set in the proposal. `UNLOADED` means no matching `/api/ps` entry; `WAITING_FOR_RESOURCES` reflects a denial/queue result from #265; `WARMING_UP` means one admitted shared warmup is active; `READY` means a successful warmup is handing the model to its first waiting consumer; `IN_USE` comes from an active MVForge operation lease; `IDLE` means a resident model has no active MVForge lease; and `FAILED` records a bounded failed attempt. `IDLE` and `/api/ps` residency alone do not claim successful inference readiness. When an external Ollama client changes residency, the next bounded observation reconciles the projection. The API distinguishes an unavailable `/api/ps` response from a valid empty list.
+The lifecycle manager depends only on this port. It does not calculate RAM/VRAM needs, host pressure, resident-model caps, inference concurrency, priorities, or retry fairness. It maps #265 WAITING to WAITING_FOR_RESOURCES and passes back #265 guidance. It releases leases according to the #265 lease contract, including when a warmup fails and /api/ps confirms the model is absent. It does not force-unload resident models.
 
-```mermaid
-stateDiagram-v2
-    [*] --> UNLOADED
-    UNLOADED --> IDLE: /api/ps finds externally loaded model
-    UNLOADED --> WAITING_FOR_RESOURCES: #265 admission pending
-    UNLOADED --> WARMING_UP: admitted warmup
-    WAITING_FOR_RESOURCES --> WARMING_UP: admission granted
-    WARMING_UP --> READY: generate succeeded and /api/ps confirms model
-    READY --> IN_USE: consumer acquires model lease
-    IDLE --> IN_USE: consumer acquires model lease
-    IN_USE --> IDLE: last MVForge lease released
-    IDLE --> UNLOADED: Ollama expiry observed
-    WARMING_UP --> FAILED: bounded attempt fails
-    WARMING_UP --> UNLOADED: cancelled and /api/ps finds no model
-    WARMING_UP --> IDLE: cancelled but /api/ps still finds model
-    FAILED --> WAITING_FOR_RESOURCES: permitted retry needs admission
-    FAILED --> WARMING_UP: bounded retry admitted
-```
+A warmup or inference request is forbidden unless admission returns ADMITTED. This applies even when /api/ps already reports the model resident, because inference itself can consume protected NAS resources. If the port is absent, errors, or returns UNAVAILABLE, keep the operation visibly waiting with reason admission_unavailable, permit cancellation, and make no /api/generate or /api/chat request. Do not poll or retry the missing authority automatically. A later retry/recovery must acquire a fresh admission decision. Read-only /api/ps status remains available because it does not load or infer.
 
-Do not add resident-model rows to `RuntimeState` or `RuntimeSnapshot`: those remain host-environment authorities. The runtime response combines #261 installed models, `/api/ps` residency and expiry, and active MVForge consumer leases. Apply a shared short cache/rate limit to status requests so Settings polling cannot create aggressive Ollama traffic. The #266 UI displays this response; it does not contact Ollama.
+The five-minute readiness deadline begins after admission is granted. Time spent in a #265 resource wait is governed only by #265. Before #265 exists, V1 can expose read-only residency and durable waiting state, but cannot enable warmup or inference.
 
-**Alternative rejected:** persist a second global model-state machine or infer `IN_USE` from `/api/ps`. A local mirror would become stale when Ollama or external clients change residency, and Ollama cannot identify MVForge ownership.
+**Alternative rejected:** default to admission granted until #265 is available. That would silently bypass NAS protection. Duplicating thresholds in #264 would create conflicting policy, while having #265 import lifecycle internals would create a circular dependency.
 
-### Warm just before model work and let Ollama expire idle residency
+### Project model lifecycle from provider evidence and operation leases
 
-Request a model only when an explicit operation starts or a Queue model-dependent stage becomes runnable. Do not warm during profile/model saves or while another Queue gate is closed. If `/api/ps` already reports the exact selected model, proceed through the current provider request and renew its `keep_alive`; otherwise, after #265 grants admission, coalesce callers on a key made from shared provider identity and exact model ID, POST the no-prompt warmup, then verify residency. A successful no-prompt warmup uses the official Ollama generate contract; Translation and other inference requests also pass the duration in their request. A loaded-but-not-currently-used model is reported as `IDLE`; the runtime response keeps its residency observation separate from the last readiness evidence.
+Report UNLOADED when no exact model entry is observed in /api/ps; WAITING_FOR_RESOURCES when #265 has not admitted the request; WARMING_UP during the admitted shared warmup; READY after warmup succeeds and /api/ps confirms residency but before a consumer lease begins; IN_USE while an admitted MVForge inference lease is active; IDLE for observed residency without an active MVForge lease; and FAILED for a bounded warmup/readiness failure. An externally loaded model is observed as IDLE until MVForge has its own readiness evidence and use lease. Status includes observation time and expiry; it does not claim exclusive ownership.
 
-Default `keep_alive` is 30 minutes. Expose bounded settings choices (5/15/30/60 minutes) and the on-demand warmup toggle through the lifecycle settings contract for #266 to present. At expiry, Ollama is allowed to unload the model. Do not send `keep_alive:0` in this change: shared Ollama may serve other clients and MVForge cannot prove that it owns every loaded model. Resource admission is requested from #265 before warmup; no RAM, VRAM, resident-count, or concurrency policy is copied into the manager.
+Use one short shared cache/rate limit for status polling. Settings consumes the backend projection and never contacts Ollama. No local authoritative residency database is needed.
 
-**Alternative rejected:** start warmup for every queued or newly configured model. This wastes NAS memory and can load work that never becomes runnable.
+### Warm only when an explicit consumer requests work
 
-### Bound readiness, cancellation, and retry at the consumer boundary
+Warm on explicit Translation demand only after all feature readiness and source validation gates pass and #265 grants admission. If the exact model is already resident, skip generate but still acquire inference admission. Otherwise singleflight by shared-provider/configuration identity and exact model ID; issue one no-prompt generate and confirm with /api/ps. Default keep_alive is 30 minutes and applies to chat/inference as well. Ollama controls idle expiry; never send keep_alive:0, pull models, restart Ollama, or force eviction.
 
-Default the readiness window to five minutes, beginning after resource admission so #265's wait remains under its own policy. Within the window, use bounded attempts and backoff; default timeout action is a retryable failure with no further automatic attempt. #266 may expose bounded timeout choices (2/5/10 minutes) and `retry`/`fail` policy, but any automatic retry remains finite and idempotent at the warmup boundary. `/api/ps` polling is rate-limited and deadline-bound. A missing model, provider error, invalid response, timeout, and cancellation produce different bounded outcomes.
+The lifecycle API has a default five-minute readiness window after admission, with bounded polling/backoff and a finite retry policy. One waiter's cancellation does not cancel other waiters. When all waiters leave, cancel the shared request and reconcile /api/ps before a later warmup. Cancellation wins before any consumer resumes.
 
-Singleflight waiters have independent cancellation. Cancelling one waiter does not cancel warmup still needed by another; when the final waiter leaves, cancel the shared request context. Since Ollama may finish loading after a client disconnect, reconcile `/api/ps` before retrying or reporting the model unloaded. Cancellation always wins before a consumer resumes.
+### Persist only Translation's resumable wait checkpoint
 
-**Alternative rejected:** retry forever or treat client disconnect as proof the provider operation stopped. Either can create an infinite queue spinner or duplicate/overlapping model loads.
+Keep Translation as the owner of operation identity, source identity, progress, and cancellation. Store a Translation-specific durable row in SQLite and treat the current in-memory operation map as a cache/view. Persist the original operation ID and a bounded request snapshot: canonical source identity/reference plus path locator, source type/representation, stream index/format, source revision key, exact provider/model ID, non-secret provider configuration revision, language/context/output options, phase/status, checkpoint version, cancellation flag, wait deadline, and row version. A path is a locator, not source identity. Do not store cues, prompts, provider responses, translated text, credentials, or endpoint URLs.
 
-### Use workflow-owned checkpoints for durable waits
+Persist WAITING_FOR_RESOURCES when admission is pending or unavailable, and persist WAITING_FOR_MODEL after admission is granted but before warmup begins. On startup, reconstruct the same operation ID and request snapshot only from either complete supported pre-inference wait phase, when every required identity field is valid, cancellation is false, and no inference or publication intent was recorded. Re-resolve the source through the existing Translation resolver and compare canonical source identity and revision; resolve the current shared #261 provider configuration and require the captured provider configuration revision and exact selected model to match. A changed path may be accepted only if the canonical identity/revision resolver proves it is the same source. Missing or changed data marks the operation RECOVERY_REQUIRED without provider work. Recovery reacquires admission; if #265 is still unavailable or returns WAITING, retain the resource wait without polling automatically or calling Ollama. A granted admission moves the operation to WAITING_FOR_MODEL and starts the five-minute readiness deadline.
 
-For Queue, persist `WAITING_FOR_MODEL` in the existing execution plan and store the exact model selection, source revision, consumer stage, and wait deadline in a bounded plan checkpoint. Enter this state only after the plan is otherwise runnable; do not activate an FFmpeg reservation while waiting. The model wait must not block another ready Queue plan. On readiness or restart recovery, re-read the Queue job and checkpoint atomically, verify cancellation and the frozen source/model identities, then return through normal claim and reservation. If a claimed worker reaches a model boundary, it must checkpoint completed work and release its reservation before waiting; it must not replay already completed stages after resume.
+Create a fresh operation-owned workspace after validation; never trust or reuse an arbitrary persisted workspace path. Use a compare-and-set transaction on operation ID, row version, phase, and cancellation before leaving the waiting checkpoint. Reacquire #265 admission, inspect /api/ps, and warm only if still needed. Recheck cancellation, source revision, and model/configuration immediately before durably changing phase to INFERENCE_STARTED and issuing the first inference call. Cancellation is persisted before cancelling the process context.
 
-For Translation, extend its existing operation lifecycle with a minimal durable operation record for wait/recovery metadata. Persist operation ID, phase, selected model, source identity/revision, cancellation/terminal state, and publication-commit marker; do not persist cues, prompts, responses, or generated translation payloads in the wait record. The in-memory operation map becomes a cache of this owner-controlled record. Startup resumes the same operation only at a pre-inference `WAITING_FOR_MODEL` boundary after source/model/cancellation checks. If a crash leaves an inference outcome uncertain, mark the attempt retryable and do not replay it; the existing explicit retry contract creates a new operation identity. The existing all-output publication transaction must persist its commit marker atomically so recovery cannot publish a duplicate result.
+After restart, only a complete WAITING_FOR_MODEL checkpoint is automatically resumable. If startup finds INFERENCE_STARTED or a later nonterminal phase, mark RECOVERY_REQUIRED and do not repeat inference. An explicit retry creates a new operation ID using the current source/model, consistent with the existing retry contract.
 
-OCR and Copilot integrations use the same manager interface but keep checkpoints in their feature-owned operation/workflow state when #263 and #224 integrate it. The lifecycle manager stores no consumer payload or parallel task state.
+### Reconcile filesystem publication with SQLite without claiming atomicity
 
-**Alternative rejected:** store all consumers' operations in a new generic manager queue. That would create another workflow authority and duplicate Queue/Subtitle operation state.
+After inference completes, validate all outputs and stage them in the operation workspace. Before touching final paths, persist a publication intent in the operation row containing the operation ID, source revision, exact artifact targets, staged-file fingerprints, and expected final-file state. Promote files through the existing guarded publication path and rollback behavior. After every final file is promoted and the source is rechecked, commit artifact metadata and the operation's PUBLICATION_COMMITTED/COMPLETED marker in one SQLite transaction. This is an ordered protocol, not a cross-system atomic transaction.
 
-### Keep model roles, resource decisions, and Settings presentation with their owners
+On startup, a row with PUBLICATION_COMMITTED is complete only if its SQLite metadata and every expected final-file fingerprint match; otherwise report RECOVERY_REQUIRED and do not republish. A row with publication intent but no committed marker is ambiguous because some filesystem promotions may have completed before the crash. Reconcile read-only against the staged/final fingerprints for diagnostics, preserve all files, mark RECOVERY_REQUIRED, and do not auto-promote, roll back, delete, clean, infer, or retry publication. If an in-process rollback cannot be verified, use the same recovery-required handling. Incomplete or unknown checkpoint versions also fail closed. This prevents duplicate inference and publication while acknowledging that SQLite and filesystem cannot commit atomically.
 
-Resolve the exact model before calling the lifecycle manager: #223 owns Primary/Fast/Fallback and eligible fallback; #266 owns feature model selection. A fallback is a new explicit consumer request only when the role policy chooses it. A model-setting or endpoint change does not rewrite an already frozen Queue/Translation checkpoint; it invalidates a wait only when its stored provider/model identity is no longer usable under the owning workflow's snapshot. #265 alone decides whether a warmup has resource admission and when a resource-waiting request can retry.
+**Alternative rejected:** treat filesystem renames plus SQLite metadata as one atomic operation. They are separate systems and a crash can occur between them. Automatic replay or rollback after an ambiguous crash could overwrite user files or publish a second result.
 
-The backend exposes lifecycle policy and runtime status to #266 without owning its screen layout or unsaved-draft behavior. Keep provider connectivity, per-model metadata readiness, loaded residency, and inference use as separate status fields.
+### Define Queue waiting for future consumers only
 
-**Alternative rejected:** let the manager silently select a fallback or wait past a changed feature selection. That would violate #223/#266 ownership and change frozen execution semantics.
+No current Queue JobStage requires Ollama, so #264 adds no Queue stage, model invocation, Queue Translation flow, or Queue implementation task to V1.
+
+When a Queue feature owner later introduces a model-dependent stage, the reusable wait contract uses the existing ExecutionPlan.Status=waiting and WaitingState=WAITING_FOR_MODEL. Its bounded Evaluation checkpoint carries the owning stage key, stable consumer ID, source identity/revision, exact provider/model configuration identity, deadline, cancellation/version, and completed-work checkpoint. The Queue job remains queued and the plan is not claimable. Before an AI stage reached after claim can wait, its owning workflow must checkpoint completed work and release/deactivate the active worker reservation; the model lifecycle manager never parks an active FFmpeg worker.
+
+When ready, the owning scheduler/workflow reloads the job and plan atomically, confirms it is not cancelled, validates the frozen source revision, exact selected model/configuration, checkpoint version, and owning stage, then reevaluates existing schedule/workspace/resource gates and returns to the normal claim/reservation path. It resumes from the owning checkpoint without replaying completed work. The lifecycle manager reports readiness only; it does not own Queue stage progression or output state. Queue integration stays deferred until a real Queue AI consumer is specified.
+
+### Keep model identity and presentation with their owners
+
+#223 selects Primary/Fast/Fallback roles and fallback behavior. Feature settings and UI belong to #266. Each consumer passes one resolved model identity; lifecycle never chooses or silently substitutes a model. #261 owns endpoint and provider transport. #265 owns admission. Translation owns its checkpoint. Future Queue/OCR/Copilot owners own their workflows.
 
 ## Risks / Trade-offs
 
-- **Warmup can consume substantial NAS memory and CPU →** call #265 before each model load, admit only runnable work, and stop when readiness expires; #264 does not invent capacity guarantees.
-- **The provider may complete warmup after local cancellation →** treat cancellation as authoritative for the consumer and reconcile `/api/ps` before another attempt.
-- **Ollama residency can change outside MVForge, and `expires_at` can be renewed by other clients →** report observed state with a timestamp and refresh through bounded `/api/ps`; do not claim exclusive ownership or force eviction.
-- **Five minutes may not load a large model on slower hardware →** expose the bounded timeout choices through #266 and return an actionable retryable failure when the selected bound expires.
-- **Translation operations are currently process-local →** add only the minimal durable wait checkpoint and commit marker to their existing lifecycle; test restart before inference, during inference, and after publication commit to prevent replay or duplicate artifacts.
-- **Warmup failure may be a role-specific fallback opportunity →** return a typed failure to the consumer and let #223 decide whether to try its fallback model.
-- **#265 is not yet merged →** lifecycle resource wait integration depends on its admission contract; until that contract exists, do not ship an independent resource policy or claim `WAITING_FOR_RESOURCES` recovery.
+- A warmup can consume substantial NAS resources → require a positive #265 lease for both load and inference; fail closed when the port is absent.
+- Ollama can finish loading after cancellation → cancellation wins for the consumer; reconcile /api/ps before another warmup and do not evict the resident model.
+- External clients can change residency or expiry → report observed state with a timestamp and no exclusivity claim.
+- Large models can exceed five minutes → return a bounded actionable timeout; do not retry indefinitely.
+- Translation restart can find a partial or unknown filesystem publication → preserve files, mark RECOVERY_REQUIRED, and require explicit resolution; do not automatically replay.
+- Queue has no current Ollama stage → defer its integration until the owning feature defines that consumer.
 
 ## Migration Plan
 
-1. Add the bounded lifecycle policy and workflow checkpoint fields/tables without backfilling model residency; absent checkpoint data means no pending model wait.
-2. Deploy the #261 provider extension and lifecycle manager with the existing keep-alive/readiness defaults. No existing Queue item or Translation setting is proactively warmed.
-3. Enable Queue and Translation wait checkpoints only when their workflow recovery handlers and #265 admission integration are available. Keep #266 as the presentation and settings client.
-4. On rollback, stop creating new waits, preserve existing checkpoints for inspection, and fail them closed as retryable rather than dispatching work without validating their frozen source/model state. Do not delete operation or publication evidence.
+1. Add the Translation-specific SQLite checkpoint with an additive migration. Existing in-memory operations cannot be reconstructed after an old process exits; do not fabricate checkpoints for them.
+2. Deploy read-only /api/ps observation and lifecycle reporting independently. Until #265 supplies its port, effectful warmup and inference paths stay unavailable and report admission_unavailable.
+3. Enable Translation warmup/inference only when the #265 port is wired and required durable checkpoint/reconciliation behavior is present.
+4. Existing Queue jobs and execution plans remain unchanged. A future Queue AI consumer must add its own migration and integration under its feature issue.
+5. On rollback, preserve waiting rows, publication intents, artifacts, and staged evidence for inspection. Never dispatch them without validation or delete files as rollback cleanup.

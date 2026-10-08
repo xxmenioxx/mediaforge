@@ -1,31 +1,32 @@
 ## Why
 
-Ollama models can be installed and configured while still unloaded, so the first AI request can stall or fail and Queue work can hold scarce FFmpeg capacity while waiting. MVForge needs one bounded, cancellable lifecycle seam that warms the exact selected model on demand, reports actual residency, and lets waiting work resume only when its source, model choice, and cancellation state remain valid.
+Ollama can have the selected model installed but unloaded, so an explicit Translation request can stall or fail on its first inference. MVForge needs one bounded model-lifecycle seam that observes real Ollama residency, warms only on demand, and lets a waiting operation resume only when its source, selected model, and cancellation state still match. Any model load or inference must pass through NAS resource admission; without #265, lifecycle work must fail closed.
 
 ## What Changes
 
-- Define model residency states `UNLOADED`, `WAITING_FOR_RESOURCES`, `WARMING_UP`, `READY`, `IN_USE`, `IDLE`, and `FAILED`, separate from feature selection and Ollama installation/readiness.
-- Warm models on demand through the #261 shared Ollama provider using `/api/generate` with `keep_alive`; discover residency from `/api/ps`. Use a 30-minute keep-alive default and propagate it on inference requests.
-- Coalesce same-provider/model warmups, bound readiness waits to five minutes by default, propagate cancellation, and stop automatic retries at a defined bound.
-- Persist Queue `WAITING_FOR_MODEL` through the existing execution-plan waiting state without holding an FFmpeg reservation or blocking other runnable jobs. Resume only after source revision, frozen model selection, and cancellation checks pass.
-- Let explicit Translation operations report waiting/warming progress through their existing operation lifecycle and revalidate the captured source revision and model before provider work resumes.
-- Expose a bounded runtime projection that distinguishes installed, loaded, and MVForge-in-use models; `/api/ps` is the residency source and MVForge operation tracking is the busy source.
+- Define lifecycle states UNLOADED, WAITING_FOR_RESOURCES, WARMING_UP, READY, IN_USE, IDLE, and FAILED, separate from installed-model discovery, provider connectivity, and feature selection.
+- Extend the shared #261 provider owner with bounded /api/ps discovery and no-prompt /api/generate warmup using keep_alive. Use a 30-minute default and carry it on inference requests.
+- Require an acyclic resource-admission port owned by #265 before either warmup or inference. If the port is absent or unavailable, expose WAITING_FOR_RESOURCES with an admission-unavailable reason and issue no model-affecting Ollama request.
+- Coalesce warmup for the same provider/model, support independent waiter cancellation, reconcile residency after cancellation, and bound readiness to five minutes after admission by default.
+- Make explicit Translation the only current workflow integration in V1. Persist its existing operation identity and a bounded pre-inference wait checkpoint in SQLite; reconstruct it after restart only after revalidating source identity/revision, selected model/configuration, and cancellation.
+- Define a reusable future Queue WAITING_FOR_MODEL contract using existing execution-plan waiting state, without adding a Queue AI stage or implementing Queue AI integration in V1.
 
-Out of scope: Ollama endpoint/configuration/catalog ownership (#261); resource admission policy and capacity decisions (#265); model-role selection or fallback (#223); Settings UI and feature model selectors (#266); OCR/Copilot workflow implementation; automatic model downloads, forced/unsafe eviction, and provider restarts.
+Out of scope: provider configuration/catalog ownership (#261); NAS resource policy (#265); model roles/fallback selection (#223); Settings UI and feature selection (#266); Queue AI-stage creation/integration until a Queue feature owner introduces an AI consumer; OCR/Copilot workflow integration (#224/#263); automatic model downloads, forced eviction, or provider restarts.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `ai-model-lifecycle`: on-demand warmup, residency reporting, bounded model waits, and safe workflow resumption.
+- ai-model-lifecycle: demand-driven model residency, admission-gated warmup, bounded waits, and safe recovery contracts.
 
 ### Modified Capabilities
 
-- `subtitles`: explicit Translation operations may wait for model warmup and must revalidate their captured source and selected model before resuming.
+- subtitles: explicit Translation can wait for model readiness and durably recover only from a pre-inference checkpoint.
 
 ## Impact
 
-- Backend: the existing #261 Ollama provider surface, Queue execution-plan waiting/recovery, runtime reporting, and the existing subtitle operation lifecycle.
-- API: bounded model residency/runtime status for the #266 Settings surface; no browser-to-Ollama calls.
-- Persistence: reuse `ExecutionPlan.WaitingState` for durable Queue waits and frozen execution identity; do not create a second model catalog or model-state database.
-- Dependencies: #261 shared Ollama provider is required; #265 owns admission decisions; #223 owns roles/fallback; #266 owns Settings presentation and per-feature selection. OCR/Copilot adapters consume the same lifecycle seam when their feature owners integrate it.
+- Backend: extend the #261 provider adapter; add lifecycle coordination and runtime projection; persist recovery metadata in the existing explicit Translation operation lifecycle.
+- Queue: document the future contract only. Current Queue stages do not require Ollama, so no Queue code, stage, or consumer is introduced by this change.
+- Persistence: add a Translation-specific SQLite checkpoint for the existing operation owner. Do not create a generic AI task store or persist model residency as authoritative state.
+- Dependencies: #261 is merged and remains provider owner. #265 must supply the admission port before warmup or inference can be enabled. #223 supplies the exact role-selected model; #266 consumes the runtime API and owns UI/selection; Queue, OCR, and Copilot integration waits for their owning feature work.
+

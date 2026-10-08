@@ -1,31 +1,36 @@
-## 1. Extend the shared Ollama provider seam
+## Delivery boundaries
 
-- [ ] 1.1 Add bounded `/api/ps` discovery and no-prompt `/api/generate` warmup to the #261 provider adapter, preserving its endpoint authority, timeouts, body limits, cancellation, and sanitized failures; verify successful, missing-model, malformed, oversized, offline, and cancelled requests with focused adapter tests.
-- [ ] 1.2 Carry the configured `keep_alive` value on Translation `/api/chat` and every other inference request while leaving prompt construction with each feature; verify request bodies and that warmup never contains source text.
+V1 covers model lifecycle plus the existing explicit Asset Info Translation operation. Read-only /api/ps observation and lifecycle reporting can be implemented before #265. Any warmup or inference requires the #265 admission port first. If that port is absent or unavailable, V1 reports WAITING_FOR_RESOURCES/admission_unavailable, issues no /api/generate or /api/chat request, and waits for explicit retry or a deployment with the admission authority.
 
-## 2. Implement lifecycle coordination
+External prerequisite, not a #264 task: #265 defines and ships the provider-neutral admission interface and policy. The interface must be acyclic, expose only opaque leases and grant/wait/deny/unavailable outcomes, and must not import lifecycle types. #261 remains the provider transport owner.
 
-- [ ] 2.1 Implement the seven lifecycle states as a projection of `/api/ps`, bounded warmup results, and MVForge operation leases; verify installed, loaded, ready, idle, in-use, failed, and unavailable cases without a second endpoint or model catalog.
-- [ ] 2.2 Add singleflight keyed by shared provider identity and exact model ID, independent waiter cancellation, final-waiter cancellation, five-minute default readiness deadline, bounded backoff, and typed retryable failures; verify concurrent callers share one warmup and cancellation cannot resume stale work.
-- [ ] 2.3 Add the lifecycle settings contract with on-demand warmup default, 30-minute keep-alive default, bounded timeout choices, and finite retry/fail policy; adapt to #265 admission decisions without adding local capacity thresholds and verify denied admission makes no Ollama warmup request.
+## V1 implementation tasks
 
-## 3. Persist model waits and integrate Queue scheduling
+### Shared provider and lifecycle
 
-- [ ] 3.1 Add a bounded frozen model-wait checkpoint to the existing Queue plan for exact model identity, source revision, AI stage, deadline, and cancellation/recovery state; verify additive SQLite migration and recovery against pre-change databases.
-- [ ] 3.2 Enter durable `WAITING_FOR_MODEL` only when other Queue gates are clear, keep the job out of active FFmpeg reservations, and restore it through normal claim after revalidating source/model/cancellation; verify a waiting job does not block another runnable job and stale or cancelled work does not resume.
-- [ ] 3.3 Checkpoint completed Queue AI stages and release any worker reservation before a model wait; verify resume continues from the saved stage without replaying completed processing or duplicating output.
+- [ ] 1.1 Extend the #261 shared provider adapter with bounded /api/ps discovery and no-prompt /api/generate warmup, reusing endpoint validation, request cancellation, timeouts, response limits, and sanitized diagnostics.
+- [ ] 1.2 Carry the configured keep_alive value on Translation /api/chat requests. Use a 30-minute default; never put prompts or source content in warmup.
+- [ ] 1.3 Require a positive #265 admission lease before warmup and before every inference, including use of a resident model. Verify missing/unavailable admission produces no model-affecting provider request and no local policy fallback.
+- [ ] 1.4 Implement the lifecycle states as a projection of #261 catalog and /api/ps evidence, admitted warmup, and active MVForge inference leases. Distinguish valid empty residency from unavailable data and do not add authoritative model rows to RuntimeState/RuntimeSnapshot.
+- [ ] 1.5 Add same-provider-configuration/exact-model singleflight, independent waiter cancellation, final-waiter cancellation, /api/ps reconciliation, five-minute readiness deadline after admission, and finite retries.
+- [ ] 1.6 Expose the bounded backend runtime projection for #266, with observed timestamp/expiry and installed, loaded, active-use, waiting, warming, idle, failed, and unavailable facts. Do not implement Settings UI or model selection here.
 
-## 4. Integrate Translation with its existing operation lifecycle
+### Durable Translation wait and recovery
 
-- [ ] 4.1 Persist only bounded Translation wait metadata and operation identity in the existing operation lifecycle, including durable cancellation and publication-commit evidence; verify old operation data remains readable and no prompts, cues, or provider responses are stored.
-- [ ] 4.2 Report waiting/warming progress and resume the same operation only after source revision, exact selected model, and cancellation checks; verify restart recovery before inference, safe handling of uncertain in-flight inference, and no duplicate or stale publication.
+- [ ] 2.1 Add an additive SQLite record for the existing explicit Translation operation, preserving its operation ID and validated bounded request snapshot, source identity/reference/revision, exact selected provider/model/configuration revision, phase/version, cancellation, and wait deadline; exclude prompts, cues, responses, output text, secrets, and endpoint URLs.
+- [ ] 2.2 Persist WAITING_FOR_RESOURCES while admission is pending and WAITING_FOR_MODEL after admission but before warmup; persist cancellation before cancelling the in-memory context. Reconstruct the same operation ID after restart only from a complete supported pre-inference wait checkpoint; reacquire admission and revalidate source, model, configuration, and cancellation before resume.
+- [ ] 2.3 Persist INFERENCE_STARTED before the first inference call. Treat restart during inference or any later nonterminal phase as RECOVERY_REQUIRED; never replay inference automatically. Keep explicit retry on a new operation ID.
+- [ ] 2.4 Journal publication intent and staged-file fingerprints in SQLite before final-file promotion. Commit artifact metadata with PUBLICATION_COMMITTED/COMPLETED in one SQLite transaction after file promotion and source recheck. On restart, reconcile fingerprints read-only; preserve files and fail closed on an ambiguous or mismatched publication.
+- [ ] 2.5 Add focused recovery regressions for valid wait resume, cancellation race, missing/unknown checkpoint fields, changed source/model/configuration, uncertain inference, crash between file promotion and SQLite commit, completed commit, and mismatched final files.
 
-## 5. Expose runtime state and preserve owner boundaries
+### Lifecycle regressions and validation
 
-- [ ] 5.1 Add `GET /api/settings/ollama/runtime` using #261 installed-model data, bounded `/api/ps` residency/expiry, and MVForge operation tracking; verify an unavailable provider is not reported as an empty catalog and status polling stays bounded.
-- [ ] 5.2 Add contract tests proving #223 role/fallback selection and #266 feature selection pass an exact model identity to the lifecycle manager, and #265 alone decides resource admission; verify the manager does not choose models or contact Ollama from the frontend.
+- [ ] 3.1 Add focused provider/lifecycle regressions for /api/ps, warmup contract, admission absent/wait/deny/grant, exact model matching, singleflight, cancellation, timeout, and bounded retry.
+- [ ] 3.2 Verify the existing Queue stage set makes no Ollama call and that lifecycle changes do not add or imply a Queue AI stage.
+- [ ] 3.3 After implementation, run ./scripts/verify.sh --auto and require its final ALL CHECKS PASSED result.
 
-## 6. Verify the integrated behavior
+## Deferred integration, outside #264 V1
 
-- [ ] 6.1 Add focused regressions for timeout, offline provider, model missing, cancellation races, retry bounds, idle expiry, restart recovery, and no automatic downloads, forced eviction, or provider restart; verify each failure remains actionable and does not duplicate provider work or publication.
-- [ ] 6.2 Run `./scripts/verify.sh --auto` after implementation and require its final `ALL CHECKS PASSED` result; record any environmental limitation without claiming full validation.
+Queue AI integration remains deferred until a Queue feature owner defines an actual model-dependent stage. At that time, use ExecutionPlan.WaitingState=WAITING_FOR_MODEL and an owning-workflow checkpoint; keep the job queued and unclaimable, hold no active FFmpeg reservation, release a reservation before any mid-execution wait, and resume only through the normal scheduler claim path after source/model/cancellation validation. Do not add a Queue stage in #264.
+
+OCR and Copilot use the same lifecycle boundary only when their feature owners integrate their workflow-owned checkpoints (#224/#263). Settings UI and per-feature selectors remain with #266. Model roles and fallback remain with #223.

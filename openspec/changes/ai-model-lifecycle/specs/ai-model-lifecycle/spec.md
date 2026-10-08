@@ -1,137 +1,219 @@
 ## Purpose
 
-Coordinate on-demand Ollama model residency with Queue and explicit AI operations so work can wait, warm, run, and recover without tying model status to installed-model settings or consuming an FFmpeg worker while the model is unavailable.
+Define on-demand model residency and readiness for MVForge's current explicit Translation consumer while preserving provider, resource, and workflow ownership. Queue AI integration is a future contract only because current Queue stages do not require Ollama.
 
 ## ADDED Requirements
 
 ### Requirement: Model lifecycle states distinguish selection, residency, and active use
 
-The system SHALL report one lifecycle state for a selected provider/model identity using `UNLOADED`, `WAITING_FOR_RESOURCES`, `WARMING_UP`, `READY`, `IN_USE`, `IDLE`, or `FAILED`. Installed-model discovery, provider reachability, and model metadata readiness SHALL remain distinct from lifecycle state. `GET /api/settings/ollama/runtime` SHALL derive loaded-model membership and Ollama expiry from `/api/ps`, installed-model identity from the shared provider catalog, and MVForge busy state from active MVForge operation tracking. It SHALL NOT infer that a model is in use merely because Ollama reports it as loaded.
+The backend SHALL report one lifecycle state for an exact shared-provider configuration and model identity using UNLOADED, WAITING_FOR_RESOURCES, WARMING_UP, READY, IN_USE, IDLE, or FAILED. Installed-model discovery, provider connectivity, metadata readiness, model residency, and MVForge use SHALL remain separate facts. Loaded-model residency and expiry SHALL come from bounded /api/ps observation owned by the #261 provider adapter. IN_USE SHALL come only from active MVForge operation leases and SHALL NOT be inferred from Ollama residency. A valid empty /api/ps response SHALL be distinct from unavailable or malformed residency data.
 
-#### Scenario: Installed model is not loaded
-- **WHEN** the shared provider catalog contains the selected model but `/api/ps` does not
-- **THEN** runtime status reports it as installed and `UNLOADED`, without claiming that it is ready or in use
+#### Scenario: Installed model is not resident
 
-#### Scenario: Loaded model has no active MVForge consumer
-- **WHEN** `/api/ps` reports the selected model as resident and MVForge has no active operation lease for it
-- **THEN** runtime status reports the observed residency and expiry with `IDLE` or `READY`, not `IN_USE`
+- **WHEN** the #261 catalog contains the exact selected model but /api/ps does not
+- **THEN** lifecycle reports installed and UNLOADED without claiming the model is ready or in use
 
-#### Scenario: Model is used by an MVForge operation
-- **WHEN** an MVForge consumer holds an active lease for the selected model
-- **THEN** runtime status reports `IN_USE` for that consumer even if Ollama residency alone would not reveal its use
+#### Scenario: External model is resident without an MVForge consumer
 
-#### Scenario: Ollama residency cannot be read
-- **WHEN** the shared provider cannot complete a bounded `/api/ps` request or returns malformed data
-- **THEN** runtime status reports an unavailable or failed state with a bounded diagnostic and does not return a false empty loaded-model list
+- **WHEN** /api/ps reports the model and MVForge has no active inference lease
+- **THEN** lifecycle reports observed residency and expiry as IDLE, not IN_USE
 
-### Requirement: Models warm only on demand and remain loaded for the configured idle interval
+#### Scenario: An admitted MVForge inference is active
 
-The system SHALL request warmup only when a runnable consumer reaches its AI stage or an explicit user operation requests model work. It SHALL NOT warm a model on profile/model-setting save or solely because a Queue item exists but is not otherwise runnable. Warmup SHALL use the shared provider to POST `/api/generate` with the exact selected model, no prompt, non-streaming response, and a `keep_alive` duration. The default duration SHALL be 30 minutes and SHALL also be sent on every inference request for that model. A warmup SHALL be considered ready only after the bounded provider operation succeeds and `/api/ps` confirms the selected model is resident. The system SHALL NOT download models, restart Ollama, or force-unload a model as part of ordinary idle expiry.
+- **WHEN** an explicit consumer holds an active inference lease for the exact model
+- **THEN** lifecycle reports IN_USE for that consumer
 
-#### Scenario: Explicit operation requests an unloaded model
-- **WHEN** a runnable AI operation requests an installed model that is not resident
-- **THEN** the system sends one on-demand warmup request through the shared provider, verifies residency, and proceeds only when ready
+#### Scenario: Residency observation is unavailable
 
-#### Scenario: Runnable operation requests an already resident model
-- **WHEN** the selected model is resident and an operation reaches its AI stage
-- **THEN** the operation uses the exact selected model and renews `keep_alive` on its inference request without pulling or switching models
+- **WHEN** bounded /api/ps discovery fails or returns malformed data
+- **THEN** the backend reports unavailable residency and a bounded diagnostic rather than a false empty list
 
-#### Scenario: Queue item is not runnable
-- **WHEN** a Queue item is blocked by an existing review, schedule, workspace, or worker condition before its AI stage
-- **THEN** the system does not warm its model until the other conditions clear and the AI stage becomes runnable
+### Requirement: Warmup and inference use the shared provider only on demand
 
-#### Scenario: Model is absent from the provider catalog
-- **WHEN** warmup is requested for a model that is not installed or Ollama reports it missing
-- **THEN** the operation receives a bounded `model_not_found` failure and no automatic pull, fallback selection, or provider restart occurs
+The lifecycle SHALL use the #261 shared Ollama endpoint and bounded transport. It SHALL request warmup only for an explicit operation that has passed its feature/source gates and resource admission. Warmup SHALL POST /api/generate with the exact selected model, stream:false, keep_alive, and no prompt. The default keep_alive SHALL be 30 minutes and SHALL also be supplied to Translation /api/chat inference. Warmup readiness requires a successful bounded generate response and a matching exact model entry from /api/ps. Residency already observed in /api/ps skips warmup but does not skip inference admission.
 
-#### Scenario: Idle model expires
-- **WHEN** the configured 30-minute keep-alive interval elapses without another MVForge inference request
-- **THEN** Ollama may expire the model and the next residency observation reports it as unloaded; MVForge does not issue `keep_alive: 0` or otherwise evict it
+The lifecycle SHALL NOT download or pull models, select a fallback, restart the Ollama provider, send keep_alive:0, or force-unload any resident model. Installed catalog membership and /api/show readiness alone SHALL NOT prove residency.
+
+#### Scenario: Explicit Translation requests an unloaded model
+
+- **WHEN** an enabled explicit Translation operation requests its exact installed model and admission is granted
+- **THEN** lifecycle sends one no-prompt generate warmup, confirms residency through /api/ps, and only then permits inference
+
+#### Scenario: Requested model is already resident
+
+- **WHEN** /api/ps reports the exact model and #265 grants inference admission
+- **THEN** Translation skips generate, calls inference with the exact model and configured keep_alive, and does not change model selection
+
+#### Scenario: Model is missing
+
+- **WHEN** warmup reports the exact selected model missing from the provider
+- **THEN** the operation reaches a bounded model_not_found failure with no automatic download, fallback, or provider restart
+
+#### Scenario: Idle residency expires
+
+- **WHEN** the keep_alive period elapses without another inference request
+- **THEN** Ollama may unload the model and a later /api/ps observation reports it as UNLOADED without MVForge eviction
+
+#### Scenario: Current Queue work has no AI stage
+
+- **WHEN** any current Queue stage runs, including subtitle preparation
+- **THEN** #264 issues no Ollama warmup or inference request and creates no model wait for that Queue job
+
+### Requirement: Every model load and inference requires #265 admission
+
+#265 SHALL own the provider-neutral admission interface and implementation. The interface SHALL accept only the shared provider/configuration identity, exact model ID, stable consumer/workflow ID, and purpose (load or inference), and SHALL return an opaque lease and an outcome of ADMITTED, WAITING, DENIED, or UNAVAILABLE with a bounded reason and optional retry guidance. It SHALL provide lease release. #265 SHALL NOT import #264 lifecycle types or call back into the lifecycle manager. The final package and signature belong to #265.
+
+The lifecycle manager SHALL make no RAM, VRAM, host pressure, resident-model, concurrency, or priority decision. It SHALL require ADMITTED before /api/generate and before every /api/chat inference, including inference for an already resident model. It SHALL map WAITING to WAITING_FOR_RESOURCES and use #265 retry guidance. DENIED SHALL stop the attempt without automatic retry. If the admission port is missing, errors, or returns UNAVAILABLE, the operation SHALL visibly wait with reason admission_unavailable, remain cancellable, and issue no generate or inference request. It SHALL not poll or retry the missing authority automatically. The five-minute readiness window SHALL begin only after ADMITTED; #265 controls resource-wait duration.
+
+#### Scenario: Resource authority grants admission
+
+- **WHEN** #265 returns ADMITTED with an opaque lease
+- **THEN** lifecycle may perform only the admitted load or inference operation and releases the lease according to the #265 contract
+
+#### Scenario: Resource authority asks the caller to wait
+
+- **WHEN** #265 returns WAITING with retry guidance
+- **THEN** lifecycle reports WAITING_FOR_RESOURCES and issues no model-affecting request before #265 grants admission
+
+#### Scenario: #265 is unavailable or not implemented
+
+- **WHEN** the admission port is absent or returns UNAVAILABLE
+- **THEN** lifecycle reports WAITING_FOR_RESOURCES with admission_unavailable, allows cancellation, makes no /api/generate or /api/chat call, and does not install a permissive fallback
+
+#### Scenario: Resident model has no inference admission
+
+- **WHEN** /api/ps reports the selected model resident but #265 has not admitted inference
+- **THEN** lifecycle does not call /api/chat
+
+#### Scenario: Admission is denied
+
+- **WHEN** #265 returns DENIED
+- **THEN** lifecycle stops that attempt without adding a local policy or silently substituting a model
 
 ### Requirement: Same-model warmup is singleflight, cancellable, and bounded
 
-Concurrent warmup requests for the same shared provider identity and exact model ID SHALL join one in-flight warmup. Each consumer SHALL be able to cancel its own wait without cancelling other consumers; the shared warmup MAY be cancelled when no consumers remain. The default readiness window SHALL be bounded to five minutes after resource admission, including warmup and readiness confirmation. Transient failures MAY be retried only with bounded backoff and within the configured attempt/deadline limit. Timeout, provider outage, missing model, malformed response, and cancellation SHALL remain distinguishable with sanitized diagnostics. When the readiness window expires, automatic attempts SHALL stop and the consumer SHALL receive an actionable retryable failure rather than an indefinite spinner.
+Concurrent requests for the same shared-provider configuration identity and exact model ID SHALL join one warmup attempt. Waiters SHALL have independent cancellation. Cancelling one waiter SHALL not cancel warmup required by other waiters. When all waiters cancel, lifecycle SHALL cancel its request context, reconcile /api/ps before another attempt, and never resume a cancelled consumer. The default readiness window SHALL be five minutes after admission, including warmup and residency confirmation. Polling and retries SHALL be bounded; after timeout, automatic attempts SHALL stop until an explicit permitted retry. Resource waits owned by #265 are outside this readiness window.
 
-#### Scenario: Concurrent consumers request the same model
-- **WHEN** multiple operations request warmup for the same provider and model while one warmup is in flight
-- **THEN** they share that warmup result and the provider receives no duplicate concurrent warmup for that key
+#### Scenario: Concurrent consumers request one model
 
-#### Scenario: One consumer cancels a shared wait
-- **WHEN** one consumer cancels while another consumer still awaits the same warmup
-- **THEN** the cancelled consumer remains cancelled and the shared warmup continues for the remaining consumer
+- **WHEN** multiple admitted consumers request warmup for the same provider configuration and model
+- **THEN** they share one in-flight warmup and do not issue duplicate concurrent generate requests
 
-#### Scenario: All consumers cancel
-- **WHEN** every consumer awaiting a shared warmup has cancelled
-- **THEN** the manager cancels its request context, prevents those consumers from resuming, and reconciles `/api/ps` before any later attempt
+#### Scenario: One of several waiters cancels
+
+- **WHEN** one consumer cancels while another waits on the same warmup
+- **THEN** only the cancelled consumer stops and the shared warmup continues for remaining consumers
+
+#### Scenario: Every waiter cancels
+
+- **WHEN** the last waiter cancels
+- **THEN** lifecycle cancels the shared request, reconciles /api/ps before retry, and resumes no cancelled consumer
 
 #### Scenario: Readiness deadline expires
-- **WHEN** the provider remains unavailable or warmup does not complete within the five-minute default window
-- **THEN** the operation reaches a bounded retryable failure state with a sanitized cause and automatic retries stop until a permitted retry occurs
 
-### Requirement: Queue waits for model readiness without occupying an FFmpeg worker
+- **WHEN** warmup or residency confirmation exceeds the five-minute default after admission
+- **THEN** the operation reports a bounded retryable failure and stops automatic attempts
 
-When a Queue AI stage is otherwise runnable but its model is waiting for resource admission or warmup, the scheduler SHALL durably expose `WAITING_FOR_MODEL` on the Queue plan. The Queue job SHALL not occupy an active FFmpeg worker reservation while waiting, and a model-waiting item SHALL NOT prevent unrelated runnable Queue work from being claimed. `WAITING_FOR_RESOURCES` SHALL represent an admission result owned by #265; this capability SHALL NOT calculate or override resource limits. On readiness, the scheduler SHALL resume through its normal claim path only after confirming that the job is not cancelled, the frozen source revision is still valid, and the exact model selection captured for that AI stage is unchanged. Cancellation or stale identity SHALL take precedence over readiness.
+### Requirement: Translation waiting is owned and durably recoverable by its existing operation
 
-#### Scenario: Queue model is not resident
-- **WHEN** an otherwise runnable Queue AI stage requests a model that needs warmup
-- **THEN** the plan durably reports `WAITING_FOR_MODEL`, no active FFmpeg reservation is held, and the AI stage has not run
+Lifecycle SHALL not own Translation operation state. The existing Translation operation SHALL persist its operation identity and a bounded WAITING_FOR_MODEL checkpoint in SQLite before warmup starts. The checkpoint SHALL preserve canonical source identity/reference and source revision, exact provider/model configuration identity, bounded request options, operation phase/version/deadline, and cancellation state. AssetPath SHALL be treated as a locator and not as source identity. The checkpoint SHALL not contain cues, prompts, provider responses, translated text, credentials, or endpoint URLs.
 
-#### Scenario: Resource admission is denied
-- **WHEN** the #265 resource-protection authority declines model admission
-- **THEN** the Queue plan reports `WAITING_FOR_RESOURCES` without duplicating capacity policy or holding an FFmpeg worker
+On backend startup, a complete supported checkpoint in either pre-inference WAITING_FOR_RESOURCES or WAITING_FOR_MODEL phase MAY be reconstructed under the same operation ID. Recovery SHALL re-resolve the canonical source and require identity/revision equality, resolve the current #261 configuration and require the captured non-secret configuration revision and exact model identity, and confirm that cancellation is false. Recovery SHALL reacquire #265 admission. If admission remains unavailable or waiting, the operation remains visibly waiting without polling automatically or contacting Ollama; after admission is granted, it proceeds through WAITING_FOR_MODEL and the five-minute readiness deadline begins. Incomplete, unknown-version, cancelled, changed-source, or changed-model checkpoints SHALL fail closed without provider work. Cancellation SHALL be persisted and SHALL win races with readiness.
 
-#### Scenario: Another Queue item is runnable
-- **WHEN** one Queue plan is waiting for a model and another Queue plan is ready
-- **THEN** the ready plan remains claimable and is not blocked by the model waiter
+Before first inference, the backend SHALL transactionally compare operation ID, row version, phase, source/model checkpoint, and cancellation state, then persist INFERENCE_STARTED. If restart observes INFERENCE_STARTED or a later nonterminal phase without a committed outcome, it SHALL mark RECOVERY_REQUIRED and SHALL NOT repeat inference. An explicit retry SHALL create a fresh operation ID under the existing retry contract.
 
-#### Scenario: Queue wait recovers after backend restart
-- **WHEN** a persisted Queue model wait is recovered after restart and the model becomes ready
-- **THEN** the scheduler rechecks the job cancellation state, frozen source revision, and captured model identity before returning it to the normal claim path
+#### Scenario: Translation is waiting when the backend restarts
 
-#### Scenario: Queue job was cancelled while waiting
-- **WHEN** readiness arrives after the associated Queue job has been cancelled
-- **THEN** the scheduler does not resume the job or issue another AI request, even if the shared warmup completed for another consumer
+- **WHEN** startup finds a complete uncancelled pre-inference WAITING_FOR_RESOURCES or WAITING_FOR_MODEL checkpoint and all source, revision, provider configuration, and exact model checks pass
+- **THEN** it reconstructs the same operation ID and request, reacquires admission, remains waiting if admission is unavailable, and checks residency only after admission is granted
 
-#### Scenario: Source or model identity changed while waiting
-- **WHEN** the captured source revision is stale or the waiting checkpoint no longer matches its frozen model selection
-- **THEN** the scheduler fails closed, performs no resumed AI work, and requires explicit re-preparation or retry
+#### Scenario: Source or model identity changed
 
-### Requirement: Waiting AI operations resume through their owning workflow lifecycle
+- **WHEN** recovery cannot prove the same source identity/revision or exact selected model/configuration
+- **THEN** it marks the operation RECOVERY_REQUIRED or stale and makes no provider call
 
-Each consumer SHALL persist its own bounded wait checkpoint using its canonical workflow identity and SHALL NOT create a second general-purpose operation lifecycle. A checkpoint SHALL contain enough information to revalidate the exact source revision, selected model identity, operation identity, and cancellation state without storing prompts, provider responses, or source cue payloads. Startup recovery SHALL resume only at a recorded pre-inference wait boundary; an uncertain in-flight inference SHALL become a retryable terminal result and SHALL NOT be replayed automatically. OCR and Copilot consumers added by their feature owners SHALL use this same lifecycle contract.
+#### Scenario: Checkpoint is incomplete or from an unknown version
 
-#### Scenario: Translation waits and resumes in the same operation
-- **WHEN** an explicit Translation operation waits for its selected model and later passes source, model, and cancellation checks
-- **THEN** the existing Translation operation resumes under its original operation identity and continues through its existing validation and atomic publication lifecycle
+- **WHEN** required identity, revision, phase, or checkpoint fields are missing or unsupported
+- **THEN** recovery fails closed and does not infer, publish, or fabricate replacement identity
 
-#### Scenario: Operation is cancelled while waiting
-- **WHEN** a user cancels a waiting AI operation before it resumes
-- **THEN** the persisted cancellation wins over model readiness and the operation creates no new provider result or publication
+#### Scenario: Cancellation races with readiness
 
-#### Scenario: Backend restarts before inference starts
-- **WHEN** startup finds a durable model-wait checkpoint at a pre-inference boundary
-- **THEN** it resumes the same operation identity only after revalidating its source, model, and cancellation state
+- **WHEN** cancellation is persisted before the pre-inference compare-and-set succeeds
+- **THEN** cancellation wins and no inference or publication begins
 
-#### Scenario: Backend restarts during uncertain provider inference
-- **WHEN** startup cannot determine whether an inference request completed
-- **THEN** it marks that attempt retryable and does not automatically replay the provider call or publish duplicate output
+#### Scenario: Backend restarts during uncertain inference
 
-### Requirement: Model lifecycle integrates with canonical provider, resource, role, and Settings owners
+- **WHEN** startup observes INFERENCE_STARTED without a durable completed inference/publication checkpoint
+- **THEN** it records RECOVERY_REQUIRED, does not replay inference, and requires an explicit new operation for retry
 
-The lifecycle manager SHALL resolve its endpoint and bounded Ollama transport through the shared provider owned by #261. It SHALL accept an exact consumer-selected model identity and SHALL NOT own a second endpoint, installed-model catalog, feature selection, Primary/Fast/Fallback role, or fallback decision. Resource admission and `WAITING_FOR_RESOURCES` SHALL be delegated to #265. The #266 Settings surface SHALL consume the backend runtime projection and lifecycle policy contract without contacting Ollama directly; #223 SHALL remain the authority for model roles and fallback selection.
+### Requirement: Translation publication reconciles SQLite and files without assuming atomicity
 
-#### Scenario: Consumer selects a model role
-- **WHEN** a consumer resolves a model through #223 or a feature selection from #266
-- **THEN** the lifecycle manager warms and reports that exact model without changing roles or feature selections
+Translation SHALL stage and validate all outputs before publication. Before changing final files, it SHALL persist a publication intent containing operation ID, source revision, exact target paths, staged-file fingerprints, and expected final-file state. After all final files are promoted and the source is rechecked, artifact metadata and PUBLICATION_COMMITTED/COMPLETED SHALL be recorded in one SQLite transaction. The specification SHALL treat filesystem promotion and SQLite commit as separate systems with a crash window between them.
 
-#### Scenario: Resource policy rejects admission
-- **WHEN** #265 denies a warmup admission
-- **THEN** the lifecycle manager records the resource wait and does not apply its own RAM, VRAM, or resident-model threshold
+Startup SHALL accept completion only when the committed SQLite operation/artifact metadata and all expected final-file fingerprints agree. If a publication intent exists without the committed marker, or if any committed artifact is missing or mismatched, startup SHALL mark RECOVERY_REQUIRED and SHALL inspect files read-only for bounded diagnostics. It SHALL NOT automatically infer, publish, republish, roll back, delete, or clean staged/final/backup files after an ambiguous restart. If an in-process rollback cannot be verified, the same recovery-required state applies.
 
-#### Scenario: Provider endpoint is changed
-- **WHEN** the shared #261 endpoint changes while a model wait exists
-- **THEN** the waiting request is invalidated or re-resolved by its owning workflow and no request is sent through a duplicate or stale endpoint authority
+#### Scenario: Crash after file promotion but before SQLite commit
 
-#### Scenario: Settings displays runtime state
-- **WHEN** #266 requests model runtime status
-- **THEN** MVForge returns backend-derived installed, loaded, active-use, waiting, warming, idle, unavailable, and expiry data without exposing prompt or provider response content
+- **WHEN** startup finds a publication intent without a committed marker
+- **THEN** it reconciles file fingerprints for diagnostics, preserves the files, and marks RECOVERY_REQUIRED without a second publication
+
+#### Scenario: SQLite commit completed and files match
+
+- **WHEN** startup finds PUBLICATION_COMMITTED metadata and every final fingerprint matches
+- **THEN** it reports the original operation completed without inference or publication
+
+#### Scenario: Committed metadata and filesystem disagree
+
+- **WHEN** an expected final file is missing or its fingerprint differs from the committed manifest
+- **THEN** startup marks RECOVERY_REQUIRED and does not overwrite or republish the file
+
+#### Scenario: In-process rollback is uncertain
+
+- **WHEN** a known publication failure occurs but restoration of every prior final cannot be verified
+- **THEN** the operation preserves filesystem evidence and enters RECOVERY_REQUIRED
+
+### Requirement: Future Queue AI consumers use the existing plan wait contract
+
+This is a deferred integration contract; #264 V1 SHALL NOT add a Queue AI stage. Current Queue stages, including subtitle preparation, SHALL remain independent of Ollama. If a Queue feature owner later introduces an explicit model-dependent stage, its plan SHALL use the existing ExecutionPlan waiting state with WAITING_FOR_MODEL and a bounded owning-workflow checkpoint. The Queue job SHALL remain queued and unclaimable while waiting, with no active FFmpeg reservation. For a model wait reached after claim, the owning workflow SHALL checkpoint completed work and release/deactivate its active reservation before waiting. The lifecycle SHALL report model readiness but SHALL NOT advance Queue stages or own Queue output state.
+
+On resume, the owning scheduler/workflow SHALL atomically reload the job and checkpoint, verify cancellation, source identity/revision, exact model/configuration identity, checkpoint version, and owning stage, then re-evaluate existing scheduler gates and return through normal claim and reservation activation. It SHALL resume only the owning checkpoint and SHALL not replay completed work.
+
+#### Scenario: Future Queue stage needs a nonresident model
+
+- **WHEN** a future Queue consumer is otherwise runnable and requests an unloaded model
+- **THEN** the execution plan durably reports WAITING_FOR_MODEL, the job remains queued, no active FFmpeg reservation is held, and no AI work has run
+
+#### Scenario: Another Queue job is runnable
+
+- **WHEN** one future Queue consumer waits for model readiness and another Queue job is ready
+- **THEN** the waiting plan does not prevent the normal claim path from selecting the ready job
+
+#### Scenario: Future Queue wait resumes
+
+- **WHEN** model readiness returns after a wait or backend restart
+- **THEN** the owning workflow resumes only after source/model/cancellation checks and normal scheduler gates pass
+
+#### Scenario: Queue operation is cancelled or stale
+
+- **WHEN** a waiting Queue job is cancelled or its source/model checkpoint is stale
+- **THEN** it does not resume or issue AI work
+
+### Requirement: Lifecycle preserves provider, role, admission, and Settings ownership
+
+The lifecycle SHALL use the #261 shared endpoint, catalog, readiness, and transport. It SHALL accept an exact model identity from its consumer and SHALL NOT own model-role selection, fallback, endpoint configuration, feature selection, or resource policy. #265 SHALL own admission. #223 SHALL own Primary/Fast/Fallback and fallback decisions. #266 SHALL own feature model selection and Settings UI. Settings SHALL consume the backend runtime projection and SHALL NOT contact Ollama directly. Future Queue, OCR, and Copilot workflow state SHALL remain with their respective feature owners.
+
+#### Scenario: Role owner chooses a model
+
+- **WHEN** #223 or a feature owner supplies an exact resolved model identity
+- **THEN** lifecycle operates on that model and does not select a replacement
+
+#### Scenario: Endpoint configuration changes during a wait
+
+- **WHEN** recovery finds a provider configuration revision different from the captured revision
+- **THEN** the owning workflow marks the wait stale and sends no request through an implicit or duplicate endpoint authority
+
+#### Scenario: Settings reads runtime
+
+- **WHEN** #266 requests runtime state
+- **THEN** the backend returns bounded installed, resident, active-use, waiting, warming, idle, unavailable, and expiry data without prompt or inference content
