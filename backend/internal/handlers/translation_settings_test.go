@@ -25,7 +25,7 @@ func TestTranslationSettingsMissingAreUnavailableAndSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if normalized["ollamaEndpoint"] != "" || normalized["ollamaModel"] != "" {
+	if _, hasEndpoint := normalized["ollamaEndpoint"]; hasEndpoint || normalized["ollamaModel"] != "" {
 		t.Fatalf("defaults invented endpoint/model: %#v", normalized)
 	}
 }

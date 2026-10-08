@@ -364,9 +364,7 @@ func TestSubtitleCanonicalPlanParityAcrossAssetProfileAndLab(t *testing.T) {
 	translationSettings.Enabled = true
 	translationSettings.Readiness = translationReadinessReady
 	translationSettings.ReadinessIdentity = translationProviderConfigurationIdentity(translationSettings)
-	if err := saveTranslationSettings(db, translationSettings); err != nil {
-		t.Fatal(err)
-	}
+	persistTranslationSettingsFixture(t, db, translationSettings)
 	if err := db.Create(&scan).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -875,9 +873,7 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 	translationSettings.Enabled = true
 	translationSettings.Readiness = translationReadinessReady
 	translationSettings.ReadinessIdentity = translationProviderConfigurationIdentity(translationSettings)
-	if err := saveTranslationSettings(db, translationSettings); err != nil {
-		t.Fatal(err)
-	}
+	persistTranslationSettingsFixture(t, db, translationSettings)
 	job := models.QueueJob{MediaPath: path, TrackProfileKey: "tracks"}
 	if err := NewQueueHandler(db).captureSupplementalProfiles(&job); err != nil {
 		t.Fatal(err)

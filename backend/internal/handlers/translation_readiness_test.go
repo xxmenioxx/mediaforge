@@ -41,9 +41,7 @@ func translationReadinessTestRouter(db *gorm.DB) *gin.Engine {
 
 func persistTranslationReadinessSettings(t *testing.T, db *gorm.DB, settings translationSettings) {
 	t.Helper()
-	if err := saveTranslationSettings(db, settings); err != nil {
-		t.Fatal(err)
-	}
+	persistTranslationSettingsFixture(t, db, settings)
 }
 
 func postTranslationReadiness(t *testing.T, router http.Handler, path string) (int, translationReadinessResponseBody, string) {

@@ -92,6 +92,25 @@ describe('SubtitleTranslationSettingsCard', () => {
     expect(api.enableSubtitleTranslation).not.toHaveBeenCalled();
   });
 
+  it('preserves unknown future model-role fields when saving Translation configuration', async () => {
+    const user = userEvent.setup();
+    const roleFields = { primary: 'qwen2.5:7b', fallback: 'future-model' };
+    const onSave = vi.fn();
+    renderCard(configuredValue({ ollamaModelRoles: roleFields }), onSave);
+
+    const model = screen.getByRole('textbox', { name: 'Ollama model' });
+    await user.clear(model);
+    await user.type(model, 'qwen2.5:14b');
+    await user.click(screen.getByRole('button', { name: 'Save translation configuration' }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      ollamaModelRoles: roleFields,
+      ollamaModel: 'qwen2.5:14b',
+    }));
+    expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty('readiness');
+    expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty('enabled', true);
+  });
+
   it('trusts backend invalidation after a provider-defining configuration change', async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();

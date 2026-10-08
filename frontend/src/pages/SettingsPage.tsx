@@ -2243,7 +2243,25 @@ const subtitleTranslationReadinessLabels: Record<SubtitleTranslationReadinessSta
 
 
 function subtitleTranslationConfigurationPayload(value: SubtitleTranslationSettingsValue, enabled?: boolean): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
+  const projectionFields = new Set([
+    'provider',
+    'ollamaEndpoint',
+    'ollamaModel',
+    'maxCuesPerRequest',
+    'maxRequestBytes',
+    'maxContextCues',
+    'maxContextChars',
+    'enabled',
+    'readiness',
+    'readinessConfigIdentity',
+    'readinessCheckedAt',
+    'readinessDiagnostic',
+    'ollamaProviderState',
+  ]);
+  const payload: Record<string, unknown> = Object.fromEntries(
+    Object.entries(value).filter(([key]) => !projectionFields.has(key)),
+  );
+  Object.assign(payload, {
     provider: value.provider,
     ollamaEndpoint: value.ollamaEndpoint,
     ollamaModel: value.ollamaModel,
@@ -2251,7 +2269,7 @@ function subtitleTranslationConfigurationPayload(value: SubtitleTranslationSetti
     maxRequestBytes: value.maxRequestBytes,
     maxContextCues: value.maxContextCues,
     maxContextChars: value.maxContextChars,
-  };
+  });
   if (enabled !== undefined) {
     payload.enabled = enabled;
   }
