@@ -38,6 +38,13 @@ and leave unmatched or ambiguous text unchanged. A higher-priority rule MAY
 resolve an overlapping match; conflicting matches at the same highest priority
 SHALL remain unchanged and be reported for review.
 
+The seeded English `| → I` rules SHALL match only at cue start or after the
+validated discourse prefixes `Well,`, `No,`, `Yes,`, `Oh,`, or `Ah,`; other
+preceding text is ambiguous and remains unchanged. The seeded `am | → am I`
+rule SHALL match only when the visible cue suffix after `|` is empty or begins
+with a validated punctuation boundary (`.`, `,`, `;`, `:`, `!`, `?`, or `…`),
+ignoring trailing whitespace and subtitle formatting.
+
 Published snapshots created before strict dictionary-language evidence was
 recorded SHALL NOT be assumed to be English solely because legacy OCR language
 normalization stored `eng`. Re-evaluation of such a snapshot MAY use an
@@ -48,9 +55,13 @@ that selection, no language-scoped dictionary rule is applied.
 - **WHEN** an English cue contains a complete token matching an enabled contraction rule such as `|'m` or `| can't`
 - **THEN** only that span is replaced with its declared English form, surrounding cue text and punctuation retain their original casing, and the candidate is sent through canonical OCR validation
 
+#### Scenario: Built-in first-person rules fail closed on ambiguous grammar
+- **WHEN** a seeded English `| → I` rule occurs after text other than cue start or a validated discourse prefix
+- **THEN** the text remains unchanged and reviewable, while the same pattern remains available for a user rule preview and explicit correction review
+
 #### Scenario: The `am |` rule requires a standalone OCR token
 - **WHEN** an English cue has `am` as a complete word followed by a standalone `|` token with the rule's validated right boundary
-- **THEN** the guarded rule may propose `am I`; an embedded bar or ambiguous separator remains unchanged and reviewable
+- **THEN** the guarded rule may propose `am I` only at cue end or before validated terminal punctuation; a following word, embedded bar, or ambiguous separator remains unchanged and reviewable
 
 #### Scenario: Proper names, words, markup, and separators are not globally rewritten
 - **WHEN** `|` occurs inside a word or name, in ASS markup or another structural field, as a separator, or in a cue with unknown or non-English language evidence
@@ -75,6 +86,12 @@ bars SHALL remain reviewable. Applied-rule provenance SHALL identify the
 canonical cue and OCR language, dictionary revision, rule identity and
 version, correction operation, and before/after text hashes.
 
+Translation preparation SHALL auto-apply only validated candidates whose
+matched rule identities all resolve to seeded built-in entries. User-defined
+rules remain available to preview and canonical OCR Review, but their
+suggestions require explicit correction acceptance and SHALL NOT auto-correct
+Translation input.
+
 #### Scenario: OCR analysis offers a contextual candidate without silently publishing it
 - **WHEN** saved or newly produced canonical OCR contains a high-confidence contextual match
 - **THEN** the shared analyzer returns the candidate and its rule provenance, and publication still follows the existing correction and review safeguards
@@ -82,6 +99,10 @@ version, correction operation, and before/after text hashes.
 #### Scenario: Translation uses the same validated correction result
 - **WHEN** bitmap subtitle evidence is prepared for Translation
 - **THEN** the same deterministic dictionary rules are evaluated once on canonical cues before translation, and remaining review findings prevent Translation from consuming unreviewed text
+
+#### Scenario: Translation keeps user-defined rule suggestions behind explicit review
+- **WHEN** a user-defined dictionary rule produces a validated candidate during Translation preparation
+- **THEN** the suggestion remains available through canonical OCR Review, Translation does not apply it automatically, and unresolved OCR quality findings prevent consumption of that cue
 
 #### Scenario: Applied correction records reproducible provenance
 - **WHEN** a dictionary rule changes a canonical cue

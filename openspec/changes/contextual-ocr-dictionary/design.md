@@ -84,6 +84,14 @@ boundary at cue end or punctuation. Each rule declares whether matching is
 case-sensitive; the configured replacement is emitted literally, while all
 text outside the matched span keeps its original bytes and casing.
 
+The seeded English rules whose replacement begins with `I` also require a
+conservative left context: cue start or one of the validated discourse
+prefixes `Well,`, `No,`, `Yes,`, `Oh,`, or `Ah,`. Any other visible prefix,
+including a grammatically ambiguous subject such as `They`, leaves the bar
+unchanged for review. For `am |`, the visible suffix after the bar must be
+empty after whitespace/formatting or begin with one of `. , ; : ! ? …`; a
+following word is not a valid boundary.
+
 Resolve language aliases only through the strict dictionary resolver. Apply
 English rules to explicit `en`, `eng`, or `english` evidence normalized to
 `eng`; capture this dictionary language and its evidence source from the raw
@@ -128,6 +136,12 @@ the existing safety gate. OCR review and
 `prepareCanonicalOCREvidenceForTranslation` call the same matcher on the same
 canonical cue text, so Translation receives one validated corrected result and
 does not run its own substitutions or OCR pass.
+
+Translation preparation automatically applies only candidates whose complete
+matched rule-ID set resolves to built-in entries. User-defined rules still
+produce matcher and OCR Review suggestions, and explicit acceptance continues
+through the existing correction operation; Translation leaves those cues
+unchanged so the canonical OCR quality gate keeps them behind review.
 
 Extend existing correction provenance with the effective dictionary revision,
 source language, rule ID/version, cue ID, correction operation identity, and

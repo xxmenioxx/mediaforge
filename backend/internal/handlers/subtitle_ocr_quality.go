@@ -660,6 +660,9 @@ func prepareCanonicalOCREvidenceForTranslation(ctx context.Context, evidence *ca
 		if finding.CandidateSource != "contextual-ocr-dictionary" || finding.Suggestion == "" {
 			continue
 		}
+		if !ocrDictionaryMatchesUseOnlyBuiltInRules(finding.DictionaryRuleIDs, snapshot.DictionaryRules) {
+			continue
+		}
 		cue, ok := canonicalCueByOrdinal(working.Cues, finding.CueID)
 		if !ok || !subtitleOCRCandidateIsMateriallyBetter(cue.Text, finding.Suggestion, working.RequestedLanguage) {
 			continue

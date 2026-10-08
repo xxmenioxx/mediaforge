@@ -165,7 +165,7 @@ func (fixture ocrDictionaryBothPublicationFixture) correctedEvidence(t *testing.
 	t.Helper()
 	rule := models.OCRDictionaryEntry{
 		ID: "rule:eng:bar-cant", Language: "eng", Pattern: "| can't", Replacement: "I can't",
-		MatchMode: "literal", BoundaryPolicy: "word", CasePolicy: "exact", Priority: 100, Enabled: true, Source: "builtin", RuleVersion: 1,
+		MatchMode: "literal", BoundaryPolicy: "word", CasePolicy: "exact", Priority: 100, Enabled: true, Source: "user", RuleVersion: 1,
 	}
 	matched := matchOCRDictionaryText(fixture.evidence.Cues[0].Text, "eng", []models.OCRDictionaryEntry{rule})
 	if matched.Text != "The I can't" || len(matched.Matches) != 1 {

@@ -99,7 +99,7 @@ func matchOCRDictionaryText(text, language string, rules []models.OCRDictionaryE
 				continue
 			}
 			seen[key] = struct{}{}
-			if !ocrDictionaryBoundaryMatches(runes, start, end) || !ocrDictionaryContextMatches(runes, start, end, rule) {
+			if !ocrDictionaryBoundaryMatches(runes, start, end) || !ocrDictionaryContextMatches(runes, start, end, rule) || !ocrDictionaryBuiltInEnglishContextMatches(runes, structural, start, end, rule) {
 				continue
 			}
 			structuralHit := false
@@ -257,6 +257,73 @@ func ocrDictionaryContextMatches(text []rune, start, end int, rule models.OCRDic
 		return false
 	}
 	return true
+}
+
+func ocrDictionaryBuiltInEnglishContextMatches(text []rune, structural []bool, start, end int, rule models.OCRDictionaryEntry) bool {
+	if rule.Source != "builtin" || rule.Language != "eng" || !strings.Contains(rule.Pattern, "|") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(rule.Pattern), "am |") && strings.EqualFold(strings.TrimSpace(rule.Replacement), "am I") {
+		suffix := strings.TrimSpace(ocrDictionaryVisibleTextSpan(text, structural, end, len(text)))
+		if suffix == "" {
+			return true
+		}
+		suffixRunes := []rune(suffix)
+		first := suffixRunes[0]
+		return strings.ContainsRune(".,;:!?…", first)
+	}
+
+	replacement := []rune(strings.TrimSpace(rule.Replacement))
+	if len(replacement) == 0 || unicode.ToLower(replacement[0]) != 'i' {
+		return true
+	}
+	prefix := strings.ToLower(strings.TrimSpace(ocrDictionaryVisibleTextSpan(text, structural, 0, start)))
+	if prefix == "" {
+		return true
+	}
+	switch prefix {
+	case "well,", "no,", "yes,", "oh,", "ah,":
+		return true
+	default:
+		return false
+	}
+}
+
+func ocrDictionaryMatchesUseOnlyBuiltInRules(ruleIDs []string, rules []models.OCRDictionaryEntry) bool {
+	if len(ruleIDs) == 0 {
+		return false
+	}
+	required := make(map[string]struct{}, len(ruleIDs))
+	for _, ruleID := range ruleIDs {
+		if strings.TrimSpace(ruleID) == "" {
+			return false
+		}
+		required[ruleID] = struct{}{}
+	}
+	found := make(map[string]struct{}, len(required))
+	for _, rule := range rules {
+		if _, ok := required[rule.ID]; !ok {
+			continue
+		}
+		if rule.Source != "builtin" {
+			return false
+		}
+		found[rule.ID] = struct{}{}
+	}
+	return len(found) == len(required)
+}
+
+func ocrDictionaryVisibleTextSpan(text []rune, structural []bool, start, end int) string {
+	if start < 0 || end > len(text) || start > end {
+		return ""
+	}
+	var visible strings.Builder
+	for index := start; index < end; index++ {
+		if !structural[index] {
+			visible.WriteRune(text[index])
+		}
+	}
+	return visible.String()
 }
 
 func sameOCRDictionaryMatch(candidates []ocrDictionaryTextCandidate) bool {

@@ -14,15 +14,21 @@ func testOCRDictionaryEntry(id, pattern, replacement string, priority int) model
 	}
 }
 
+func testBuiltInOCRDictionaryEntry(id, pattern, replacement string, priority int) models.OCRDictionaryEntry {
+	rule := testOCRDictionaryEntry(id, pattern, replacement, priority)
+	rule.Source = "builtin"
+	return rule
+}
+
 func TestOCRDictionaryMatcherUsesLiteralWordBoundariesAndLanguage(t *testing.T) {
 	rules := []models.OCRDictionaryEntry{
-		testOCRDictionaryEntry("im", "|'m", "I'm", 100),
-		testOCRDictionaryEntry("ive", "|'ve", "I've", 100),
-		testOCRDictionaryEntry("ill", "|'ll", "I'll", 100),
-		testOCRDictionaryEntry("id", "|'d", "I'd", 100),
-		testOCRDictionaryEntry("cant", "| can't", "I can't", 100),
-		testOCRDictionaryEntry("dont", "| don't", "I don't", 100),
-		testOCRDictionaryEntry("am_i", "am |", "am I", 100),
+		testBuiltInOCRDictionaryEntry("im", "|'m", "I'm", 100),
+		testBuiltInOCRDictionaryEntry("ive", "|'ve", "I've", 100),
+		testBuiltInOCRDictionaryEntry("ill", "|'ll", "I'll", 100),
+		testBuiltInOCRDictionaryEntry("id", "|'d", "I'd", 100),
+		testBuiltInOCRDictionaryEntry("cant", "| can't", "I can't", 100),
+		testBuiltInOCRDictionaryEntry("dont", "| don't", "I don't", 100),
+		testBuiltInOCRDictionaryEntry("am_i", "am |", "am I", 100),
 	}
 	cases := []struct {
 		name     string
@@ -36,12 +42,19 @@ func TestOCRDictionaryMatcherUsesLiteralWordBoundariesAndLanguage(t *testing.T) 
 		{name: "contraction ill", language: "english", input: "|'ll go", want: "I'll go", matches: 1},
 		{name: "contraction id", language: "eng", input: "|'d wait", want: "I'd wait", matches: 1},
 		{name: "phrase and punctuation", language: "eng", input: "No, | can't!", want: "No, I can't!", matches: 1},
-		{name: "dont", language: "eng", input: "They | don't.", want: "They I don't.", matches: 1},
+		{name: "contraction at cue start", language: "eng", input: "| don't.", want: "I don't.", matches: 1},
+		{name: "ambiguous pronoun before dont", language: "eng", input: "They | don't.", want: "They | don't.", matches: 0},
+		{name: "ambiguous prefix before cant", language: "eng", input: "Maybe | can't.", want: "Maybe | can't.", matches: 0},
 		{name: "guarded am i", language: "eng", input: "am |?", want: "am I?", matches: 1},
+		{name: "am i at cue end", language: "eng", input: "Who am |", want: "Who am I", matches: 1},
+		{name: "am i at punctuation boundary", language: "eng", input: "Who am |?", want: "Who am I?", matches: 1},
+		{name: "am i punctuation before more text", language: "eng", input: "Who am |? Maybe.", want: "Who am I? Maybe.", matches: 1},
 		{name: "proper name token", language: "eng", input: "Spam|'m ready", want: "Spam|'m ready", matches: 0},
 		{name: "embedded contraction", language: "eng", input: "x|'m ready", want: "x|'m ready", matches: 0},
 		{name: "contraction suffix", language: "eng", input: "|'milk", want: "|'milk", matches: 0},
 		{name: "guarded am suffix", language: "eng", input: "am |answer", want: "am |answer", matches: 0},
+		{name: "am i ambiguous right context", language: "eng", input: "am | hello", want: "am | hello", matches: 0},
+		{name: "am i ambiguous after question word", language: "eng", input: "Who am | hello", want: "Who am | hello", matches: 0},
 		{name: "unknown language", language: "", input: "|'m", want: "|'m", matches: 0},
 		{name: "spanish language", language: "spa", input: "|'m", want: "|'m", matches: 0},
 		{name: "markup remains intact", language: "eng", input: "{\\i1}|'m{\\i0}", want: "{\\i1}I'm{\\i0}", matches: 1},
@@ -61,6 +74,14 @@ func TestOCRDictionaryMatcherUsesLiteralWordBoundariesAndLanguage(t *testing.T) 
 				t.Fatalf("unexpected ambiguity: %#v", result.Ambiguous)
 			}
 		})
+	}
+}
+
+func TestOCRDictionaryMatcherRetainsUserRuleFlexibilityForReview(t *testing.T) {
+	rule := testOCRDictionaryEntry("user:eng:dont", "| don't", "I don't", 100)
+	result := matchOCRDictionaryText("They | don't.", "eng", []models.OCRDictionaryEntry{rule})
+	if result.Text != "They I don't." || len(result.Matches) != 1 {
+		t.Fatalf("custom rule should remain available for explicit review: %#v", result)
 	}
 }
 
@@ -161,7 +182,7 @@ func TestLegacySnapshotDoesNotInheritEnglishDictionaryRules(t *testing.T) {
 
 func TestCanonicalAnalyzerOffersValidatedContextualDictionarySuggestion(t *testing.T) {
 	snapshot := &publishedCanonicalOCRSnapshot{
-		DictionaryRules:    []models.OCRDictionaryEntry{testOCRDictionaryEntry("builtin:eng:im", "|'m", "I'm", 100)},
+		DictionaryRules:    []models.OCRDictionaryEntry{testBuiltInOCRDictionaryEntry("builtin:eng:im", "|'m", "I'm", 100)},
 		DictionaryRevision: "dictionary-revision",
 		DictionaryLanguage: "eng",
 		Evidence: canonicalOCREvidence{
@@ -180,5 +201,25 @@ func TestCanonicalAnalyzerOffersValidatedContextualDictionarySuggestion(t *testi
 	}
 	if report.DictionaryRevision != "dictionary-revision" || report.DictionaryLanguage != "eng" {
 		t.Fatalf("dictionary binding missing from report: %#v", report)
+	}
+}
+
+func TestCanonicalAnalyzerKeepsAmbiguousBuiltInEnglishRuleInReview(t *testing.T) {
+	snapshot := &publishedCanonicalOCRSnapshot{
+		DictionaryRules:    []models.OCRDictionaryEntry{testBuiltInOCRDictionaryEntry("builtin:eng:dont", "| don't", "I don't", 100)},
+		DictionaryLanguage: "eng",
+		Evidence: canonicalOCREvidence{
+			RequestedLanguage: "eng", DictionaryLanguage: "eng", DictionaryLanguageSource: "request",
+			Integrity: "published-canonical-cues-v1",
+			Cues:      []canonicalBitmapSubtitleCue{{SourceOrdinal: 4, Text: "They | don't."}},
+		},
+	}
+	report := analyzeCanonicalOCRSnapshot(snapshot)
+	if len(report.Findings) != 1 {
+		t.Fatalf("expected one OCR finding, got %#v", report.Findings)
+	}
+	finding := report.Findings[0]
+	if finding.Status != subtitleOCRQualityStatusReview || finding.Suggestion != "" {
+		t.Fatalf("ambiguous built-in English context must remain reviewable without a suggestion: %#v", finding)
 	}
 }

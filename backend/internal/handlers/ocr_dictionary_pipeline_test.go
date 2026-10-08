@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -49,5 +50,33 @@ func TestTranslationPreparationReusesDictionaryMatcherAndProvenance(t *testing.T
 	}
 	if len(evidence.Cues) != 1 || evidence.Cues[0].Text != "Well, |'m here." {
 		t.Fatalf("translation mutated the source canonical evidence: %#v", evidence.Cues)
+	}
+}
+
+func TestTranslationPreparationDoesNotAutoApplyUserDictionaryRule(t *testing.T) {
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", t.TempDir())
+	db, err := gorm.Open(sqlite.Open("file:ocr-dictionary-translation-user-rule?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.OCRDictionaryEntry{}); err != nil {
+		t.Fatal(err)
+	}
+	rule := testOCRDictionaryEntry("user:eng:im", "|'m", "I'm", 100)
+	if err := db.Create(&rule).Error; err != nil {
+		t.Fatal(err)
+	}
+	if candidate, ok, _, _, _ := deterministicOCRSuggestionWithDictionary("Well, |'m here.", "eng", "eng", []models.OCRDictionaryEntry{rule}); !ok || candidate != "Well, I'm here." {
+		t.Fatalf("custom rule should remain a validated OCR Review candidate, got %q, %v", candidate, ok)
+	}
+	evidence := &canonicalOCREvidence{
+		Identity:          canonicalOCRIdentity{SourcePath: "/media/source.mkv", StreamIndex: 3, StreamCodec: "subrip", RequestedLanguage: "eng"},
+		RequestedLanguage: "eng", EffectiveLanguage: "eng", DictionaryLanguage: "eng", DictionaryLanguageSource: "request",
+		Complete: true, Integrity: "canonical-cues-validated-v1",
+		Cues: []canonicalBitmapSubtitleCue{{Start: 1.25, End: 2.5, Text: "Well, |'m here.", SourceOrdinal: 17}},
+	}
+	prepared, err := prepareCanonicalOCREvidenceForTranslation(context.Background(), evidence, nil, canonicalOCRDictionaryPreparation{DB: db, OperationID: "translation-custom-rule"})
+	if err == nil || prepared != nil || !strings.Contains(err.Error(), "requires review before translation") {
+		t.Fatalf("Translation must keep user-rule suggestions behind the canonical review gate, prepared=%#v err=%v", prepared, err)
 	}
 }
