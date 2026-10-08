@@ -2065,6 +2065,9 @@ func (h WorkerHandler) audioProfile(key string) (*audioEnhancementProfile, error
 }
 
 func (h WorkerHandler) audioProfileForJob(job models.QueueJob) (*audioEnhancementProfile, error) {
+	if strings.TrimSpace(job.AudioProfileKey) == assetDefaultsCustomAudioKey {
+		return nil, nil
+	}
 	if len(job.AudioProfileSnapshot) > 0 {
 		return audioProfileFromMap(job.AudioProfileKey, job.AudioProfileSnapshot), nil
 	}

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -57,6 +58,118 @@ func TestFFmpegCommandBuilderAddsEnhancedAudioNonDestructively(t *testing.T) {
 	assertContains(t, command, "-disposition:a:0 0")
 	assertContains(t, command, "-disposition:a:1 default")
 	assertContains(t, command, "-map_chapters 0")
+}
+
+func TestAudioProfileForJobDistinguishesAssetDefaultsFromEnhancementProfiles(t *testing.T) {
+	cases := []struct {
+		name                 string
+		job                  models.QueueJob
+		wantCompatibilityAAC bool
+		wantEnhancement      bool
+		wantEnhancedFilter   string
+	}{
+		{
+			name: "Asset Defaults custom audio without compatibility track",
+			job: models.QueueJob{
+				AudioProfileKey: assetDefaultsCustomAudioKey,
+				ProfileResolution: models.JSONMap{"audio": models.JSONMap{"profileData": models.JSONMap{
+					"addCompatibleTrack": false, "compatibleTrackQuality": 160,
+					"compatibleTrackChannels": 2, "compatibleTrackSource": "default",
+				}}},
+				AudioProfileSnapshot: models.JSONMap{
+					"addCompatibleTrack": false, "compatibleTrackQuality": 160,
+					"compatibleTrackChannels": 2, "compatibleTrackSource": "default",
+					"preferredDefaultLanguage": "jpn",
+				},
+			},
+		},
+		{
+			name: "Asset Defaults custom audio with compatibility track",
+			job: models.QueueJob{
+				AudioProfileKey: assetDefaultsCustomAudioKey,
+				ProfileResolution: models.JSONMap{"audio": models.JSONMap{"profileData": models.JSONMap{
+					"addCompatibleTrack": true, "compatibleTrackQuality": 160,
+					"compatibleTrackChannels": 2, "compatibleTrackSource": "default",
+				}}},
+				AudioProfileSnapshot: models.JSONMap{
+					"addCompatibleTrack": true, "compatibleTrackQuality": 160,
+					"compatibleTrackChannels": 2, "compatibleTrackSource": "default",
+					"preferredDefaultLanguage": "jpn",
+				},
+			},
+			wantCompatibilityAAC: true,
+		},
+		{
+			name: "genuine enhancement profile",
+			job: models.QueueJob{
+				AudioProfileKey: "dialogue",
+				AudioProfileSnapshot: models.JSONMap{
+					"filters": "volume=0.8", "outputCodec": "aac",
+				},
+			},
+			wantEnhancement:    true,
+			wantEnhancedFilter: "volume=0.8",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			audioProfile, err := (WorkerHandler{}).audioProfileForJob(tc.job)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := audioProfile != nil; got != tc.wantEnhancement {
+				t.Fatalf("enhancement profile active=%v, want %v (profile=%#v)", got, tc.wantEnhancement, audioProfile)
+			}
+
+			profile := models.Profile{
+				VideoCodec: "copy", AudioCodec: "copy",
+				WorkerConfig: models.JSONMap{},
+			}
+			applyAssetDefaultsAudioToVideoProfile(&profile, tc.job)
+			plan := MediaJobPlan{
+				InputPath: "/media/raw/episode.mkv", OutputPath: "/media/staging/episode.mkv", Overwrite: true,
+				ProcessingMode: ProcessingModeFullEncode, Profile: profile, AudioProfile: audioProfile,
+				Streams: MediaStreamInventory{Audio: []MediaAudioStream{
+					{Index: 1, Codec: "ac3", Channels: 6, Default: true},
+					{Index: 2, Codec: "dts", Channels: 6},
+				}},
+				Override: AssetConversionOverrideState{KeepAudioStreams: []int{1, 2}},
+			}
+			command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+
+			if tc.wantCompatibilityAAC {
+				if count := strings.Count(command, "-map 0:1"); count != 2 {
+					t.Fatalf("compatibility AAC should derive from the default stream once; stream 1 mappings=%d: %s", count, command)
+				}
+				if count := strings.Count(command, "-map 0:2"); count != 1 {
+					t.Fatalf("selected stream 2 should be mapped once, got %d: %s", count, command)
+				}
+				assertContains(t, command, "-c:a:2 aac")
+				assertContains(t, command, "title=AAC Stereo (MVForge)")
+				assertNotContains(t, command, "-filter:a:")
+				assertNotContains(t, command, "Enhanced Audio (MVForge)")
+				return
+			}
+
+			if !tc.wantEnhancement {
+				for _, streamIndex := range []int{1, 2} {
+					if count := strings.Count(command, fmt.Sprintf("-map 0:%d", streamIndex)); count != 1 {
+						t.Fatalf("selected stream %d should be mapped exactly once, got %d: %s", streamIndex, count, command)
+					}
+				}
+				assertNotContains(t, command, "AAC Stereo (MVForge)")
+				assertNotContains(t, command, "Enhanced Audio (MVForge)")
+				assertNotContains(t, command, "-filter:a:")
+				return
+			}
+
+			assertContains(t, command, "-filter:a:2 "+tc.wantEnhancedFilter)
+			assertContains(t, command, "-c:a:2 aac")
+			assertContains(t, command, "title=Enhanced Audio (MVForge)")
+			assertNotContains(t, command, "AAC Stereo (MVForge)")
+		})
+	}
 }
 
 func TestFFmpegCommandBuilderUsesFrozenSubtitleRoleDispositions(t *testing.T) {
