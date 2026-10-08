@@ -476,13 +476,34 @@ func TestAssetDefaultsPreviewTestEncodeQueueParityForUnassignedAsset(t *testing.
 		t.Fatalf("Preview, Test Encode, and Queue video decisions diverged: preview=%#v test=%#v queue=%#v", assetDefaultsVideoParityDecision(previewProfile), assetDefaultsVideoParityDecision(testProfile), assetDefaultsVideoParityDecision(queueProfile))
 	}
 
-	queueAudio := audioProfileFromMap(queueJob.AudioProfileKey, queueJob.AudioProfileSnapshot)
-	if !reflect.DeepEqual(queueAudio, testEncode.audio) {
-		t.Fatalf("Preview/Test Encode/Queue audio defaults diverged: queue=%#v test=%#v", queueAudio, testEncode.audio)
+	worker := WorkerHandler{}
+	queueAudio, err := worker.audioProfileForJob(queueJob)
+	if err != nil {
+		t.Fatal(err)
 	}
-	previewAudio := audioProfileFromMap(previewJob.AudioProfileKey, profileDataForQueueJob(previewJob, "audio"))
-	if !reflect.DeepEqual(previewAudio, testEncode.audio) {
-		t.Fatalf("Preview audio defaults diverged: preview=%#v test=%#v", previewAudio, testEncode.audio)
+	previewAudio, err := worker.audioProfileForJob(previewJob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queueAudio != nil || previewAudio != nil || testEncode.audio != nil {
+		t.Fatalf("Asset Defaults custom audio activated an enhancement profile: preview=%#v test=%#v queue=%#v", previewAudio, testEncode.audio, queueAudio)
+	}
+	audioCompatibilitySettings := func(profile models.Profile) models.JSONMap {
+		return models.JSONMap{
+			"addAacStereoTrack":          boolValue(profile.WorkerConfig["addAacStereoTrack"], false),
+			"aacStereoBitrateKbps":       workerIntValue(profile.WorkerConfig["aacStereoBitrateKbps"], 192),
+			"aacStereoChannels":          workerIntValue(profile.WorkerConfig["aacStereoChannels"], 2),
+			"aacStereoSourceStreamIndex": workerIntValue(profile.WorkerConfig["aacStereoSourceStreamIndex"], -1),
+		}
+	}
+	wantAudioCompatibility := models.JSONMap{
+		"addAacStereoTrack": true, "aacStereoBitrateKbps": 160,
+		"aacStereoChannels": 2, "aacStereoSourceStreamIndex": -1,
+	}
+	for name, profile := range map[string]models.Profile{"preview": previewProfile, "test_encode": testProfile, "queue": queueProfile} {
+		if settings := audioCompatibilitySettings(profile); !reflect.DeepEqual(settings, wantAudioCompatibility) {
+			t.Fatalf("%s Asset Defaults compatibility settings=%#v, want %#v", name, settings, wantAudioCompatibility)
+		}
 	}
 	previewTracks, err := resolvedSubtitleTrackProfileForAsset(db, mediaPath)
 	if err != nil {
