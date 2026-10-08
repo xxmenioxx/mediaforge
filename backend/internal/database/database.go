@@ -64,6 +64,7 @@ func Migrate(db *gorm.DB) error {
 		&models.ProfileQualification{},
 		&models.TaskReservation{},
 		&models.AppSetting{},
+		&models.OCRDictionaryEntry{},
 		&models.ProtectedCredential{},
 		&models.CompatiblePreviewRequestRecord{},
 		&models.CompatiblePreviewArtifactRecord{},
@@ -76,6 +77,9 @@ func Migrate(db *gorm.DB) error {
 		&models.AssetPublishedOutbox{},
 		&models.JellyfinIntegrationOutcome{},
 	); err != nil {
+		return err
+	}
+	if err := seedOCRDictionaryEntries(db); err != nil {
 		return err
 	}
 	if err := backfillTestEncodeArtifactOwnership(db); err != nil {
@@ -134,6 +138,25 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	return backfillPendingExecutionPlans(db)
+}
+
+func seedOCRDictionaryEntries(db *gorm.DB) error {
+	entries := []models.OCRDictionaryEntry{
+		{ID: "builtin:eng:im", Language: "eng", Pattern: "|'m", Replacement: "I'm", MatchMode: "literal", BoundaryPolicy: "word", CasePolicy: "exact", Priority: 100, Enabled: true, Source: "builtin", RuleVersion: 1},
+		{ID: "builtin:eng:ive", Language: "eng", Pattern: "|'ve", Replacement: "I've", MatchMode: "literal", BoundaryPolicy: "word", CasePolicy: "exact", Priority: 100, Enabled: true, Source: "builtin", RuleVersion: 1},
+		{ID: "builtin:eng:ill", Language: "eng", Pattern: "|'ll", Replacement: "I'll", MatchMode: "literal", BoundaryPolicy: "word", CasePolicy: "exact", Priority: 100, Enabled: true, Source: "builtin", RuleVersion: 1},
+		{ID: "builtin:eng:id", Language: "eng", Pattern: "|'d", Replacement: "I'd", MatchMode: "literal", BoundaryPolicy: "word", CasePolicy: "exact", Priority: 100, Enabled: true, Source: "builtin", RuleVersion: 1},
+		{ID: "builtin:eng:cant", Language: "eng", Pattern: "| can't", Replacement: "I can't", MatchMode: "literal", BoundaryPolicy: "word", CasePolicy: "exact", Priority: 100, Enabled: true, Source: "builtin", RuleVersion: 1},
+		{ID: "builtin:eng:dont", Language: "eng", Pattern: "| don't", Replacement: "I don't", MatchMode: "literal", BoundaryPolicy: "word", CasePolicy: "exact", Priority: 100, Enabled: true, Source: "builtin", RuleVersion: 1},
+		{ID: "builtin:eng:am_i", Language: "eng", Pattern: "am |", Replacement: "am I", MatchMode: "literal", BoundaryPolicy: "word", CasePolicy: "exact", Priority: 100, Enabled: true, Source: "builtin", RuleVersion: 1},
+	}
+	return db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"language", "pattern", "replacement", "match_mode", "boundary_policy",
+			"left_context", "right_context", "case_policy", "priority", "source", "rule_version", "updated_at",
+		}),
+	}).Create(&entries).Error
 }
 
 func backfillTestEncodeArtifactOwnership(db *gorm.DB) error {

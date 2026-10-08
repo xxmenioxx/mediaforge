@@ -4988,6 +4988,8 @@ async function generateExternalSubtitle(
         format: selection.format,
         logicalTransformKey: sidecar.logicalTransformKey,
         baselineRevision: report.baselineRevision,
+        dictionaryLanguage: report.dictionaryLanguage,
+        dictionaryRevision: report.dictionaryRevision,
         revisions: report.revisionSet,
         corrections: corrections.map((correction) => correction.suggestion
           ? { cueId: correction.cueId, action: 'apply' as const, suggestion: correction.suggestion }

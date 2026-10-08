@@ -3076,6 +3076,8 @@ export type SubtitleOCRQualityFinding = {
   reasons?: string[];
   evidence?: string[];
   candidateSource?: string;
+  dictionaryRuleIds?: string[];
+  dictionaryRuleVersions?: number[];
   baselineRevision: string;
 };
 
@@ -3102,12 +3104,109 @@ export type SubtitleOCRQualityReport = {
   baselineRevision: string;
   analyzerVersion: string;
   repairVersion: string;
+  dictionaryLanguage?: OCRDictionaryLanguage;
+  dictionaryRevision?: string;
   cleanCount: number;
   suspiciousCount: number;
   reviewCount: number;
   legacyTextOnly?: boolean;
   canCorrect: boolean;
   findings: SubtitleOCRQualityFinding[];
+};
+
+export type OCRDictionaryLanguage = 'eng' | 'spa' | 'jpn' | 'jpn_vert';
+
+export type OCRDictionaryEntry = {
+  id: string;
+  language: OCRDictionaryLanguage;
+  pattern: string;
+  replacement: string;
+  matchMode: 'literal';
+  boundaryPolicy: 'word';
+  leftContext?: string;
+  rightContext?: string;
+  casePolicy: 'exact' | 'insensitive';
+  priority: number;
+  enabled: boolean;
+  source: 'builtin' | 'user';
+  ruleVersion: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OCRDictionaryRuleInput = {
+  language: OCRDictionaryLanguage;
+  pattern: string;
+  replacement: string;
+  matchMode: 'literal';
+  boundaryPolicy: 'word';
+  leftContext?: string;
+  rightContext?: string;
+  casePolicy: 'exact' | 'insensitive';
+  priority: number;
+  enabled?: boolean;
+};
+
+export type OCRDictionarySearchResponse = {
+  entries: OCRDictionaryEntry[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
+export type OCRDictionaryTestMatchInput = {
+  language: OCRDictionaryLanguage;
+  sample: string;
+  rule: OCRDictionaryRuleInput;
+};
+
+export type OCRDictionaryTestMatchResponse = {
+  language: OCRDictionaryLanguage;
+  matched: boolean;
+  matchCount: number;
+  result: string;
+  ambiguous?: Array<{ start: number; end: number; ruleIds: string[] }>;
+  dictionaryRevision: string;
+};
+
+export type OCRDictionaryReevaluationInput = {
+  mediaPath?: string;
+  sidecarPath?: string;
+  sidecarPaths?: string[];
+  format: 'srt' | 'ass' | 'both';
+  logicalTransformKey?: string;
+  dictionaryLanguage?: OCRDictionaryLanguage;
+};
+
+export type OCRDictionaryReevaluationChange = {
+  cueId: number;
+  before: string;
+  after: string;
+  ruleIds: string[];
+  ruleVersions: number[];
+  beforeTextHash: string;
+  afterTextHash: string;
+};
+
+export type OCRDictionaryReevaluationPreview = {
+  previewId: string;
+  artifactRevision: string;
+  revisions: NonNullable<SubtitleOCRQualityReport['revisionSet']>;
+  dictionaryLanguage?: OCRDictionaryLanguage;
+  dictionaryLanguageSource?: string;
+  dictionaryRevision: string;
+  cleanCount: number;
+  suspiciousCount: number;
+  reviewCount: number;
+  requiresLanguageChoice: boolean;
+  changes: OCRDictionaryReevaluationChange[];
+};
+
+export type OCRDictionaryReevaluationApplyInput = OCRDictionaryReevaluationInput & {
+  previewId: string;
+  artifactRevision: string;
+  dictionaryRevision: string;
+  acceptedCueIds: number[];
 };
 
 export type SubtitleExtractionOperationList = {

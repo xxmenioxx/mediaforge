@@ -968,10 +968,10 @@ func ocrKnownWords(language string) map[string]struct{} {
 
 func ocrDictionaryCandidate(token, language string) (string, bool) {
 	dictionary := ocrKnownWords(language)
-	if len(dictionary) == 0 || !strings.ContainsAny(token, "01|") {
+	if len(dictionary) == 0 || !strings.ContainsAny(token, "01") {
 		return "", false
 	}
-	candidate := strings.NewReplacer("0", "o", "1", "l", "|", "i").Replace(token)
+	candidate := strings.NewReplacer("0", "o", "1", "l").Replace(token)
 	if candidate == token {
 		return "", false
 	}
