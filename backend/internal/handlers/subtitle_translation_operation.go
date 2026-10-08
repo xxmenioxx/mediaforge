@@ -23,10 +23,39 @@ const (
 	subtitleTranslationFailureProviderUnavailable   subtitleTranslationFailureClass = "provider_unavailable"
 	subtitleTranslationFailureProviderTimeout       subtitleTranslationFailureClass = "provider_timeout"
 	subtitleTranslationFailureMalformedResponse     subtitleTranslationFailureClass = "malformed_response"
+	subtitleTranslationFailureOCRReviewRequired     subtitleTranslationFailureClass = "ocr_review_required"
+	subtitleTranslationFailureOCRFailed             subtitleTranslationFailureClass = "ocr_failed"
 	subtitleTranslationFailureStaleSource           subtitleTranslationFailureClass = "stale_source"
 	subtitleTranslationFailureCancelled             subtitleTranslationFailureClass = "cancelled"
 	subtitleTranslationFailureTranslationFailed     subtitleTranslationFailureClass = "translation_failed"
 )
+
+type subtitleTranslationDomainError struct {
+	failureClass subtitleTranslationFailureClass
+	cause        error
+}
+
+func (failure *subtitleTranslationDomainError) Error() string {
+	if failure == nil || failure.cause == nil {
+		return "subtitle translation failed"
+	}
+	return failure.cause.Error()
+}
+
+func (failure *subtitleTranslationDomainError) Unwrap() error {
+	if failure == nil {
+		return nil
+	}
+	return failure.cause
+}
+
+func subtitleOCRReviewRequiredError(cause error) error {
+	return &subtitleTranslationDomainError{failureClass: subtitleTranslationFailureOCRReviewRequired, cause: cause}
+}
+
+func subtitleOCRFailedError(cause error) error {
+	return &subtitleTranslationDomainError{failureClass: subtitleTranslationFailureOCRFailed, cause: cause}
+}
 
 type subtitleTranslationOperationView struct {
 	Provider                string `json:"provider,omitempty"`
@@ -235,6 +264,10 @@ func subtitleTranslationFailureClassOf(err error) subtitleTranslationFailureClas
 	if errors.Is(err, context.Canceled) {
 		return subtitleTranslationFailureCancelled
 	}
+	var domainErr *subtitleTranslationDomainError
+	if errors.As(err, &domainErr) && domainErr != nil {
+		return domainErr.failureClass
+	}
 	return subtitleTranslationFailureTranslationFailed
 }
 
@@ -248,6 +281,10 @@ func subtitleTranslationDiagnostic(class subtitleTranslationFailureClass) string
 		return "Translation provider request timed out."
 	case subtitleTranslationFailureMalformedResponse:
 		return "Translation provider returned a malformed response."
+	case subtitleTranslationFailureOCRReviewRequired:
+		return "OCR review is required before translation."
+	case subtitleTranslationFailureOCRFailed:
+		return "Canonical OCR could not be prepared for translation."
 	case subtitleTranslationFailureStaleSource:
 		return "Subtitle source changed before publication."
 	case subtitleTranslationFailureCancelled:
@@ -255,6 +292,49 @@ func subtitleTranslationDiagnostic(class subtitleTranslationFailureClass) string
 	default:
 		return "Subtitle translation failed."
 	}
+}
+
+func subtitleTranslationFailurePhase(operationID string, err error) string {
+	switch subtitleTranslationFailureClassOf(err) {
+	case subtitleTranslationFailureOCRReviewRequired:
+		return "ocr_review"
+	case subtitleTranslationFailureOCRFailed:
+		return "ocr"
+	case subtitleTranslationFailureProviderConfiguration,
+		subtitleTranslationFailureProviderUnavailable,
+		subtitleTranslationFailureProviderTimeout,
+		subtitleTranslationFailureMalformedResponse:
+		return "translating"
+	}
+
+	phase := ""
+	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+		phase = operation.Phase
+	})
+	if phase != "" && phase != "cleanup" && phase != "error" && phase != "cancelled" && phase != "completed" {
+		return phase
+	}
+	if subtitleTranslationFailureClassOf(err) == subtitleTranslationFailureStaleSource {
+		return "validating"
+	}
+	return "preparing"
+}
+
+type subtitleTranslationProgressSnapshot struct {
+	progress  float64
+	processed int
+	total     int
+	valid     bool
+}
+
+func subtitleTranslationProgressForFailure(operationID string) subtitleTranslationProgressSnapshot {
+	snapshot := subtitleTranslationProgressSnapshot{}
+	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+		snapshot = subtitleTranslationProgressSnapshot{
+			progress: operation.Progress, processed: operation.Processed, total: operation.Total, valid: true,
+		}
+	})
+	return snapshot
 }
 
 func runSubtitleTranslationOperation(
@@ -287,12 +367,14 @@ func runSubtitleTranslationOperation(
 			finishSubtitleTranslationOperation(operationID, workspace, "cancelled", "Subtitle translation cancelled", err)
 			return
 		}
+		failurePhase := subtitleTranslationFailurePhase(operationID, err)
+		failureProgress := subtitleTranslationProgressForFailure(operationID)
 		updateSubtitleTranslationProgress(operationID, "cleanup", -1, -1, "Cleaning up subtitle translation")
 		cleanupErr := cleanupSubtitleOperationWorkspace(workspace)
 		if cleanupErr != nil {
 			err = fmt.Errorf("%w; cleanup diagnostic: %v", err, cleanupErr)
 		}
-		setSubtitleTranslationTerminal(operationID, "error", "error", "Subtitle translation failed", err)
+		setSubtitleTranslationTerminal(operationID, "error", failurePhase, "Subtitle translation failed", err, failureProgress)
 		return
 	}
 
@@ -325,6 +407,12 @@ func finishSubtitleTranslationOperation(
 	message string,
 	err error,
 ) {
+	failurePhase := ""
+	failureProgress := subtitleTranslationProgressSnapshot{}
+	if status != "cancelled" {
+		failurePhase = subtitleTranslationFailurePhase(operationID, err)
+		failureProgress = subtitleTranslationProgressForFailure(operationID)
+	}
 	updateSubtitleTranslationProgress(operationID, "cleanup", -1, -1, "Cleaning up subtitle translation")
 	cleanupErr := error(nil)
 	if workspace != "" {
@@ -345,14 +433,19 @@ func finishSubtitleTranslationOperation(
 		setSubtitleTranslationTerminal(operationID, "cancelled", "cleanup", message, err)
 		return
 	}
-	setSubtitleTranslationTerminal(operationID, "error", "error", message, err)
+	setSubtitleTranslationTerminal(operationID, "error", failurePhase, message, err, failureProgress)
 }
 
-func setSubtitleTranslationTerminal(operationID, status, phase, message string, err error) {
+func setSubtitleTranslationTerminal(operationID, status, phase, message string, err error, failureProgress ...subtitleTranslationProgressSnapshot) {
 	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
 		operation.Status = status
 		operation.Phase = phase
 		operation.Message = message
+		if status == "error" && len(failureProgress) > 0 && failureProgress[0].valid {
+			operation.Progress = failureProgress[0].progress
+			operation.Processed = failureProgress[0].processed
+			operation.Total = failureProgress[0].total
+		}
 		failureClass := subtitleTranslationFailureClassOf(err)
 		if status == "cancelled" {
 			failureClass = subtitleTranslationFailureCancelled
@@ -413,15 +506,17 @@ func boundedSubtitleTranslationError(err error) string {
 var subtitleTranslationPhaseRank = map[string]int{
 	"preparing":   0,
 	"ocr":         1,
-	"translating": 2,
-	"validating":  3,
-	"publishing":  4,
-	"cleanup":     5,
+	"ocr_review":  2,
+	"translating": 3,
+	"validating":  4,
+	"publishing":  5,
+	"cleanup":     6,
 }
 
 var subtitleTranslationPhaseProgress = map[string][2]float64{
 	"preparing":   {1, 10},
 	"ocr":         {10, 40},
+	"ocr_review":  {40, 40},
 	"translating": {40, 80},
 	"validating":  {85, 85},
 	"publishing":  {90, 90},

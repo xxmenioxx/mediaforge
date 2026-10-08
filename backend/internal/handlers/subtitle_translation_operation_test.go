@@ -149,7 +149,7 @@ func TestSubtitleTranslationOperationFailureCleanupAndRetry(t *testing.T) {
 	failed := waitForSubtitleTranslationOperation(t, operationID, "error")
 	defer deleteSubtitleTranslationOperation(operationID)
 	workspace := <-failedWorkspace
-	if failed.Phase != "error" || failed.Error == "" || len(failed.Error) > maxSubtitleTranslationOperationError+3 {
+	if failed.Phase != "preparing" || failed.Error == "" || len(failed.Error) > maxSubtitleTranslationOperationError+3 {
 		t.Fatalf("unexpected bounded translation failure: %#v", failed)
 	}
 	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
@@ -259,12 +259,16 @@ func TestSubtitleTranslationOperationFailureViewIsTypedAndSecretSafe(t *testing.
 		status       string
 		failureClass subtitleTranslationFailureClass
 		diagnostic   string
+		runningPhase string
+		wantPhase    string
 	}{
-		{name: "unavailable", err: &TranslationProviderError{Class: translationProviderErrorUnavailable, Err: errors.New("SUPER_SECRET_TOKEN_123")}, status: "error", failureClass: subtitleTranslationFailureProviderUnavailable, diagnostic: "Translation provider is unavailable."},
-		{name: "timeout", err: &TranslationProviderError{Class: translationProviderErrorTimeout, Err: errors.New("PRIVATE_PROVIDER_RESPONSE_456")}, status: "error", failureClass: subtitleTranslationFailureProviderTimeout, diagnostic: "Translation provider request timed out."},
-		{name: "configuration", err: &TranslationProviderError{Class: translationProviderErrorConfiguration, Err: errors.New("Authorization: Bearer SUPER_SECRET_TOKEN_123")}, status: "error", failureClass: subtitleTranslationFailureProviderConfiguration, diagnostic: "Translation provider configuration is invalid."},
-		{name: "malformed", err: malformedTranslationResultError("provider response PRIVATE_PROVIDER_RESPONSE_456"), status: "error", failureClass: subtitleTranslationFailureMalformedResponse, diagnostic: "Translation provider returned a malformed response."},
-		{name: "stale source", err: staleTranslationSourceError("source changed at /private/source"), status: "error", failureClass: subtitleTranslationFailureStaleSource, diagnostic: "Subtitle source changed before publication."},
+		{name: "unavailable", err: &TranslationProviderError{Class: translationProviderErrorUnavailable, Err: errors.New("SUPER_SECRET_TOKEN_123")}, status: "error", failureClass: subtitleTranslationFailureProviderUnavailable, diagnostic: "Translation provider is unavailable.", runningPhase: "translating", wantPhase: "translating"},
+		{name: "timeout", err: &TranslationProviderError{Class: translationProviderErrorTimeout, Err: errors.New("PRIVATE_PROVIDER_RESPONSE_456")}, status: "error", failureClass: subtitleTranslationFailureProviderTimeout, diagnostic: "Translation provider request timed out.", runningPhase: "translating", wantPhase: "translating"},
+		{name: "configuration", err: &TranslationProviderError{Class: translationProviderErrorConfiguration, Err: errors.New("Authorization: Bearer SUPER_SECRET_TOKEN_123")}, status: "error", failureClass: subtitleTranslationFailureProviderConfiguration, diagnostic: "Translation provider configuration is invalid.", runningPhase: "translating", wantPhase: "translating"},
+		{name: "malformed", err: malformedTranslationResultError("provider response PRIVATE_PROVIDER_RESPONSE_456"), status: "error", failureClass: subtitleTranslationFailureMalformedResponse, diagnostic: "Translation provider returned a malformed response.", runningPhase: "translating", wantPhase: "translating"},
+		{name: "stale source", err: staleTranslationSourceError("source changed at /private/source"), status: "error", failureClass: subtitleTranslationFailureStaleSource, diagnostic: "Subtitle source changed before publication.", runningPhase: "validating", wantPhase: "validating"},
+		{name: "OCR review required", err: subtitleOCRReviewRequiredError(errors.New("canonical OCR cue 12 requires review: private path /workspace/private")), status: "error", failureClass: subtitleTranslationFailureOCRReviewRequired, diagnostic: "OCR review is required before translation.", runningPhase: "ocr", wantPhase: "ocr_review"},
+		{name: "OCR failed", err: subtitleOCRFailedError(errors.New("OCR command failed at /workspace/private")), status: "error", failureClass: subtitleTranslationFailureOCRFailed, diagnostic: "Canonical OCR could not be prepared for translation.", runningPhase: "ocr", wantPhase: "ocr"},
 		{name: "cancelled", err: context.Canceled, status: "cancelled", failureClass: subtitleTranslationFailureCancelled, diagnostic: "Subtitle translation cancelled."},
 	}
 	for _, test := range tests {
@@ -272,7 +276,11 @@ func TestSubtitleTranslationOperationFailureViewIsTypedAndSecretSafe(t *testing.
 			root := t.TempDir()
 			t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
 			request := testSubtitleTranslationOperationRequest(filepath.Join(root, "movie.mkv"))
-			operationID, err := startSubtitleTranslationOperation(request, func(context.Context, string, string, subtitleTranslationOperationRequest) error {
+			var operationID string
+			operationID, err := startSubtitleTranslationOperation(request, func(_ context.Context, runningOperationID, _ string, _ subtitleTranslationOperationRequest) error {
+				if test.runningPhase != "" {
+					updateSubtitleTranslationProgress(runningOperationID, test.runningPhase, 0, 0, "Running test stage")
+				}
 				return test.err
 			})
 			if err != nil {
@@ -283,12 +291,15 @@ func TestSubtitleTranslationOperationFailureViewIsTypedAndSecretSafe(t *testing.
 			if operation.Translation == nil || operation.Translation.FailureClass != string(test.failureClass) || operation.Translation.Diagnostic != test.diagnostic || !operation.Translation.Retryable || operation.Translation.Cancellable {
 				t.Fatalf("unexpected translation view: %#v", operation.Translation)
 			}
+			if test.wantPhase != "" && operation.Phase != test.wantPhase {
+				t.Fatalf("terminal phase=%q, want %q", operation.Phase, test.wantPhase)
+			}
 			encoded, err := json.Marshal(operation)
 			if err != nil {
 				t.Fatal(err)
 			}
 			serialized := string(encoded)
-			for _, secret := range []string{"SUPER_SECRET_TOKEN_123", "PRIVATE_PROVIDER_RESPONSE_456", "Authorization: Bearer", "/private/source"} {
+			for _, secret := range []string{"SUPER_SECRET_TOKEN_123", "PRIVATE_PROVIDER_RESPONSE_456", "Authorization: Bearer", "/private/source", "/workspace/private"} {
 				if strings.Contains(serialized, secret) {
 					t.Fatalf("serialized operation leaked %q: %s", secret, serialized)
 				}

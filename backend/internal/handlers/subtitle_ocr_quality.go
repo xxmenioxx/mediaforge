@@ -541,13 +541,13 @@ func correctedCanonicalOCREvidenceForTranslation(evidence *canonicalOCREvidence)
 // remaining findings may use only the existing bounded selective OCR seam.
 func prepareCanonicalOCREvidenceForTranslation(ctx context.Context, evidence *canonicalOCREvidence, onProgress OCRProgressFunc) (*canonicalOCREvidence, error) {
 	if ctx == nil {
-		return nil, errors.New("canonical OCR translation preparation requires a context")
+		return nil, subtitleOCRFailedError(errors.New("canonical OCR translation preparation requires a context"))
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if evidence == nil || !evidence.Complete || len(evidence.Cues) == 0 {
-		return nil, errors.New("canonical OCR evidence is incomplete for translation")
+		return nil, subtitleOCRFailedError(errors.New("canonical OCR evidence is incomplete for translation"))
 	}
 
 	working := cloneCanonicalOCREvidence(evidence)
@@ -566,11 +566,11 @@ func prepareCanonicalOCREvidenceForTranslation(ctx context.Context, evidence *ca
 
 	root := canonicalOCRWorkspaceRoot()
 	if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, fmt.Errorf("cannot create selective OCR workspace: %w", err)
+		return nil, subtitleOCRFailedError(fmt.Errorf("cannot create selective OCR workspace: %w", err))
 	}
 	workspace, err := os.MkdirTemp(root, ".mvforge-translation-selective-*")
 	if err != nil {
-		return nil, fmt.Errorf("cannot create selective OCR workspace: %w", err)
+		return nil, subtitleOCRFailedError(fmt.Errorf("cannot create selective OCR workspace: %w", err))
 	}
 	defer cleanupSubtitleOperationWorkspace(workspace)
 
@@ -587,26 +587,26 @@ func prepareCanonicalOCREvidenceForTranslation(ctx context.Context, evidence *ca
 		}
 		cue, ok := byID[finding.CueID]
 		if !ok {
-			return nil, fmt.Errorf("canonical OCR cue %d cannot be safely translated", finding.CueID)
+			return nil, subtitleOCRFailedError(fmt.Errorf("canonical OCR cue %d cannot be safely translated", finding.CueID))
 		}
 		capability := selectiveOCRCueCapabilityFor(snapshot, cue)
 		if !capability.Available {
-			return nil, fmt.Errorf("canonical OCR cue %d requires review before translation: %s", finding.CueID, capability.Reason)
+			return nil, subtitleOCRReviewRequiredError(fmt.Errorf("canonical OCR cue %d requires review before translation: %s", finding.CueID, capability.Reason))
 		}
 		candidate, source, err := runSelectiveSecondaryOCR(ctx, snapshot, cue, workspace, onProgress)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
-			return nil, fmt.Errorf("canonical OCR cue %d selective correction failed: %w", finding.CueID, err)
+			return nil, subtitleOCRFailedError(fmt.Errorf("canonical OCR cue %d selective correction failed: %w", finding.CueID, err))
 		}
 		candidate = strings.TrimSpace(candidate)
 		if source != "selective-secondary-ocr" || len(candidate) > 4*1024 || strings.TrimSpace(candidate) == "" || strings.ContainsAny(candidate, "\r\n") || !subtitleOCRCandidateIsMateriallyBetter(cue.Text, candidate, snapshot.Evidence.RequestedLanguage) {
-			return nil, fmt.Errorf("canonical OCR cue %d requires review before translation: selective candidate was not safely validated", finding.CueID)
+			return nil, subtitleOCRReviewRequiredError(fmt.Errorf("canonical OCR cue %d requires review before translation: selective candidate was not safely validated", finding.CueID))
 		}
 		corrected, err := applySubtitleOCRCorrections(working.Cues, []subtitleOCRCorrection{{CueID: finding.CueID, Action: "edit", Text: candidate}})
 		if err != nil {
-			return nil, fmt.Errorf("canonical OCR cue %d selective correction failed: %w", finding.CueID, err)
+			return nil, subtitleOCRFailedError(fmt.Errorf("canonical OCR cue %d selective correction failed: %w", finding.CueID, err))
 		}
 		working.Cues = corrected
 		working.CorrectionProvenance = append(working.CorrectionProvenance, selectiveOCRCorrectionProvenance(finding.CueID, candidate))
@@ -617,7 +617,7 @@ func prepareCanonicalOCREvidenceForTranslation(ctx context.Context, evidence *ca
 	finalReport := analyzeCanonicalOCRSnapshot(snapshot)
 	for _, finding := range finalReport.Findings {
 		if finding.Status != subtitleOCRQualityStatusClean {
-			return nil, fmt.Errorf("canonical OCR cue %d requires review before translation after selective correction", finding.CueID)
+			return nil, subtitleOCRReviewRequiredError(fmt.Errorf("canonical OCR cue %d requires review before translation after selective correction", finding.CueID))
 		}
 	}
 	return working, nil

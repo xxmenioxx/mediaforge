@@ -3742,6 +3742,8 @@ function AssetRow({
   const [subtitleCompositionOperation, setSubtitleCompositionOperation] = useState<SubtitleExtractionOperation | null>(null);
   const [subtitleCompositionError, setSubtitleCompositionError] = useState('');
   const [translationSource, setTranslationSource] = useState<SubtitleTranslationSourceSelector | null>(null);
+  const [translationDialogOpen, setTranslationDialogOpen] = useState(false);
+  const [translationReviewSidecarPath, setTranslationReviewSidecarPath] = useState<string | null>(null);
   const subtitleOperationPollers = useRef<Set<string>>(new Set());
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [assignProfileOpen, setAssignProfileOpen] = useState(false);
@@ -4833,6 +4835,29 @@ async function generateExternalSubtitle(
     }
   }
 
+  function canonicalOCRReviewSidecarForTranslation(source: SubtitleTranslationSourceSelector) {
+    if (source.type !== 'embedded') return undefined;
+    const embedded = subtitleEligibility.data?.embedded.find((value) => value.streamIndex === source.embedded.streamIndex);
+    const artifactPath = embedded?.canonicalOcrArtifactPath;
+    if (!artifactPath) return undefined;
+    const sidecars = subtitleEligibility.data?.external ?? externalSubtitles.data ?? [];
+    return sidecars.find((sidecar) => sidecar.path === artifactPath && sidecar.ocrAnalysisAvailable);
+  }
+
+  function openTranslation(source: SubtitleTranslationSourceSelector) {
+    setTranslationSource(source);
+    setTranslationDialogOpen(true);
+  }
+
+  function reviewTranslationOCR() {
+    if (!translationSource) return;
+    const sidecar = canonicalOCRReviewSidecarForTranslation(translationSource);
+    if (!sidecar) return;
+    setTranslationReviewSidecarPath(sidecar.path);
+    setTranslationDialogOpen(false);
+    void analyzeExternalSubtitle(sidecar);
+  }
+
   async function restyleExternalSubtitle(sidecar: ExternalSubtitle, mode: 'restyle' | 'srt_to_ass', options: { replace?: boolean; overrideExistingASSStyles?: boolean } = {}) {
     const eligibility = sidecar.eligibility;
     const allowed = mode === 'restyle' ? eligibility?.restyle : eligibility?.srtToAss;
@@ -4976,6 +5001,10 @@ async function generateExternalSubtitle(
       });
       setSubtitleQualityMessages((current) => ({ ...current, [key]: 'Correction published. Re-analyze to review the new baseline.' }));
       await refreshSubtitleEvidence();
+      if (translationReviewSidecarPath && selection.sidecarPaths.includes(translationReviewSidecarPath)) {
+        setTranslationReviewSidecarPath(null);
+        setTranslationDialogOpen(true);
+      }
     } catch (error) {
       setSubtitleQualityMessages((current) => ({ ...current, [key]: error instanceof Error ? error.message : 'OCR correction failed.' }));
     }
@@ -5993,7 +6022,7 @@ async function generateExternalSubtitle(
                       onCancel={cancelExternalSubtitle}
                       disabled={hasOpenJob || !assetInfoCapability(asset, 'manageSubtitles').allowed}
                       translationDisabled={rowLocked || !assetInfoCapability(asset, 'manageSubtitles').allowed}
-                      onTranslate={(streamIndex) => setTranslationSource({ type: 'embedded', embedded: { streamIndex } })}
+                      onTranslate={(streamIndex) => openTranslation({ type: 'embedded', embedded: { streamIndex } })}
                     />
                     <Typography variant="h4">Sidecars</Typography>
                     <>
@@ -6005,7 +6034,7 @@ async function generateExternalSubtitle(
                         renaming={renameExternalSubtitle.isPending}
                         disabled={hasOpenJob || !assetInfoCapability(asset, 'manageSubtitles').allowed}
                         translationDisabled={rowLocked || !assetInfoCapability(asset, 'manageSubtitles').allowed}
-                        onTranslate={(subtitle) => setTranslationSource({ type: 'external', external: { subtitlePath: subtitle.path } })}
+                        onTranslate={(subtitle) => openTranslation({ type: 'external', external: { subtitlePath: subtitle.path } })}
                         onAnalyze={analyzeExternalSubtitle}
                         qualityReports={subtitleQualityReports}
                         qualityMessages={subtitleQualityMessages}
@@ -6466,10 +6495,12 @@ async function generateExternalSubtitle(
       </Dialog>
       {translationSource ? (
         <SubtitleTranslationDialog
-          open
+          key={`${asset.path}:${translationSource.type === 'embedded' ? `embedded:${translationSource.embedded.streamIndex}` : `external:${translationSource.external.subtitlePath}`}`}
+          open={translationDialogOpen}
           path={asset.path}
           source={translationSource}
-          onClose={() => setTranslationSource(null)}
+          onClose={() => setTranslationDialogOpen(false)}
+          onReviewOCR={canonicalOCRReviewSidecarForTranslation(translationSource) ? reviewTranslationOCR : undefined}
         />
       ) : null}
     </>
@@ -6746,6 +6777,7 @@ type SubtitleGenerationState = {
     | 'analyzing'
     | 'extracting'
     | 'ocr'
+    | 'ocr_review'
     | 'reconciliation'
     | 'cleanup'
     | 'publishing'

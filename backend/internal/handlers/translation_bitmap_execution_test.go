@@ -224,7 +224,7 @@ func TestExecuteBitmapTranslationFailsClosedBeforeProviderForReviewCue(t *testin
 		MediaPath: mediaPath, Stream: stream, RequestedLanguage: "eng", OCRMode: "accurate",
 		TargetLocale: "es-419", Provider: provider, Settings: bitmapTranslationExecutionTestSettings(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "requires review") || provider.calls != 0 || result.Outputs != nil {
+	if err == nil || !strings.Contains(err.Error(), "requires review") || subtitleTranslationFailureClassOf(err) != subtitleTranslationFailureOCRReviewRequired || provider.calls != 0 || result.Outputs != nil {
 		t.Fatalf("review cue was not gated before provider: result=%#v calls=%d err=%v", result, provider.calls, err)
 	}
 }
@@ -256,14 +256,18 @@ func TestExecuteBitmapTranslationRunsAcceptedSelectiveOCRBeforeProvider(t *testi
 }
 
 func TestExecuteBitmapTranslationRejectsUnacceptableSelectiveCandidate(t *testing.T) {
-	mediaPath, stream, _, _ := setupSelectiveBitmapTranslationFixture(t, "The h�use", "The h�use")
+	mediaPath, stream, _, logPath := setupSelectiveBitmapTranslationFixture(t, "The h�use", "The h�use")
 	provider := &bitmapTranslationProviderSpy{}
 	result, err := executeBitmapTranslation(context.Background(), bitmapTranslationExecutionRequest{
 		MediaPath: mediaPath, Stream: stream, RequestedLanguage: "eng", OCRMode: "accurate",
 		TargetLocale: "es-419", Provider: provider, Settings: bitmapTranslationExecutionTestSettings(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "requires review") || provider.calls != 0 || result.Outputs != nil {
+	if err == nil || !strings.Contains(err.Error(), "requires review") || subtitleTranslationFailureClassOf(err) != subtitleTranslationFailureOCRReviewRequired || provider.calls != 0 || result.Outputs != nil {
 		t.Fatalf("unacceptable selective candidate was accepted: result=%#v calls=%d err=%v", result, provider.calls, err)
+	}
+	log, readErr := os.ReadFile(logPath)
+	if readErr != nil || strings.Count(string(log), "selective") != 3 {
+		t.Fatalf("selective OCR did not succeed before candidate safety rejection: log=%q err=%v", log, readErr)
 	}
 }
 
@@ -282,8 +286,107 @@ func TestExecuteBitmapTranslationRejectsSelectiveCandidateBelowCanonicalThreshol
 		MediaPath: mediaPath, Stream: stream, RequestedLanguage: "eng", OCRMode: "accurate",
 		TargetLocale: "es-419", Provider: provider, Settings: bitmapTranslationExecutionTestSettings(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "requires review") || provider.calls != 0 || result.Outputs != nil {
+	if err == nil || !strings.Contains(err.Error(), "requires review") || subtitleTranslationFailureClassOf(err) != subtitleTranslationFailureOCRReviewRequired || provider.calls != 0 || result.Outputs != nil {
 		t.Fatalf("below-threshold selective candidate was accepted: result=%#v calls=%d err=%v", result, provider.calls, err)
+	}
+}
+
+func TestBitmapTranslationRetryUsesCorrectedPublishedCanonicalOCREvidence(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "movie.mkv")
+	if err := os.WriteFile(mediaPath, []byte("PGS source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := installCanonicalOCRTestTools(t, `#!/bin/sh
+output=""
+for argument do
+  case "$argument" in
+    --output-filename:*) output="${argument#--output-filename:}" ;;
+  esac
+done
+printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'bad{' > "$output"
+`)
+	writeExecutable(t, filepath.Join(bin, "ffmpeg"), `#!/bin/sh
+output=""
+for argument do output="$argument"; done
+case "$output" in *.sup) : > "$output" ;; esac
+`)
+	lifecycleRoot := filepath.Join(root, "ocr-cache")
+	persistentRoot := filepath.Join(root, "ocr-state")
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", lifecycleRoot)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", persistentRoot)
+	stream := FFProbeStream{Index: 4, ID: "pgs-4", CodecName: "hdmv_pgs_subtitle", Tags: map[string]string{"language": "eng"}}
+	generatedPath := filepath.Join(root, "generated.eng.srt")
+	generated, err := generateBitmapSubtitleAtPathWithResult(context.Background(), mediaPath, stream, "srt", "eng", "accurate", generatedPath, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("baseline OCR could not generate SRT: %v", err)
+	}
+	baseline, err := os.ReadFile(generatedPath)
+	if err != nil || !validSubtitleSidecar("srt", baseline) || len(generated.Evidence.Cues) != 1 || generated.Evidence.Cues[0].Text != "bad{" {
+		t.Fatalf("baseline OCR did not produce a valid reviewable SRT: text=%q err=%v", baseline, err)
+	}
+
+	logicalTransform := "subtitle:4:converted:srt"
+	sidecarPath := filepath.Join(root, "movie.eng.srt")
+	if err := os.WriteFile(sidecarPath, baseline, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), sidecarPath, "srt", logicalTransform, generated.Evidence, "baseline-test", ""); err != nil {
+		t.Fatal(err)
+	}
+	provider := &bitmapTranslationProviderSpy{}
+	runner := func(ctx context.Context, operationID, _ string, _ subtitleTranslationOperationRequest) error {
+		updateSubtitleTranslationProgress(operationID, "ocr", 0, 0, "Preparing canonical OCR subtitles")
+		_, executionErr := executeBitmapTranslation(ctx, bitmapTranslationExecutionRequest{
+			MediaPath: mediaPath, Stream: stream, RequestedLanguage: "eng", OCRLanguage: "eng", OCRMode: "accurate",
+			TargetLocale: "es-419", RequestedRepresentation: "srt", Provider: provider, Settings: bitmapTranslationExecutionTestSettings(),
+			OnProgress: func(processed, total int) {
+				updateSubtitleTranslationProgress(operationID, "ocr", processed, total, "Preparing canonical OCR subtitles")
+			},
+			OnBatch: func(processed, total int) {
+				updateSubtitleTranslationProgress(operationID, "translating", processed, total, "Translating subtitle batches")
+			},
+		})
+		return executionErr
+	}
+	request := testSubtitleTranslationOperationRequest(mediaPath)
+	operationID, err := startSubtitleTranslationOperation(request, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteSubtitleTranslationOperation(operationID)
+	failed := waitForSubtitleTranslationOperation(t, operationID, "error")
+	if failed.Phase != "ocr_review" || failed.Progress != 40 || failed.Translation == nil || failed.Translation.FailureClass != string(subtitleTranslationFailureOCRReviewRequired) || failed.Translation.Diagnostic != "OCR review is required before translation." || provider.calls != 0 {
+		t.Fatalf("baseline review requirement was not surfaced before provider execution: operation=%#v calls=%d", failed, provider.calls)
+	}
+
+	oldRevision, _, err := publishedSubtitleRevisionFor(sidecarPath, logicalTransform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	correctedEvidence := cloneCanonicalOCREvidence(generated.Evidence)
+	correctedEvidence.Cues[0].Text = "The house"
+	correctedEvidence.CorrectionProvenance = append(correctedEvidence.CorrectionProvenance, canonicalOCRCorrectionProvenance{
+		CueID: 1, Action: "edit", CandidateSource: "manual-review", Validation: "canonical OCR correction", SelectedBy: "reviewer",
+	})
+	stagedCorrection := filepath.Join(t.TempDir(), "reviewed.eng.srt")
+	writeTestSRT(t, stagedCorrection, correctedEvidence.Cues[0].Text)
+	correctedSnapshot := &publishedCanonicalOCRSnapshot{Format: "srt", LogicalTransformKey: logicalTransform, Evidence: *correctedEvidence}
+	if err := publishCorrectedSubtitleFiles(context.Background(), "review-correction", []string{sidecarPath}, []string{"srt"}, []string{stagedCorrection}, []*publishedCanonicalOCRSnapshot{correctedSnapshot}, []publishedSubtitleRevision{oldRevision}); err != nil {
+		t.Fatalf("canonical OCR review correction was not published: %v", err)
+	}
+
+	retryID, err := retrySubtitleTranslationOperation(operationID, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteSubtitleTranslationOperation(retryID)
+	if retryID == operationID {
+		t.Fatal("retry reused the failed translation operation identity")
+	}
+	completed := waitForSubtitleTranslationOperation(t, retryID, "completed")
+	if completed.Phase != "completed" || provider.calls != 1 || len(provider.batches) != 1 || len(provider.batches[0].Cues) != 1 || provider.batches[0].Cues[0].Text != "The house" {
+		t.Fatalf("retry did not translate the corrected canonical OCR evidence: operation=%#v batches=%#v calls=%d", completed, provider.batches, provider.calls)
 	}
 }
 
@@ -404,7 +507,7 @@ func TestExecuteBitmapTranslationOCRFailureAndZeroRecognitionDoNotCallProvider(t
 				MediaPath: mediaPath, Stream: FFProbeStream{Index: 4, ID: "pgs-4", CodecName: "hdmv_pgs_subtitle"}, RequestedLanguage: "eng", OCRMode: "raw",
 				TargetLocale: "es-419", Provider: provider, Settings: bitmapTranslationExecutionTestSettings(),
 			})
-			if err == nil || provider.calls != 0 || result.Outputs != nil {
+			if err == nil || subtitleTranslationFailureClassOf(err) != subtitleTranslationFailureOCRFailed || provider.calls != 0 || result.Outputs != nil {
 				t.Fatalf("OCR failure reached provider or produced output: result=%#v calls=%d err=%v", result, provider.calls, err)
 			}
 		})
