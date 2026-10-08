@@ -47,10 +47,13 @@ resolver fuente exacta
   → exponer el resultado
 ```
 
-Las fases visibles pueden ser `preparing`, `ocr`, `translating`, `validating`,
-`publishing` y `cleanup`. La cancelación usa el `context.Context` de la
-operación existente. Un retry crea una identidad de operación nueva; no
-reactiva el registro terminal anterior.
+Las fases visibles pueden ser `preparing`, `ocr`, `ocr_review`, `translating`,
+`validating`, `publishing` y `cleanup`. Un cue que no supera la validación OCR
+segura termina como `ocr_review_required` en `ocr_review`; una falla de
+ejecución OCR termina como `ocr_failed` en `ocr`. La API expone diagnósticos
+fijos y acotados, sin detalles internos del OCR. La cancelación usa el
+`context.Context` de la operación existente. Un retry crea una identidad de
+operación nueva; no reactiva el registro terminal anterior.
 
 ## Ruta de texto SRT
 
@@ -161,6 +164,10 @@ no repite OCR por serializer. `bitmapTranslationSourceFor`,
 `correctedCanonicalOCREvidenceForTranslation` y
 `prepareCanonicalOCREvidenceForTranslation` pertenecen a la frontera
 canónica de OCR. La traducción consume la vista final corregida de los cues.
+Si existe una publicación canónica válida para el mismo archivo y stream
+embebido, la traducción reutiliza esa evidencia. Las correcciones publicadas
+por la revisión OCR existente (#39) quedan así disponibles para el siguiente
+retry sin debilitar los umbrales de validación.
 
 El fallback de orientación `jpn`/`jpn_vert` termina antes del trabajo del
 provider. Ollama recibe el idioma y texto canónicos resultantes; no selecciona
@@ -418,7 +425,8 @@ cancelación o fallo. No forma parte de ese ownership incidental:
 | --- | --- |
 | Resolución de fuente | La operación no inicia o no continúa. |
 | Auto ambiguo | El provider no se llama. |
-| OCR o corrección | El provider no se llama. |
+| OCR no ejecutable | `ocr_failed`; el provider no se llama. |
+| Cue OCR requiere revisión | `ocr_review_required`; el provider no se llama hasta corregir la evidencia mediante #39. |
 | Provider no disponible o timeout | No hay publicación. |
 | Respuesta de cues malformada | No hay publicación. |
 | Mutación de estructura ASS/SSA | No hay publicación. |

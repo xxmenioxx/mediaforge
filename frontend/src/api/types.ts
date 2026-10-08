@@ -544,6 +544,10 @@ export type SubtitleSourceEligibility = {
   streamIndex?: number;
   policyVersion: string;
   compositionClass?: 'dialogue' | 'sign' | 'lyrics' | 'commentary' | 'unknown' | string;
+  canonicalOcrArtifactIdentity?: string;
+  canonicalOcrArtifactRevision?: string;
+  canonicalOcrArtifactPath?: string;
+  canonicalOcrLogicalTransform?: string;
 };
 
 export type SubtitleCompositionCandidate = {
@@ -3021,6 +3025,7 @@ export type SubtitleExtractionOperation = {
     | 'analyzing'
     | 'extracting'
     | 'ocr'
+    | 'ocr_review'
     | 'reconciliation'
     | 'cleanup'
     | 'publishing'

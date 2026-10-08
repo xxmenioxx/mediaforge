@@ -1,5 +1,6 @@
 import {
   Alert,
+  AlertTitle,
   Button,
   Chip,
   Dialog,
@@ -38,7 +39,14 @@ function providerLabel(provider?: string) {
 }
 
 function operationPhaseLabel(phase: SubtitleExtractionOperation['phase']) {
-  return phase.charAt(0).toUpperCase() + phase.slice(1);
+  const labels: Partial<Record<SubtitleExtractionOperation['phase'], string>> = {
+    ocr: 'OCR',
+    ocr_review: 'OCR review',
+    translating: 'Translating',
+    validating: 'Validating',
+    publishing: 'Publishing',
+  };
+  return labels[phase] ?? phase.charAt(0).toUpperCase() + phase.slice(1);
 }
 
 function apiErrorMessage(error: unknown, fallback: string) {
@@ -53,6 +61,7 @@ function TranslationOperationStatus({
   retryError,
   onCancel,
   onRetry,
+  onReviewOCR,
 }: {
   operation: SubtitleExtractionOperation;
   operationError?: unknown;
@@ -61,6 +70,7 @@ function TranslationOperationStatus({
   retryError?: unknown;
   onCancel: () => void;
   onRetry: () => void;
+  onReviewOCR?: () => void;
 }) {
   const running = operation.status === 'running';
   const cancelled = operation.status === 'cancelled';
@@ -73,6 +83,7 @@ function TranslationOperationStatus({
   const translatedArtifacts = (operation.result?.artifacts ?? []).filter(
     (artifact) => artifact.mode === 'translation',
   );
+  const ocrReviewRequired = operation.translation?.failureClass === 'ocr_review_required';
 
   return (
     <Stack spacing={1.5}>
@@ -99,10 +110,20 @@ function TranslationOperationStatus({
       {completed ? <Alert severity="success">Translation completed.</Alert> : null}
       {cancelled ? <Alert severity="info">Translation cancelled.</Alert> : null}
       {operation.status === 'error' ? (
-        <Alert severity="warning">
-          {operation.translation?.failureClass ? `${operation.translation.failureClass}: ` : ''}
-          {diagnostic}
-        </Alert>
+        ocrReviewRequired ? (
+          <Alert severity="warning">
+            <AlertTitle>Translation paused</AlertTitle>
+            {diagnostic}
+          </Alert>
+        ) : (
+          <Alert severity="warning">
+            {operation.translation?.failureClass ? `${operation.translation.failureClass}: ` : ''}
+            {diagnostic}
+          </Alert>
+        )
+      ) : null}
+      {operation.status === 'error' && ['ocr', 'ocr_review', 'translating', 'validating', 'publishing'].includes(operation.phase) ? (
+        <Typography variant="caption" color="text.secondary">Stage: {operationPhaseLabel(operation.phase)}</Typography>
       ) : null}
       {translatedArtifacts.length > 0 ? (
         <Stack spacing={0.75}>
@@ -121,6 +142,9 @@ function TranslationOperationStatus({
           {retryPending ? 'Retrying…' : 'Retry translation'}
         </Button>
       ) : null}
+      {ocrReviewRequired && onReviewOCR ? (
+        <Button variant="outlined" onClick={onReviewOCR}>Review OCR</Button>
+      ) : null}
       {running && operation.translation?.cancellable ? (
         <Button color="warning" variant="outlined" onClick={onCancel} disabled={cancelPending}>
           {cancelPending ? 'Cancelling…' : 'Cancel translation'}
@@ -136,11 +160,13 @@ export function SubtitleTranslationDialog({
   path,
   source,
   onClose,
+  onReviewOCR,
 }: {
   open: boolean;
   path: string;
   source: SubtitleTranslationSourceSelector;
   onClose: () => void;
+  onReviewOCR?: () => void;
 }) {
   const queryClient = useQueryClient();
   const [sourceLanguage, setSourceLanguage] = useState('');
@@ -314,6 +340,7 @@ export function SubtitleTranslationDialog({
               retryError={retry.error}
               onCancel={() => cancel.mutate(currentOperation.id)}
               onRetry={() => retry.mutate(currentOperation.id)}
+              onReviewOCR={onReviewOCR}
             />
           ) : null}
         </Stack>

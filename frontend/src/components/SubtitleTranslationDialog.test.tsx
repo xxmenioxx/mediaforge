@@ -79,7 +79,7 @@ function operation(overrides: Partial<SubtitleExtractionOperation> = {}): Subtit
 
 function renderDialog(selectedSource = source, queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  })) {
+  }), onReviewOCR?: () => void) {
   render(
     <QueryClientProvider client={queryClient}>
       <SubtitleTranslationDialog
@@ -87,6 +87,7 @@ function renderDialog(selectedSource = source, queryClient = new QueryClient({
         path="/media/episode.mkv"
         source={selectedSource}
         onClose={() => undefined}
+        onReviewOCR={onReviewOCR}
       />
     </QueryClientProvider>,
   );
@@ -510,6 +511,28 @@ describe('SubtitleTranslationDialog', () => {
     expect(vi.mocked(api.startSubtitleTranslation).mock.calls[0]?.[0]).toEqual(expect.objectContaining({ sourceLanguage: 'auto' }));
     expect(await screen.findByText(`translation_failed: ${diagnostic}`)).toBeTruthy();
     expect(screen.queryByText(/SUPER_SECRET_TOKEN_123|PRIVATE_PROVIDER_RESPONSE_456|private-nas:11434/)).toBeNull();
+  });
+
+  it('surfaces OCR review as a paused translation with an action to the OCR review flow', async () => {
+    const user = userEvent.setup();
+    const onReviewOCR = vi.fn();
+    const failed = operation({
+      status: 'error',
+      phase: 'ocr_review',
+      error: 'private path /workspace/private',
+      translation: { failureClass: 'ocr_review_required', diagnostic: 'OCR review is required before translation.', retryable: true, cancellable: false },
+    });
+    vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: failed });
+    vi.mocked(api.subtitleOperation).mockResolvedValue(failed);
+    renderDialog(source, undefined, onReviewOCR);
+
+    await user.click(await screen.findByRole('button', { name: 'Start translation' }));
+    expect(await screen.findByText('Translation paused')).toBeTruthy();
+    expect(screen.getByText('OCR review is required before translation.')).toBeTruthy();
+    expect(screen.getByText('Stage: OCR review')).toBeTruthy();
+    expect(screen.queryByText(/private path|workspace\/private/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Review OCR' }));
+    expect(onReviewOCR).toHaveBeenCalledTimes(1);
   });
 
   it('renders locale-distinct translation artifacts and filters non-translation artifacts', async () => {
