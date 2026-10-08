@@ -683,7 +683,7 @@ export function SettingsPage() {
                 saveError={updateSetting.isError && updateSetting.variables?.key === 'jellyfin'
                   ? updateSetting.error instanceof Error ? updateSetting.error.message : 'Please try again.'
                   : undefined}
-                onSave={(value) => updateSetting.mutate({ key: 'jellyfin', value })}
+                onSave={(value) => updateSetting.mutateAsync({ key: 'jellyfin', value })}
               />
             ) : null}
 
@@ -1114,20 +1114,22 @@ export function SettingsPage() {
               </Grid>
             ) : null}
 
-            <Button
-              startIcon={<SaveIcon />}
-              variant="contained"
-              onClick={() => saveSettings()}
-              disabled={
-                updateSetting.isPending ||
-                updateSettingsBatch.isPending ||
-                saveCoreSettings.isPending ||
-                Boolean(workerProgressPercentError(form.workers.startNextJobAtProgressPercent))
-              }
-              sx={{ alignSelf: 'flex-start' }}
-            >
-              Save Settings
-            </Button>
+            {section !== 'providers-integrations' ? (
+              <Button
+                startIcon={<SaveIcon />}
+                variant="contained"
+                onClick={() => saveSettings()}
+                disabled={
+                  updateSetting.isPending ||
+                  updateSettingsBatch.isPending ||
+                  saveCoreSettings.isPending ||
+                  Boolean(workerProgressPercentError(form.workers.startNextJobAtProgressPercent))
+                }
+                sx={{ alignSelf: 'flex-start' }}
+              >
+                Save Settings
+              </Button>
+            ) : null}
           </Stack>
         ) : (
           <AdvancedSettings form={form} setForm={setForm} onSave={saveAdvancedSettings} isSaving={updateSetting.isPending || updateSettingsBatch.isPending || saveCoreSettings.isPending} />
@@ -1229,7 +1231,6 @@ function ProvidersIntegrationsSettingsDomain({ value, libraries, saving, saveErr
     <Grid container spacing={2}>
       <Grid size={{ xs: 12 }}>
         <JellyfinSettingsCard
-          key={JSON.stringify(value)}
           value={value}
           libraries={libraries}
           saving={saving}
