@@ -16,7 +16,7 @@ import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import SaveIcon from '@mui/icons-material/Save';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { JellyfinIntegrationOutcome, JellyfinIntegrationState, JellyfinLibrary, Library } from '../api/types';
 
@@ -36,7 +36,7 @@ type Props = {
   libraries: Library[];
   saving: boolean;
   saveError?: string;
-  onSave: (value: Record<string, unknown>) => void;
+  onSave: (value: Record<string, unknown>) => void | Promise<unknown>;
 };
 
 function jellyfinDraft(value?: Record<string, unknown>): Draft {
@@ -70,6 +70,37 @@ function persistedJellyfinLibraries(value: unknown): JellyfinLibrary[] {
   });
 }
 
+function draftConfigurationSignature(draft: Draft) {
+  const mappings = draft.mappings
+    .map(({ mvforgeLibraryId, jellyfinLibraryId }) => ({ mvforgeLibraryId, jellyfinLibraryId }))
+    .sort((left, right) => left.mvforgeLibraryId - right.mvforgeLibraryId || left.jellyfinLibraryId.localeCompare(right.jellyfinLibraryId));
+  return JSON.stringify({
+    enabled: draft.enabled,
+    baseUrl: draft.baseUrl,
+    credentialConfigured: draft.credentialConfigured,
+    refreshAfterPublish: draft.refreshAfterPublish,
+    refreshTestEncode: draft.refreshTestEncode,
+    debounceSeconds: draft.debounceSeconds,
+    mappings,
+  });
+}
+
+function persistedConfigurationSignature(value?: Record<string, unknown>) {
+  const revision = value?.connectionConfigRevision;
+  return JSON.stringify({
+    configuration: draftConfigurationSignature(jellyfinDraft(value)),
+    connectionConfigRevision: typeof revision === 'number' || typeof revision === 'string' ? revision : null,
+  });
+}
+
+function savedJellyfinValue(result: unknown): Record<string, unknown> | undefined {
+  if (typeof result !== 'object' || result === null || !('value' in result)) return undefined;
+  const value = (result as { value?: unknown }).value;
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
 function statusLabel(outcome: JellyfinIntegrationOutcome) {
   if (outcome.status === 'success') return outcome.effectiveScope === 'server_wide' ? 'Server scan requested' : 'Refresh accepted';
   if (outcome.status === 'retryable_failure' || outcome.status === 'permanent_configuration_error') return 'Failed';
@@ -80,10 +111,12 @@ function statusLabel(outcome: JellyfinIntegrationOutcome) {
 
 export function JellyfinSettingsCard({ value, libraries, saving, saveError, onSave }: Props) {
   const queryClient = useQueryClient();
-  const [persistedBaseline] = useState(() => jellyfinDraft(value));
+  const [persistedBaseline, setPersistedBaseline] = useState(() => jellyfinDraft(value));
+  const [baselineSignature, setBaselineSignature] = useState(() => persistedConfigurationSignature(value));
   const [draft, setDraft] = useState<Draft>(() => jellyfinDraft(value));
   const [credentialDraft, setCredentialDraft] = useState('');
   const [clearCredential, setClearCredential] = useState(false);
+  const [persistedConflict, setPersistedConflict] = useState<Record<string, unknown> | null>(null);
   const [selectedMVForgeLibrary, setSelectedMVForgeLibrary] = useState<number | ''>('');
   const [selectedJellyfinLibrary, setSelectedJellyfinLibrary] = useState('');
   const [manualLibraryId, setManualLibraryId] = useState<number | ''>('');
@@ -110,29 +143,71 @@ export function JellyfinSettingsCard({ value, libraries, saving, saveError, onSa
   const liveReachability = integrationState.data?.liveReachability ?? 'unknown';
   const configurationValid = integrationState.data?.configurationValid ?? (value?.configurationValid === true || (Boolean(persistedBaseline.baseUrl.trim()) && persistedBaseline.credentialConfigured));
   const canAddMapping = librariesLoaded && !configurationNeedsRevalidation && selectedMVForgeLibrary !== '' && selectedJellyfinLibrary !== '' && !draft.mappings.some((mapping) => mapping.jellyfinLibraryId === selectedJellyfinLibrary && mapping.mvforgeLibraryId !== selectedMVForgeLibrary);
-  const mappingIdentity = (mappings: Mapping[]) => mappings
-    .map(({ mvforgeLibraryId, jellyfinLibraryId, jellyfinServerId, needsRemap }) => `${mvforgeLibraryId}:${jellyfinLibraryId}:${jellyfinServerId ?? ''}:${needsRemap === true}`)
-    .sort()
-    .join('|');
-  const settingsDirty = draft.enabled !== persistedBaseline.enabled
-    || draft.baseUrl !== persistedBaseline.baseUrl
-    || draft.refreshAfterPublish !== persistedBaseline.refreshAfterPublish
-    || draft.refreshTestEncode !== persistedBaseline.refreshTestEncode
-    || draft.debounceSeconds !== persistedBaseline.debounceSeconds
-    || mappingIdentity(draft.mappings) !== mappingIdentity(persistedBaseline.mappings)
+  const settingsDirty = draftConfigurationSignature(draft) !== draftConfigurationSignature(persistedBaseline)
     || credentialDraft.length > 0
     || clearCredential;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const nextSignature = persistedConfigurationSignature(value);
+      if (nextSignature === baselineSignature) {
+        if (persistedConflict) setPersistedConflict(null);
+        return;
+      }
+      if (saving) return;
+
+      if (settingsDirty) {
+        setPersistedConflict(value ?? {});
+        return;
+      }
+
+      const nextBaseline = jellyfinDraft(value);
+      setPersistedBaseline(nextBaseline);
+      setDraft(nextBaseline);
+      setBaselineSignature(nextSignature);
+      setCredentialDraft('');
+      setClearCredential(false);
+      setPersistedConflict(null);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [baselineSignature, persistedConflict, saving, settingsDirty, value]);
   const canTestConnection = Boolean(persistedBaseline.baseUrl.trim())
     && persistedBaseline.credentialConfigured
     && !settingsDirty
     && !connection.isPending;
 
-  const save = () => onSave({
-    ...draft,
-    mappings: draft.mappings.map(({ mvforgeLibraryId, jellyfinLibraryId, jellyfinName, remap }) => ({ mvforgeLibraryId, jellyfinLibraryId, jellyfinName, ...(remap ? { remap: true } : {}) })),
-    ...(credentialDraft ? { apiToken: credentialDraft } : {}),
-    ...(clearCredential ? { clearCredential: true } : {}),
-  });
+  const rebasePersistedValue = (persistedValue: Record<string, unknown>) => {
+    const nextBaseline = jellyfinDraft(persistedValue);
+    setPersistedBaseline(nextBaseline);
+    setDraft(nextBaseline);
+    setBaselineSignature(persistedConfigurationSignature(persistedValue));
+    setCredentialDraft('');
+    setClearCredential(false);
+    setPersistedConflict(null);
+  };
+
+  const save = async () => {
+    const submittedValue = {
+      ...draft,
+      mappings: draft.mappings.map(({ mvforgeLibraryId, jellyfinLibraryId, jellyfinName, remap }) => ({ mvforgeLibraryId, jellyfinLibraryId, jellyfinName, ...(remap ? { remap: true } : {}) })),
+      ...(credentialDraft ? { apiToken: credentialDraft } : {}),
+      ...(clearCredential ? { clearCredential: true } : {}),
+    };
+    try {
+      const result = await onSave(submittedValue);
+      const savedValue = savedJellyfinValue(result) ?? {
+        ...submittedValue,
+        credentialConfigured: clearCredential ? false : credentialDraft ? true : persistedBaseline.credentialConfigured,
+      };
+      rebasePersistedValue(savedValue);
+    } catch {
+      // SettingsPage exposes the mutation error and keeps this draft editable.
+    }
+  };
+
+  const reloadPersistedSettings = () => {
+    if (persistedConflict) rebasePersistedValue(persistedConflict);
+  };
 
   const addMapping = () => {
     if (selectedMVForgeLibrary === '' || !selectedJellyfinLibrary) return;
@@ -198,6 +273,14 @@ export function JellyfinSettingsCard({ value, libraries, saving, saveError, onSa
             </Button>
           </Stack>
           {saveError ? <Alert severity="error">Jellyfin settings could not be saved: {saveError}. The mapping is still an unsaved draft.</Alert> : null}
+          {persistedConflict ? (
+            <Alert
+              severity="warning"
+              action={<Button color="inherit" size="small" onClick={reloadPersistedSettings}>Reload persisted settings</Button>}
+            >
+              Jellyfin settings changed elsewhere. Your draft is preserved. Reload the persisted settings to replace it.
+            </Alert>
+          ) : null}
           {settingsDirty ? <Alert severity="info">Save Jellyfin settings before testing the connection or requesting a manual refresh.</Alert> : null}
           {connection.data ? (
             <Alert severity={connection.data.authenticated ? 'success' : 'warning'}>

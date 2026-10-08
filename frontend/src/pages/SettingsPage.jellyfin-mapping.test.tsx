@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -41,6 +41,8 @@ let settingsReads: number;
 let stateReads: number;
 let settingsPosts: Array<{ path: string; value: Record<string, unknown> }>;
 let rejectJellyfinSave: boolean;
+let liveReachability: string;
+let discoveredStateLibraries: typeof jellyfinLibraries;
 
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -83,6 +85,8 @@ beforeEach(() => {
   stateReads = 0;
   settingsPosts = [];
   rejectJellyfinSave = false;
+  liveReachability = 'reachable';
+  discoveredStateLibraries = jellyfinLibraries;
 
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost');
@@ -103,10 +107,10 @@ beforeEach(() => {
         configurationNeedsRevalidation: false,
         lastConnectionSuccessful: true,
         lastSuccessfulConnectionAt: '2026-10-05T12:00:00Z',
-        liveReachability: 'reachable',
+        liveReachability,
         serverId: 'mapping-server',
         librariesLoaded: true,
-        libraries: jellyfinLibraries,
+        libraries: discoveredStateLibraries,
         mappings,
       });
     }
@@ -145,6 +149,40 @@ afterEach(() => {
 });
 
 describe('SettingsPage Jellyfin mapping persistence', () => {
+  it('keeps a dirty mapping draft through an unrelated settings refetch', async () => {
+    const user = userEvent.setup();
+    const queryClient = makeQueryClient();
+    renderSettings(queryClient);
+
+    expect(await screen.findByText(/no mappings configured/i)).toBeTruthy();
+    await addAnimeMapping(user);
+    expect(savedMappingIsDisplayed()).toBeTruthy();
+
+    persistedJellyfinValue = {
+      ...persistedJellyfinValue,
+      lastConnectionSuccessful: false,
+      lastSuccessfulConnectionAt: '2026-10-06T12:00:00Z',
+      libraries: [{ ...jellyfinLibraries[0], name: 'Anime discovered again' }],
+    };
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+    });
+
+    expect(settingsReads).toBeGreaterThan(1);
+    expect(savedMappingIsDisplayed()).toBeTruthy();
+    expect(await screen.findByText(/save jellyfin settings before testing the connection or requesting a manual refresh/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^save settings$/i })).toBeNull();
+    expect(settingsPosts).toHaveLength(0);
+  });
+
+  it('does not expose the global core save action in Providers & Integrations', async () => {
+    renderSettings();
+
+    expect(await screen.findByText(/no mappings configured/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^save settings$/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /^save jellyfin settings$/i })).toBeTruthy();
+  });
+
   it('saves through the real SettingsPage mutation and restores the mapping after refetch, navigation, and reload', async () => {
     const user = userEvent.setup();
     const view = renderSettings();
@@ -190,5 +228,52 @@ describe('SettingsPage Jellyfin mapping persistence', () => {
     expect(await screen.findByText(/jellyfin settings could not be saved: database unavailable\. the mapping is still an unsaved draft/i)).toBeTruthy();
     expect(savedMappingIsDisplayed()).toBeTruthy();
     expect(persistedJellyfinValue.mappings).toEqual([]);
+  });
+
+  it('refreshes live Jellyfin state without replacing a mapping draft', async () => {
+    const user = userEvent.setup();
+    const queryClient = makeQueryClient();
+    renderSettings(queryClient);
+
+    expect(await screen.findByText(/live reachability: reachable/i)).toBeTruthy();
+    await addAnimeMapping(user);
+
+    liveReachability = 'unavailable';
+    discoveredStateLibraries = [{ ...jellyfinLibraries[0], name: 'Anime collection refreshed' }];
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['jellyfinIntegrationState'] });
+    });
+
+    expect(await screen.findByText(/live reachability: unavailable/i)).toBeTruthy();
+    expect(screen.getByText(/anime \(id 4\) → anime collection refreshed \(id jf-library-exact-44\)/i)).toBeTruthy();
+    expect(screen.getByText(/save jellyfin settings before testing the connection or requesting a manual refresh/i)).toBeTruthy();
+  });
+
+  it('surfaces an external configuration conflict and reloads only after an explicit choice', async () => {
+    const user = userEvent.setup();
+    const queryClient = makeQueryClient();
+    renderSettings(queryClient);
+
+    expect(await screen.findByText(/no mappings configured/i)).toBeTruthy();
+    await addAnimeMapping(user);
+
+    persistedJellyfinValue = {
+      ...persistedJellyfinValue,
+      baseUrl: 'http://jellyfin-external.local:8096',
+      connectionConfigRevision: 2,
+    };
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+    });
+
+    expect(await screen.findByText(/jellyfin settings changed elsewhere\. your draft is preserved/i)).toBeTruthy();
+    expect(savedMappingIsDisplayed()).toBeTruthy();
+    expect((screen.getByRole('textbox', { name: /jellyfin base url/i }) as HTMLInputElement).value).toBe('http://jellyfin.local:8096');
+
+    await user.click(screen.getByRole('button', { name: /reload persisted settings/i }));
+
+    expect(await screen.findByText(/no mappings configured/i)).toBeTruthy();
+    expect((screen.getByRole('textbox', { name: /jellyfin base url/i }) as HTMLInputElement).value).toBe('http://jellyfin-external.local:8096');
+    expect(screen.queryByText(/jellyfin settings changed elsewhere/i)).toBeNull();
   });
 });
