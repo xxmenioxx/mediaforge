@@ -12,8 +12,9 @@ import (
 )
 
 type SettingsHandler struct {
-	db      *gorm.DB
-	secrets ProtectedSecretSource
+	db               *gorm.DB
+	secrets          ProtectedSecretSource
+	ollamaHTTPClient *http.Client
 }
 
 const (
@@ -66,6 +67,9 @@ func (h SettingsHandler) List(c *gin.Context) {
 	var settings []models.AppSetting
 	err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		secrets := h.secretSource()
+		if err := migrateOllamaProviderSettings(tx); err != nil {
+			return err
+		}
 		if err := migrateLegacyJellyfinCredential(tx, secrets); err != nil {
 			return err
 		}

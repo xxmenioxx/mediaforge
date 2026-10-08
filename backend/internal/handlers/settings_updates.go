@@ -15,8 +15,80 @@ func (h SettingsHandler) updateSettings(ctx context.Context, inputs []SettingInp
 	if len(inputs) == 0 {
 		return nil, settingPolicyError{status: http.StatusBadRequest, message: "settings batch must not be empty"}
 	}
-	updated := make([]models.AppSetting, 0, len(inputs))
+	responseCount := len(inputs)
+	updated := make([]models.AppSetting, 0, responseCount)
 	err := h.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := migrateOllamaProviderSettings(tx); err != nil {
+			return err
+		}
+		inputs = append([]SettingInput(nil), inputs...)
+		seenInputs := make(map[string]struct{}, len(inputs))
+		providerIndex, translationIndex := -1, -1
+		for index, input := range inputs {
+			if input.Key == "" {
+				return settingPolicyError{status: http.StatusBadRequest, message: "setting key is required"}
+			}
+			if _, exists := seenInputs[input.Key]; exists {
+				return settingPolicyError{status: http.StatusBadRequest, message: fmt.Sprintf("duplicate setting key %q", input.Key)}
+			}
+			seenInputs[input.Key] = struct{}{}
+			if input.Key == ollamaProviderSettingsKey {
+				providerIndex = index
+			}
+			if input.Key == translationSettingsKey {
+				translationIndex = index
+			}
+		}
+		configurationBefore, err := loadOllamaProviderConfiguration(tx)
+		if err != nil {
+			return err
+		}
+		providerEndpoint, providerEndpointPresent := "", false
+		if providerIndex >= 0 {
+			if inputs[providerIndex].Value == nil {
+				return settingPolicyError{status: http.StatusBadRequest, message: fmt.Sprintf("setting %q value must be an object", ollamaProviderSettingsKey)}
+			}
+			providerEndpoint, providerEndpointPresent, err = settingEndpointInput(inputs[providerIndex].Value, "endpoint")
+			if err != nil {
+				return asSettingPolicyError(err)
+			}
+		}
+		legacyEndpoint, legacyEndpointPresent := "", false
+		if translationIndex >= 0 && inputs[translationIndex].Value != nil {
+			legacyEndpoint, legacyEndpointPresent, err = settingEndpointInput(inputs[translationIndex].Value, "ollamaEndpoint")
+			if err != nil {
+				return asSettingPolicyError(err)
+			}
+		}
+		if configurationBefore.State == ollamaProviderStateMigrationConflict && translationIndex >= 0 && !legacyEndpointPresent && providerIndex < 0 {
+			return settingPolicyError{status: http.StatusConflict, message: "Ollama endpoint migration conflict must be resolved before updating Translation settings"}
+		}
+		if legacyEndpointPresent {
+			if providerIndex >= 0 {
+				if !providerEndpointPresent {
+					return settingPolicyError{status: http.StatusBadRequest, message: "endpoint is required"}
+				}
+				if providerEndpoint != legacyEndpoint {
+					return settingPolicyError{status: http.StatusConflict, message: "Translation and shared Ollama endpoints conflict in one update"}
+				}
+			} else {
+				sharedValue := models.JSONMap{"endpoint": legacyEndpoint}
+				var shared models.AppSetting
+				if err := tx.First(&shared, "key = ?", ollamaProviderSettingsKey).Error; err == nil {
+					sharedValue = cloneSettingJSONMap(shared.Value)
+					sharedValue["endpoint"] = legacyEndpoint
+				} else if err != nil && err != gorm.ErrRecordNotFound {
+					return err
+				}
+				providerEndpoint, providerEndpointPresent = legacyEndpoint, true
+				inputs = append(inputs, SettingInput{Key: ollamaProviderSettingsKey, Value: sharedValue})
+				providerIndex = len(inputs) - 1
+			}
+		}
+		if configurationBefore.State == ollamaProviderStateMigrationConflict && providerIndex >= 0 && !providerEndpointPresent {
+			return settingPolicyError{status: http.StatusBadRequest, message: "endpoint is required"}
+		}
+
 		mutation := settingsMutationContext{ctx: ctx, db: tx, secrets: h.secretSource()}
 		definitions := make([]settingDefinition, len(inputs))
 		values := make([]models.JSONMap, len(inputs))
@@ -67,6 +139,11 @@ func (h SettingsHandler) updateSettings(ctx context.Context, inputs []SettingInp
 				}
 			}
 		}
+		if providerEndpointPresent {
+			if err := resolveLegacyTranslationEndpoint(tx, configurationBefore.SharedEndpoint, providerEndpoint); err != nil {
+				return fmt.Errorf("resolve legacy Translation endpoint: %w", err)
+			}
+		}
 
 		for index, input := range inputs {
 			var setting models.AppSetting
@@ -80,7 +157,9 @@ func (h SettingsHandler) updateSettings(ctx context.Context, inputs []SettingInp
 				}
 				setting.Value = projected
 			}
-			updated = append(updated, setting)
+			if index < responseCount {
+				updated = append(updated, setting)
+			}
 		}
 		return nil
 	})

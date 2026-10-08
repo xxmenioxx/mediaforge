@@ -686,7 +686,8 @@ export type SubtitleTranslationReadiness = {
 };
 
 export type SubtitleTranslationSettingsValue = {
-  provider: string;
+  [key: string]: unknown;
+	provider: string;
   ollamaEndpoint: string;
   ollamaModel: string;
   maxCuesPerRequest: number;

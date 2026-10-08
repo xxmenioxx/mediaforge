@@ -61,7 +61,7 @@ func buildSettingDefinitions() map[string]settingDefinition {
 		{"cancellationPolicy", "operations"}, {"housekeeping", "operations"}, {testEncodePolicySettingKey, "test-encode"},
 		{"originalRetentionPolicy", "archive"},
 		{"subtitleSettings", "pipeline"}, {translationSettingsKey, "pipeline"},
-		{jellyfinSettingsKey, "providers-integrations"},
+		{jellyfinSettingsKey, "providers-integrations"}, {ollamaProviderSettingsKey, "providers-integrations"},
 		{"runtimePolicy", "runtime"}, {"remoteExecutors", "runtime"},
 		{"directPlay", "pipeline"}, {"workingHours", "pipeline"},
 		{analysisPolicySettingKey, "analysis"}, {profileSampleEstimatePolicySettingKey, "analysis"},
@@ -96,6 +96,15 @@ func buildSettingDefinitions() map[string]settingDefinition {
 	})
 	definitions[translationSettingsKey] = withNormalizer(definitions[translationSettingsKey], func(ctx settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
 		return translationSettingsForUpdate(ctx.db, value)
+	})
+	definitions[translationSettingsKey] = withProjector(definitions[translationSettingsKey], func(ctx settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
+		return translationSettingsProjection(ctx.db, value)
+	})
+	definitions[ollamaProviderSettingsKey] = withNormalizer(definitions[ollamaProviderSettingsKey], func(ctx settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
+		return ollamaProviderSettingsForUpdate(ctx.db, value)
+	})
+	definitions[ollamaProviderSettingsKey] = withProjector(definitions[ollamaProviderSettingsKey], func(ctx settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
+		return ollamaProviderSettingsProjection(ctx.db, value)
 	})
 	definitions["subtitleSettings"] = withNormalizer(definitions["subtitleSettings"], func(_ settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
 		return normalizeSubtitleSettingsForUpdate(value)
