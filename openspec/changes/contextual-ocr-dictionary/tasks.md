@@ -5,13 +5,13 @@
 
 ## 2. Contextual matching and canonical integration
 
-- [ ] 2.1 Add strict dictionary-language eligibility that preserves unknown/unsupported state without changing existing OCR fallback behavior; verify English aliases, unknown language, Spanish, and Japanese cases with focused tests.
+- [ ] 2.1 Preserve raw language authority separately from the existing OCR fallback and add strict dictionary-language eligibility; verify English aliases, unknown language, Spanish, Japanese, and legacy snapshots with focused tests.
 - [ ] 2.2 Implement the bounded literal matcher, explicit case and word-boundary policies, English starter rules, preview/test-match, and deterministic priority conflict handling; verify contractions, `am |`, punctuation, casing, proper names, words, ASS markup, separators, and equal-priority conflicts with table-driven tests.
 - [ ] 2.3 Route candidates through the existing canonical OCR analyzer/correction and Translation preparation paths; verify both consumers produce the same validated cue changes, unmatched bars remain reviewable, and dictionary rules do not bypass the OCR gate or trigger a second OCR pass.
 
 ## 3. Canonical OCR re-evaluation and publication
 
-- [ ] 3.1 Add snapshot-based re-evaluation preview with cue diffs, quality counts, artifact revision, and dictionary revision; verify published files and snapshots remain unchanged and the operation does not invoke PGS/VobSub OCR.
+- [ ] 3.1 Add snapshot-based re-evaluation preview with cue diffs, quality counts, artifact revision, dictionary revision, and an explicit language choice for ambiguous legacy snapshots; verify preview bindings, unchanged published files/snapshots, and no PGS/VobSub OCR invocation.
 - [ ] 3.2 Apply accepted candidates through the existing correction operation with stale revision checks, rule/version and before/after hash provenance, and bounded predecessor snapshot history; verify successful re-analysis/rollback and stale, failed, or cancelled operations preserve the prior authoritative baseline.
 - [ ] 3.3 Preserve serializer and publication integrity for SRT, ASS, and logical `both`; verify cue identity/order/timing, ASS tags/styles/geometry/positioning, common corrected text, and all-output atomic rollback with focused regression tests.
 

@@ -15,7 +15,9 @@ The current `normalizedOCRLanguage` helper maps unknown values to `eng` for the
 existing OCR workflow. Dictionary eligibility must therefore be stricter than
 that general fallback: English rules apply only when the evidence explicitly
 resolves to the canonical English language. This change does not alter the
-global OCR language resolver.
+global OCR language resolver. Older published snapshots may contain only the
+post-fallback `eng` value, so that value alone cannot establish English rule
+eligibility for legacy re-evaluation.
 
 ## Goals / Non-Goals
 
@@ -84,11 +86,21 @@ text outside the matched span keeps its original bytes and casing.
 
 Resolve language aliases only through the strict dictionary resolver. Apply
 English rules to explicit `en`, `eng`, or `english` evidence normalized to
-`eng`; do not call the global normalizer for dictionary eligibility because
-its unknown-language fallback is English. The dictionary schema can carry
-canonical languages supported by the OCR runtime, but English is the only
-seeded rule set in this change. A rule for one language is never a fallback
-for another.
+`eng`; capture this dictionary language and its evidence source from the raw
+request or stream language tag before `normalizedOCRLanguage` applies its
+fallback. Persist it separately from the effective OCR language so ordinary
+OCR behavior and cache identity remain unchanged. Do not call the global
+normalizer for dictionary eligibility because its unknown-language fallback
+is English. The dictionary schema can carry canonical languages supported by
+the OCR runtime, but English is the only seeded rule set in this change. A rule
+for one language is never a fallback for another.
+
+For a legacy published snapshot without strict language evidence, do not infer
+English from its stored `RequestedLanguage=eng`. Re-evaluation accepts an
+explicit supported language selection for that preview, binds it into the
+preview revision, and records it in correction provenance. Without a selection
+the snapshot remains analyzable, but no language-scoped dictionary rule is
+applied.
 
 Find non-overlapping candidates left-to-right after sorting by descending
 priority. A unique highest-priority replacement wins an overlap. Conflicting
@@ -176,6 +188,9 @@ API types/client for the owning Settings page, but do not change
   Use strict dictionary language eligibility based on explicit evidence and
   test empty, unknown, Spanish, and Japanese language cases without changing
   global OCR normalization.
+- `[Legacy snapshots do not retain language authority]` → Treat their
+  normalized `eng` value as ambiguous and require an explicit language choice
+  for dictionary re-evaluation; bind that choice to preview and apply.
 - `[User rules conflict or shadow each other]` → Validate rule structure,
   expose priority and test-match preview, and fail closed on conflicting
   equal-priority matches.

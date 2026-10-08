@@ -38,6 +38,12 @@ and leave unmatched or ambiguous text unchanged. A higher-priority rule MAY
 resolve an overlapping match; conflicting matches at the same highest priority
 SHALL remain unchanged and be reported for review.
 
+Published snapshots created before strict dictionary-language evidence was
+recorded SHALL NOT be assumed to be English solely because legacy OCR language
+normalization stored `eng`. Re-evaluation of such a snapshot MAY use an
+explicitly selected supported language bound to that preview and apply; without
+that selection, no language-scoped dictionary rule is applied.
+
 #### Scenario: English contractions match with declared boundaries and case policy
 - **WHEN** an English cue contains a complete token matching an enabled contraction rule such as `|'m` or `| can't`
 - **THEN** only that span is replaced with its declared English form, surrounding cue text and punctuation retain their original casing, and the candidate is sent through canonical OCR validation
@@ -53,6 +59,10 @@ SHALL remain unchanged and be reported for review.
 #### Scenario: Conflicting equal-priority rules fail safe
 - **WHEN** overlapping enabled rules match the same text with different replacements and share the highest priority
 - **THEN** no replacement is auto-applied and the ambiguous match is returned for review
+
+#### Scenario: Legacy snapshots do not inherit the English fallback
+- **WHEN** a published snapshot lacks trustworthy dictionary-language evidence and its legacy OCR language is `eng`
+- **THEN** English rules are not applied unless the re-evaluation request explicitly selects English, and that selection is included in the preview and correction provenance
 
 ### Requirement: Dictionary candidates reuse canonical OCR correction and Translation preparation
 
@@ -96,6 +106,10 @@ backup files.
 #### Scenario: Re-evaluation uses saved evidence without PGS OCR
 - **WHEN** a user requests re-evaluation for an artifact with a valid canonical OCR snapshot
 - **THEN** the system evaluates its saved canonical cues with the current enabled rules and does not re-extract subtitle images or invoke PGS/VobSub OCR
+
+#### Scenario: Legacy language choice is bound to re-evaluation
+- **WHEN** a legacy snapshot lacks strict dictionary-language evidence and the user explicitly selects a supported language for preview
+- **THEN** that language is used only for the previewed rule evaluation and apply rejects the preview if its language selection changes
 
 #### Scenario: Preview reports changes and remaining review work
 - **WHEN** re-evaluation finds dictionary candidates
