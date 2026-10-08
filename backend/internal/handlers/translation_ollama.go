@@ -170,15 +170,21 @@ func (provider *ollamaTranslationProvider) TestConnection(ctx context.Context) T
 	}
 	encodedResponse, err := readBoundedOllamaBody(ctx, response.Body, ollamaReadinessMaxResponseBody)
 	if err != nil {
-		return ollamaReadinessForRequestError(ctx, err)
+		readiness := ollamaReadinessForRequestError(ctx, err)
+		var limitErr *ollamaResponseBodyLimitError
+		if errors.As(err, &limitErr) {
+			readiness.FailureState = "invalid_response"
+		}
+		return readiness
 	}
 	if err := ctx.Err(); err != nil {
 		return ollamaReadinessForRequestError(ctx, err)
 	}
 	if len(bytes.TrimSpace(encodedResponse)) == 0 || !json.Valid(encodedResponse) {
 		return TranslationProviderReadiness{
-			State:      translationReadinessUnavailable,
-			Diagnostic: "Ollama readiness returned a malformed response",
+			State:        translationReadinessUnavailable,
+			Diagnostic:   "Ollama readiness returned a malformed response",
+			FailureState: "invalid_response",
 		}
 	}
 	return TranslationProviderReadiness{State: translationReadinessReady}

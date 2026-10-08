@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
 	"strings"
 	"time"
 
@@ -33,8 +34,9 @@ const (
 )
 
 type TranslationProviderReadiness struct {
-	State      translationProviderReadinessState
-	Diagnostic string
+	State        translationProviderReadinessState
+	Diagnostic   string
+	FailureState string
 }
 
 type TranslationProviderReadinessChecker interface {
@@ -105,7 +107,17 @@ func translationReadinessForConfigurationError(err error) TranslationProviderRea
 }
 
 func (h SettingsHandler) TestTranslationConnection(c *gin.Context) {
+	if err := MigrateOllamaProviderSettings(h.db); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	settings := loadTranslationSettings(h.db)
+	if settings.ConfigurationState == ollamaProviderStateMigrationConflict || settings.ConfigurationState == ollamaProviderStateInvalid || settings.ConfigurationState == ollamaProviderStateMigrationRequired {
+		settings.Readiness = translationReadinessInvalidConfiguration
+		settings.ReadinessDiagnostic = "Ollama provider endpoint migration must be resolved before testing Translation"
+		c.JSON(http.StatusConflict, translationReadinessResponse(settings))
+		return
+	}
 	if !translationSettingsConfigured(settings) {
 		settings.Enabled = false
 		settings.Readiness = translationReadinessNotConfigured
@@ -143,7 +155,17 @@ func (h SettingsHandler) TestTranslationConnection(c *gin.Context) {
 }
 
 func (h SettingsHandler) EnableTranslation(c *gin.Context) {
+	if err := MigrateOllamaProviderSettings(h.db); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	settings := loadTranslationSettings(h.db)
+	if settings.ConfigurationState == ollamaProviderStateMigrationConflict || settings.ConfigurationState == ollamaProviderStateInvalid || settings.ConfigurationState == ollamaProviderStateMigrationRequired {
+		settings.Readiness = translationReadinessInvalidConfiguration
+		settings.ReadinessDiagnostic = "Ollama provider endpoint migration must be resolved before enabling Translation"
+		c.JSON(http.StatusConflict, translationReadinessResponse(settings))
+		return
+	}
 	if !translationSettingsConfigured(settings) {
 		settings.Enabled = false
 		settings.Readiness = translationReadinessNotConfigured

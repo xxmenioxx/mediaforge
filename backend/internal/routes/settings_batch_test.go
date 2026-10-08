@@ -30,3 +30,29 @@ func TestSettingsBatchRouteIsRegisteredAndUsable(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func TestSharedOllamaProviderRoutesAreRegisteredAlongsideTranslationCompatibilityRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open("file:route-shared-ollama?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}, &models.ProtectedCredential{}); err != nil {
+		t.Fatal(err)
+	}
+	router := New(db)
+	registered := make(map[string]bool)
+	for _, route := range router.Routes() {
+		registered[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{
+		"POST /api/settings/ollama/test-connection",
+		"GET /api/settings/ollama/models",
+		"POST /api/settings/ollama/model-readiness",
+		"POST /api/settings/subtitle-translation/test-connection",
+	} {
+		if !registered[route] {
+			t.Errorf("route %q is not registered", route)
+		}
+	}
+}

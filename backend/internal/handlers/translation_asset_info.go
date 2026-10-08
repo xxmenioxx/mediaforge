@@ -99,6 +99,9 @@ func translationCapabilityOutputs(representation string) []string {
 }
 
 func translationCapabilityAvailability(settings translationSettings) (bool, string) {
+	if settings.ConfigurationState == ollamaProviderStateMigrationConflict || settings.ConfigurationState == ollamaProviderStateInvalid || settings.ConfigurationState == ollamaProviderStateMigrationRequired {
+		return false, "Ollama provider endpoint migration must be resolved first."
+	}
 	if !translationSettingsConfigured(settings) {
 		return false, "Translation provider is not configured."
 	}
@@ -128,6 +131,14 @@ func translationCapabilityAvailability(settings translationSettings) (bool, stri
 	}
 }
 
+func (h AssetHandler) migrateSharedOllamaProviderSettings(c *gin.Context) bool {
+	if err := MigrateOllamaProviderSettings(h.db); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	return true
+}
+
 func (h AssetHandler) SubtitleTranslationCapability(c *gin.Context) {
 	var request subtitleTranslationCapabilityRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -145,6 +156,9 @@ func (h AssetHandler) SubtitleTranslationCapability(c *gin.Context) {
 		return
 	}
 
+	if !h.migrateSharedOllamaProviderSettings(c) {
+		return
+	}
 	settings := loadTranslationSettings(h.db)
 	available, reason := translationCapabilityAvailability(settings)
 	provider := subtitleTranslationCapabilityProvider{
@@ -225,6 +239,9 @@ func (h AssetHandler) StartSubtitleTranslation(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if !h.migrateSharedOllamaProviderSettings(c) {
+		return
+	}
 	settings := loadTranslationSettings(h.db)
 	available, reason := translationCapabilityAvailability(settings)
 	if !available {
@@ -283,6 +300,9 @@ func (h AssetHandler) retrySubtitleTranslation(c *gin.Context) {
 	oldRequest, err := subtitleTranslationRetryRequest(operationID)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
+		return
+	}
+	if !h.migrateSharedOllamaProviderSettings(c) {
 		return
 	}
 	settings := loadTranslationSettings(h.db)

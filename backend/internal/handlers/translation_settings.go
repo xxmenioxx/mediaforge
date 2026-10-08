@@ -26,6 +26,7 @@ const (
 type translationSettings struct {
 	Provider            string
 	OllamaEndpoint      string
+	ConfigurationState  string
 	OllamaModel         string
 	MaxCuesPerRequest   int
 	MaxRequestBytes     int
@@ -36,6 +37,7 @@ type translationSettings struct {
 	ReadinessIdentity   string
 	ReadinessCheckedAt  string
 	ReadinessDiagnostic string
+	Extra               models.JSONMap
 }
 
 func defaultTranslationSettings() translationSettings {
@@ -61,10 +63,22 @@ func normalizeTranslationSettingsValue(value models.JSONMap) (models.JSONMap, er
 
 func translationSettingsForUpdate(db *gorm.DB, value models.JSONMap) (models.JSONMap, error) {
 	previous := loadTranslationSettings(db)
-	normalized, err := normalizeTranslationSettingsValue(value)
+	incomingValue := cloneSettingJSONMap(previous.Extra)
+	for key, item := range value {
+		incomingValue[key] = item
+	}
+	if _, hasEndpoint := incomingValue["ollamaEndpoint"]; !hasEndpoint {
+		configuration, err := loadOllamaProviderConfiguration(db)
+		if err != nil {
+			return nil, err
+		}
+		incomingValue["ollamaEndpoint"] = configuration.Endpoint
+	}
+	normalized, err := normalizeTranslationSettingsValue(incomingValue)
 	if err != nil {
 		return nil, err
 	}
+	normalized["ollamaEndpoint"] = incomingValue["ollamaEndpoint"]
 	incoming, err := translationSettingsFromValue(normalized, true)
 	if err != nil {
 		return nil, err
@@ -104,15 +118,35 @@ func loadTranslationSettings(db *gorm.DB) translationSettings {
 	if err := db.First(&setting, "key = ?", translationSettingsKey).Error; err != nil {
 		return defaults
 	}
-	settings, err := translationSettingsFromValue(setting.Value, false)
-	if err != nil || !translationSettingsUsable(settings) {
+	configuration, err := loadOllamaProviderConfiguration(db)
+	if err != nil {
+		settings, parseErr := translationSettingsFromValue(setting.Value, false)
+		if parseErr != nil {
+			return defaults
+		}
+		settings.ConfigurationState = ollamaProviderStateInvalid
+		settings.OllamaEndpoint = ""
+		return settings
+	}
+	storedValue := cloneSettingJSONMap(setting.Value)
+	if configuration.State == ollamaProviderStateConfigured {
+		storedValue["ollamaEndpoint"] = configuration.Endpoint
+	}
+	settings, err := translationSettingsFromValue(storedValue, false)
+	if err != nil {
 		return defaults
+	}
+	settings.ConfigurationState = configuration.State
+	settings.OllamaEndpoint = configuration.Endpoint
+	if configuration.State != ollamaProviderStateConfigured || !translationSettingsUsable(settings) {
+		return settings
 	}
 	return normalizeLoadedTranslationSettings(settings)
 }
 
 func translationSettingsFromValue(value models.JSONMap, strict bool) (translationSettings, error) {
 	settings := defaultTranslationSettings()
+	settings.Extra = translationSettingsExtraFields(value)
 	if raw, present := value[translationSettingsEnabledKey]; present {
 		enabled, ok := raw.(bool)
 		if !ok {
@@ -234,9 +268,9 @@ func translationSettingsFromValue(value models.JSONMap, strict bool) (translatio
 }
 
 func translationSettingsValue(settings translationSettings) models.JSONMap {
-	return models.JSONMap{
+	value := cloneSettingJSONMap(settings.Extra)
+	knownValues := models.JSONMap{
 		"provider":                                settings.Provider,
-		"ollamaEndpoint":                          settings.OllamaEndpoint,
 		"ollamaModel":                             settings.OllamaModel,
 		"maxCuesPerRequest":                       settings.MaxCuesPerRequest,
 		"maxRequestBytes":                         settings.MaxRequestBytes,
@@ -248,6 +282,57 @@ func translationSettingsValue(settings translationSettings) models.JSONMap {
 		translationSettingsReadinessCheckedAtKey:  settings.ReadinessCheckedAt,
 		translationSettingsReadinessDiagnosticKey: settings.ReadinessDiagnostic,
 	}
+	for key, item := range knownValues {
+		value[key] = item
+	}
+	delete(value, "ollamaEndpoint")
+	delete(value, "ollamaProviderState")
+	return value
+}
+
+func translationSettingsExtraFields(value models.JSONMap) models.JSONMap {
+	known := map[string]struct{}{
+		"provider": {}, "ollamaEndpoint": {}, "ollamaModel": {},
+		"maxCuesPerRequest": {}, "maxRequestBytes": {}, "maxContextCues": {}, "maxContextChars": {},
+		translationSettingsEnabledKey: {}, translationSettingsReadinessKey: {},
+		translationSettingsReadinessIdentityKey: {}, translationSettingsReadinessCheckedAtKey: {},
+		translationSettingsReadinessDiagnosticKey: {}, "ollamaProviderState": {},
+	}
+	extra := make(models.JSONMap)
+	for key, item := range value {
+		if _, isKnown := known[key]; !isKnown {
+			extra[key] = item
+		}
+	}
+	return extra
+}
+
+func translationSettingsProjection(db *gorm.DB, value models.JSONMap) (models.JSONMap, error) {
+	configuration, err := loadOllamaProviderConfiguration(db)
+	if err != nil {
+		return nil, err
+	}
+	projectedValue := cloneSettingJSONMap(value)
+	if configuration.SharedEndpoint == "" || validateOllamaEndpoint(configuration.SharedEndpoint) == nil {
+		projectedValue["ollamaEndpoint"] = configuration.SharedEndpoint
+	}
+	settings, err := translationSettingsFromValue(projectedValue, false)
+	if err != nil {
+		return nil, err
+	}
+	settings.ConfigurationState = configuration.State
+	settings.OllamaEndpoint = configuration.Endpoint
+	if configuration.State == ollamaProviderStateMigrationConflict || configuration.State == ollamaProviderStateInvalid || configuration.State == ollamaProviderStateMigrationRequired {
+		settings.Enabled = false
+		settings.Readiness = translationReadinessInvalidConfiguration
+		settings.ReadinessIdentity = ""
+		settings.ReadinessCheckedAt = ""
+		settings.ReadinessDiagnostic = "Ollama provider configuration must be resolved before Translation can run"
+	}
+	projection := translationSettingsValue(settings)
+	projection["ollamaEndpoint"] = configuration.SharedEndpoint
+	projection["ollamaProviderState"] = configuration.State
+	return projection, nil
 }
 
 func optionalStringSettingValue(value models.JSONMap, key string) (string, bool) {

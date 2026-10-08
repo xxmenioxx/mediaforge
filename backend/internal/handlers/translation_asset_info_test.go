@@ -375,9 +375,7 @@ func configureAssetInfoTranslationFixture(t *testing.T, dbPath, endpoint string)
 	mediaPath := filepath.Join(dbPath, "episode.mkv")
 	writeTestFile(t, mediaPath, "media fixture")
 	db := translationSourceTestDB(t, dbPath, mediaPath)
-	if err := saveTranslationSettings(db, readyAssetInfoTranslationSettings(endpoint)); err != nil {
-		t.Fatal(err)
-	}
+	persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings(endpoint))
 	return db
 }
 
@@ -453,9 +451,7 @@ func TestAssetInfoTranslationEntryPointExternalSRTAndASS(t *testing.T) {
 			writeTestFile(t, sourcePath, content)
 			fixture := newAssetInfoTranslationOllamaFixture()
 			db := translationSourceTestDB(t, root, mediaPath)
-			if err := saveTranslationSettings(db, readyAssetInfoTranslationSettings("http://nas:11434")); err != nil {
-				t.Fatal(err)
-			}
+			persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
 			handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
 			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":%q,"targetLocale":%q,"outputRepresentation":%q}`, mediaPath, sourcePath, testCase.sourceLanguage, testCase.locale, testCase.extension)
 			capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath))
@@ -521,9 +517,7 @@ func TestAssetInfoTranslationRetryRefreshesSourceAndProviderThroughHTTP(t *testi
 	settingsV1 := readyAssetInfoTranslationSettings("http://nas:11434")
 	settingsV1.OllamaModel = "model-v1"
 	settingsV1.ReadinessIdentity = translationProviderConfigurationIdentity(settingsV1)
-	if err := saveTranslationSettings(db, settingsV1); err != nil {
-		t.Fatal(err)
-	}
+	persistTranslationSettingsFixture(t, db, settingsV1)
 	fixture := newAssetInfoTranslationOllamaFixture()
 	fixture.failures = []error{&TranslationProviderError{Class: translationProviderErrorUnavailable, Err: errors.New("first provider attempt")}}
 	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
@@ -549,9 +543,7 @@ func TestAssetInfoTranslationRetryRefreshesSourceAndProviderThroughHTTP(t *testi
 	settingsV2 := settingsV1
 	settingsV2.OllamaModel = "model-v2"
 	settingsV2.ReadinessIdentity = translationProviderConfigurationIdentity(settingsV2)
-	if err := saveTranslationSettings(db, settingsV2); err != nil {
-		t.Fatal(err)
-	}
+	persistTranslationSettingsFixture(t, db, settingsV2)
 
 	retryStatus, retryBody := postAssetInfoTranslationRetry(t, handler, oldID)
 	if retryStatus != http.StatusAccepted {
@@ -606,9 +598,7 @@ func TestAssetInfoTranslationRetryRejectsDisappearedExactSourceThroughHTTP(t *te
 	writeTestFile(t, mediaPath, "media fixture")
 	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
 	db := translationSourceTestDB(t, root, mediaPath)
-	if err := saveTranslationSettings(db, readyAssetInfoTranslationSettings("http://nas:11434")); err != nil {
-		t.Fatal(err)
-	}
+	persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
 	fixture := newAssetInfoTranslationOllamaFixture()
 	fixture.failures = []error{&TranslationProviderError{Class: translationProviderErrorUnavailable, Err: errors.New("first provider attempt")}}
 	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
@@ -685,9 +675,7 @@ func TestAssetInfoTranslationRetryAcceptsCancelledThroughHTTP(t *testing.T) {
 	writeTestFile(t, mediaPath, "media fixture")
 	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
 	db := translationSourceTestDB(t, root, mediaPath)
-	if err := saveTranslationSettings(db, readyAssetInfoTranslationSettings("http://nas:11434")); err != nil {
-		t.Fatal(err)
-	}
+	persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
 	fixture := newAssetInfoTranslationOllamaFixture()
 	fixture.failures = []error{context.Canceled}
 	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
@@ -731,9 +719,7 @@ func TestAssetInfoTranslationEntryPointEmbeddedSSAUsesCanonicalMuxer(t *testing.
 	argsPath := installAssetInfoTranslationFFmpeg(t, "[Script Info]\nTitle: Fixture\n\n[Events]\nFormat: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}Hello\\Nworld\n")
 	fixture := newAssetInfoTranslationOllamaFixture()
 	db := translationSourceTestDB(t, root, mediaPath)
-	if err := saveTranslationSettings(db, readyAssetInfoTranslationSettings("http://nas:11434")); err != nil {
-		t.Fatal(err)
-	}
+	persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
 	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
 	beforeSource, _ := os.ReadFile(mediaPath)
 	operation := startAssetInfoTranslationAndWait(t, handler, fmt.Sprintf(`{"path":%q,"source":{"type":"embedded","embedded":{"streamIndex":4}},"sourceLanguage":"en","targetLocale":"es-ES","outputRepresentation":"ssa"}`, mediaPath))
@@ -788,9 +774,7 @@ func TestAssetInfoTranslationEntryPointBitmapPGSAndVobSub(t *testing.T) {
 			}
 			fixture := newAssetInfoTranslationOllamaFixture()
 			db := translationSourceTestDB(t, root, mediaPath)
-			if err := saveTranslationSettings(db, readyAssetInfoTranslationSettings("http://nas:11434")); err != nil {
-				t.Fatal(err)
-			}
+			persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
 			handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
 			beforeSource, _ := os.ReadFile(mediaPath)
 			operation := startAssetInfoTranslationAndWait(t, handler, fmt.Sprintf(`{"path":%q,"source":{"type":"embedded","embedded":{"streamIndex":4}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":%q}`, mediaPath, testCase.requestedOutput))
@@ -841,9 +825,7 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' '123 !!!' > "$output"
 	writeExecutable(t, filepath.Join(bin, "ffmpeg"), "#!/bin/sh\noutput=\nfor argument do output=\"$argument\"; done\ncase \"$output\" in *.sup) : > \"$output\" ;; esac\n")
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
 	db := translationSourceTestDB(t, root, mediaPath)
-	if err := saveTranslationSettings(db, readyAssetInfoTranslationSettings("http://nas:11434")); err != nil {
-		t.Fatal(err)
-	}
+	persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
 	fixture := newAssetInfoTranslationOllamaFixture()
 	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
 	beforeSource, err := os.ReadFile(mediaPath)

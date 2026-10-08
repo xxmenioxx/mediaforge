@@ -116,6 +116,7 @@ export const defaultSubtitleTranslationSettings: SubtitleTranslationSettingsValu
 export function subtitleTranslationSettingsValue(value: Record<string, unknown> | undefined): SubtitleTranslationSettingsValue {
   const source = value ?? {};
   return {
+    ...source,
     provider: stringValue(source.provider, ''),
     ollamaEndpoint: stringValue(source.ollamaEndpoint, ''),
     ollamaModel: stringValue(source.ollamaModel, ''),
