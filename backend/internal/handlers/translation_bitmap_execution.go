@@ -75,8 +75,21 @@ func executeBitmapTranslation(ctx context.Context, request bitmapTranslationExec
 	if err != nil {
 		return bitmapTranslationExecutionResult{}, err
 	}
-	preparedEvidence, err := prepareCanonicalOCREvidenceForTranslation(ctx, source.Evidence, request.OnProgress, canonicalOCRDictionaryPreparation{DB: request.DictionaryDB, OperationID: request.OperationID})
+	preparedEvidence, err := prepareCanonicalOCREvidenceForTranslation(ctx, source.Evidence, request.OnProgress, canonicalOCRDictionaryPreparation{
+		DB: request.DictionaryDB, OperationID: request.OperationID,
+		ArtifactRevision: source.ArtifactRevision, LogicalTransform: source.LogicalTransform,
+	})
 	if err != nil {
+		if subtitleTranslationFailureClassOf(err) == subtitleTranslationFailureOCRReviewRequired {
+			target := source.ReviewTarget
+			if target == nil {
+				target = &canonicalOCRReviewTarget{
+					State: "missing", Message: "No current published canonical OCR sidecar matches this Translation request.",
+					Identity: source.Evidence.Identity,
+				}
+			}
+			err = attachSubtitleOCRReviewTarget(err, target)
+		}
 		return bitmapTranslationExecutionResult{}, err
 	}
 	source.Evidence = preparedEvidence

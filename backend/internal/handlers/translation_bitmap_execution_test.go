@@ -334,13 +334,6 @@ case "$output" in *.sup) : > "$output" ;; esac
 	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), sidecarPath, "srt", logicalTransform, generated.Evidence, "baseline-test", ""); err != nil {
 		t.Fatal(err)
 	}
-	assSidecarPath := filepath.Join(root, "movie.eng.ass")
-	if err := os.WriteFile(assSidecarPath, []byte("[Script Info]\nTitle: baseline\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := commitPublishedCanonicalOCRSnapshot(context.Background(), assSidecarPath, "ass", "subtitle:4:converted:ass", generated.Evidence, "baseline-ass-test", ""); err != nil {
-		t.Fatal(err)
-	}
 	provider := &bitmapTranslationProviderSpy{}
 	runner := func(ctx context.Context, operationID, _ string, _ subtitleTranslationOperationRequest) error {
 		updateSubtitleTranslationProgress(operationID, "ocr", 0, 0, "Preparing canonical OCR subtitles")

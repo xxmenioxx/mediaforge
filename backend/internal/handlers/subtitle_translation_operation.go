@@ -31,8 +31,9 @@ const (
 )
 
 type subtitleTranslationDomainError struct {
-	failureClass subtitleTranslationFailureClass
-	cause        error
+	failureClass    subtitleTranslationFailureClass
+	cause           error
+	ocrReviewTarget *canonicalOCRReviewTarget
 }
 
 func (failure *subtitleTranslationDomainError) Error() string {
@@ -53,22 +54,42 @@ func subtitleOCRReviewRequiredError(cause error) error {
 	return &subtitleTranslationDomainError{failureClass: subtitleTranslationFailureOCRReviewRequired, cause: cause}
 }
 
+func subtitleOCRReviewRequiredErrorWithTarget(cause error, target *canonicalOCRReviewTarget) error {
+	return &subtitleTranslationDomainError{failureClass: subtitleTranslationFailureOCRReviewRequired, cause: cause, ocrReviewTarget: target}
+}
+
+func attachSubtitleOCRReviewTarget(err error, target *canonicalOCRReviewTarget) error {
+	if err == nil || target == nil {
+		return err
+	}
+	var domainError *subtitleTranslationDomainError
+	if errors.As(err, &domainError) && domainError.failureClass == subtitleTranslationFailureOCRReviewRequired {
+		domainError.ocrReviewTarget = target
+		return err
+	}
+	if subtitleTranslationFailureClassOf(err) == subtitleTranslationFailureOCRReviewRequired {
+		return subtitleOCRReviewRequiredErrorWithTarget(err, target)
+	}
+	return err
+}
+
 func subtitleOCRFailedError(cause error) error {
 	return &subtitleTranslationDomainError{failureClass: subtitleTranslationFailureOCRFailed, cause: cause}
 }
 
 type subtitleTranslationOperationView struct {
-	Provider                string `json:"provider,omitempty"`
-	Model                   string `json:"model,omitempty"`
-	RequestedSourceLanguage string `json:"requestedSourceLanguage,omitempty"`
-	TargetLocale            string `json:"targetLocale,omitempty"`
-	OutputRepresentation    string `json:"outputRepresentation,omitempty"`
-	ContextMode             string `json:"contextMode,omitempty"`
-	ContextSource           string `json:"contextSource,omitempty"`
-	FailureClass            string `json:"failureClass,omitempty"`
-	Diagnostic              string `json:"diagnostic,omitempty"`
-	Retryable               bool   `json:"retryable"`
-	Cancellable             bool   `json:"cancellable"`
+	Provider                string                    `json:"provider,omitempty"`
+	Model                   string                    `json:"model,omitempty"`
+	RequestedSourceLanguage string                    `json:"requestedSourceLanguage,omitempty"`
+	TargetLocale            string                    `json:"targetLocale,omitempty"`
+	OutputRepresentation    string                    `json:"outputRepresentation,omitempty"`
+	ContextMode             string                    `json:"contextMode,omitempty"`
+	ContextSource           string                    `json:"contextSource,omitempty"`
+	FailureClass            string                    `json:"failureClass,omitempty"`
+	Diagnostic              string                    `json:"diagnostic,omitempty"`
+	Retryable               bool                      `json:"retryable"`
+	Cancellable             bool                      `json:"cancellable"`
+	OCRReviewTarget         *canonicalOCRReviewTarget `json:"ocrReviewTarget,omitempty"`
 }
 
 // subtitleTranslationOperationRequest is the bounded, secret-free execution
@@ -489,6 +510,10 @@ func setSubtitleTranslationTerminal(operationID, status, phase, message string, 
 			operation.Translation.Cancellable = false
 			if failureClass != "" {
 				operation.Translation.Diagnostic = subtitleTranslationDiagnostic(failureClass)
+			}
+			var domainError *subtitleTranslationDomainError
+			if errors.As(err, &domainError) && failureClass == subtitleTranslationFailureOCRReviewRequired {
+				operation.Translation.OCRReviewTarget = domainError.ocrReviewTarget
 			}
 		}
 		if status == "cancelled" || status == "completed" {

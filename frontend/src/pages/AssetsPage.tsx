@@ -77,10 +77,11 @@ import { assetPathWithin, formatDurationSummary, type LibraryTreeSelection, type
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
+import { SubtitleOCRReviewDialog } from '../components/SubtitleOCRReviewDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
 import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
 import { openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_OPEN_EVENT, QUEUE_BATCH_PREFLIGHT_STORAGE_KEY } from '../utils/queueBatchPreflightEvents';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AssetTracksUpdateInput, AudioEnhancementProfile, EffectiveAssetConfiguration, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AssetTracksUpdateInput, AudioEnhancementProfile, CanonicalOCRReviewTarget, EffectiveAssetConfiguration, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -3743,7 +3744,8 @@ function AssetRow({
   const [subtitleCompositionError, setSubtitleCompositionError] = useState('');
   const [translationSource, setTranslationSource] = useState<SubtitleTranslationSourceSelector | null>(null);
   const [translationDialogOpen, setTranslationDialogOpen] = useState(false);
-  const [translationReviewSidecarPath, setTranslationReviewSidecarPath] = useState<string | null>(null);
+  const [translationReviewTarget, setTranslationReviewTarget] = useState<CanonicalOCRReviewTarget | null>(null);
+  const [translationReviewDialogOpen, setTranslationReviewDialogOpen] = useState(false);
   const subtitleOperationPollers = useRef<Set<string>>(new Set());
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [assignProfileOpen, setAssignProfileOpen] = useState(false);
@@ -4871,27 +4873,19 @@ async function generateExternalSubtitle(
     }
   }
 
-  function canonicalOCRReviewSidecarForTranslation(source: SubtitleTranslationSourceSelector) {
-    if (source.type !== 'embedded') return undefined;
-    const embedded = subtitleEligibility.data?.embedded.find((value) => value.streamIndex === source.embedded.streamIndex);
-    const artifactPath = embedded?.canonicalOcrArtifactPath;
-    if (!artifactPath) return undefined;
-    const sidecars = subtitleEligibility.data?.external ?? externalSubtitles.data ?? [];
-    return sidecars.find((sidecar) => sidecar.path === artifactPath && sidecar.ocrAnalysisAvailable);
-  }
-
   function openTranslation(source: SubtitleTranslationSourceSelector) {
     setTranslationSource(source);
     setTranslationDialogOpen(true);
   }
 
-  function reviewTranslationOCR() {
-    if (!translationSource) return;
-    const sidecar = canonicalOCRReviewSidecarForTranslation(translationSource);
-    if (!sidecar) return;
-    setTranslationReviewSidecarPath(sidecar.path);
+  function reviewTranslationOCR(operation: SubtitleExtractionOperation) {
+    const target = operation.translation?.ocrReviewTarget ?? {
+      state: 'missing',
+      message: 'This server did not return an exact OCR review target. Return to Translation and retry to refresh the request identity.',
+    };
+    setTranslationReviewTarget(target);
     setTranslationDialogOpen(false);
-    void analyzeExternalSubtitle(sidecar);
+    setTranslationReviewDialogOpen(true);
   }
 
   async function restyleExternalSubtitle(sidecar: ExternalSubtitle, mode: 'restyle' | 'srt_to_ass', options: { replace?: boolean; overrideExistingASSStyles?: boolean } = {}) {
@@ -5039,10 +5033,6 @@ async function generateExternalSubtitle(
       });
       setSubtitleQualityMessages((current) => ({ ...current, [key]: 'Correction published. Re-analyze to review the new baseline.' }));
       await refreshSubtitleEvidence();
-      if (translationReviewSidecarPath && selection.sidecarPaths.includes(translationReviewSidecarPath)) {
-        setTranslationReviewSidecarPath(null);
-        setTranslationDialogOpen(true);
-      }
     } catch (error) {
       setSubtitleQualityMessages((current) => ({ ...current, [key]: error instanceof Error ? error.message : 'OCR correction failed.' }));
     }
@@ -6546,9 +6536,25 @@ async function generateExternalSubtitle(
           path={asset.path}
           source={translationSource}
           onClose={() => setTranslationDialogOpen(false)}
-          onReviewOCR={canonicalOCRReviewSidecarForTranslation(translationSource) ? reviewTranslationOCR : undefined}
+          onReviewOCR={reviewTranslationOCR}
         />
       ) : null}
+      <SubtitleOCRReviewDialog
+        open={translationReviewDialogOpen}
+        mediaPath={asset.path}
+        target={translationReviewTarget}
+        onClose={() => {
+          setTranslationReviewDialogOpen(false);
+          if (translationSource) setTranslationDialogOpen(true);
+        }}
+        onSaved={() => {
+          setTranslationReviewDialogOpen(false);
+          void (async () => {
+            await refreshSubtitleEvidence();
+            if (translationSource) setTranslationDialogOpen(true);
+          })();
+        }}
+      />
     </>
   );
 }
