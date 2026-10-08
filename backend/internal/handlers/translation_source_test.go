@@ -166,7 +166,7 @@ func translationSourceTestDB(t *testing.T, root, mediaPath string) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.AppSetting{}); err != nil {
+	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.AppSetting{}, &models.OCRDictionaryEntry{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.Library{Name: "Test", SourcePath: root, DestinationPath: root, Type: "movies"}).Error; err != nil {

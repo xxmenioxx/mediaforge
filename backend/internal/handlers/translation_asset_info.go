@@ -405,6 +405,8 @@ func (h AssetHandler) runAssetInfoSubtitleTranslation(
 			RequestedRepresentation: request.RequestedRepresentation,
 			Provider:                provider,
 			Settings:                settings,
+			DictionaryDB:            h.db,
+			OperationID:             operationID,
 			OnProgress: func(processed, total int) {
 				updateSubtitleTranslationProgress(operationID, "ocr", processed, total, "Preparing canonical OCR subtitles")
 			},

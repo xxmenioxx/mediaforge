@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"gorm.io/gorm"
 )
 
 // bitmapTranslationExecutionRequest is an operation-local input for the
@@ -25,6 +27,8 @@ type bitmapTranslationExecutionRequest struct {
 	RequestedRepresentation string
 	Provider                TranslationProvider
 	Settings                translationSettings
+	DictionaryDB            *gorm.DB
+	OperationID             string
 	TranslationContext      *TranslationContext
 	OnProgress              OCRProgressFunc
 	OnBatch                 func(processed, total int)
@@ -71,7 +75,7 @@ func executeBitmapTranslation(ctx context.Context, request bitmapTranslationExec
 	if err != nil {
 		return bitmapTranslationExecutionResult{}, err
 	}
-	preparedEvidence, err := prepareCanonicalOCREvidenceForTranslation(ctx, source.Evidence, request.OnProgress)
+	preparedEvidence, err := prepareCanonicalOCREvidenceForTranslation(ctx, source.Evidence, request.OnProgress, canonicalOCRDictionaryPreparation{DB: request.DictionaryDB, OperationID: request.OperationID})
 	if err != nil {
 		return bitmapTranslationExecutionResult{}, err
 	}

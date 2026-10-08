@@ -68,13 +68,15 @@ func (identity canonicalOCRIdentity) key() string {
 }
 
 type canonicalOCRRequest struct {
-	Identity         canonicalOCRIdentity
-	MediaPath        string
-	Stream           FFProbeStream
-	Language         string
-	Mode             string
-	PreparedLocal    bool
-	PreparationStart float64
+	Identity                 canonicalOCRIdentity
+	MediaPath                string
+	Stream                   FFProbeStream
+	Language                 string
+	DictionaryLanguage       string
+	DictionaryLanguageSource string
+	Mode                     string
+	PreparedLocal            bool
+	PreparationStart         float64
 }
 
 type canonicalOCRRuntimeSnapshot struct {
@@ -107,25 +109,34 @@ func (failure *canonicalOCRFailure) Unwrap() error {
 }
 
 type canonicalOCREvidence struct {
-	Identity             canonicalOCRIdentity               `json:"identity"`
-	RequestedLanguage    string                             `json:"requestedLanguage"`
-	EffectiveLanguage    string                             `json:"effectiveLanguage"`
-	OCRMode              string                             `json:"ocrMode"`
-	Message              string                             `json:"message"`
-	Complete             bool                               `json:"complete"`
-	Integrity            string                             `json:"integrity"`
-	Cues                 []canonicalBitmapSubtitleCue       `json:"cues"`
-	Geometry             []bitmapCueGeometry                `json:"geometry"`
-	CorrectionProvenance []canonicalOCRCorrectionProvenance `json:"correctionProvenance,omitempty"`
+	Identity                 canonicalOCRIdentity               `json:"identity"`
+	RequestedLanguage        string                             `json:"requestedLanguage"`
+	EffectiveLanguage        string                             `json:"effectiveLanguage"`
+	DictionaryLanguage       string                             `json:"dictionaryLanguage,omitempty"`
+	DictionaryLanguageSource string                             `json:"dictionaryLanguageSource,omitempty"`
+	OCRMode                  string                             `json:"ocrMode"`
+	Message                  string                             `json:"message"`
+	Complete                 bool                               `json:"complete"`
+	Integrity                string                             `json:"integrity"`
+	Cues                     []canonicalBitmapSubtitleCue       `json:"cues"`
+	Geometry                 []bitmapCueGeometry                `json:"geometry"`
+	CorrectionProvenance     []canonicalOCRCorrectionProvenance `json:"correctionProvenance,omitempty"`
 }
 
 type canonicalOCRCorrectionProvenance struct {
-	CueID           int    `json:"cueId"`
-	Action          string `json:"action"`
-	CandidateSource string `json:"candidateSource,omitempty"`
-	TextHash        string `json:"textHash,omitempty"`
-	Validation      string `json:"validation"`
-	SelectedBy      string `json:"selectedBy"`
+	CueID                  int      `json:"cueId"`
+	Action                 string   `json:"action"`
+	CandidateSource        string   `json:"candidateSource,omitempty"`
+	TextHash               string   `json:"textHash,omitempty"`
+	BeforeTextHash         string   `json:"beforeTextHash,omitempty"`
+	AfterTextHash          string   `json:"afterTextHash,omitempty"`
+	DictionaryLanguage     string   `json:"dictionaryLanguage,omitempty"`
+	DictionaryRevision     string   `json:"dictionaryRevision,omitempty"`
+	DictionaryRuleIDs      []string `json:"dictionaryRuleIds,omitempty"`
+	DictionaryRuleVersions []int    `json:"dictionaryRuleVersions,omitempty"`
+	OperationID            string   `json:"operationId,omitempty"`
+	Validation             string   `json:"validation"`
+	SelectedBy             string   `json:"selectedBy"`
 }
 
 type canonicalOCREvidenceCacheRecord struct {
@@ -191,6 +202,17 @@ func canonicalOCRRequestFor(
 		scope = "segmented-test-encode"
 	}
 	mode = normalizedOCRMode(mode)
+	dictionaryLanguage := ""
+	dictionaryLanguageSource := ""
+	if strings.TrimSpace(language) != "" {
+		if canonical, ok := strictOCRDictionaryLanguage(language); ok {
+			dictionaryLanguage = canonical
+			dictionaryLanguageSource = "request"
+		}
+	} else if canonical, ok := strictOCRDictionaryLanguage(stream.Tags["language"]); ok {
+		dictionaryLanguage = canonical
+		dictionaryLanguageSource = "stream-tag"
+	}
 	language = normalizedOCRLanguage(language, stream.Tags["language"])
 	return canonicalOCRRequest{
 		Identity: canonicalOCRIdentity{
@@ -211,12 +233,14 @@ func canonicalOCRRequestFor(
 			PreparedRepresentation: "prepared-subtitle-v1",
 			PipelineProvenance:     canonicalOCRPipelineProvenance,
 		},
-		MediaPath:        cleanPath,
-		Stream:           stream,
-		Language:         language,
-		Mode:             mode,
-		PreparedLocal:    preparedLocal,
-		PreparationStart: segmentStart,
+		MediaPath:                cleanPath,
+		Stream:                   stream,
+		Language:                 language,
+		DictionaryLanguage:       dictionaryLanguage,
+		DictionaryLanguageSource: dictionaryLanguageSource,
+		Mode:                     mode,
+		PreparedLocal:            preparedLocal,
+		PreparationStart:         segmentStart,
 	}
 }
 
@@ -342,7 +366,7 @@ func canonicalOCREvidenceForRequest(
 		if onProgress != nil {
 			onProgress(1, 1)
 		}
-		return cached, nil
+		return canonicalOCREvidenceWithDictionaryAuthority(cached, request), nil
 	}
 
 	root := canonicalOCRWorkspaceRoot()
@@ -371,7 +395,8 @@ func canonicalOCREvidenceForRequest(
 			if progress.total > 0 && onProgress != nil {
 				onProgress(progress.processed, progress.total)
 			}
-			return subscription.wait(ctx)
+			evidence, err := subscription.wait(ctx)
+			return canonicalOCREvidenceWithDictionaryAuthority(evidence, request), err
 		}
 	}
 	flightCtx, cancel := context.WithCancel(context.Background())
@@ -402,7 +427,18 @@ func canonicalOCREvidenceForRequest(
 		onProgress(progress.processed, progress.total)
 	}
 	go flight.execute()
-	return subscription.wait(ctx)
+	evidence, err := subscription.wait(ctx)
+	return canonicalOCREvidenceWithDictionaryAuthority(evidence, request), err
+}
+
+func canonicalOCREvidenceWithDictionaryAuthority(evidence *canonicalOCREvidence, request canonicalOCRRequest) *canonicalOCREvidence {
+	if evidence == nil {
+		return nil
+	}
+	copy := cloneCanonicalOCREvidence(evidence)
+	copy.DictionaryLanguage = request.DictionaryLanguage
+	copy.DictionaryLanguageSource = request.DictionaryLanguageSource
+	return copy
 }
 
 func (subscription *canonicalOCRSubscription) wait(ctx context.Context) (*canonicalOCREvidence, error) {
@@ -501,15 +537,17 @@ func (flight *canonicalOCRFlight) execute() {
 			identity.PreparedRepresentationHash = preparedHash
 		}
 		evidence = &canonicalOCREvidence{
-			Identity:          identity,
-			RequestedLanguage: flight.request.Language,
-			EffectiveLanguage: result.EffectiveLanguage,
-			OCRMode:           flight.request.Mode,
-			Message:           result.Message,
-			Complete:          true,
-			Integrity:         "canonical-cues-validated-v1",
-			Cues:              cloneCanonicalCues(result.Cues),
-			Geometry:          append([]bitmapCueGeometry(nil), result.Geometry...),
+			Identity:                 identity,
+			RequestedLanguage:        flight.request.Language,
+			EffectiveLanguage:        result.EffectiveLanguage,
+			DictionaryLanguage:       flight.request.DictionaryLanguage,
+			DictionaryLanguageSource: flight.request.DictionaryLanguageSource,
+			OCRMode:                  flight.request.Mode,
+			Message:                  result.Message,
+			Complete:                 true,
+			Integrity:                "canonical-cues-validated-v1",
+			Cues:                     cloneCanonicalCues(result.Cues),
+			Geometry:                 append([]bitmapCueGeometry(nil), result.Geometry...),
 		}
 		commitCanonicalOCREvidence(flight.request, flight.key, evidence)
 	} else if err == nil && flight.ctx.Err() != nil {

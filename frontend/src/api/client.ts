@@ -79,6 +79,15 @@ import type {
   SubtitleCompositionInput,
   SubtitleEligibilityResponse,
   SubtitleExtractionResult,
+  OCRDictionaryEntry,
+  OCRDictionaryLanguage,
+  OCRDictionaryReevaluationApplyInput,
+  OCRDictionaryReevaluationInput,
+  OCRDictionaryReevaluationPreview,
+  OCRDictionaryRuleInput,
+  OCRDictionarySearchResponse,
+  OCRDictionaryTestMatchResponse,
+  OCRDictionaryTestMatchInput,
   SubtitleTranslationCapability,
   SubtitleTranslationCapabilityInput,
   SubtitleTranslationReadiness,
@@ -408,6 +417,65 @@ export const api = {
       { method: 'POST', body: JSON.stringify(input) },
     ),
 
+  searchOCRDictionary: (input: {
+    language?: OCRDictionaryLanguage;
+    search?: string;
+    source?: 'builtin' | 'user';
+    enabled?: boolean;
+    page?: number;
+    pageSize?: number;
+  } = {}) => {
+    const query = new URLSearchParams();
+    if (input.language) query.set('language', input.language);
+    if (input.search?.trim()) query.set('search', input.search.trim());
+    if (input.source) query.set('source', input.source);
+    if (input.enabled !== undefined) query.set('enabled', String(input.enabled));
+    if (input.page !== undefined) query.set('page', String(input.page));
+    if (input.pageSize !== undefined) query.set('pageSize', String(input.pageSize));
+    return request<OCRDictionarySearchResponse>(`/api/assets/ocr-dictionary?${query.toString()}`);
+  },
+
+  createOCRDictionaryEntry: (input: OCRDictionaryRuleInput) =>
+    request<OCRDictionaryEntry>('/api/assets/ocr-dictionary', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  updateOCRDictionaryEntry: (id: string, input: OCRDictionaryRuleInput) =>
+    request<OCRDictionaryEntry>(`/api/assets/ocr-dictionary/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+
+  setOCRDictionaryEntryEnabled: (id: string, enabled: boolean) =>
+    request<OCRDictionaryEntry>(`/api/assets/ocr-dictionary/${encodeURIComponent(id)}/enabled`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
+
+  deleteOCRDictionaryEntry: (id: string) =>
+    request<{ message?: string }>(`/api/assets/ocr-dictionary/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+
+  testOCRDictionaryMatch: (input: OCRDictionaryTestMatchInput) =>
+    request<OCRDictionaryTestMatchResponse>('/api/assets/ocr-dictionary/test-match', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  previewOCRDictionaryReevaluation: (input: OCRDictionaryReevaluationInput) =>
+    request<OCRDictionaryReevaluationPreview>('/api/assets/subtitle-ocr/reevaluate/preview', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  applyOCRDictionaryReevaluation: (input: OCRDictionaryReevaluationApplyInput) =>
+    request<{ operationId: string; status: string; phase: string; progress: number }>(
+      '/api/assets/subtitle-ocr/reevaluate/apply',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+
   correctSubtitleOCR: (input: {
     mediaPath?: string;
     sidecarPath?: string;
@@ -415,6 +483,8 @@ export const api = {
     format: 'srt' | 'ass' | 'both';
     logicalTransformKey?: string;
     baselineRevision: string;
+    dictionaryLanguage?: OCRDictionaryLanguage;
+    dictionaryRevision?: string;
     revisions?: Array<{
       artifactPath: string;
       artifactIdentity: string;

@@ -18,13 +18,17 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/config"
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 const (
 	subtitleOCRQualityVersion       = "quality-v1"
 	subtitleOCRRepairVersion        = "repair-v1"
 	maxPublishedSubtitleBytes       = 64 * 1024 * 1024
+	maxPublishedOCRHistoryEntries   = 3
+	maxPublishedOCRHistoryBytes     = 16 * 1024 * 1024
 	subtitleOCRQualityStatusClean   = "clean"
 	subtitleOCRQualityStatusSuspect = "suspicious"
 	subtitleOCRQualityStatusReview  = "review"
@@ -48,32 +52,76 @@ func (revision publishedSubtitleRevision) key() string {
 }
 
 type publishedCanonicalOCRSnapshot struct {
-	Version             int                       `json:"version"`
-	OwnerIdentity       string                    `json:"ownerIdentity"`
-	SourcePath          string                    `json:"sourcePath"`
+	Version                  int                                 `json:"version"`
+	OwnerIdentity            string                              `json:"ownerIdentity"`
+	SourcePath               string                              `json:"sourcePath"`
+	Format                   string                              `json:"format"`
+	LogicalTransformKey      string                              `json:"logicalTransformKey,omitempty"`
+	Revision                 publishedSubtitleRevision           `json:"revision"`
+	Evidence                 canonicalOCREvidence                `json:"evidence"`
+	CreatedAt                time.Time                           `json:"createdAt"`
+	UpdatedAt                time.Time                           `json:"updatedAt"`
+	AnalyzerVersion          string                              `json:"analyzerVersion"`
+	RepairVersion            string                              `json:"repairVersion"`
+	ScoringVersion           string                              `json:"scoringVersion"`
+	PreviousRevision         string                              `json:"previousRevision,omitempty"`
+	CorrectionOperation      string                              `json:"correctionOperation,omitempty"`
+	Integrity                string                              `json:"integrity"`
+	History                  []publishedCanonicalOCRHistoryEntry `json:"history,omitempty"`
+	DictionaryRules          []models.OCRDictionaryEntry         `json:"-"`
+	DictionaryRevision       string                              `json:"-"`
+	DictionaryLanguage       string                              `json:"-"`
+	DictionaryLanguageSource string                              `json:"-"`
+}
+
+type publishedCanonicalOCRHistoryEntry struct {
+	Revision            publishedSubtitleRevision `json:"revision"`
 	Format              string                    `json:"format"`
 	LogicalTransformKey string                    `json:"logicalTransformKey,omitempty"`
-	Revision            publishedSubtitleRevision `json:"revision"`
 	Evidence            canonicalOCREvidence      `json:"evidence"`
 	CreatedAt           time.Time                 `json:"createdAt"`
-	UpdatedAt           time.Time                 `json:"updatedAt"`
-	AnalyzerVersion     string                    `json:"analyzerVersion"`
-	RepairVersion       string                    `json:"repairVersion"`
-	ScoringVersion      string                    `json:"scoringVersion"`
-	PreviousRevision    string                    `json:"previousRevision,omitempty"`
 	CorrectionOperation string                    `json:"correctionOperation,omitempty"`
-	Integrity           string                    `json:"integrity"`
+}
+
+func appendedPublishedCanonicalOCRHistory(snapshot *publishedCanonicalOCRSnapshot) ([]publishedCanonicalOCRHistoryEntry, error) {
+	if snapshot == nil {
+		return nil, errors.New("canonical OCR snapshot is required for predecessor history")
+	}
+	history := append([]publishedCanonicalOCRHistoryEntry(nil), snapshot.History...)
+	history = append(history, publishedCanonicalOCRHistoryEntry{
+		Revision: snapshot.Revision, Format: snapshot.Format, LogicalTransformKey: snapshot.LogicalTransformKey,
+		Evidence: *cloneCanonicalOCREvidence(&snapshot.Evidence), CreatedAt: snapshot.CreatedAt,
+		CorrectionOperation: snapshot.CorrectionOperation,
+	})
+	for len(history) > maxPublishedOCRHistoryEntries {
+		history = history[1:]
+	}
+	for {
+		encoded, err := json.Marshal(history)
+		if err != nil {
+			return nil, err
+		}
+		if len(encoded) <= maxPublishedOCRHistoryBytes {
+			return history, nil
+		}
+		if len(history) <= 1 {
+			return nil, errors.New("canonical OCR predecessor history exceeds the supported size")
+		}
+		history = history[1:]
+	}
 }
 
 type subtitleOCRQualityFinding struct {
-	CueID           int      `json:"cueId"`
-	OriginalText    string   `json:"originalText"`
-	Suggestion      string   `json:"suggestion,omitempty"`
-	Status          string   `json:"status"`
-	Reasons         []string `json:"reasons,omitempty"`
-	Evidence        []string `json:"evidence,omitempty"`
-	CandidateSource string   `json:"candidateSource,omitempty"`
-	Baseline        string   `json:"baselineRevision"`
+	CueID                  int      `json:"cueId"`
+	OriginalText           string   `json:"originalText"`
+	Suggestion             string   `json:"suggestion,omitempty"`
+	Status                 string   `json:"status"`
+	Reasons                []string `json:"reasons,omitempty"`
+	Evidence               []string `json:"evidence,omitempty"`
+	CandidateSource        string   `json:"candidateSource,omitempty"`
+	DictionaryRuleIDs      []string `json:"dictionaryRuleIds,omitempty"`
+	DictionaryRuleVersions []int    `json:"dictionaryRuleVersions,omitempty"`
+	Baseline               string   `json:"baselineRevision"`
 }
 
 type subtitleOCRQualityReport struct {
@@ -85,6 +133,8 @@ type subtitleOCRQualityReport struct {
 	BaselineRevision    string                      `json:"baselineRevision"`
 	AnalyzerVersion     string                      `json:"analyzerVersion"`
 	RepairVersion       string                      `json:"repairVersion"`
+	DictionaryLanguage  string                      `json:"dictionaryLanguage,omitempty"`
+	DictionaryRevision  string                      `json:"dictionaryRevision,omitempty"`
 	CleanCount          int                         `json:"cleanCount"`
 	SuspiciousCount     int                         `json:"suspiciousCount"`
 	ReviewCount         int                         `json:"reviewCount"`
@@ -193,6 +243,8 @@ type subtitleOCRCorrectionInput struct {
 	Format              string                      `json:"format"`
 	LogicalTransformKey string                      `json:"logicalTransformKey,omitempty"`
 	BaselineRevision    string                      `json:"baselineRevision"`
+	DictionaryLanguage  string                      `json:"dictionaryLanguage,omitempty"`
+	DictionaryRevision  string                      `json:"dictionaryRevision,omitempty"`
 	Revisions           []publishedSubtitleRevision `json:"revisions,omitempty"`
 	Corrections         []subtitleOCRCorrection     `json:"corrections"`
 }
@@ -247,6 +299,10 @@ func loadOrReconstructPublishedOCRSnapshot(path, format, logicalTransform string
 }
 
 func analyzePublishedOCRQuality(path, format, logicalTransform string) (subtitleOCRQualityReport, error) {
+	return analyzePublishedOCRQualityWithDictionary(path, format, logicalTransform, nil, "")
+}
+
+func analyzePublishedOCRQualityWithDictionary(path, format, logicalTransform string, db *gorm.DB, languageOverride string) (subtitleOCRQualityReport, error) {
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format == "" {
 		format = strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
@@ -257,6 +313,9 @@ func analyzePublishedOCRQuality(path, format, logicalTransform string) (subtitle
 	snapshot, ok := loadOrReconstructPublishedOCRSnapshot(path, format, logicalTransform)
 	if !ok {
 		return subtitleOCRQualityReport{}, fmt.Errorf("published OCR canonical baseline is unavailable; regenerate through the canonical subtitle pipeline")
+	}
+	if err := attachOCRDictionarySnapshot(snapshot, db, languageOverride); err != nil {
+		return subtitleOCRQualityReport{}, err
 	}
 	return analyzeCanonicalOCRSnapshot(snapshot), nil
 }
@@ -312,7 +371,7 @@ func validateDeterministicOCRCorrectionIntents(snapshot *publishedCanonicalOCRSn
 		case "apply":
 			expected := strings.TrimSpace(finding.Suggestion)
 			candidate := strings.TrimSpace(correction.Suggestion)
-			if finding.CandidateSource != "deterministic-confusion-repair" || expected == "" || candidate != expected || strings.TrimSpace(correction.Text) != "" {
+			if (finding.CandidateSource != "deterministic-confusion-repair" && finding.CandidateSource != "contextual-ocr-dictionary") || expected == "" || candidate != expected || strings.TrimSpace(correction.Text) != "" {
 				return fmt.Errorf("OCR correction for cue %d is not the current deterministic suggestion", correction.CueID)
 			}
 		default:
@@ -322,14 +381,22 @@ func validateDeterministicOCRCorrectionIntents(snapshot *publishedCanonicalOCRSn
 	return nil
 }
 
-func correctionProvenanceFor(snapshot *publishedCanonicalOCRSnapshot, corrections []subtitleOCRCorrection) []canonicalOCRCorrectionProvenance {
+func correctionProvenanceFor(snapshot *publishedCanonicalOCRSnapshot, corrections []subtitleOCRCorrection, operationIDs ...string) []canonicalOCRCorrectionProvenance {
 	if snapshot == nil || len(corrections) == 0 {
 		return nil
 	}
 	report := analyzeCanonicalOCRSnapshot(snapshot)
-	sources := make(map[int]string, len(report.Findings))
+	findings := make(map[int]subtitleOCRQualityFinding, len(report.Findings))
 	for _, finding := range report.Findings {
-		sources[finding.CueID] = finding.CandidateSource
+		findings[finding.CueID] = finding
+	}
+	cues := make(map[int]canonicalBitmapSubtitleCue, len(snapshot.Evidence.Cues))
+	for _, cue := range snapshot.Evidence.Cues {
+		cues[cue.SourceOrdinal] = cue
+	}
+	operationID := ""
+	if len(operationIDs) > 0 {
+		operationID = strings.TrimSpace(operationIDs[0])
 	}
 	provenance := make([]canonicalOCRCorrectionProvenance, 0, len(corrections))
 	for _, correction := range corrections {
@@ -340,22 +407,38 @@ func correctionProvenanceFor(snapshot *publishedCanonicalOCRSnapshot, correction
 		if strings.EqualFold(strings.TrimSpace(correction.Action), "apply") {
 			text = strings.TrimSpace(correction.Suggestion)
 		}
-		textHash := ""
-		if text != "" {
-			sum := sha256.Sum256([]byte(text))
-			textHash = hex.EncodeToString(sum[:])
+		if text == "" || strings.EqualFold(strings.TrimSpace(correction.Action), "keep") || strings.EqualFold(strings.TrimSpace(correction.Action), "reject") {
+			continue
 		}
+		finding := findings[correction.CueID]
+		beforeHash := boundedTextHash(cues[correction.CueID].Text)
+		afterHash := boundedTextHash(text)
 		selectedBy := "user"
 		validation := "manual-text"
 		if strings.EqualFold(strings.TrimSpace(correction.Action), "apply") {
 			selectedBy = "deterministic-analyzer"
 			validation = "deterministic-suggestion"
+			if finding.CandidateSource == "contextual-ocr-dictionary" {
+				selectedBy = "contextual-dictionary"
+				validation = "dictionary-and-quality-gate"
+			}
 		}
 		provenance = append(provenance, canonicalOCRCorrectionProvenance{
-			CueID: correction.CueID, Action: strings.ToLower(strings.TrimSpace(correction.Action)), CandidateSource: sources[correction.CueID], TextHash: textHash, Validation: validation, SelectedBy: selectedBy,
+			CueID: correction.CueID, Action: strings.ToLower(strings.TrimSpace(correction.Action)),
+			CandidateSource: finding.CandidateSource, TextHash: afterHash,
+			BeforeTextHash: beforeHash, AfterTextHash: afterHash,
+			DictionaryLanguage: snapshot.DictionaryLanguage, DictionaryRevision: snapshot.DictionaryRevision,
+			DictionaryRuleIDs:      append([]string(nil), finding.DictionaryRuleIDs...),
+			DictionaryRuleVersions: append([]int(nil), finding.DictionaryRuleVersions...),
+			OperationID:            operationID, Validation: validation, SelectedBy: selectedBy,
 		})
 	}
 	return provenance
+}
+
+func boundedTextHash(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
 }
 
 func selectiveOCRCueCapabilityFor(snapshot *publishedCanonicalOCRSnapshot, cue canonicalBitmapSubtitleCue) selectiveOCRCueCapability {
@@ -474,6 +557,10 @@ func loadCanonicalOCRBothSnapshots(paths []string, logicalTransform string) ([]*
 }
 
 func analyzeCanonicalOCRBoth(paths []string, logicalTransform string) (subtitleOCRQualityReport, []*publishedCanonicalOCRSnapshot, error) {
+	return analyzeCanonicalOCRBothWithDictionary(paths, logicalTransform, nil, "")
+}
+
+func analyzeCanonicalOCRBothWithDictionary(paths []string, logicalTransform string, db *gorm.DB, languageOverride string) (subtitleOCRQualityReport, []*publishedCanonicalOCRSnapshot, error) {
 	snapshots, formats, err := loadCanonicalOCRBothSnapshots(paths, logicalTransform)
 	if err != nil {
 		return subtitleOCRQualityReport{}, nil, err
@@ -482,6 +569,9 @@ func analyzeCanonicalOCRBoth(paths []string, logicalTransform string) (subtitleO
 		if !snapshot.CanCorrectLegacy(formats[index], len(snapshots)) {
 			return subtitleOCRQualityReport{}, nil, errors.New("canonical both OCR structural evidence is unavailable")
 		}
+	}
+	if err := attachOCRDictionarySnapshot(snapshots[0], db, languageOverride); err != nil {
+		return subtitleOCRQualityReport{}, nil, err
 	}
 	report := analyzeCanonicalOCRSnapshot(snapshots[0])
 	report.Format = "both"
@@ -539,7 +629,12 @@ func correctedCanonicalOCREvidenceForTranslation(evidence *canonicalOCREvidence)
 // quality path used by #39 before translation sees any cues. Deterministic
 // repairs have already been applied by correctedCanonicalOCREvidenceForTranslation;
 // remaining findings may use only the existing bounded selective OCR seam.
-func prepareCanonicalOCREvidenceForTranslation(ctx context.Context, evidence *canonicalOCREvidence, onProgress OCRProgressFunc) (*canonicalOCREvidence, error) {
+type canonicalOCRDictionaryPreparation struct {
+	DB          *gorm.DB
+	OperationID string
+}
+
+func prepareCanonicalOCREvidenceForTranslation(ctx context.Context, evidence *canonicalOCREvidence, onProgress OCRProgressFunc, preparations ...canonicalOCRDictionaryPreparation) (*canonicalOCREvidence, error) {
 	if ctx == nil {
 		return nil, subtitleOCRFailedError(errors.New("canonical OCR translation preparation requires a context"))
 	}
@@ -552,7 +647,40 @@ func prepareCanonicalOCREvidenceForTranslation(ctx context.Context, evidence *ca
 
 	working := cloneCanonicalOCREvidence(evidence)
 	snapshot := &publishedCanonicalOCRSnapshot{Evidence: *working}
+	var preparation canonicalOCRDictionaryPreparation
+	if len(preparations) > 0 {
+		preparation = preparations[0]
+	}
+	if err := attachOCRDictionarySnapshot(snapshot, preparation.DB, ""); err != nil {
+		return nil, subtitleOCRFailedError(fmt.Errorf("cannot load canonical OCR dictionary: %w", err))
+	}
 	report := analyzeCanonicalOCRSnapshot(snapshot)
+	dictionaryCorrections := make([]subtitleOCRCorrection, 0)
+	for _, finding := range report.Findings {
+		if finding.CandidateSource != "contextual-ocr-dictionary" || finding.Suggestion == "" {
+			continue
+		}
+		cue, ok := canonicalCueByOrdinal(working.Cues, finding.CueID)
+		if !ok || !subtitleOCRCandidateIsMateriallyBetter(cue.Text, finding.Suggestion, working.RequestedLanguage) {
+			continue
+		}
+		dictionaryCorrections = append(dictionaryCorrections, subtitleOCRCorrection{CueID: finding.CueID, Action: "apply", Suggestion: finding.Suggestion})
+	}
+	if len(dictionaryCorrections) > 0 {
+		operationID := strings.TrimSpace(preparation.OperationID)
+		if operationID == "" {
+			operationID = "translation-preparation:" + working.Identity.key()
+		}
+		provenance := correctionProvenanceFor(snapshot, dictionaryCorrections, operationID)
+		corrected, err := applySubtitleOCRCorrections(working.Cues, dictionaryCorrections)
+		if err != nil {
+			return nil, subtitleOCRFailedError(fmt.Errorf("canonical OCR dictionary correction failed: %w", err))
+		}
+		working.Cues = corrected
+		working.CorrectionProvenance = append(working.CorrectionProvenance, provenance...)
+		snapshot.Evidence = *working
+		report = analyzeCanonicalOCRSnapshot(snapshot)
+	}
 	needsSelective := false
 	for _, finding := range report.Findings {
 		if finding.Status != subtitleOCRQualityStatusClean {
@@ -621,6 +749,15 @@ func prepareCanonicalOCREvidenceForTranslation(ctx context.Context, evidence *ca
 		}
 	}
 	return working, nil
+}
+
+func canonicalCueByOrdinal(cues []canonicalBitmapSubtitleCue, ordinal int) (canonicalBitmapSubtitleCue, bool) {
+	for _, cue := range cues {
+		if cue.SourceOrdinal == ordinal {
+			return cue, true
+		}
+	}
+	return canonicalBitmapSubtitleCue{}, false
 }
 
 func correctedCueByOrdinal(cues []canonicalBitmapSubtitleCue, ordinal int) canonicalBitmapSubtitleCue {
@@ -736,7 +873,10 @@ func publishCorrectedSubtitleFiles(
 		for index, path := range paths {
 			private := filepath.Join(rollbackRoot, fmt.Sprintf("%s-%d", filepath.Base(path), index))
 			if err := os.WriteFile(private, oldContent[index], 0o600); err == nil {
-				_ = copyPublishedFile(private, path, true)
+				if err := copyPublishedFile(private, path, true); err == nil {
+					restoredAt := time.Unix(0, oldRevisions[index].ModifiedAtUnixNano)
+					_ = os.Chtimes(path, restoredAt, restoredAt)
+				}
 			}
 			_ = os.Remove(private)
 			owner := publishedSubtitleOwnerIdentity(path, formats[index], snapshots[index].LogicalTransformKey)
@@ -761,7 +901,7 @@ func publishCorrectedSubtitleFiles(
 		previous := oldRevisions[index].key()
 		// The complete output set has crossed the publication barrier. A later
 		// cancellation must not roll back a committed publication.
-		if err := commitPublishedCanonicalOCRSnapshot(context.Background(), paths[index], formats[index], snapshot.LogicalTransformKey, &snapshot.Evidence, operationID, previous); err != nil {
+		if err := commitPublishedCanonicalOCRSnapshot(context.Background(), paths[index], formats[index], snapshot.LogicalTransformKey, &snapshot.Evidence, operationID, previous, snapshot.History); err != nil {
 			rollback()
 			return fmt.Errorf("cannot commit corrected OCR baseline: %w", err)
 		}
@@ -780,8 +920,13 @@ func runSubtitleOCRCorrectionOperation(
 	ctx context.Context,
 	operationID, workspace string,
 	input subtitleOCRCorrectionInput,
+	databases ...*gorm.DB,
 ) {
 	defer cleanupSubtitleOperationWorkspace(workspace)
+	var dictionaryDB *gorm.DB
+	if len(databases) > 0 {
+		dictionaryDB = databases[0]
+	}
 	paths := subtitleOCRPaths(input.SidecarPath, input.SidecarPaths)
 	oldRevisions, err := validateSubtitleQualityCorrectionInput(input)
 	if err != nil {
@@ -832,6 +977,8 @@ func runSubtitleOCRCorrectionOperation(
 		})
 		return
 	}
+	ocrDictionaryRevisionMu.RLock()
+	defer ocrDictionaryRevisionMu.RUnlock()
 	for index, path := range paths {
 		if snapshots[index] == nil {
 			snapshot, ok := loadOrReconstructPublishedOCRSnapshot(path, formats[index], input.LogicalTransformKey)
@@ -855,6 +1002,34 @@ func runSubtitleOCRCorrectionOperation(
 			})
 			return
 		}
+		if err := attachOCRDictionarySnapshot(snapshots[index], dictionaryDB, input.DictionaryLanguage); err != nil {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "error"
+				operation.Phase = "error"
+				operation.Message = "OCR correction failed"
+				operation.Error = err.Error()
+			})
+			return
+		}
+		if input.DictionaryRevision != "" && snapshots[index].DictionaryRevision != input.DictionaryRevision {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "error"
+				operation.Phase = "error"
+				operation.Message = "Stale OCR dictionary preview"
+				operation.Error = "OCR dictionary changed after preview; analyze the artifact again"
+			})
+			return
+		}
+		snapshots[index].History, err = appendedPublishedCanonicalOCRHistory(snapshots[index])
+		if err != nil {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "error"
+				operation.Phase = "error"
+				operation.Message = "OCR correction failed"
+				operation.Error = err.Error()
+			})
+			return
+		}
 	}
 	for _, snapshot := range snapshots {
 		if err := validateDeterministicOCRCorrectionIntents(snapshot, input.Corrections); err != nil {
@@ -868,7 +1043,11 @@ func runSubtitleOCRCorrectionOperation(
 		}
 	}
 	for _, snapshot := range snapshots {
-		snapshot.Evidence.CorrectionProvenance = correctionProvenanceFor(snapshot, input.Corrections)
+		if snapshot.Evidence.DictionaryLanguage == "" && snapshot.DictionaryLanguage != "" {
+			snapshot.Evidence.DictionaryLanguage = snapshot.DictionaryLanguage
+			snapshot.Evidence.DictionaryLanguageSource = snapshot.DictionaryLanguageSource
+		}
+		snapshot.Evidence.CorrectionProvenance = correctionProvenanceFor(snapshot, input.Corrections, operationID)
 	}
 	cues, err := applySubtitleOCRCorrections(snapshots[0].Evidence.Cues, input.Corrections)
 	if err != nil {
@@ -914,8 +1093,12 @@ func runSubtitleOCRCorrectionOperation(
 	})
 }
 
-func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace string, input subtitleOCRAnalyzeInput) {
+func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace string, input subtitleOCRAnalyzeInput, databases ...*gorm.DB) {
 	defer cleanupSubtitleOperationWorkspace(workspace)
+	var dictionaryDB *gorm.DB
+	if len(databases) > 0 {
+		dictionaryDB = databases[0]
+	}
 	paths := subtitleOCRPaths(input.SidecarPath, input.SidecarPaths)
 	if len(paths) == 0 {
 		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
@@ -935,7 +1118,7 @@ func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace
 			})
 			return
 		}
-		report, snapshots, err := analyzeCanonicalOCRBoth(paths, input.LogicalTransformKey)
+		report, snapshots, err := analyzeCanonicalOCRBothWithDictionary(paths, input.LogicalTransformKey, dictionaryDB, "")
 		if err == nil && len(snapshots) > 0 {
 			report = enrichSubtitleOCRReportWithSelective(ctx, workspace, snapshots[0], report)
 		}
@@ -975,7 +1158,7 @@ func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace
 			})
 			return
 		}
-		report, err := analyzePublishedOCRQuality(path, input.Format, input.LogicalTransformKey)
+		report, err := analyzePublishedOCRQualityWithDictionary(path, input.Format, input.LogicalTransformKey, dictionaryDB, "")
 		if err != nil {
 			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
 				operation.Status = "error"
@@ -986,6 +1169,15 @@ func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace
 			return
 		}
 		if snapshot, ok := loadOrReconstructPublishedOCRSnapshot(path, report.Format, input.LogicalTransformKey); ok {
+			if err := attachOCRDictionarySnapshot(snapshot, dictionaryDB, ""); err != nil {
+				updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+					operation.Status = "error"
+					operation.Phase = "error"
+					operation.Message = "OCR analysis failed"
+					operation.Error = err.Error()
+				})
+				return
+			}
 			report = enrichSubtitleOCRReportWithSelective(ctx, workspace, snapshot, report)
 		}
 		if index == 0 {
@@ -1017,7 +1209,7 @@ func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace
 	})
 }
 
-func startSubtitleOCRAnalysisOperation(input subtitleOCRAnalyzeInput) (string, error) {
+func startSubtitleOCRAnalysisOperation(input subtitleOCRAnalyzeInput, databases ...*gorm.DB) (string, error) {
 	paths := subtitleOCRPaths(input.SidecarPath, input.SidecarPaths)
 	validated, err := validateSubtitleOCRSidecarPaths(input.MediaPath, paths)
 	if err != nil {
@@ -1044,7 +1236,7 @@ func startSubtitleOCRAnalysisOperation(input subtitleOCRAnalyzeInput) (string, e
 	subtitleExtractionOperations.Unlock()
 	go func() {
 		defer cancel()
-		runSubtitleOCRAnalysisOperation(workCtx, operationID, workspace, input)
+		runSubtitleOCRAnalysisOperation(workCtx, operationID, workspace, input, databases...)
 	}()
 	return operationID, nil
 }
@@ -1059,7 +1251,7 @@ func (snapshot *publishedCanonicalOCRSnapshot) CanCorrectLegacy(format string, o
 	return strings.EqualFold(format, "srt") && outputCount == 1
 }
 
-func startSubtitleOCRCorrectionOperation(input subtitleOCRCorrectionInput) (string, error) {
+func startSubtitleOCRCorrectionOperation(input subtitleOCRCorrectionInput, databases ...*gorm.DB) (string, error) {
 	paths := subtitleOCRPaths(input.SidecarPath, input.SidecarPaths)
 	validated, err := validateSubtitleOCRSidecarPaths(input.MediaPath, paths)
 	if err != nil {
@@ -1082,7 +1274,7 @@ func startSubtitleOCRCorrectionOperation(input subtitleOCRCorrectionInput) (stri
 	subtitleExtractionOperations.Unlock()
 	go func() {
 		defer cancel()
-		runSubtitleOCRCorrectionOperation(workCtx, operationID, workspace, input)
+		runSubtitleOCRCorrectionOperation(workCtx, operationID, workspace, input, databases...)
 	}()
 	return operationID, nil
 }
@@ -1102,7 +1294,7 @@ func (h AssetHandler) AnalyzeSubtitleOCR(c *gin.Context) {
 		input.SidecarPath = paths[0]
 		input.SidecarPaths = paths
 	}
-	operationID, err := startSubtitleOCRAnalysisOperation(input)
+	operationID, err := startSubtitleOCRAnalysisOperation(input, h.db)
 	if err != nil {
 		c.JSON(409, gin.H{"error": err.Error()})
 		return
@@ -1129,7 +1321,7 @@ func (h AssetHandler) CorrectSubtitleOCR(c *gin.Context) {
 		c.JSON(409, gin.H{"error": err.Error()})
 		return
 	}
-	operationID, err := startSubtitleOCRCorrectionOperation(input)
+	operationID, err := startSubtitleOCRCorrectionOperation(input, h.db)
 	if err != nil {
 		c.JSON(409, gin.H{"error": err.Error()})
 		return
@@ -1408,6 +1600,7 @@ func commitPublishedCanonicalOCRSnapshot(
 	path, format, logicalTransform string,
 	evidence *canonicalOCREvidence,
 	operationID, previousRevision string,
+	history ...[]publishedCanonicalOCRHistoryEntry,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1420,6 +1613,10 @@ func commitPublishedCanonicalOCRSnapshot(
 		return err
 	}
 	owner := publishedSubtitleOwnerIdentity(path, format, logicalTransform)
+	var predecessorHistory []publishedCanonicalOCRHistoryEntry
+	if len(history) > 0 {
+		predecessorHistory = clonePublishedCanonicalOCRHistory(history[0])
+	}
 	snapshot := publishedCanonicalOCRSnapshot{
 		Version:             1,
 		OwnerIdentity:       owner,
@@ -1436,6 +1633,7 @@ func commitPublishedCanonicalOCRSnapshot(
 		PreviousRevision:    strings.TrimSpace(previousRevision),
 		CorrectionOperation: strings.TrimSpace(operationID),
 		Integrity:           "published-canonical-cues-v1",
+		History:             predecessorHistory,
 	}
 	encoded, err := json.Marshal(snapshot)
 	if err != nil {
@@ -1464,6 +1662,15 @@ func commitPublishedCanonicalOCRSnapshot(
 	}
 	prunePublishedCanonicalSnapshots(root)
 	return nil
+}
+
+func clonePublishedCanonicalOCRHistory(history []publishedCanonicalOCRHistoryEntry) []publishedCanonicalOCRHistoryEntry {
+	cloned := make([]publishedCanonicalOCRHistoryEntry, len(history))
+	for index, entry := range history {
+		cloned[index] = entry
+		cloned[index].Evidence = *cloneCanonicalOCREvidence(&entry.Evidence)
+	}
+	return cloned
 }
 
 func prunePublishedCanonicalSnapshots(root string) {
@@ -1572,6 +1779,8 @@ func analyzeCanonicalOCRSnapshot(snapshot *publishedCanonicalOCRSnapshot) subtit
 		BaselineRevision:    snapshot.Revision.key(),
 		AnalyzerVersion:     subtitleOCRQualityVersion,
 		RepairVersion:       subtitleOCRRepairVersion,
+		DictionaryLanguage:  snapshot.DictionaryLanguage,
+		DictionaryRevision:  snapshot.DictionaryRevision,
 		LegacyTextOnly:      snapshot.Evidence.Integrity == "legacy-text-cues-v1",
 		CanCorrect:          snapshot.Evidence.Integrity != "legacy-text-cues-v1" || strings.EqualFold(snapshot.Format, "srt"),
 		Findings:            make([]subtitleOCRQualityFinding, 0, len(snapshot.Evidence.Cues)),
@@ -1583,13 +1792,26 @@ func analyzeCanonicalOCRSnapshot(snapshot *publishedCanonicalOCRSnapshot) subtit
 			finding.Status = subtitleOCRQualityStatusReview
 			finding.Reasons = append(finding.Reasons, "replacement character")
 		}
-		if confusion := ocrConfusionCount(cue.Text, snapshot.Evidence.RequestedLanguage); confusion > 0 {
+		confusion := ocrConfusionCount(cue.Text, snapshot.Evidence.RequestedLanguage)
+		if confusion > 0 {
 			finding.Status = subtitleOCRQualityStatusSuspect
 			finding.Reasons = append(finding.Reasons, "known OCR confusion pattern")
 			finding.Evidence = append(finding.Evidence, fmt.Sprintf("%d bounded confusion signal(s)", confusion))
-			if suggestion, ok := deterministicOCRSuggestion(cue.Text, snapshot.Evidence.RequestedLanguage); ok {
+		}
+		dictionaryResult := matchOCRDictionaryText(cue.Text, snapshot.DictionaryLanguage, snapshot.DictionaryRules)
+		if confusion > 0 || len(dictionaryResult.Matches) > 0 {
+			if suggestion, ok, source, ruleIDs, ruleVersions := deterministicOCRSuggestionWithDictionary(cue.Text, snapshot.Evidence.RequestedLanguage, snapshot.DictionaryLanguage, snapshot.DictionaryRules); ok {
 				finding.Suggestion = suggestion
-				finding.CandidateSource = "deterministic-confusion-repair"
+				finding.CandidateSource = source
+				finding.DictionaryRuleIDs = ruleIDs
+				finding.DictionaryRuleVersions = ruleVersions
+			}
+		}
+		if len(dictionaryResult.Ambiguous) > 0 {
+			finding.Status = subtitleOCRQualityStatusReview
+			finding.Reasons = append(finding.Reasons, "conflicting contextual OCR dictionary rules")
+			for _, conflict := range dictionaryResult.Ambiguous {
+				finding.Evidence = append(finding.Evidence, "conflicting rules: "+strings.Join(conflict.RuleIDs, ", "))
 			}
 		}
 		if strings.ContainsAny(lower, "|{}[]") {
@@ -1651,11 +1873,32 @@ func enrichSubtitleOCRReportWithSelective(ctx context.Context, workspace string,
 }
 
 func deterministicOCRSuggestion(text, language string) (string, bool) {
+	candidate, ok, _, _, _ := deterministicOCRSuggestionWithDictionary(text, language, "", nil)
+	return candidate, ok
+}
+
+func deterministicOCRSuggestionWithDictionary(text, language, dictionaryLanguage string, rules []models.OCRDictionaryEntry) (string, bool, string, []string, []int) {
 	if strings.Contains(text, "{\\") || strings.TrimSpace(text) == "" {
-		return "", false
+		return "", false, "", nil, nil
 	}
 	changed := false
-	candidate := ocrConfusionTokenPattern.ReplaceAllStringFunc(text, func(token string) string {
+	candidate := text
+	source := "deterministic-confusion-repair"
+	var ruleIDs []string
+	var ruleVersions []int
+	if canonicalLanguage, ok := strictOCRDictionaryLanguage(dictionaryLanguage); ok {
+		matched := matchOCRDictionaryText(candidate, canonicalLanguage, rules)
+		if len(matched.Matches) > 0 {
+			candidate = matched.Text
+			changed = candidate != text
+			source = "contextual-ocr-dictionary"
+			for _, match := range matched.Matches {
+				ruleIDs = append(ruleIDs, match.RuleIDs...)
+				ruleVersions = append(ruleVersions, match.RuleVersions...)
+			}
+		}
+	}
+	candidate = ocrConfusionTokenPattern.ReplaceAllStringFunc(candidate, func(token string) string {
 		replacement, ok := ocrDictionaryCandidate(token, language)
 		if !ok {
 			return token
@@ -1664,7 +1907,7 @@ func deterministicOCRSuggestion(text, language string) (string, bool) {
 		return replacement
 	})
 	if !changed || candidate == text || subtitleOCRScoreForLanguage(candidate, language) <= subtitleOCRScoreForLanguage(text, language) {
-		return "", false
+		return "", false, "", nil, nil
 	}
-	return candidate, true
+	return candidate, true, source, ruleIDs, ruleVersions
 }
