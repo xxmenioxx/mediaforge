@@ -59,14 +59,15 @@ func TestOllamaTranslationProviderUsesConfiguredChatEndpointAndContract(t *testi
 						Role    string `json:"role"`
 						Content string `json:"content"`
 					} `json:"messages"`
-					Stream bool   `json:"stream"`
-					Format string `json:"format"`
+					Stream    bool   `json:"stream"`
+					Format    string `json:"format"`
+					KeepAlive string `json:"keep_alive"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Errorf("decode request: %v", err)
 					return
 				}
-				if request.Model != "qwen2.5:7b" || request.Stream || request.Format != "json" || len(request.Messages) != 1 || request.Messages[0].Role != "user" {
+				if request.Model != "qwen2.5:7b" || request.Stream || request.Format != "json" || request.KeepAlive != "30m" || len(request.Messages) != 1 || request.Messages[0].Role != "user" {
 					t.Errorf("unexpected Ollama request envelope: %#v", request)
 				}
 				content := request.Messages[0].Content

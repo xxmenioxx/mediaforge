@@ -10,7 +10,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 )
 
@@ -248,6 +251,16 @@ func (h AssetHandler) StartSubtitleTranslation(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": reason})
 		return
 	}
+	protectedRequested := modelLifecycleEnabled()
+	if protectedRequested && !h.aiModelLifecycle.protectedEnabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "protected AI model lifecycle is enabled but unavailable"})
+		return
+	}
+	protected := protectedRequested
+	if protected && settings.Provider != translationProviderOllama {
+		c.JSON(http.StatusConflict, gin.H{"error": "protected Translation lifecycle currently requires the configured Ollama provider"})
+		return
+	}
 	provider, err := h.translationProviderForSettings(settings)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
@@ -277,10 +290,16 @@ func (h AssetHandler) StartSubtitleTranslation(c *gin.Context) {
 	if source.Type == "embedded" && source.StreamIndex != nil {
 		request.SourceReference = strconv.Itoa(*source.StreamIndex)
 	}
-	runner := func(ctx context.Context, operationID, workspace string, operationRequest subtitleTranslationOperationRequest) error {
-		return h.runAssetInfoSubtitleTranslation(ctx, operationID, workspace, operationRequest, provider, settings)
+	configurationRevision := providerConfigurationRevision(settings.OllamaEndpoint, settings.OllamaModel)
+	workflowID := translationAdmissionWorkflowID(request)
+	runnerForOperation := h.subtitleTranslationRunner(request, settings, provider, configurationRevision, workflowID, protected)
+	var beforeLaunch func(string, time.Time) error
+	if protected {
+		beforeLaunch = func(operationID string, deadline time.Time) error {
+			return createTranslationCheckpoint(h.db, operationID, request, configurationRevision, deadline)
+		}
 	}
-	operationID, err := startSubtitleTranslationOperation(request, runner)
+	operationID, err := startSubtitleTranslationOperationWithIdentity(request, runnerForOperation, "", time.Now().Add(subtitleOperationTimeout), beforeLaunch)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
 		return
@@ -289,6 +308,106 @@ func (h AssetHandler) StartSubtitleTranslation(c *gin.Context) {
 	operation := cloneSubtitleExtractionOperationSnapshot(subtitleExtractionOperations.items[operationID])
 	subtitleExtractionOperations.RUnlock()
 	c.JSON(http.StatusAccepted, gin.H{"operation": operation})
+}
+
+func (h AssetHandler) subtitleTranslationRunner(
+	request subtitleTranslationOperationRequest,
+	settings translationSettings,
+	provider TranslationProvider,
+	configurationRevision, workflowID string,
+	protected bool,
+) subtitleTranslationRunner {
+	return func(ctx context.Context, operationID, workspace string, operationRequest subtitleTranslationOperationRequest) error {
+		operationProvider := provider
+		if protected {
+			var checkpointPhaseMu sync.Mutex
+			var checkpointPhaseErr error
+			validateBeforeInference := func(ctx context.Context) error {
+				current := loadTranslationSettings(h.db)
+				if current.Provider != translationProviderOllama || current.OllamaModel != request.ProviderModel || providerConfigurationRevision(current.OllamaEndpoint, current.OllamaModel) != configurationRevision {
+					return staleTranslationSourceError("Translation provider configuration changed while waiting")
+				}
+				_, currentSource, currentStream, err := h.resolveTranslationExecutionSource(ctx, request)
+				if err != nil || currentSource.SourceRevision != request.SourceRevision {
+					return staleTranslationSourceError("subtitle source changed while waiting for model readiness")
+				}
+				revision, err := translationSourceRevisionForResolvedSource(currentSource, currentStream)
+				if err != nil || revision.key() != request.SourceRevision {
+					return staleTranslationSourceError("subtitle source revision changed while waiting for model readiness")
+				}
+				return ctx.Err()
+			}
+			phaseUpdate := func(phase, message string) {
+				if phase == "WAITING_FOR_RESOURCES" || phase == "WAITING_FOR_MODEL" || phase == "READY" || phase == "FAILED" {
+					if err := updateTranslationCheckpointPhase(h.db, operationID, phase, message); err != nil {
+						checkpointPhaseMu.Lock()
+						if checkpointPhaseErr == nil {
+							checkpointPhaseErr = err
+						}
+						checkpointPhaseMu.Unlock()
+					}
+				}
+				updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+					if operation.Kind == subtitleTranslationOperationKind && operation.Status == "running" {
+						operation.Phase = strings.ToLower(phase)
+						operation.Message = message
+					}
+				})
+			}
+			operationProvider = lifecycleTranslationProvider{
+				manager: h.aiModelLifecycle.manager, provider: provider, endpoint: settings.OllamaEndpoint,
+				configurationRevision: configurationRevision, model: operationRequest.ProviderModel,
+				operationID: operationID, workflowID: workflowID, validate: validateBeforeInference,
+				markInferenceStarted: func() error {
+					checkpointPhaseMu.Lock()
+					phaseErr := checkpointPhaseErr
+					checkpointPhaseMu.Unlock()
+					if phaseErr != nil {
+						return errors.New("could not persist the Translation readiness checkpoint")
+					}
+					return markTranslationInferenceStarted(h.db, operationID, configurationRevision, operationRequest.ProviderModel)
+				},
+				onInferenceError: func() { markTranslationRecoveryRequired(h.db, operationID, "provider_inference_outcome_uncertain") },
+				onPhase:          phaseUpdate,
+			}
+		}
+		err := h.runAssetInfoSubtitleTranslation(ctx, operationID, workspace, operationRequest, operationProvider, settings)
+		if protected && err != nil {
+			var checkpoint models.TranslationOperationCheckpoint
+			if h.db.First(&checkpoint, "operation_id = ?", operationID).Error == nil {
+				if checkpoint.Cancelled || errors.Is(ctx.Err(), context.Canceled) {
+					// The durable cancellation flag wins over readiness and failure updates.
+				} else if checkpoint.InferenceStarted {
+					markTranslationRecoveryRequired(h.db, operationID, "inference_or_translation_outcome_uncertain")
+					if errors.Is(err, errResourceAdmissionUnavailable) {
+						err = errors.New("resource admission became unavailable after inference started; Translation requires recovery")
+					}
+				} else if errors.Is(err, errResourceAdmissionUnavailable) {
+					_ = updateTranslationCheckpointPhase(h.db, operationID, "WAITING_FOR_RESOURCES", boundedLifecycleReason(err.Error()))
+					updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+						if operation.Status == "running" {
+							operation.Phase = "waiting_for_resources"
+							operation.Message = "Waiting for resource admission; no model request was sent"
+						}
+					})
+					if cleanupErr := cleanupSubtitleOperationWorkspace(workspace); cleanupErr != nil {
+						updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+							operation.Message = "Waiting for resource admission; temporary workspace cleanup needs attention"
+						})
+					}
+					<-ctx.Done()
+					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						_ = updateTranslationCheckpointPhase(h.db, operationID, "FAILED", "resource_admission_wait_deadline_expired")
+						return errors.New("Translation resource admission wait deadline expired")
+					}
+					return ctx.Err()
+				} else {
+					_ = updateTranslationCheckpointPhase(h.db, operationID, "FAILED", "translation_failed_before_inference")
+				}
+			}
+		}
+		return err
+	}
 }
 
 func (h AssetHandler) retrySubtitleTranslation(c *gin.Context) {
@@ -309,6 +428,16 @@ func (h AssetHandler) retrySubtitleTranslation(c *gin.Context) {
 	available, reason := translationCapabilityAvailability(settings)
 	if !available {
 		c.JSON(http.StatusConflict, gin.H{"error": reason})
+		return
+	}
+	protectedRequested := modelLifecycleEnabled()
+	if protectedRequested && !h.aiModelLifecycle.protectedEnabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "protected AI model lifecycle is enabled but unavailable"})
+		return
+	}
+	protected := protectedRequested
+	if protected && settings.Provider != translationProviderOllama {
+		c.JSON(http.StatusConflict, gin.H{"error": "protected Translation lifecycle currently requires the configured Ollama provider"})
 		return
 	}
 	provider, err := h.translationProviderForSettings(settings)
@@ -355,10 +484,16 @@ func (h AssetHandler) retrySubtitleTranslation(c *gin.Context) {
 	} else if source.StreamIndex != nil {
 		freshRequest.SourceReference = strconv.Itoa(*source.StreamIndex)
 	}
-	runner := func(ctx context.Context, retryID, workspace string, request subtitleTranslationOperationRequest) error {
-		return h.runAssetInfoSubtitleTranslation(ctx, retryID, workspace, request, provider, settings)
+	configurationRevision := providerConfigurationRevision(settings.OllamaEndpoint, settings.OllamaModel)
+	workflowID := translationAdmissionWorkflowID(freshRequest)
+	runner := h.subtitleTranslationRunner(freshRequest, settings, provider, configurationRevision, workflowID, protected)
+	var beforeLaunch func(string, time.Time) error
+	if protected {
+		beforeLaunch = func(newID string, deadline time.Time) error {
+			return createTranslationCheckpoint(h.db, newID, freshRequest, configurationRevision, deadline)
+		}
 	}
-	newOperationID, err := retrySubtitleTranslationOperationWithRequest(operationID, freshRequest, runner)
+	newOperationID, err := retrySubtitleTranslationOperationWithIdentity(operationID, freshRequest, runner, time.Now().Add(subtitleOperationTimeout), beforeLaunch)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
 		return
@@ -372,6 +507,9 @@ func (h AssetHandler) retrySubtitleTranslation(c *gin.Context) {
 func (h AssetHandler) translationProviderForSettings(settings translationSettings) (TranslationProvider, error) {
 	if h.translationProviderFactory != nil {
 		return h.translationProviderFactory(settings)
+	}
+	if h.ollamaHTTPClient != nil {
+		return translationProviderForSettingsWithClient(settings, h.ollamaHTTPClient)
 	}
 	return translationProviderForSettings(settings)
 }
@@ -470,6 +608,7 @@ func (h AssetHandler) runAssetInfoSubtitleTranslation(
 		return err
 	}
 	updateSubtitleTranslationProgress(operationID, "publishing", -1, -1, "Publishing translated subtitles")
+	protected := h.aiModelLifecycle.protectedEnabled()
 	publishedArtifacts, err := publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
 		Ctx:            ctx,
 		OperationID:    operationID,
@@ -479,6 +618,23 @@ func (h AssetHandler) runAssetInfoSubtitleTranslation(
 			return h.recheckAssetInfoTranslationSource(ctx, request, expected)
 		},
 		Targets: targets,
+		PreparePublication: func(targets []subtitleTranslationPublicationTarget) error {
+			if !protected {
+				return nil
+			}
+			return prepareTranslationPublicationIntent(h.db, operationID, targets)
+		},
+		CommitPublication: func([]SubtitleArtifact) error {
+			if !protected {
+				return nil
+			}
+			return commitTranslationPublication(h.db, operationID)
+		},
+		OnRecoveryRequired: func(reason string) {
+			if protected {
+				markTranslationRecoveryRequired(h.db, operationID, reason)
+			}
+		},
 	})
 	if err == nil {
 		setSubtitleTranslationResult(operationID, publishedArtifacts)

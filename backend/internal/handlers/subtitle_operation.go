@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -653,6 +654,7 @@ func (h *AssetHandler) CancelSubtitleExtractionOperation(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "operation id is required"})
 		return
 	}
+	_, checkpointErr := markTranslationCancelledIfPresent(h.db, id)
 
 	// Every subtitle publisher waits on subtitlePublicationMu and checks its
 	// context before the final source recheck. Signal cancellation before taking
@@ -678,6 +680,10 @@ func (h *AssetHandler) CancelSubtitleExtractionOperation(c *gin.Context) {
 	}
 	snapshot := cloneSubtitleExtractionOperationSnapshot(operation)
 	subtitleExtractionOperations.Unlock()
+	if checkpointErr != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Translation cancellation could not be durably recorded"})
+		return
+	}
 
 	if snapshot.Status == "running" {
 		c.JSON(202, snapshot)

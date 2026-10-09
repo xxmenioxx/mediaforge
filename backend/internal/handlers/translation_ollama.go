@@ -16,6 +16,7 @@ import (
 
 const (
 	ollamaTranslationHTTPTimeout     = 60 * time.Second
+	ollamaModelKeepAlive             = "30m"
 	ollamaTranslationMaxRequestBody  = 2 * 1024 * 1024
 	ollamaTranslationMaxResponseBody = 2 * 1024 * 1024
 	ollamaReadinessMaxResponseBody   = 256 * 1024
@@ -31,10 +32,11 @@ type ollamaTranslationProvider struct {
 }
 
 type ollamaChatRequest struct {
-	Model    string              `json:"model"`
-	Messages []ollamaChatMessage `json:"messages"`
-	Stream   bool                `json:"stream"`
-	Format   string              `json:"format"`
+	Model     string              `json:"model"`
+	Messages  []ollamaChatMessage `json:"messages"`
+	Stream    bool                `json:"stream"`
+	Format    string              `json:"format"`
+	KeepAlive string              `json:"keep_alive"`
 }
 
 type ollamaChatMessage struct {
@@ -237,8 +239,9 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 			Role:    "user",
 			Content: prompt,
 		}},
-		Stream: false,
-		Format: "json",
+		Stream:    false,
+		Format:    "json",
+		KeepAlive: ollamaModelKeepAlive,
 	}
 	encodedRequest, err := json.Marshal(requestBody)
 	if err != nil {

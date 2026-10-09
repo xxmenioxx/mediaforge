@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/anuelvs/mvforge/backend/internal/airesource"
 	"github.com/anuelvs/mvforge/backend/internal/applog"
 	"github.com/anuelvs/mvforge/backend/internal/handlers"
 	"github.com/gin-contrib/cors"
@@ -33,7 +34,10 @@ func New(db *gorm.DB) *gin.Engine {
 
 	libraries := handlers.NewLibraryHandler(db)
 	logs := handlers.NewLogHandler(db)
-	assets := handlers.NewAssetHandler(db)
+	resourceAdmission := airesource.NewService(db)
+	ollamaHTTPClient := handlers.NewOllamaProviderHTTPClient()
+	aiModelLifecycle := handlers.NewAIModelLifecycle(db, resourceAdmission, ollamaHTTPClient)
+	assets := handlers.NewAssetHandlerWithLifecycle(db, aiModelLifecycle)
 	advisor := handlers.NewAdvisorHandler(db)
 	paths := handlers.NewPathHandler(db)
 	profiles := handlers.NewProfileHandler(db)
@@ -43,7 +47,7 @@ func New(db *gorm.DB) *gin.Engine {
 	queue := handlers.NewQueueHandler(db)
 	executionPlans := handlers.NewExecutionPlanHandler(db)
 	scanner := handlers.NewScannerHandler(db)
-	settings := handlers.NewSettingsHandler(db)
+	settings := handlers.NewSettingsHandlerWithLifecycle(db, resourceAdmission, aiModelLifecycle)
 	jellyfin := handlers.NewJellyfinHandler(db)
 	validation := handlers.NewValidationHandler(db)
 	imports := handlers.NewImportHandler(db)
@@ -214,6 +218,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/settings/ollama/test-connection", settings.TestOllamaConnection)
 		api.GET("/settings/ollama/models", settings.ListOllamaModels)
 		api.POST("/settings/ollama/model-readiness", settings.TestOllamaModelReadiness)
+		api.GET("/settings/ollama/runtime", settings.OllamaRuntimeStatus)
 		api.POST("/settings/jellyfin/test-connection", settings.TestJellyfinConnection)
 		api.GET("/settings/jellyfin/state", settings.JellyfinIntegrationState)
 		api.GET("/jellyfin/outcomes", jellyfin.Outcomes)

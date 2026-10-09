@@ -33,6 +33,8 @@ type AssetHandler struct {
 	db                         *gorm.DB
 	trackMaintenanceRuntime    *trackMaintenanceRuntime
 	translationProviderFactory func(translationSettings) (TranslationProvider, error)
+	aiModelLifecycle           *AIModelLifecycle
+	ollamaHTTPClient           *http.Client
 }
 
 type SubtitleExtractionResult struct {
@@ -533,6 +535,16 @@ func NewAssetHandler(db *gorm.DB) AssetHandler {
 	recoverInterruptedTrackMaintenance(db)
 	recoverInterruptedTestEncodes(db)
 	return AssetHandler{db: db}
+}
+
+func NewAssetHandlerWithLifecycle(db *gorm.DB, lifecycle *AIModelLifecycle) AssetHandler {
+	handler := NewAssetHandler(db)
+	handler.aiModelLifecycle = lifecycle
+	if lifecycle != nil && lifecycle.manager != nil {
+		handler.ollamaHTTPClient = lifecycle.manager.providerAPI.client
+	}
+	handler.recoverProtectedTranslationOperations()
+	return handler
 }
 
 func (h AssetHandler) List(c *gin.Context) {

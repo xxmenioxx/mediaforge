@@ -139,6 +139,16 @@ func startSubtitleTranslationOperation(
 	request subtitleTranslationOperationRequest,
 	runner subtitleTranslationRunner,
 ) (string, error) {
+	return startSubtitleTranslationOperationWithIdentity(request, runner, "", time.Time{}, nil)
+}
+
+func startSubtitleTranslationOperationWithIdentity(
+	request subtitleTranslationOperationRequest,
+	runner subtitleTranslationRunner,
+	requestedOperationID string,
+	deadline time.Time,
+	beforeLaunch func(string, time.Time) error,
+) (string, error) {
 	if runner == nil {
 		return "", errors.New("translation operation runner is required")
 	}
@@ -155,9 +165,25 @@ func startSubtitleTranslationOperation(
 		return "", fmt.Errorf("cannot create translation workspace: %w", err)
 	}
 
-	operationID := fmt.Sprintf("subtitle-translation-%d", time.Now().UnixNano())
-	workCtx, cancel := context.WithTimeout(context.Background(), subtitleOperationTimeout)
 	now := time.Now()
+	operationID := strings.TrimSpace(requestedOperationID)
+	if operationID == "" {
+		operationID = fmt.Sprintf("subtitle-translation-%d", now.UnixNano())
+	}
+	if deadline.IsZero() {
+		deadline = now.Add(subtitleOperationTimeout)
+	}
+	if !deadline.After(now) {
+		_ = cleanupSubtitleOperationWorkspace(workspace)
+		return "", errors.New("subtitle translation operation deadline has expired")
+	}
+	if beforeLaunch != nil {
+		if err := beforeLaunch(operationID, deadline); err != nil {
+			_ = cleanupSubtitleOperationWorkspace(workspace)
+			return "", err
+		}
+	}
+	workCtx, cancel := context.WithDeadline(context.Background(), deadline)
 	requestSnapshot := request
 	operation := &subtitleExtractionOperation{
 		ID:                     operationID,
@@ -619,8 +645,18 @@ func retrySubtitleTranslationOperationWithRequest(
 	request subtitleTranslationOperationRequest,
 	runner subtitleTranslationRunner,
 ) (string, error) {
+	return retrySubtitleTranslationOperationWithIdentity(operationID, request, runner, time.Time{}, nil)
+}
+
+func retrySubtitleTranslationOperationWithIdentity(
+	operationID string,
+	request subtitleTranslationOperationRequest,
+	runner subtitleTranslationRunner,
+	deadline time.Time,
+	beforeLaunch func(string, time.Time) error,
+) (string, error) {
 	if _, err := subtitleTranslationRetryRequest(operationID); err != nil {
 		return "", err
 	}
-	return startSubtitleTranslationOperation(request, runner)
+	return startSubtitleTranslationOperationWithIdentity(request, runner, "", deadline, beforeLaunch)
 }

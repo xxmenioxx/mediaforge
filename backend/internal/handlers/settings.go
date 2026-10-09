@@ -18,6 +18,7 @@ type SettingsHandler struct {
 	secrets           ProtectedSecretSource
 	ollamaHTTPClient  *http.Client
 	resourceAdmission *airesource.Service
+	aiModelLifecycle  *AIModelLifecycle
 }
 
 const (
@@ -68,6 +69,15 @@ func NewSettingsHandler(db *gorm.DB) SettingsHandler {
 
 func NewSettingsHandlerWithAdmission(db *gorm.DB, admission *airesource.Service) SettingsHandler {
 	return SettingsHandler{db: db, secrets: gormProtectedSecretSource{}, resourceAdmission: admission}
+}
+
+func NewSettingsHandlerWithLifecycle(db *gorm.DB, admission *airesource.Service, lifecycle *AIModelLifecycle) SettingsHandler {
+	handler := NewSettingsHandlerWithAdmission(db, admission)
+	handler.aiModelLifecycle = lifecycle
+	if lifecycle != nil && lifecycle.manager != nil {
+		handler.ollamaHTTPClient = lifecycle.manager.providerAPI.client
+	}
+	return handler
 }
 
 func (h SettingsHandler) AIResourceProtectionStatus(c *gin.Context) {

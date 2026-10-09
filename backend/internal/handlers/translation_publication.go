@@ -27,6 +27,9 @@ type subtitleTranslationPublicationRequest struct {
 	CommitMetadata        func([]SubtitleArtifact) error
 	RollbackMetadata      func([]SubtitleArtifact) error
 	PublishStage          func(string, string) error
+	PreparePublication    func([]subtitleTranslationPublicationTarget) error
+	CommitPublication     func([]SubtitleArtifact) error
+	OnRecoveryRequired    func(string)
 }
 
 func validTranslatedSubtitleSidecar(format string, content []byte) bool {
@@ -270,13 +273,36 @@ func publishSubtitleTranslationOutputs(request subtitleTranslationPublicationReq
 		rollbackEntries[index].Existed = true
 	}
 
-	rollback := func() {
+	rollback := func() error {
+		failures := make([]string, 0)
 		for _, entry := range rollbackEntries {
 			if entry.Existed {
-				_ = copyPublishedFile(entry.BackupPath, entry.FinalPath, true)
+				if err := copyPublishedFile(entry.BackupPath, entry.FinalPath, true); err != nil {
+					failures = append(failures, "restore existing destination failed")
+				}
 			} else {
-				_ = os.Remove(entry.FinalPath)
+				if err := os.Remove(entry.FinalPath); err != nil && !os.IsNotExist(err) {
+					failures = append(failures, "remove newly promoted destination failed")
+				}
 			}
+		}
+		if len(failures) > 0 {
+			return errors.New(strings.Join(failures, "; "))
+		}
+		return nil
+	}
+	rollbackWithCause := func(cause error) error {
+		if rollbackErr := rollback(); rollbackErr != nil {
+			if request.OnRecoveryRequired != nil {
+				request.OnRecoveryRequired("publication_rollback_uncertain")
+			}
+			return fmt.Errorf("%w; translated output rollback is uncertain: %s", cause, rollbackErr.Error())
+		}
+		return cause
+	}
+	if request.PreparePublication != nil {
+		if err := request.PreparePublication(request.Targets); err != nil {
+			return nil, fmt.Errorf("cannot persist translated publication intent: %w", err)
 		}
 	}
 	publishStage := request.PublishStage
@@ -286,12 +312,10 @@ func publishSubtitleTranslationOutputs(request subtitleTranslationPublicationReq
 	publishedArtifacts := make([]SubtitleArtifact, len(request.Targets))
 	for index, target := range request.Targets {
 		if err := request.Ctx.Err(); err != nil {
-			rollback()
-			return nil, err
+			return nil, rollbackWithCause(err)
 		}
 		if err := publishStage(target.StagePath, target.FinalPath); err != nil {
-			rollback()
-			return nil, fmt.Errorf("cannot publish translated %s output: %w", target.Format, err)
+			return nil, rollbackWithCause(fmt.Errorf("cannot publish translated %s output: %w", target.Format, err))
 		}
 		publishedArtifacts[index] = target.Artifact
 		publishedArtifacts[index].StagedPath = target.FinalPath
@@ -299,28 +323,57 @@ func publishSubtitleTranslationOutputs(request subtitleTranslationPublicationReq
 		publishedArtifacts[index].Status = "published"
 	}
 	if request.Ctx.Err() != nil {
-		rollback()
-		return nil, request.Ctx.Err()
+		return nil, rollbackWithCause(request.Ctx.Err())
 	}
 	if request.CommitMetadata != nil {
 		if err := request.CommitMetadata(publishedArtifacts); err != nil {
-			rollback()
+			rollbackErr := rollback()
 			if request.RollbackMetadata != nil {
 				if rollbackErr := request.RollbackMetadata(publishedArtifacts); rollbackErr != nil {
+					if request.OnRecoveryRequired != nil {
+						request.OnRecoveryRequired("publication_metadata_rollback_uncertain")
+					}
 					return nil, fmt.Errorf("cannot commit translated artifact metadata: %w; metadata rollback diagnostic: %s", err, boundedSubtitleTranslationError(rollbackErr))
 				}
+			}
+			if rollbackErr != nil {
+				if request.OnRecoveryRequired != nil {
+					request.OnRecoveryRequired("publication_file_rollback_uncertain")
+				}
+				return nil, fmt.Errorf("cannot commit translated artifact metadata: %w; file rollback diagnostic: %s", err, boundedSubtitleTranslationError(rollbackErr))
 			}
 			return nil, fmt.Errorf("cannot commit translated artifact metadata: %w", err)
 		}
 	}
 	if err := request.Ctx.Err(); err != nil {
-		rollback()
+		rollbackErr := rollback()
 		if request.CommitMetadata != nil && request.RollbackMetadata != nil {
 			if rollbackErr := request.RollbackMetadata(publishedArtifacts); rollbackErr != nil {
+				if request.OnRecoveryRequired != nil {
+					request.OnRecoveryRequired("publication_metadata_rollback_uncertain")
+				}
 				return nil, fmt.Errorf("%w; metadata rollback diagnostic: %s", err, boundedSubtitleTranslationError(rollbackErr))
 			}
 		}
+		if rollbackErr != nil {
+			if request.OnRecoveryRequired != nil {
+				request.OnRecoveryRequired("publication_file_rollback_uncertain")
+			}
+			return nil, fmt.Errorf("%w; file rollback diagnostic: %s", err, boundedSubtitleTranslationError(rollbackErr))
+		}
 		return nil, err
+	}
+	if request.CommitPublication != nil {
+		if err := request.CommitPublication(publishedArtifacts); err != nil {
+			rollbackErr := rollback()
+			if request.OnRecoveryRequired != nil {
+				request.OnRecoveryRequired("publication_checkpoint_commit_uncertain")
+			}
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("cannot commit translated publication checkpoint: %w; file rollback diagnostic: %s", err, boundedSubtitleTranslationError(rollbackErr))
+			}
+			return nil, fmt.Errorf("cannot commit translated publication checkpoint: %w", err)
+		}
 	}
 	markSubtitlePublicationCommitted(request.OperationID)
 	return publishedArtifacts, nil

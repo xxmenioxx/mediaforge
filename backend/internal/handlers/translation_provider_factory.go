@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 )
 
@@ -17,13 +18,23 @@ const (
 // identifiers reserve explicit failure states for future adapters without
 // making them usable settings.
 func translationProviderForSettings(settings translationSettings) (TranslationProvider, error) {
+	return translationProviderForSettingsWithClient(settings, nil)
+}
+
+func translationProviderForSettingsWithClient(settings translationSettings, client *http.Client) (TranslationProvider, error) {
 	providerName := strings.TrimSpace(settings.Provider)
 	switch providerName {
 	case "":
 		return nil, translationProviderConfigurationError("translation provider is not configured")
 	case translationProviderOllama:
 		settings.Provider = providerName
-		provider, err := newOllamaTranslationProvider(settings)
+		var provider *ollamaTranslationProvider
+		var err error
+		if client == nil {
+			provider, err = newOllamaTranslationProvider(settings)
+		} else {
+			provider, err = newOllamaTranslationProviderWithClient(settings, client)
+		}
 		if err != nil {
 			return nil, translationProviderConfigurationError("%s", err.Error())
 		}
