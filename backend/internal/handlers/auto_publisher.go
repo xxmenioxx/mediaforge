@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -54,11 +55,34 @@ func (p *AutoPublisher) tick() {
 	if !automation.AutoPublisherEnabled {
 		return
 	}
+	p.recoverUnattemptedValidationHandoffs()
 	var jobs []models.QueueJob
-	if err := p.db.Where("status = ? AND published_at IS NULL AND (publication_state = '' OR publication_state = ?)", JobStatusCompleted, PublicationReady).Order("updated_at asc").Limit(10).Find(&jobs).Error; err != nil {
+	if err := p.db.Where(`status = ? AND published_at IS NULL AND (
+		(stage = ? AND TRIM(validation_run_id) <> '' AND (publication_state = '' OR publication_state = ?))
+		OR EXISTS (
+			SELECT 1 FROM publisher_publications AS publication
+			WHERE publication.queue_job_id = queue_jobs.id
+			AND publication.execution_number = queue_jobs.execution_number
+			AND publication.state = ?
+		)
+	)`, JobStatusCompleted, JobStageReadyToPublish, PublicationReady, PublicationReady).Order("updated_at asc").Limit(10).Find(&jobs).Error; err != nil {
 		return
 	}
 	for _, job := range jobs {
+		_, _ = (PublisherHandler{db: p.db}).publishQueueJobWithMode(job, false, true)
+	}
+}
+
+func (p *AutoPublisher) recoverUnattemptedValidationHandoffs() {
+	var publications []models.PublisherPublication
+	if err := p.db.Where("state = ? AND failure_code = ? AND validation_run_id = '' AND attempt_count = 0 AND fencing_generation = 0 AND published_at IS NULL AND original_archive_status = ?", PublicationBlocked, "identity_changed", "pending").Order("updated_at asc").Limit(10).Find(&publications).Error; err != nil {
+		return
+	}
+	for _, publication := range publications {
+		var job models.QueueJob
+		if err := p.db.First(&job, publication.QueueJobID).Error; err != nil || job.Status != JobStatusCompleted || job.Stage != JobStageReadyToPublish || job.ExecutionNumber == nil || *job.ExecutionNumber != publication.ExecutionNumber || strings.TrimSpace(job.ValidationRunID) == "" {
+			continue
+		}
 		_, _ = (PublisherHandler{db: p.db}).publishQueueJobWithMode(job, false, true)
 	}
 }
