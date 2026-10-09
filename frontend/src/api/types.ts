@@ -1492,7 +1492,22 @@ export type SchedulerRecoveryReport = {
   orphanWorkspacePaths: string[]; warnings: string[];
 };
 
-export type HousekeepingCandidate = { path: string; jobId?: number; reason: string; sizeBytes: number; modifiedAt: string };
+export type HousekeepingCandidateKind = 'job_workspace' | 'job_log' | 'stage_artifact' | 'empty_directory' | 'test_encode' | 'runtime_snapshot';
+
+export type HousekeepingCandidate = {
+  candidateId: string;
+  kind: HousekeepingCandidateKind;
+  path: string;
+  jobId?: number;
+  operationId?: string;
+  testEncodeId?: number;
+  reason: string;
+  ownership?: string;
+  sizeBytes: number;
+  modifiedAt: string;
+  safeToDelete: boolean;
+  blockedReason?: string;
+};
 export type RuntimeSnapshotRetentionReport = {
   rowsConsidered: number;
   referencedKept: number;
@@ -1505,7 +1520,10 @@ export type RuntimeSnapshotRetentionReport = {
 export type HousekeepingReport = {
   ranAt: string;
   dryRun: boolean;
+  previewId?: string;
+  previewExpiresAt?: string;
   candidates: HousekeepingCandidate[];
+  summaries: { kind: HousekeepingCandidateKind; candidateCount: number; recoverableBytes: number }[];
   removedPaths: string[];
   recoveredBytes: number;
   errors: string[];

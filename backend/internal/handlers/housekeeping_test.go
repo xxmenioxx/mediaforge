@@ -61,7 +61,7 @@ func TestHousekeepingPreviewAndRunRespectWorkspaceBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(preview.Candidates) != 2 || len(preview.RemovedPaths) != 0 {
+	if len(preview.Candidates) != 3 || len(preview.RemovedPaths) != 0 || preview.Summaries[0].RecoverableBytes != 8 {
 		t.Fatalf("unexpected preview: %#v", preview)
 	}
 	if _, err := os.Stat(filepath.Join(root, "job-"+strconv.FormatUint(uint64(failed.ID), 10))); err != nil {
@@ -217,7 +217,7 @@ func TestHousekeepingDoesNotDeleteActiveTestEncodeArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Candidates) != 0 || len(report.RemovedPaths) != 0 {
+	if len(report.RemovedPaths) != 0 || len(report.Candidates) != 1 || report.Candidates[0].SafeToDelete || report.Candidates[0].BlockedReason == "" {
 		t.Fatalf("active Test Encode appeared in automatic cleanup: %#v", report)
 	}
 	if _, err := os.Stat(output); err != nil {

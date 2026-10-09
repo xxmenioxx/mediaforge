@@ -1,54 +1,104 @@
 package handlers
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
-	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 type HousekeepingPolicy struct {
-	AutoEnabled           bool `json:"autoEnabled"`
-	IntervalHours         int  `json:"intervalHours"`
-	FailedRetentionDays   int  `json:"failedRetentionDays"`
-	CanceledRetentionDays int  `json:"canceledRetentionDays"`
-	OrphanRetentionDays   int  `json:"orphanRetentionDays"`
+	AutoEnabled                     bool `json:"autoEnabled"`
+	IntervalHours                   int  `json:"intervalHours"`
+	FailedRetentionDays             int  `json:"failedRetentionDays"`
+	CanceledRetentionDays           int  `json:"canceledRetentionDays"`
+	OrphanRetentionDays             int  `json:"orphanRetentionDays"`
+	PublishedWorkspaceRetentionDays int  `json:"publishedWorkspaceRetentionDays"`
+	PublishedJobLogRetentionDays    int  `json:"publishedJobLogRetentionDays"`
+	FailedJobLogRetentionDays       int  `json:"failedJobLogRetentionDays"`
+	CanceledJobLogRetentionDays     int  `json:"canceledJobLogRetentionDays"`
+	OrphanJobLogRetentionDays       int  `json:"orphanJobLogRetentionDays"`
+	EmptyRawDirectoriesEnabled      bool `json:"emptyRawDirectoriesEnabled"`
+	OrphanStageArtifactsEnabled     bool `json:"orphanStageArtifactsEnabled"`
 }
 
 type HousekeepingCandidate struct {
-	Path         string `json:"path"`
-	JobID        uint   `json:"jobId,omitempty"`
-	TestEncodeID uint   `json:"testEncodeId,omitempty"`
-	Reason       string `json:"reason"`
-	SizeBytes    int64  `json:"sizeBytes"`
-	ModifiedAt   string `json:"modifiedAt"`
+	CandidateID   string `json:"candidateId"`
+	Kind          string `json:"kind"`
+	Path          string `json:"path"`
+	JobID         uint   `json:"jobId,omitempty"`
+	OperationID   string `json:"operationId,omitempty"`
+	TestEncodeID  uint   `json:"testEncodeId,omitempty"`
+	Reason        string `json:"reason"`
+	Ownership     string `json:"ownership"`
+	SizeBytes     int64  `json:"sizeBytes"`
+	ModifiedAt    string `json:"modifiedAt"`
+	SafeToDelete  bool   `json:"safeToDelete"`
+	BlockedReason string `json:"blockedReason,omitempty"`
+}
+
+type HousekeepingCategorySummary struct {
+	Kind             string `json:"kind"`
+	CandidateCount   int    `json:"candidateCount"`
+	RecoverableBytes int64  `json:"recoverableBytes"`
 }
 
 type HousekeepingReport struct {
 	RanAt            time.Time                      `json:"ranAt"`
 	DryRun           bool                           `json:"dryRun"`
+	PreviewID        string                         `json:"previewId,omitempty"`
+	PreviewExpiresAt *time.Time                     `json:"previewExpiresAt,omitempty"`
 	Candidates       []HousekeepingCandidate        `json:"candidates"`
+	Summaries        []HousekeepingCategorySummary  `json:"summaries"`
 	RemovedPaths     []string                       `json:"removedPaths"`
 	RecoveredBytes   int64                          `json:"recoveredBytes"`
 	Errors           []string                       `json:"errors"`
 	RuntimeSnapshots RuntimeSnapshotRetentionReport `json:"runtimeSnapshots"`
 }
 
+type housekeepingBoundCandidate struct {
+	Candidate HousekeepingCandidate `json:"candidate"`
+	Identity  string                `json:"identity"`
+}
+
+type housekeepingPreviewState struct {
+	PreviewID        string                         `json:"previewId"`
+	CreatedAt        time.Time                      `json:"createdAt"`
+	ExpiresAt        time.Time                      `json:"expiresAt"`
+	Policy           HousekeepingPolicy             `json:"policy"`
+	RoleRoots        map[string]string              `json:"roleRoots"`
+	Candidates       []housekeepingBoundCandidate   `json:"candidates"`
+	RuntimeSnapshots RuntimeSnapshotRetentionReport `json:"runtimeSnapshots"`
+	Errors           []string                       `json:"errors"`
+}
+
+const (
+	housekeepingPreviewKey          = "housekeepingPreview"
+	housekeepingPreviewTTL          = 5 * time.Minute
+	housekeepingMaxCandidates       = 500
+	housekeepingKindWorkspace       = "job_workspace"
+	housekeepingKindJobLog          = "job_log"
+	housekeepingKindStageArtifact   = "stage_artifact"
+	housekeepingKindEmptyDirectory  = "empty_directory"
+	housekeepingKindTestEncode      = "test_encode"
+	housekeepingKindRuntimeSnapshot = "runtime_snapshot"
+)
+
+var errStaleHousekeepingPreview = errors.New("housekeeping preview is stale or expired; run a fresh preview")
+
 type HousekeepingHandler struct{ db *gorm.DB }
 
 func NewHousekeepingHandler(db *gorm.DB) HousekeepingHandler { return HousekeepingHandler{db: db} }
 
 func (h HousekeepingHandler) Preview(c *gin.Context) {
-	report, err := RunHousekeeping(h.db, true)
+	report, err := PreviewHousekeeping(h.db)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -57,19 +107,19 @@ func (h HousekeepingHandler) Preview(c *gin.Context) {
 }
 
 func (h HousekeepingHandler) Run(c *gin.Context) {
-	var preview models.AppSetting
-	result := h.db.Where("key = ?", "housekeepingLastRun").Limit(1).Find(&preview)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
+	var input struct {
+		PreviewID string `json:"previewId" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || strings.TrimSpace(input.PreviewID) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "previewId is required; run a fresh housekeeping preview first"})
 		return
 	}
-	dryRun, _ := preview.Value["dryRun"].(bool)
-	if result.RowsAffected == 0 || !dryRun || time.Since(preview.UpdatedAt) > 15*time.Minute {
-		c.JSON(http.StatusConflict, gin.H{"error": "run a fresh housekeeping preview before removing files"})
-		return
-	}
-	report, err := RunHousekeeping(h.db, false)
+	report, err := ExecuteHousekeepingPreview(h.db, input.PreviewID)
 	if err != nil {
+		if errors.Is(err, errStaleHousekeepingPreview) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -77,7 +127,12 @@ func (h HousekeepingHandler) Run(c *gin.Context) {
 }
 
 func loadHousekeepingPolicy(db *gorm.DB) (HousekeepingPolicy, error) {
-	policy := HousekeepingPolicy{AutoEnabled: true, IntervalHours: 24, FailedRetentionDays: 7, CanceledRetentionDays: 3, OrphanRetentionDays: 7}
+	policy := HousekeepingPolicy{
+		AutoEnabled: true, IntervalHours: 24, FailedRetentionDays: 7, CanceledRetentionDays: 3, OrphanRetentionDays: 7,
+		PublishedWorkspaceRetentionDays: 0, PublishedJobLogRetentionDays: 14, FailedJobLogRetentionDays: 14,
+		CanceledJobLogRetentionDays: 7, OrphanJobLogRetentionDays: 7,
+		EmptyRawDirectoriesEnabled: true, OrphanStageArtifactsEnabled: true,
+	}
 	var setting models.AppSetting
 	result := db.Where("key = ?", "housekeeping").Limit(1).Find(&setting)
 	if result.Error != nil || result.RowsAffected == 0 {
@@ -88,129 +143,25 @@ func loadHousekeepingPolicy(db *gorm.DB) (HousekeepingPolicy, error) {
 	policy.FailedRetentionDays = intSetting(setting.Value, "failedRetentionDays", policy.FailedRetentionDays)
 	policy.CanceledRetentionDays = intSetting(setting.Value, "canceledRetentionDays", policy.CanceledRetentionDays)
 	policy.OrphanRetentionDays = intSetting(setting.Value, "orphanRetentionDays", policy.OrphanRetentionDays)
+	policy.PublishedWorkspaceRetentionDays = intSetting(setting.Value, "publishedWorkspaceRetentionDays", policy.PublishedWorkspaceRetentionDays)
+	policy.PublishedJobLogRetentionDays = intSetting(setting.Value, "publishedJobLogRetentionDays", policy.PublishedJobLogRetentionDays)
+	policy.FailedJobLogRetentionDays = intSetting(setting.Value, "failedJobLogRetentionDays", policy.FailedJobLogRetentionDays)
+	policy.CanceledJobLogRetentionDays = intSetting(setting.Value, "canceledJobLogRetentionDays", policy.CanceledJobLogRetentionDays)
+	policy.OrphanJobLogRetentionDays = intSetting(setting.Value, "orphanJobLogRetentionDays", policy.OrphanJobLogRetentionDays)
+	policy.EmptyRawDirectoriesEnabled = boolSetting(setting.Value["emptyRawDirectoriesEnabled"], policy.EmptyRawDirectoriesEnabled)
+	policy.OrphanStageArtifactsEnabled = boolSetting(setting.Value["orphanStageArtifactsEnabled"], policy.OrphanStageArtifactsEnabled)
 	return policy, nil
 }
 
 func RunHousekeeping(db *gorm.DB, dryRun bool) (HousekeepingReport, error) {
-	report := HousekeepingReport{RanAt: time.Now(), DryRun: dryRun, Candidates: []HousekeepingCandidate{}, RemovedPaths: []string{}, Errors: []string{}, RuntimeSnapshots: RuntimeSnapshotRetentionReport{Errors: []string{}}}
-	policy, err := loadHousekeepingPolicy(db)
-	if err != nil {
-		return report, err
+	if dryRun {
+		return PreviewHousekeeping(db)
 	}
-	roles, err := scheduler.LoadStorageRoles(db)
-	if err != nil {
-		return report, err
-	}
-	workRoot, err := roles.Path(scheduler.StorageRoleWork)
-	if err != nil {
-		return report, err
-	}
-	root, err := filepath.Abs(workRoot)
-	if err != nil {
-		return report, err
-	}
-	entries, err := os.ReadDir(root)
-	if os.IsNotExist(err) {
-		entries = nil
-	} else if err != nil {
-		return report, err
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "job-") {
-			continue
-		}
-		id, parseErr := strconv.ParseUint(strings.TrimPrefix(entry.Name(), "job-"), 10, 64)
-		if parseErr != nil || id == 0 {
-			continue
-		}
-		candidatePath := filepath.Join(root, entry.Name())
-		if filepath.Dir(candidatePath) != root {
-			continue
-		}
-		info, statErr := entry.Info()
-		if statErr != nil {
-			report.Errors = append(report.Errors, statErr.Error())
-			continue
-		}
-		candidate, eligible, candidateErr := housekeepingCandidate(db, uint(id), candidatePath, info.ModTime(), policy, report.RanAt)
-		if candidateErr != nil {
-			report.Errors = append(report.Errors, candidateErr.Error())
-			continue
-		}
-		if !eligible {
-			continue
-		}
-		report.Candidates = append(report.Candidates, candidate)
-		if dryRun {
-			continue
-		}
-		if err := os.RemoveAll(candidate.Path); err != nil {
-			report.Errors = append(report.Errors, fmt.Sprintf("%s: %v", candidate.Path, err))
-			continue
-		}
-		report.RemovedPaths = append(report.RemovedPaths, candidate.Path)
-		report.RecoveredBytes += candidate.SizeBytes
-	}
-	if db.Migrator().HasTable(&models.TestEncode{}) {
-		testEncodePolicy := testEncodePolicyFromSettings(db)
-		var tests []models.TestEncode
-		query := db.Where("deleted_at IS NULL AND keep = ? AND expires_at IS NOT NULL AND expires_at <= ? AND status NOT IN ?",
-			false, report.RanAt, []string{testEncodeWaiting, testEncodeRunning, testEncodeDeleted, "expired"})
-		if activeIDs := testEncodeActiveOperationIDs(); len(activeIDs) > 0 {
-			query = query.Where("id NOT IN ?", activeIDs)
-		}
-		if err := query.Order("expires_at ASC").Order("id ASC").Limit(testEncodePolicy.MaxCleanupBatchSize).Find(&tests).Error; err != nil {
-			report.Errors = append(report.Errors, err.Error())
-		} else {
-			for _, test := range tests {
-				if testEncodeOperationActive(test.ID) {
-					continue
-				}
-				diskUsage, usageErr := (AssetHandler{db: db}).testEncodeOwnedArtifactDiskUsage(test)
-				if usageErr != nil {
-					report.Errors = append(report.Errors, fmt.Sprintf("test encode %d: %v", test.ID, usageErr))
-					continue
-				}
-				candidate := HousekeepingCandidate{Path: test.OutputPath, TestEncodeID: test.ID, Reason: "Test Encode retention expired", ModifiedAt: test.UpdatedAt.UTC().Format(time.RFC3339), SizeBytes: diskUsage}
-				report.Candidates = append(report.Candidates, candidate)
-				if dryRun {
-					continue
-				}
-				mutated, cleanupErr := (AssetHandler{db: db}).removeTestEncodeFilesWithEvidence(test)
-				if test.Status == testEncodeReady && mutated {
-					_ = recordJellyfinTrigger(db, jellyfinTrigger{
-						Reason: jellyfinReasonTestRemoved, SourceKey: testEncodeJellyfinSourceKey(jellyfinReasonTestRemoved, test.ID),
-						LibraryID: test.LibraryID, TestEncodeID: test.ID, Reconcile: true,
-					})
-				}
-				if cleanupErr != nil {
-					_ = db.Model(&test).Updates(map[string]any{
-						"reconciliation_status": "cleanup_failed", "reconciliation_message": cleanupErr.Error(), "last_reconciled_at": report.RanAt,
-					}).Error
-					report.Errors = append(report.Errors, fmt.Sprintf("test encode %d: %v", test.ID, cleanupErr))
-					continue
-				}
-				now := report.RanAt
-				_ = db.Model(&test).Updates(map[string]any{"status": "expired", "phase": "expired", "deleted_at": &now, "output_path": "", "temporary_path": "", "subtitle_artifacts": models.JSONList{}, "updated_at": now}).Error
-				report.RemovedPaths = append(report.RemovedPaths, candidate.Path)
-				report.RecoveredBytes += candidate.SizeBytes
-			}
-		}
-	}
-	runtimeReport, runtimeErr := pruneRuntimeSnapshots(db, report.RanAt, dryRun)
-	report.RuntimeSnapshots = runtimeReport
-	if runtimeErr != nil {
-		report.RuntimeSnapshots.Errors = append(report.RuntimeSnapshots.Errors, runtimeErr.Error())
-		report.Errors = append(report.Errors, runtimeErr.Error())
-	}
-	if err := persistHousekeepingReport(db, report); err != nil {
-		return report, err
-	}
-	return report, nil
+	return runAutomaticHousekeeping(db)
 }
 
 func housekeepingCandidate(db *gorm.DB, jobID uint, path string, modified time.Time, policy HousekeepingPolicy, now time.Time) (HousekeepingCandidate, bool, error) {
-	candidate := HousekeepingCandidate{Path: path, JobID: jobID, ModifiedAt: modified.UTC().Format(time.RFC3339)}
+	candidate := HousekeepingCandidate{Kind: housekeepingKindWorkspace, Path: path, JobID: jobID, Ownership: "queue_job workspace contract", ModifiedAt: modified.UTC().Format(time.RFC3339Nano)}
 	var job models.QueueJob
 	result := db.Where("id = ?", jobID).Limit(1).Find(&job)
 	if result.Error != nil {
@@ -218,14 +169,20 @@ func housekeepingCandidate(db *gorm.DB, jobID uint, path string, modified time.T
 	}
 	retentionDays := 0
 	if result.RowsAffected == 0 {
-		candidate.JobID, candidate.Reason, retentionDays = 0, "orphan workspace", policy.OrphanRetentionDays
+		candidate.JobID, candidate.Reason, candidate.Ownership, retentionDays = 0, "orphan workspace", "direct work/job-N contract", policy.OrphanRetentionDays
+	} else if isProtectedHousekeepingJob(&job) {
+		candidate.Reason = "job workspace is active, under review, or completed but unpublished"
+		candidate.BlockedReason = "job lifecycle remains protected"
+		return candidate, false, nil
 	} else if job.Status == JobStatusCanceled {
 		candidate.Reason, retentionDays = "canceled job retention expired", policy.CanceledRetentionDays
 	} else if job.Status == JobStatusFailed {
 		candidate.Reason, retentionDays = "failed job retention expired", policy.FailedRetentionDays
-	} else if job.PublishedAt != nil {
-		candidate.Reason, retentionDays = "published job workspace", 0
+	} else if job.Status == JobStatusCompleted && job.PublishedAt != nil {
+		candidate.Reason, retentionDays = "published job workspace", policy.PublishedWorkspaceRetentionDays
 	} else {
+		candidate.Reason = "workspace ownership or lifecycle is ambiguous"
+		candidate.BlockedReason = "job is not in a cleanup eligible terminal state"
 		return candidate, false, nil
 	}
 	reference := modified
@@ -234,15 +191,25 @@ func housekeepingCandidate(db *gorm.DB, jobID uint, path string, modified time.T
 		if job.FinishedAt != nil {
 			reference = *job.FinishedAt
 		}
+		if job.PublishedAt != nil && job.Status == JobStatusCompleted {
+			reference = *job.PublishedAt
+		}
 	}
 	if now.Before(reference.Add(time.Duration(max(retentionDays, 0)) * 24 * time.Hour)) {
+		candidate.BlockedReason = "retention period has not elapsed"
 		return candidate, false, nil
 	}
-	size, err := directorySize(path)
+	if jobHasActiveHousekeepingReferences(db, jobID, path) {
+		candidate.BlockedReason = "active worker, reservation, or operation references this workspace"
+		return candidate, false, nil
+	}
+	size, err := directorySizeNoSymlinks(path)
 	if err != nil {
-		return candidate, false, err
+		candidate.BlockedReason = "workspace contains an unsafe or unreadable entry"
+		return candidate, false, nil
 	}
 	candidate.SizeBytes = size
+	candidate.SafeToDelete = true
 	return candidate, true, nil
 }
 
@@ -267,10 +234,19 @@ func directorySize(root string) (int64, error) {
 func persistHousekeepingReport(db *gorm.DB, report HousekeepingReport) error {
 	candidates := make([]models.JSONMap, 0, len(report.Candidates))
 	for _, item := range report.Candidates {
-		candidates = append(candidates, models.JSONMap{"path": item.Path, "jobId": item.JobID, "testEncodeId": item.TestEncodeID, "reason": item.Reason, "sizeBytes": item.SizeBytes, "modifiedAt": item.ModifiedAt})
+		candidates = append(candidates, models.JSONMap{
+			"candidateId": item.CandidateID, "kind": item.Kind, "path": item.Path, "jobId": item.JobID,
+			"operationId": item.OperationID, "testEncodeId": item.TestEncodeID, "reason": item.Reason,
+			"ownership": item.Ownership, "sizeBytes": item.SizeBytes, "modifiedAt": item.ModifiedAt,
+			"safeToDelete": item.SafeToDelete, "blockedReason": item.BlockedReason,
+		})
+	}
+	summaries := make([]models.JSONMap, 0, len(report.Summaries))
+	for _, summary := range report.Summaries {
+		summaries = append(summaries, models.JSONMap{"kind": summary.Kind, "candidateCount": summary.CandidateCount, "recoverableBytes": summary.RecoverableBytes})
 	}
 	runtimeSnapshots := models.JSONMap{"rowsConsidered": report.RuntimeSnapshots.RowsConsidered, "referencedKept": report.RuntimeSnapshots.ReferencedKept, "latestKept": report.RuntimeSnapshots.LatestKept, "recentUnreferencedKept": report.RuntimeSnapshots.RecentUnreferencedKept, "pruneCandidates": report.RuntimeSnapshots.PruneCandidates, "deleted": report.RuntimeSnapshots.Deleted, "errors": report.RuntimeSnapshots.Errors}
-	value := models.JSONMap{"ranAt": report.RanAt.UTC().Format(time.RFC3339), "dryRun": report.DryRun, "candidates": candidates, "removedPaths": report.RemovedPaths, "recoveredBytes": report.RecoveredBytes, "errors": report.Errors, "runtimeSnapshots": runtimeSnapshots}
+	value := models.JSONMap{"ranAt": report.RanAt.UTC().Format(time.RFC3339Nano), "dryRun": report.DryRun, "previewId": report.PreviewID, "previewExpiresAt": report.PreviewExpiresAt, "candidates": candidates, "summaries": summaries, "removedPaths": report.RemovedPaths, "recoveredBytes": report.RecoveredBytes, "errors": report.Errors, "runtimeSnapshots": runtimeSnapshots}
 	setting := models.AppSetting{Key: "housekeepingLastRun", Value: value}
 	return db.Where(models.AppSetting{Key: setting.Key}).Assign(models.AppSetting{Value: value}).FirstOrCreate(&setting).Error
 }

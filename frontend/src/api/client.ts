@@ -764,7 +764,7 @@ export const api = {
   schedulerRecovery: () => request<SchedulerRecoveryReport>('/api/system/scheduler-recovery'),
   runSchedulerRecovery: () => request<SchedulerRecoveryReport>('/api/system/scheduler-recovery/run', { method: 'POST', body: JSON.stringify({}) }),
   previewHousekeeping: () => request<HousekeepingReport>('/api/system/housekeeping/preview'),
-  runHousekeeping: () => request<HousekeepingReport>('/api/system/housekeeping/run', { method: 'POST', body: JSON.stringify({}) }),
+  runHousekeeping: (input: { previewId: string }) => request<HousekeepingReport>('/api/system/housekeeping/run', { method: 'POST', body: JSON.stringify(input) }),
   updateQueueJobStatus: ({ jobId, ...statusUpdate }: UpdateJobStatusInput) =>
     request<QueueJob>(`/api/workers/jobs/${jobId}/status`, {
       method: 'POST',
