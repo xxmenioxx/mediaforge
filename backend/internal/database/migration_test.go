@@ -1,6 +1,7 @@
 package database
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -160,6 +161,199 @@ func TestPublisherAttemptEvidenceAndAuditAreAppendOnly(t *testing.T) {
 	}
 	if err := db.Where("event_id = ?", audit.EventID).Delete(&models.PublisherAuditEvent{}).Error; err == nil {
 		t.Fatal("Publisher action audit delete was not rejected")
+	}
+}
+
+func TestPublisherIdentityRecoveryTriggerReplacesExistingTriggerAndFailsClosed(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "publisher-identity-trigger.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("initial migration: %v", err)
+	}
+	if err := db.Exec(`DROP TRIGGER publisher_publications_identity_no_update`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TRIGGER publisher_publications_identity_no_update
+		BEFORE UPDATE ON publisher_publications
+		WHEN OLD.validation_run_id IS NOT NEW.validation_run_id
+		BEGIN SELECT RAISE(ABORT, 'publisher publication identity is immutable'); END`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migration did not replace the existing identity trigger: %v", err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("repeated migration was not idempotent: %v", err)
+	}
+
+	newPublisherPublication := func(index int, validationRunID string) models.PublisherPublication {
+		t.Helper()
+		now := time.Now().UTC()
+		sourceRecordID := uint(index + 100)
+		publication := models.PublisherPublication{
+			PublicationID: fmt.Sprintf("publication:identity-trigger:%d", index),
+			QueueJobID:    uint(index + 1000), ExecutionNumber: 1,
+			ExecutionPlanID: uint(index + 2000), ExecutionPlanVersion: 1, ExecutionPlanFingerprint: "plan:fingerprint",
+			LibraryID: uint(index + 3000), DestinationRoot: "/library", DestinationPath: "/library/episode.mkv",
+			PublishMode: "standard", ResultArtifactID: "result:artifact", ResultGenerationToken: "result:generation",
+			ResultGenerationVersion: 1, ResultOutputRevision: "result:revision", ValidationRunID: validationRunID,
+			SourceAssetRecordID: &sourceRecordID, SourceAssetRecordCreatedAt: now.Add(-time.Hour),
+			SourceAssetRecordModifiedAt: now.Add(-time.Minute), SourceAssetRecordSizeBytes: 123, SourcePath: "/raw/episode.mkv",
+			State: "BLOCKED", FailureCode: "identity_changed", AttemptCount: 0, FencingGeneration: 0,
+			Manifest: models.JSONList{}, OriginalArchiveStatus: "pending", CreatedAt: now, UpdatedAt: now,
+		}
+		if err := db.Create(&publication).Error; err != nil {
+			t.Fatalf("create publication fixture: %v", err)
+		}
+		return publication
+	}
+
+	positive := newPublisherPublication(1, "")
+	if err := db.Model(&models.PublisherPublication{}).Where("publication_id = ?", positive.PublicationID).Updates(map[string]any{
+		"validation_run_id": "validation-run:canonical", "state": "READY", "failure_code": "", "failure_summary": "",
+	}).Error; err != nil {
+		t.Fatalf("canonical zero-attempt recovery binding was rejected: %v", err)
+	}
+
+	mutatedOldState := func(index int, column string, value any) {
+		t.Helper()
+		publication := newPublisherPublication(index, "")
+		if err := db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update(column, value).Error; err != nil {
+			t.Fatalf("prepare invalid recovery state %s: %v", column, err)
+		}
+		if err := db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("validation_run_id", "validation-run:canonical").Error; err == nil {
+			t.Errorf("trigger accepted ValidationRun binding with OLD %s=%v", column, value)
+		}
+		var stored models.PublisherPublication
+		if err := db.Where("publication_id = ?", publication.PublicationID).First(&stored).Error; err != nil {
+			t.Fatal(err)
+		}
+		if stored.ValidationRunID != "" {
+			t.Errorf("rejected ValidationRun binding changed stored identity: %q", stored.ValidationRunID)
+		}
+	}
+
+	for index, tc := range []struct {
+		name  string
+		value string
+	}{
+		{name: "canonical to different run", value: "validation-run:canonical-b"},
+		{name: "canonical to empty", value: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			publication := newPublisherPublication(index+2, "validation-run:canonical-a")
+			if err := db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("validation_run_id", tc.value).Error; err == nil {
+				t.Fatalf("trigger accepted ValidationRunID transition to %q", tc.value)
+			}
+		})
+	}
+
+	for index, tc := range []struct {
+		name   string
+		column string
+		value  any
+	}{
+		{name: "wrong state", column: "state", value: "READY"},
+		{name: "wrong failure code", column: "failure_code", value: "other_failure"},
+		{name: "attempt count", column: "attempt_count", value: 1},
+		{name: "fencing generation", column: "fencing_generation", value: 1},
+		{name: "active attempt", column: "active_attempt_id", value: "attempt:active"},
+		{name: "lease", column: "lease_expires_at", value: time.Now().UTC().Add(time.Hour)},
+		{name: "published timestamp", column: "published_at", value: time.Now().UTC()},
+		{name: "archive not pending", column: "original_archive_status", value: "archived"},
+	} {
+		t.Run(tc.name, func(t *testing.T) { mutatedOldState(index+10, tc.column, tc.value) })
+	}
+
+	newStateMutations := []struct {
+		name        string
+		column      string
+		value       any
+		isUnchanged func(models.PublisherPublication) bool
+	}{
+		{name: "attempt count", column: "attempt_count", value: 1, isUnchanged: func(p models.PublisherPublication) bool { return p.AttemptCount == 0 }},
+		{name: "fencing generation", column: "fencing_generation", value: 1, isUnchanged: func(p models.PublisherPublication) bool { return p.FencingGeneration == 0 }},
+		{name: "active attempt", column: "active_attempt_id", value: "attempt:active", isUnchanged: func(p models.PublisherPublication) bool { return p.ActiveAttemptID == "" }},
+		{name: "lease", column: "lease_expires_at", value: time.Now().UTC().Add(time.Hour), isUnchanged: func(p models.PublisherPublication) bool { return p.LeaseExpiresAt == nil }},
+		{name: "published timestamp", column: "published_at", value: time.Now().UTC(), isUnchanged: func(p models.PublisherPublication) bool { return p.PublishedAt == nil }},
+		{name: "archive progression", column: "original_archive_status", value: "archiving", isUnchanged: func(p models.PublisherPublication) bool { return p.OriginalArchiveStatus == "pending" }},
+		{name: "archive evidence", column: "original_archive_error", value: "changed during recovery", isUnchanged: func(p models.PublisherPublication) bool { return p.OriginalArchiveError == "" }},
+		{name: "manifest evidence", column: "manifest", value: models.JSONList{"manifest:changed"}, isUnchanged: func(p models.PublisherPublication) bool { return len(p.Manifest) == 0 }},
+		{name: "immutable identity", column: "source_path", value: "/raw/changed.mkv", isUnchanged: func(p models.PublisherPublication) bool { return p.SourcePath == "/raw/episode.mkv" }},
+	}
+	for index, tc := range newStateMutations {
+		t.Run("same update with "+tc.name, func(t *testing.T) {
+			publication := newPublisherPublication(index+60, "")
+			updates := map[string]any{
+				"validation_run_id": "validation-run:canonical",
+				"state":             "READY",
+				"failure_code":      "",
+				"failure_summary":   "",
+				tc.column:           tc.value,
+			}
+			if err := db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Updates(updates).Error; err == nil {
+				t.Fatalf("trigger accepted ValidationRun binding together with %s mutation", tc.column)
+			}
+			var stored models.PublisherPublication
+			if err := db.Where("publication_id = ?", publication.PublicationID).First(&stored).Error; err != nil {
+				t.Fatal(err)
+			}
+			if stored.ValidationRunID != "" {
+				t.Fatalf("rejected update changed ValidationRunID to %q", stored.ValidationRunID)
+			}
+			if !tc.isUnchanged(stored) {
+				t.Errorf("rejected update also changed %s", tc.column)
+			}
+			if !stored.UpdatedAt.Equal(publication.UpdatedAt) {
+				t.Errorf("rejected update changed updated_at from %s to %s", publication.UpdatedAt, stored.UpdatedAt)
+			}
+		})
+	}
+
+	identityMutations := []struct {
+		column string
+		value  any
+	}{
+		{column: "publication_id", value: "publication:identity-trigger:changed"},
+		{column: "queue_job_id", value: uint(9001)},
+		{column: "execution_number", value: uint(2)},
+		{column: "execution_plan_id", value: uint(9002)},
+		{column: "execution_plan_version", value: 2},
+		{column: "execution_plan_fingerprint", value: "plan:changed"},
+		{column: "library_id", value: uint(9003)},
+		{column: "destination_root", value: "/other-library"},
+		{column: "destination_path", value: "/other-library/episode.mkv"},
+		{column: "publish_mode", value: "replace_library"},
+		{column: "result_artifact_id", value: "result:changed"},
+		{column: "result_generation_token", value: "result:generation:changed"},
+		{column: "result_generation_version", value: 2},
+		{column: "result_output_revision", value: "result:revision:changed"},
+		{column: "validation_override_event_ids", value: models.JSONList{"override:changed"}},
+		{column: "source_asset_record_id", value: uint(9999)},
+		{column: "source_asset_record_created_at", value: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{column: "source_asset_record_modified_at", value: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{column: "source_asset_record_size_bytes", value: int64(999)},
+		{column: "source_path", value: "/raw/changed.mkv"},
+		{column: "created_at", value: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	for index, tc := range identityMutations {
+		t.Run("immutable identity "+tc.column, func(t *testing.T) {
+			publication := newPublisherPublication(index+30, "")
+			if err := db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Updates(map[string]any{
+				"validation_run_id": "validation-run:canonical", tc.column: tc.value,
+			}).Error; err == nil {
+				t.Fatalf("trigger accepted ValidationRun binding together with %s mutation", tc.column)
+			}
+			var stored models.PublisherPublication
+			if err := db.Where("publication_id = ?", publication.PublicationID).First(&stored).Error; err != nil {
+				t.Fatal(err)
+			}
+			if stored.ValidationRunID != "" {
+				t.Fatalf("rejected identity update changed ValidationRunID to %q", stored.ValidationRunID)
+			}
+		})
 	}
 }
 
