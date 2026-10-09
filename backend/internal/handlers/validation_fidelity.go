@@ -367,7 +367,11 @@ func fidelityExpectedOutput(profile models.Profile, source canonicalFidelitySour
 	rateAuthority, rateReason := "resolved_cadence", "frozen cadence output rate is unresolved"
 	rateUnreliable := false
 	if expectedRate != "" && parseFrameRateValue(expectedRate) > 0 && !profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) && strings.TrimSpace(stringFromUnknown(worker["cadenceResolutionWarning"])) == "" {
-		rateState, rateReason = fidelityAuthorityTransform, cadenceReason(worker)
+		if strings.EqualFold(strings.TrimSpace(stringFromUnknown(worker["effectiveCadenceOperation"])), "preserve") {
+			rateState, rateReason = fidelityAuthorityPreserve, "frozen cadence preserves its resolved source rate"
+		} else {
+			rateState, rateReason = fidelityAuthorityTransform, cadenceReason(worker)
+		}
 	} else if fidelityCadenceExplicitPreserve(worker) {
 		expectedRate = stringFromUnknown(source.effective["frameRate"])
 		rateState, rateAuthority, rateReason = fidelityAuthorityPreserve, "resolved_cadence", "frozen cadence explicitly preserves source rate"

@@ -863,6 +863,79 @@ func TestQueueProfileSnapshotFreezesResolvedCadencePlan(t *testing.T) {
 	}
 }
 
+func TestQueueProfileSnapshotFreezesAutomaticCadencePreserveForFrameFidelity(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-auto-cadence-preserve-snapshot?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "auto"
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/auto-preserve.mkv"
+	analysis := CadenceAnalysis{
+		Version: cadenceAnalysisVersion, Type: "native_progressive", DeclaredFrameRate: "24000/1001",
+		DeclaredFPS: 24000.0 / 1001.0, EffectiveFPS: 24000.0 / 1001.0,
+		Confidence: .99, SampleCount: 3, RegionCount: 3,
+	}
+	recommendation := CadenceRecommendation{Version: 1, Operation: "preserve", Confidence: .99}
+	if err := db.Create(&models.ScanResult{
+		Path: path, VideoCodec: "h264", Width: 1920, Height: 1080,
+		VideoStreams: models.JSONList{map[string]any{"codec": "h264", "width": 1920, "height": 1080, "avgFrameRate": "24000/1001", "fieldOrder": "progressive"}},
+		InterlaceAnalysis: models.JSONMap{
+			"version": float64(interlaceAnalysisVersion), "status": "progressive", "fieldOrder": "progressive", "averageFrameRate": "24000/1001", "confidence": .99,
+		},
+		CadenceAnalysis: cadenceAnalysisMap(analysis), CadenceRecommendation: cadenceRecommendationMap(recommendation),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{MediaPath: path, Status: JobStatusQueued}
+	if err := NewQueueHandler(db).captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := freezeQueuePreparedProfileSnapshot(db, &job, resolved); err != nil {
+		t.Fatal(err)
+	}
+	frozen := unknownRecord(job.ProfileSnapshot["workerConfig"])
+	if got := stringFromUnknown(frozen["effectiveCadenceOperation"]); got != "preserve" {
+		t.Fatalf("Queue snapshot cadence operation=%q want preserve: %#v", got, frozen)
+	}
+	if got := stringFromUnknown(frozen["effectiveOutputFrameRate"]); got != "24000/1001" {
+		t.Fatalf("Queue snapshot effective FPS=%q want 24000/1001: %#v", got, frozen)
+	}
+	if unknown, ok := frozen["effectiveOutputFrameRateUnknown"].(bool); !ok || unknown {
+		t.Fatalf("Queue snapshot did not freeze known FPS state: %#v", frozen["effectiveOutputFrameRateUnknown"])
+	}
+
+	restored, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := effectiveVideoDecision(restored)
+	if workerStringValue(decision["cadenceOperation"]) != "preserve" || workerStringValue(decision["effectiveFrameRate"]) != "24000/1001" {
+		t.Fatalf("restored Queue execution decision lost cadence authority: %#v", decision)
+	}
+
+	report := validateJobFrameFidelity(db, job,
+		fidelityFrameProbe("h264", "yuv420p", "24000/1001", "progressive"),
+		fidelityFrameProbe("h264", "yuv420p", "24000/1001", "progressive"), nil,
+	)
+	frameRate := report["fields"].(models.JSONMap)["frameRate"].(models.JSONMap)
+	if frameRate["expected"] != "24000/1001" || frameRate["status"] != "passed" || frameRate["authorityState"] != "preserve" {
+		t.Fatalf("Frame Fidelity did not use the frozen Queue cadence: %#v", frameRate)
+	}
+}
+
 func TestQueueProfileSnapshotFreezesResolvedUpscaleDecision(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-upscale-snapshot?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
