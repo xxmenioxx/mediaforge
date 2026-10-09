@@ -110,6 +110,119 @@ func TestAnalyzeCadencePreservesNativeProgressive(t *testing.T) {
 	}
 }
 
+func TestAutomaticCadenceFreezesKnownProgressiveSourceFrameRate(t *testing.T) {
+	tests := []struct {
+		name string
+		rate string
+	}{
+		{name: "fractional film rate", rate: "24000/1001"},
+		{name: "integer progressive rate", rate: "25/1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fps := parseFrameRateValue(test.rate)
+			analysis := CadenceAnalysis{
+				Version: cadenceAnalysisVersion, Type: "native_progressive",
+				DeclaredFrameRate: test.rate, DeclaredFPS: fps, EffectiveFPS: fps,
+				Confidence: .99, SampleCount: 3, RegionCount: 3,
+			}
+			recommendation := CadenceRecommendation{Version: 1, Operation: "preserve", Confidence: .99}
+			profile := models.Profile{WorkerConfig: models.JSONMap{
+				"cadenceMode": "auto", "fieldStructureMode": "auto", "videoFilters": "scale=1280:720",
+			}}
+
+			resolved := profileWithCadenceOutputDecision(profile, analysis, recommendation)
+			if got := workerStringValue(resolved.WorkerConfig["effectiveCadenceOperation"]); got != "preserve" {
+				t.Fatalf("effective cadence operation=%q want preserve: %#v", got, resolved.WorkerConfig)
+			}
+			if got := workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]); got != test.rate {
+				t.Fatalf("effective output FPS=%q want exact source FPS %q: %#v", got, test.rate, resolved.WorkerConfig)
+			}
+			if unknown, ok := resolved.WorkerConfig["effectiveOutputFrameRateUnknown"].(bool); !ok || unknown {
+				t.Fatalf("known source FPS must be explicitly known, got %#v", resolved.WorkerConfig["effectiveOutputFrameRateUnknown"])
+			}
+			if got := workerStringValue(resolved.WorkerConfig["videoFilters"]); got != "scale=1280:720" {
+				t.Fatalf("preserving cadence changed video filters: %q", got)
+			}
+			if args := cadenceOutputArgs(resolved); len(args) != 0 {
+				t.Fatalf("preserving cadence must not force CFR: %#v", args)
+			}
+			decision := effectiveVideoDecision(resolved)
+			if workerStringValue(decision["cadenceOperation"]) != "preserve" || workerStringValue(decision["effectiveFrameRate"]) != test.rate {
+				t.Fatalf("effective video decision lost resolved cadence: %#v", decision)
+			}
+		})
+	}
+}
+
+func TestAutomaticCadencePreserveFailsClosedWithoutConclusiveSourceRate(t *testing.T) {
+	tests := []struct {
+		name     string
+		analysis CadenceAnalysis
+	}{
+		{
+			name: "unknown source FPS",
+			analysis: CadenceAnalysis{
+				Version: cadenceAnalysisVersion, Type: "native_progressive",
+				EffectiveFPS: 24000.0 / 1001.0, Confidence: .99, SampleCount: 3, RegionCount: 3,
+			},
+		},
+		{
+			name: "ambiguous samples",
+			analysis: CadenceAnalysis{
+				Version: cadenceAnalysisVersion, Type: "native_progressive",
+				DeclaredFrameRate: "24000/1001", DeclaredFPS: 24000.0 / 1001.0, EffectiveFPS: 24000.0 / 1001.0,
+				Confidence: .99, SampleCount: 3, RegionCount: 4, AmbiguousSampleCount: 1,
+			},
+		},
+		{
+			name: "contradictory classification",
+			analysis: CadenceAnalysis{
+				Version: cadenceAnalysisVersion, Type: "hard_telecine",
+				DeclaredFrameRate: "30000/1001", DeclaredFPS: 30000.0 / 1001.0, EffectiveFPS: 24000.0 / 1001.0,
+				Confidence: .99, SampleCount: 3, RegionCount: 3, FrameRateMismatch: true,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := models.Profile{WorkerConfig: models.JSONMap{"cadenceMode": "auto"}}
+			resolved := profileWithCadenceOutputDecision(profile, test.analysis, CadenceRecommendation{Version: 1, Operation: "preserve", Confidence: .99})
+			if got := workerStringValue(resolved.WorkerConfig["effectiveCadenceOperation"]); got != "" {
+				t.Fatalf("unresolved cadence was frozen as %q: %#v", got, resolved.WorkerConfig)
+			}
+			if got := workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]); got != "" {
+				t.Fatalf("unresolved source cadence guessed output FPS %q: %#v", got, resolved.WorkerConfig)
+			}
+			if !profileWorkerBool(resolved, "effectiveOutputFrameRateUnknown", false) {
+				t.Fatalf("unresolved cadence was not explicitly marked unknown: %#v", resolved.WorkerConfig)
+			}
+		})
+	}
+}
+
+func TestAutomaticCadencePreserveDoesNotOverrideSelectedFPSOrIVTC(t *testing.T) {
+	t.Run("explicit FPS filter", func(t *testing.T) {
+		profile := models.Profile{WorkerConfig: models.JSONMap{"cadenceMode": "auto", "videoFilters": "fps=30000/1001"}}
+		analysis := CadenceAnalysis{Type: "native_progressive", DeclaredFrameRate: "24000/1001", DeclaredFPS: 24000.0 / 1001.0, EffectiveFPS: 24000.0 / 1001.0, Confidence: .99, SampleCount: 2}
+		resolved := profileWithCadenceOutputDecision(profile, analysis, CadenceRecommendation{Operation: "preserve", Confidence: .99})
+		if got := workerStringValue(resolved.WorkerConfig["effectiveCadenceOperation"]); got != "explicit_fps_filter" || workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]) != "30000/1001" {
+			t.Fatalf("automatic preserve overrode explicit FPS filter: %#v", resolved.WorkerConfig)
+		}
+	})
+
+	t.Run("inverse telecine", func(t *testing.T) {
+		profile := models.Profile{WorkerConfig: models.JSONMap{"cadenceMode": "auto", "fieldStructureMode": "preserve", "cadenceFieldOrder": "tff"}}
+		analysis := CadenceAnalysis{Type: "hard_telecine", DeclaredFrameRate: "30000/1001", DeclaredFPS: 30000.0 / 1001.0, EffectiveFPS: 24000.0 / 1001.0, Confidence: .99, SampleCount: 3, FrameRateMismatch: true}
+		interlace := InterlaceAnalysis{Status: "telecine", Confidence: .99, IVTCValidation: &IVTCValidation{SelectedOrder: "tff", Confidence: .99}}
+		recommendation := CadenceRecommendation{Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .99}
+		resolved := profileWithCadenceOutputDecision(profile, analysis, recommendation, interlace)
+		if got := workerStringValue(resolved.WorkerConfig["effectiveCadenceOperation"]); got != "inverse_telecine" || workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]) != "24000/1001" {
+			t.Fatalf("automatic preserve changed inverse telecine decision: %#v", resolved.WorkerConfig)
+		}
+	})
+}
+
 func TestAnalyzeCadenceKeepsMixedSamplesReviewOnly(t *testing.T) {
 	analysis := analyzeCadence("mpeg2video", "30000/1001", InterlaceAnalysis{Status: "progressive", Windows: []InterlaceWindow{
 		progressiveCadenceWindow(24000.0/1001.0, true), progressiveCadenceWindow(30000.0/1001.0, false),

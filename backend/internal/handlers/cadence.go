@@ -381,7 +381,50 @@ func profileWithCadenceOutputDecision(profile models.Profile, analysis CadenceAn
 			delete(profile.WorkerConfig, "effectiveAutomaticMotionFilters")
 		}
 	}
+	if mode == "auto" && recommendation.Operation == "preserve" && workerStringValue(profile.WorkerConfig["effectiveCadenceOperation"]) == "" && analysis.Type != "native" {
+		profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+		profile.WorkerConfig["effectiveOutputFrameRateUnknown"] = true
+		if strings.TrimSpace(workerStringValue(profile.WorkerConfig["cadenceResolutionWarning"])) != "" || hasCadenceTransformFilter(workerStringValue(profile.WorkerConfig["videoFilters"])) {
+			return profile
+		}
+		if rate := automaticCadencePreserveFrameRate(analysis, recommendation); rate != "" {
+			profile.WorkerConfig["effectiveCadenceOperation"] = "preserve"
+			profile.WorkerConfig["effectiveOutputFrameRate"] = rate
+			profile.WorkerConfig["effectiveOutputFrameRateUnknown"] = false
+		}
+	}
 	return profile
+}
+
+func automaticCadencePreserveFrameRate(analysis CadenceAnalysis, recommendation CadenceRecommendation) string {
+	if recommendation.Operation != "preserve" || strings.TrimSpace(recommendation.OutputFrameRate) != "" {
+		return ""
+	}
+	if analysis.Type != "native_progressive" && analysis.Type != "interlaced" {
+		return ""
+	}
+	if analysis.Confidence < .8 || analysis.FrameRateMismatch || analysis.AmbiguousSampleCount > 0 || analysis.ContradictorySamples > 0 || analysis.SampleCount < 1 {
+		return ""
+	}
+	rate := firstReliableFrameRate(analysis.DeclaredFrameRate)
+	declaredFPS := parseFrameRateValue(rate)
+	if declaredFPS <= 0 || analysis.DeclaredFPS <= 0 || analysis.EffectiveFPS <= 0 ||
+		!nearFPS(declaredFPS, analysis.DeclaredFPS, .01) || !nearFPS(analysis.DeclaredFPS, analysis.EffectiveFPS, .10) {
+		return ""
+	}
+	return rate
+}
+
+func hasCadenceTransformFilter(filters string) bool {
+	for _, raw := range strings.Split(strings.ToLower(filters), ",") {
+		parts := strings.SplitN(strings.TrimSpace(raw), "=", 2)
+		name := strings.TrimSpace(parts[0])
+		switch name {
+		case "fps", "framerate", "fieldmatch", "decimate", "mpdecimate", "framestep", "select", "setpts", "minterpolate", "pullup":
+			return true
+		}
+	}
+	return false
 }
 
 func normalizedCadenceMode(value string) string {
@@ -583,6 +626,10 @@ func profileWithResolvedFieldAndCadenceModes(profile models.Profile, analysis In
 
 func cadenceOutputArgs(profile models.Profile) []string {
 	if strings.TrimSpace(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"])) == "" {
+		return nil
+	}
+	if normalizedCadenceMode(workerStringValue(profile.WorkerConfig["cadenceMode"])) == "auto" &&
+		strings.EqualFold(workerStringValue(profile.WorkerConfig["effectiveCadenceOperation"]), "preserve") {
 		return nil
 	}
 	return []string{"-fps_mode", "cfr"}
