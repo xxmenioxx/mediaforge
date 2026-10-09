@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -53,10 +54,26 @@ type jobArtifact struct {
 // These identity values are fields of the existing kind=result artifact, not
 // a separate Result record or a Validation-owned identity.
 type resultArtifactIdentity struct {
-	ArtifactID        string `json:"artifactId"`
-	GenerationToken   string `json:"generationToken"`
-	GenerationVersion int    `json:"generationVersion"`
-	OutputRevision    string `json:"outputRevision"`
+	ArtifactID             string                        `json:"artifactId"`
+	GenerationToken        string                        `json:"generationToken"`
+	GenerationVersion      int                           `json:"generationVersion"`
+	OutputRevision         string                        `json:"outputRevision"`
+	OutputRevisionEvidence *resultOutputRevisionEvidence `json:"outputRevisionEvidence,omitempty"`
+}
+
+type resultOutputRevisionEvidence struct {
+	ContentRevision    string                            `json:"contentRevision"`
+	SizeBytes          int64                             `json:"sizeBytes"`
+	ContentSHA256      string                            `json:"contentSHA256"`
+	BoundedFingerprint string                            `json:"boundedFingerprint"`
+	Filesystem         resultOutputFilesystemDiagnostics `json:"filesystem"`
+}
+
+type resultOutputFilesystemDiagnostics struct {
+	ModifiedAtUnixNano int64  `json:"modifiedAtUnixNano"`
+	Mode               uint32 `json:"mode"`
+	Device             string `json:"device,omitempty"`
+	Inode              string `json:"inode,omitempty"`
 }
 
 type resultExecutionBinding struct {
@@ -761,8 +778,11 @@ func resultIdentityForJob(db *gorm.DB, job models.QueueJob) (*resultArtifactIden
 	if job.ID == 0 {
 		return nil, nil, nil
 	}
-	outputRevision, revisionErr := resultOutputRevisionForPath(job.OutputPath)
-	if revisionErr != nil {
+	outputEvidence, revisionErr := resultOutputRevisionEvidenceForPath(job.OutputPath)
+	outputRevision := ""
+	if revisionErr == nil {
+		outputRevision = outputEvidence.ContentRevision
+	} else {
 		// Preserve the failed worker Result as addressable evidence. This sentinel
 		// revision cannot match a later file and therefore cannot authorize handoff.
 		outputRevision, revisionErr = canonicalEvidenceHash("result-output-revision-unavailable-v1", models.JSONMap{
@@ -782,9 +802,11 @@ func resultIdentityForJob(db *gorm.DB, job models.QueueJob) (*resultArtifactIden
 		executionNumber = *job.ExecutionNumber
 	}
 	identity := &resultArtifactIdentity{
-		ArtifactID:      fmt.Sprintf("job-result:%d:execution:%d", job.ID, executionNumber),
-		GenerationToken: hex.EncodeToString(generation[:]), GenerationVersion: 1,
-		OutputRevision: outputRevision,
+		ArtifactID:             fmt.Sprintf("job-result:%d:execution:%d", job.ID, executionNumber),
+		GenerationToken:        hex.EncodeToString(generation[:]),
+		GenerationVersion:      1,
+		OutputRevision:         outputRevision,
+		OutputRevisionEvidence: outputEvidence,
 	}
 	planID, planVersion := uint(0), 0
 	planFingerprint := ""
@@ -818,22 +840,121 @@ func resultIdentityForJob(db *gorm.DB, job models.QueueJob) (*resultArtifactIden
 }
 
 func resultOutputRevisionForPath(path string) (string, error) {
-	info, err := os.Stat(path)
+	evidence, err := resultOutputRevisionEvidenceForPath(path)
 	if err != nil {
 		return "", err
 	}
-	if info.IsDir() || info.Size() <= 0 {
-		return "", fmt.Errorf("output is not a non-empty regular file")
+	return evidence.ContentRevision, nil
+}
+
+func resultOutputRevisionEvidenceForPath(path string) (*resultOutputRevisionEvidence, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 {
+		return nil, fmt.Errorf("output is not a non-empty regular file")
+	}
+	fingerprint, err := mediaFileFingerprintForOpenFile(file, info)
+	if err != nil {
+		return nil, err
+	}
+	contentHash := sha256.New()
+	if _, err := io.Copy(contentHash, file); err != nil {
+		return nil, err
+	}
+	finalInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	pathInfo, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, finalInfo) || !os.SameFile(info, pathInfo) || info.Size() != finalInfo.Size() || !info.ModTime().Equal(finalInfo.ModTime()) || info.Mode() != finalInfo.Mode() {
+		return nil, fmt.Errorf("output changed while computing content identity")
+	}
+	evidence := &resultOutputRevisionEvidence{
+		SizeBytes:          info.Size(),
+		ContentSHA256:      hex.EncodeToString(contentHash.Sum(nil)),
+		BoundedFingerprint: fingerprint,
+		Filesystem: resultOutputFilesystemDiagnostics{
+			ModifiedAtUnixNano: info.ModTime().UnixNano(),
+			Mode:               uint32(info.Mode()),
+			Device:             statIdentityField(info, "Dev"),
+			Inode:              statIdentityField(info, "Ino"),
+		},
+	}
+	evidence.ContentRevision, err = resultOutputRevisionV2ForEvidence(evidence)
+	if err != nil {
+		return nil, err
+	}
+	return evidence, nil
+}
+
+func resultOutputRevisionV2ForEvidence(evidence *resultOutputRevisionEvidence) (string, error) {
+	return canonicalEvidenceHash("result-output-revision-v2", models.JSONMap{
+		"sizeBytes": evidence.SizeBytes, "contentSHA256": evidence.ContentSHA256,
+		"boundedFingerprint": evidence.BoundedFingerprint,
+	})
+}
+
+func resultOutputRevisionV1ForEvidence(evidence *resultOutputRevisionEvidence) (string, error) {
+	return canonicalEvidenceHash("result-output-revision-v1", models.JSONMap{
+		"sizeBytes": evidence.SizeBytes, "modifiedAtUnixNano": evidence.Filesystem.ModifiedAtUnixNano,
+		"mode": evidence.Filesystem.Mode, "device": evidence.Filesystem.Device,
+		"inode": evidence.Filesystem.Inode, "boundedFingerprint": evidence.BoundedFingerprint,
+	})
+}
+
+func resultOutputRevisionForIdentity(path, expectedRevision string) (*resultOutputRevisionEvidence, error) {
+	switch {
+	case strings.HasPrefix(expectedRevision, "result-output-revision-v2-"):
+		return resultOutputRevisionEvidenceForPath(path)
+	case strings.HasPrefix(expectedRevision, "result-output-revision-v1-"):
+		// Legacy Results retain their original metadata-sensitive semantics. The
+		// v2 content-only revision must never be substituted for an existing v1.
+		evidence, err := resultOutputRevisionV1EvidenceForPath(path)
+		if err != nil {
+			return nil, err
+		}
+		evidence.ContentRevision, err = resultOutputRevisionV1ForEvidence(evidence)
+		if err != nil {
+			return nil, err
+		}
+		return evidence, nil
+	default:
+		return nil, fmt.Errorf("unsupported Result output revision version")
+	}
+}
+
+func resultOutputRevisionV1EvidenceForPath(path string) (*resultOutputRevisionEvidence, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 {
+		return nil, fmt.Errorf("output is not a non-empty regular file")
 	}
 	fingerprint, err := mediaFileFingerprint(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return canonicalEvidenceHash("result-output-revision-v1", models.JSONMap{
-		"sizeBytes": info.Size(), "modifiedAtUnixNano": info.ModTime().UnixNano(),
-		"mode": uint32(info.Mode()), "device": statIdentityField(info, "Dev"),
-		"inode": statIdentityField(info, "Ino"), "boundedFingerprint": fingerprint,
-	})
+	return &resultOutputRevisionEvidence{
+		SizeBytes:          info.Size(),
+		BoundedFingerprint: fingerprint,
+		Filesystem: resultOutputFilesystemDiagnostics{
+			ModifiedAtUnixNano: info.ModTime().UnixNano(),
+			Mode:               uint32(info.Mode()),
+			Device:             statIdentityField(info, "Dev"),
+			Inode:              statIdentityField(info, "Ino"),
+		},
+	}, nil
 }
 
 func statIdentityField(info os.FileInfo, name string) string {

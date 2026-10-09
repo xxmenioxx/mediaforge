@@ -243,18 +243,22 @@ func evaluateValidationRules(db *gorm.DB, job models.QueueJob, artifact map[stri
 	add := func(key string, expected, actual any, severity, disposition, state string, actionable, overrideable bool, explanation string, refs ...string) {
 		findings = append(findings, validationFinding{Key: key, Expected: expected, Actual: actual, Severity: severity, Disposition: disposition, State: state, Actionable: actionable, Overrideable: overrideable, Explanation: explanation, EvidenceReferences: refs})
 	}
-	currentRevision, statErr := resultOutputRevisionForPath(job.OutputPath)
-	identityMatches := statErr == nil && identity.OutputRevision != "" && currentRevision == identity.OutputRevision
+	currentEvidence, revisionErr := resultOutputRevisionForIdentity(job.OutputPath, identity.OutputRevision)
+	identityMatches := revisionErr == nil && currentEvidence.ContentRevision == identity.OutputRevision
+	expectedEvidence := any(identity.OutputRevisionEvidence)
+	if identity.OutputRevisionEvidence == nil {
+		expectedEvidence = identity.OutputRevision
+	}
+	actualEvidence := any(currentEvidence)
+	if revisionErr != nil {
+		actualEvidence = revisionErr.Error()
+	}
 	if identity.ArtifactID == "" || identity.GenerationToken == "" || identity.GenerationVersion < 1 || identity.OutputRevision == "" {
-		add("artifact.identity", "canonical Result identity", nil, "critical", "blocking", "FAIL", true, false, "The Result artifact has no complete canonical generation and output identity.", "result.identity")
+		add("artifact.identity", "canonical Result identity", actualEvidence, "critical", "blocking", "FAIL", true, false, "The Result artifact has no complete canonical generation and output identity.", "result.identity")
 	} else if !identityMatches {
-		actual := any(currentRevision)
-		if statErr != nil {
-			actual = statErr.Error()
-		}
-		add("artifact.identity", identity.OutputRevision, actual, "critical", "blocking", "FAIL", true, false, "The current output no longer matches the Result generation recorded at worker completion.", "result.identity", "filesystem.output")
+		add("artifact.identity", expectedEvidence, actualEvidence, "critical", "blocking", "FAIL", true, false, "The current output no longer matches the Result generation recorded at worker completion.", "result.identity", "filesystem.output")
 	} else {
-		add("artifact.identity", identity, identity, "info", "blocking", "PASS", false, false, "The canonical Result generation and bounded output revision match.", "result.identity")
+		add("artifact.identity", expectedEvidence, actualEvidence, "info", "blocking", "PASS", false, false, "The canonical Result generation and content revision match; filesystem metadata is diagnostic only.", "result.identity")
 	}
 	resultSidecars, expectedManifest, actualManifest, manifestMatches := resultManifestEvidence(job, artifact)
 	manifestState, manifestExplanation := "PASS", "The Result manifest identifies the produced output and all frozen required artifacts."
@@ -697,8 +701,28 @@ func resultIdentityFromArtifact(artifact map[string]any) (resultArtifactIdentity
 	identity := resultArtifactIdentity{
 		ArtifactID: stringFromUnknown(raw["artifactId"]), GenerationToken: stringFromUnknown(raw["generationToken"]),
 		GenerationVersion: workerIntValue(raw["generationVersion"], 0), OutputRevision: stringFromUnknown(raw["outputRevision"]),
+		OutputRevisionEvidence: resultOutputRevisionEvidenceFromUnknown(raw["outputRevisionEvidence"]),
 	}
-	return identity, identity.ArtifactID != "" && identity.GenerationToken != "" && identity.OutputRevision != ""
+	complete := identity.ArtifactID != "" && identity.GenerationToken != "" && identity.OutputRevision != ""
+	if strings.HasPrefix(identity.OutputRevision, "result-output-revision-v2-") {
+		complete = complete && identity.OutputRevisionEvidence != nil && identity.OutputRevisionEvidence.ContentRevision == identity.OutputRevision
+	}
+	return identity, complete
+}
+
+func resultOutputRevisionEvidenceFromUnknown(value any) *resultOutputRevisionEvidence {
+	if value == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var evidence resultOutputRevisionEvidence
+	if err := json.Unmarshal(encoded, &evidence); err != nil || evidence.ContentRevision == "" || evidence.SizeBytes <= 0 || evidence.ContentSHA256 == "" || evidence.BoundedFingerprint == "" {
+		return nil
+	}
+	return &evidence
 }
 
 func resultBindingFromArtifact(artifact map[string]any) (resultExecutionBinding, bool) {
@@ -1040,8 +1064,8 @@ func (h ValidationHandler) CreateOverride(c *gin.Context) {
 	var artifact map[string]any
 	artifact, _, err := readLatestJobArtifact(h.db, job, "result")
 	identity, identityOK := resultIdentityFromArtifact(artifact)
-	currentRevision, revisionErr := resultOutputRevisionForPath(job.OutputPath)
-	if err != nil || !runMatchesResult(run, artifact) || !identityOK || revisionErr != nil || currentRevision != identity.OutputRevision {
+	currentEvidence, revisionErr := resultOutputRevisionForIdentity(job.OutputPath, identity.OutputRevision)
+	if err != nil || !runMatchesResult(run, artifact) || !identityOK || revisionErr != nil || currentEvidence.ContentRevision != identity.OutputRevision {
 		c.JSON(http.StatusConflict, gin.H{"error": "Result identity changed; requeue execution before recording an override"})
 		return
 	}
@@ -1130,8 +1154,8 @@ func canonicalRunAllowsPublish(db *gorm.DB, job models.QueueJob, automatic bool)
 	if !ok {
 		return false, "current Result identity is missing"
 	}
-	revision, err := resultOutputRevisionForPath(job.OutputPath)
-	if err != nil || revision != identity.OutputRevision {
+	evidence, err := resultOutputRevisionForIdentity(job.OutputPath, identity.OutputRevision)
+	if err != nil || evidence.ContentRevision != identity.OutputRevision {
 		return false, "output has changed since Validation; queue a new execution"
 	}
 	if run.Outcome == "PASS" {

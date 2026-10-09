@@ -1037,8 +1037,8 @@ func (h PublisherHandler) verifyBoundDelivery(job models.QueueJob, publication m
 	if !ok || identity.ArtifactID != publication.ResultArtifactID || identity.GenerationToken != publication.ResultGenerationToken || identity.GenerationVersion != publication.ResultGenerationVersion || identity.OutputRevision != publication.ResultOutputRevision {
 		return errors.New("canonical Result was replaced or its Validation binding is stale")
 	}
-	if revision, err := resultOutputRevisionForPath(job.OutputPath); err != nil || revision != publication.ResultOutputRevision {
-		return errors.New("canonical Result bytes or file revision changed after Validation")
+	if evidence, err := resultOutputRevisionForIdentity(job.OutputPath, publication.ResultOutputRevision); err != nil || evidence.ContentRevision != publication.ResultOutputRevision {
+		return errors.New("canonical Result content revision changed after Validation")
 	}
 	var run models.ValidationRun
 	if err := h.db.Where("run_id = ? AND job_id = ?", publication.ValidationRunID, job.ID).First(&run).Error; err != nil || run.RunID != job.ValidationRunID || run.ExecutionPlanID != publication.ExecutionPlanID || run.ResultArtifactID != publication.ResultArtifactID || run.ResultGenerationToken != publication.ResultGenerationToken || run.ResultGenerationVersion != publication.ResultGenerationVersion || run.ResultOutputRevision != publication.ResultOutputRevision {
