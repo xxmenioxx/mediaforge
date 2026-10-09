@@ -189,6 +189,160 @@ type canonicalOCRReviewArtifact struct {
 	Revision         publishedSubtitleRevision `json:"revision"`
 }
 
+func (revision *publishedSubtitleRevision) UnmarshalJSON(data []byte) error {
+	type revisionJSON publishedSubtitleRevision
+	var decoded revisionJSON
+	if err := json.Unmarshal(rewriteCanonicalOCRNanosecondJSONFields(data, false), &decoded); err != nil {
+		return err
+	}
+	*revision = publishedSubtitleRevision(decoded)
+	return nil
+}
+
+func (target canonicalOCRReviewTarget) MarshalJSON() ([]byte, error) {
+	type targetJSON canonicalOCRReviewTarget
+	data, err := json.Marshal(targetJSON(target))
+	if err != nil {
+		return nil, err
+	}
+	return rewriteCanonicalOCRNanosecondJSONFields(data, true), nil
+}
+
+func (target *canonicalOCRReviewTarget) UnmarshalJSON(data []byte) error {
+	type targetJSON canonicalOCRReviewTarget
+	var decoded targetJSON
+	if err := json.Unmarshal(rewriteCanonicalOCRNanosecondJSONFields(data, false), &decoded); err != nil {
+		return err
+	}
+	*target = canonicalOCRReviewTarget(decoded)
+	return nil
+}
+
+func (report subtitleOCRQualityReport) MarshalJSON() ([]byte, error) {
+	type reportJSON subtitleOCRQualityReport
+	data, err := json.Marshal(reportJSON(report))
+	if err != nil {
+		return nil, err
+	}
+	return rewriteCanonicalOCRNanosecondJSONFields(data, true), nil
+}
+
+func rewriteCanonicalOCRNanosecondJSONFields(data []byte, quote bool) []byte {
+	output := make([]byte, 0, len(data)+64)
+	for index := 0; index < len(data); {
+		if data[index] != '"' {
+			output = append(output, data[index])
+			index++
+			continue
+		}
+
+		keyStart := index + 1
+		keyEnd := keyStart
+		for keyEnd < len(data) {
+			if data[keyEnd] == '\\' {
+				keyEnd += 2
+				continue
+			}
+			if data[keyEnd] == '"' {
+				break
+			}
+			keyEnd++
+		}
+		if keyEnd >= len(data) {
+			output = append(output, data[index:]...)
+			break
+		}
+
+		key := string(data[keyStart:keyEnd])
+		tokenEnd := keyEnd + 1
+		output = append(output, data[index:tokenEnd]...)
+		index = tokenEnd
+		if key != "modifiedAtUnixNano" && key != "sourceModTimeUnixNano" {
+			continue
+		}
+
+		valueStart := index
+		for valueStart < len(data) && isJSONWhitespace(data[valueStart]) {
+			valueStart++
+		}
+		if valueStart >= len(data) || data[valueStart] != ':' {
+			continue
+		}
+		valueStart++
+		for valueStart < len(data) && isJSONWhitespace(data[valueStart]) {
+			valueStart++
+		}
+		output = append(output, data[index:valueStart]...)
+		index = valueStart
+
+		if quote {
+			end, ok := canonicalOCRIntegerTokenEnd(data, index)
+			if ok {
+				output = append(output, '"')
+				output = append(output, data[index:end]...)
+				output = append(output, '"')
+				index = end
+			}
+			continue
+		}
+
+		end, ok := canonicalOCRQuotedIntegerTokenEnd(data, index)
+		if ok {
+			output = append(output, data[index+1:end-1]...)
+			index = end
+		}
+	}
+	return output
+}
+
+func canonicalOCRIntegerTokenEnd(data []byte, start int) (int, bool) {
+	if start >= len(data) {
+		return start, false
+	}
+	index := start
+	if data[index] == '-' {
+		index++
+	}
+	digitsStart := index
+	for index < len(data) && data[index] >= '0' && data[index] <= '9' {
+		index++
+	}
+	if index == digitsStart || (index < len(data) && !isJSONValueDelimiter(data[index])) {
+		return start, false
+	}
+	return index, true
+}
+
+func canonicalOCRQuotedIntegerTokenEnd(data []byte, start int) (int, bool) {
+	if start >= len(data) || data[start] != '"' {
+		return start, false
+	}
+	index := start + 1
+	if index < len(data) && data[index] == '-' {
+		index++
+	}
+	digitsStart := index
+	for index < len(data) && data[index] >= '0' && data[index] <= '9' {
+		index++
+	}
+	if index == digitsStart || index >= len(data) || data[index] != '"' {
+		return start, false
+	}
+	end := index + 1
+	if end < len(data) && !isJSONValueDelimiter(data[end]) {
+		return start, false
+	}
+	return end, true
+}
+
+func isJSONWhitespace(value byte) bool {
+	return value == ' ' || value == '\t' || value == '\n' || value == '\r'
+}
+
+func isJSONValueDelimiter(value byte) bool {
+	return isJSONWhitespace(value) || value == ',' || value == '}' || value == ']'
+}
+
 const maxSelectiveOCRCueDurationSeconds = 30
 
 type selectiveOCRCueCapability struct {

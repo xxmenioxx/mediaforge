@@ -162,12 +162,12 @@ describe('Asset Info OCR review routing', () => {
     } as never);
     const revision = {
       artifactPath: reviewPath, artifactIdentity: 'review-artifact', sizeBytes: 100,
-      modifiedAtUnixNano: 1787875200000000000, contentHash: 'review-content-hash', logicalTransform: 'canonical-ocr-stream-4',
+      modifiedAtUnixNano: '1787875200000000000', contentHash: 'review-content-hash', logicalTransform: 'canonical-ocr-stream-4',
     };
     const reviewTarget = {
       state: 'exact',
       identity: {
-        version: 1, sourcePath: assetPath, sourceSize: 1024, sourceModTimeUnixNano: 1787875200000000000,
+        version: 1, sourcePath: assetPath, sourceSize: 1024, sourceModTimeUnixNano: '1787875200000000000',
         sourceSnapshotVersion: 'stat-v1', streamIndex: 4, streamId: 'pgs-4', streamCodec: 'hdmv_pgs_subtitle',
         requestedLanguage: 'eng', ocrMode: 'accurate', preparationScope: 'full-asset', segmentStart: '0.000000',
         segmentDuration: 0, preparedStreamMapping: '', preparedRepresentation: '', pipelineProvenance: 'canonical-pipeline', runtimeProvenance: 'test-runtime',

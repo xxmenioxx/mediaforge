@@ -3136,7 +3136,7 @@ export type PublishedSubtitleRevision = {
   artifactPath: string;
   artifactIdentity: string;
   sizeBytes: number;
-  modifiedAtUnixNano: number;
+  modifiedAtUnixNano: string;
   contentHash: string;
   logicalTransform?: string;
 };
@@ -3145,7 +3145,7 @@ export type CanonicalOCRIdentity = {
   version: number;
   sourcePath: string;
   sourceSize: number;
-  sourceModTimeUnixNano: number;
+  sourceModTimeUnixNano: string;
   sourceSnapshotVersion: string;
   streamIndex: number;
   streamId: string;

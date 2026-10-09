@@ -493,7 +493,7 @@ export const api = {
       artifactPath: string;
       artifactIdentity: string;
       sizeBytes: number;
-      modifiedAtUnixNano: number;
+      modifiedAtUnixNano: string;
       contentHash: string;
       logicalTransform?: string;
     }>;

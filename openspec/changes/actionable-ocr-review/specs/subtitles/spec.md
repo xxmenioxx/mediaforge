@@ -136,6 +136,8 @@ transform and contain equivalent canonical cue evidence. A target SHALL NOT
 be selected from filename, language, or stream index alone. Missing,
 incompatible, or conflicting evidence SHALL be shown as an actionable error
 inside the review surface without closing or losing Translation context.
+Source and artifact nanosecond revision values SHALL remain exact when the
+target is returned to and submitted by the browser review client.
 
 #### Scenario: Review OCR opens the exact target
 
@@ -158,6 +160,13 @@ inside the review surface without closing or losing Translation context.
   revisions, logical transforms, or canonical cue evidence
 - **THEN** the review surface reports the conflict and analyzes or modifies no
   candidate until the canonical target is unambiguous
+
+#### Scenario: Nanosecond revisions remain exact through review
+
+- **WHEN** a review target contains source or artifact modification times
+  outside JavaScript's safe integer range
+- **THEN** opening and submitting that target preserves the exact revision
+  values and does not make a current target appear stale
 
 #### Scenario: Review loading, empty, error, and cancel states stay visible
 

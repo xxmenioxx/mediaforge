@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -70,6 +73,57 @@ func newCanonicalOCRReviewFixture(t *testing.T, text string, cueEnd float64) can
 		t.Fatalf("review fixture did not resolve exactly: found=%v target=%#v err=%v", found, selection, err)
 	}
 	return canonicalOCRReviewFixture{root: root, mediaPath: mediaPath, sidecar: sidecar, stream: stream, evidence: evidence, request: request, target: selection.ReviewTarget}
+}
+
+func TestCanonicalOCRReviewJSONPreservesNanosecondRevisions(t *testing.T) {
+	fixture := newCanonicalOCRReviewFixture(t, "The h0use", 2)
+	if fixture.target.Identity.SourceModTimeUnixNano <= 1<<53 || fixture.target.Revisions[0].ModifiedAtUnixNano <= 1<<53 {
+		t.Fatalf("fixture timestamps do not exercise JavaScript integer precision: source=%d artifact=%d", fixture.target.Identity.SourceModTimeUnixNano, fixture.target.Revisions[0].ModifiedAtUnixNano)
+	}
+
+	targetPayload, err := json.Marshal(fixture.target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(targetPayload), `"sourceModTimeUnixNano":"`) || !strings.Contains(string(targetPayload), `"modifiedAtUnixNano":"`) {
+		t.Fatalf("review target did not serialize nanosecond fields as decimal strings: %s", targetPayload)
+	}
+	var decodedTarget canonicalOCRReviewTarget
+	if err := json.Unmarshal(targetPayload, &decodedTarget); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(*fixture.target, decodedTarget) {
+		t.Fatalf("review target changed during JSON round trip: got %#v want %#v", decodedTarget, *fixture.target)
+	}
+	if _, _, _, err := canonicalOCRReviewTargetSnapshots(&decodedTarget); err != nil {
+		t.Fatalf("round-tripped target no longer resolves to its exact canonical snapshots: %v", err)
+	}
+
+	report := subtitleOCRQualityReport{
+		ArtifactPath: fixture.sidecar, Format: fixture.target.Format,
+		LogicalTransformKey: fixture.target.LogicalTransformKey,
+		Revision:            fixture.target.Revisions[0], RevisionSet: fixture.target.Revisions,
+		BaselineRevision: fixture.target.BaselineRevision, AnalyzerVersion: subtitleOCRQualityVersion,
+		Findings: []subtitleOCRQualityFinding{}, ReviewTarget: fixture.target,
+	}
+	reportPayload, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decodedReport struct {
+		Revision     publishedSubtitleRevision   `json:"revision"`
+		RevisionSet  []publishedSubtitleRevision `json:"revisionSet"`
+		ReviewTarget *canonicalOCRReviewTarget   `json:"reviewTarget"`
+	}
+	if err := json.Unmarshal(reportPayload, &decodedReport); err != nil {
+		t.Fatal(err)
+	}
+	if decodedReport.Revision != fixture.target.Revisions[0] || !reflect.DeepEqual(decodedReport.RevisionSet, fixture.target.Revisions) || decodedReport.ReviewTarget == nil || !reflect.DeepEqual(*decodedReport.ReviewTarget, *fixture.target) {
+		t.Fatalf("quality report revisions changed during JSON round trip: got %#v want %#v", decodedReport, report)
+	}
+	if !strings.Contains(string(reportPayload), `"modifiedAtUnixNano":"`+strconv.FormatInt(fixture.target.Revisions[0].ModifiedAtUnixNano, 10)+`"`) {
+		t.Fatalf("quality report did not preserve the exact revision string: %s", reportPayload)
+	}
 }
 
 func TestTranslationApprovalOnlyReviewPreservesSidecarAndRetriesWithoutLoop(t *testing.T) {

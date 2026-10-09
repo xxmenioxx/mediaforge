@@ -20,7 +20,7 @@ import { SubtitleOCRReviewDialog } from './SubtitleOCRReviewDialog';
 const exactTarget: CanonicalOCRReviewTarget = {
   state: 'exact',
   identity: {
-    version: 1, sourcePath: '/media/movie.mkv', sourceSize: 20, sourceModTimeUnixNano: 10,
+    version: 1, sourcePath: '/media/movie.mkv', sourceSize: 20, sourceModTimeUnixNano: '10',
     sourceSnapshotVersion: 'stat-v1', streamIndex: 4, streamId: 'pgs-4', streamCodec: 'hdmv_pgs_subtitle',
     requestedLanguage: 'eng', ocrMode: 'accurate', preparationScope: 'full-asset', segmentStart: '0.000000',
     segmentDuration: 0, preparedStreamMapping: 'subtitle-stream:4', preparedRepresentation: 'prepared-subtitle-v1',
@@ -83,7 +83,7 @@ describe('SubtitleOCRReviewDialog', () => {
       ...operation('completed', 'completed'),
       qualityReport: {
         artifactPath: '/media/movie.eng.srt', format: 'srt', logicalTransformKey: 'logical-review',
-        revision: { artifactPath: '/media/movie.eng.srt', artifactIdentity: 'srt', sizeBytes: 10, modifiedAtUnixNano: 10, contentHash: 'hash', logicalTransform: 'logical-review' },
+        revision: { artifactPath: '/media/movie.eng.srt', artifactIdentity: 'srt', sizeBytes: 10, modifiedAtUnixNano: '10', contentHash: 'hash', logicalTransform: 'logical-review' },
         revisionSet: [], baselineRevision: 'baseline-review', analyzerVersion: 'quality-v1', repairVersion: 'repair-v1',
         cleanCount: 1, suspiciousCount: 0, reviewCount: 0, canCorrect: true,
         findings: [{ cueId: 1, originalText: 'Hello', status: 'clean', baselineRevision: 'baseline-review', startSeconds: 1, endSeconds: 2 }],

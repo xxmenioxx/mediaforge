@@ -62,6 +62,12 @@ or conflicting evidence produce an explicit ambiguous/stale result instead
 of format-order selection. Analyze and Correct revalidate the descriptor and
 all revisions at request time and again before committing.
 
+Source and artifact nanosecond revisions remain exact at the browser boundary:
+the review API emits these `int64` fields as decimal strings, and the frontend
+keeps them as strings when submitting the captured target. Canonical snapshot
+storage retains its existing numeric representation. This prevents JavaScript
+number rounding from changing an otherwise exact revision during review.
+
 Use the existing Translation operation response and OCR analysis/correction
 operations rather than adding a new OCR job or matching endpoint. The Review
 OCR action remains available for an OCR-review blocker even when the target
