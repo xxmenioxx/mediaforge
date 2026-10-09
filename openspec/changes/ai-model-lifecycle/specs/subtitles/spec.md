@@ -47,7 +47,7 @@ The backend SHALL support bounded states equivalent to disabled, not_configured,
 
 An explicit Asset Info Translation operation SHALL remain owned by the existing subtitle operation lifecycle. Before returning an accepted operation ID, the backend SHALL persist a bounded Translation-specific SQLite record containing that original operation ID and the validated request snapshot needed to reconstruct a pre-inference wait. The record SHALL include canonical source identity/reference and source revision, while AssetPath is only a locator; source type/representation, stream index/format, exact provider/model identity, non-secret provider configuration revision, language/context/output options; checkpoint version and phase; wait deadline; cancellation state; and a compare-and-set row version. It SHALL NOT contain cues, prompts, provider responses, translated text, credentials, or endpoint URLs.
 
-When waiting, progress SHALL identify WAITING_FOR_RESOURCES or WAITING_FOR_MODEL and the bounded cause. Missing or unavailable #265 admission SHALL be visible as admission_unavailable, cancellable, and must make no /api/generate or /api/chat request. Resource wait duration is owned by #265; the five-minute readiness deadline starts only after admission is granted.
+When waiting, progress SHALL identify WAITING_FOR_RESOURCES or WAITING_FOR_MODEL and the bounded cause. The merged #265 service SHALL be shared across production consumers. WAITING SHALL await its opaque ticket and cancellation SHALL cancel the ticket. UNAVAILABLE (including missing/stale telemetry, absent measured estimates, unavailable critical-service guard, or missing capacity domain) SHALL remain visible and cancellable until cancellation or the operation deadline; it SHALL make no /api/generate or /api/chat request and SHALL not automatically poll/retry. DENIED SHALL fail that attempt. Resource wait duration is owned by #265; the five-minute readiness deadline starts only after model-load admission.
 
 #### Scenario: Translation reaches a model wait
 
@@ -92,14 +92,14 @@ Recovery SHALL create a new operation-owned workspace after validation and SHALL
 
 ### Requirement: Translation publication has a durable intent and fail-closed reconciliation
 
-After inference, Translation SHALL validate and stage all requested outputs in its operation-owned workspace. Before promoting any final file, it SHALL persist a SQLite publication intent containing the operation ID, source revision, exact output targets, staged-file fingerprints, and expected final-file state. It SHALL use the existing guarded publication/rollback path. Only after every output is promoted and the source has been rechecked SHALL artifact metadata and the operation's PUBLICATION_COMMITTED/COMPLETED marker be committed in one SQLite transaction. The system SHALL NOT describe the filesystem and SQLite sequence as one atomic transaction.
+After inference, Translation SHALL validate and stage all requested outputs in its operation-owned workspace. Before promoting any final file, it SHALL persist a SQLite publication intent containing the operation ID, source revision, exact output targets, staged-file fingerprints, and expected final-file state. It SHALL use the existing guarded publication/rollback path. Only after every output is promoted and the source has been rechecked SHALL the operation's PUBLICATION_COMMITTED marker be committed in SQLite. Asset Info Translation V1 has no separate artifact-metadata callback; a future callback SHALL share that SQLite transaction. The system SHALL NOT describe the filesystem and SQLite sequence as one atomic transaction.
 
-After restart, a publication-committed operation is complete only if its SQLite artifact metadata and every expected final-file fingerprint match. A publication intent without a committed marker, a metadata/filesystem mismatch, or an unverified in-process rollback SHALL result in RECOVERY_REQUIRED. Startup MAY compare journaled fingerprints to staged/final/backup files for bounded diagnostics, but SHALL preserve them and SHALL NOT automatically publish, republish, roll back, delete, clean, or infer. A retry requires an explicit new operation identity.
+After restart, a publication-committed operation is complete only if its SQLite operation marker and every expected final-file fingerprint match. For a PUBLISHING checkpoint without a committed marker, startup SHALL inspect final fingerprints read-only and MAY record PUBLICATION_COMMITTED only if every exact expected fingerprint matches. Any missing, unreadable, or mismatched target or unverified in-process rollback SHALL result in RECOVERY_REQUIRED. Startup SHALL preserve files and SHALL NOT automatically publish, republish, roll back, delete, clean, or infer. A retry requires an explicit new operation identity.
 
 #### Scenario: Crash between file promotion and SQLite commit
 
 - **WHEN** startup finds publication intent but no committed marker
-- **THEN** it inspects recorded fingerprints for diagnosis, preserves all files, and marks RECOVERY_REQUIRED without republishing
+- **THEN** it marks PUBLICATION_COMMITTED only if every exact final fingerprint matches; otherwise it preserves all files and marks RECOVERY_REQUIRED without republishing
 
 #### Scenario: SQLite and final files confirm commit
 
@@ -115,4 +115,3 @@ After restart, a publication-committed operation is complete only if its SQLite 
 
 - **WHEN** a publication failure occurs and restoration of every previous final cannot be proven
 - **THEN** the operation preserves filesystem evidence and remains RECOVERY_REQUIRED
-

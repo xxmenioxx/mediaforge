@@ -237,7 +237,7 @@ wait "$child"
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- runSubtitleCommand(ctx, script, nil, nil, nil) }()
-	waitForFile(t, marker)
+	waitForNonEmptyFile(t, marker)
 	cancel()
 	select {
 	case err := <-done:
@@ -492,6 +492,19 @@ func waitForFile(t *testing.T, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %q", path)
+}
+
+func waitForNonEmptyFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		contents, err := os.ReadFile(path)
+		if err == nil && strings.TrimSpace(string(contents)) != "" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for non-empty %q", path)
 }
 
 func waitForFileOrSubtitleOperationFailure(t *testing.T, path, operationID string) {

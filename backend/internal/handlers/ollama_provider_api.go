@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,8 @@ import (
 const (
 	ollamaVersionMaxResponseBody = 64 * 1024
 	ollamaTagsMaxResponseBody    = 1024 * 1024
+	ollamaPSMaxResponseBody      = 512 * 1024
+	ollamaGenerateMaxBody        = 64 * 1024
 )
 
 type ollamaProviderAPIClient struct {
@@ -72,6 +76,23 @@ type ollamaTagsResponse struct {
 	} `json:"models"`
 }
 
+type ollamaPSResponse struct {
+	Models []ollamaResidentModel `json:"models"`
+}
+
+type ollamaResidentModel struct {
+	Name      string    `json:"name"`
+	Model     string    `json:"model"`
+	ExpiresAt time.Time `json:"expires_at"`
+	SizeVRAM  int64     `json:"size_vram"`
+}
+
+type ollamaWarmupRequest struct {
+	Model     string `json:"model"`
+	Stream    bool   `json:"stream"`
+	KeepAlive string `json:"keep_alive"`
+}
+
 type ollamaModelReadinessRequest struct {
 	ModelID string `json:"modelId"`
 }
@@ -96,6 +117,14 @@ func (h SettingsHandler) ollamaProviderAPIClient() ollamaProviderAPIClient {
 	return ollamaProviderAPIClient{client: h.ollamaHTTPClient}
 }
 
+// ollamaProviderConfigurationID is the provider-neutral identity used by the
+// #265 admission estimates and residency observations. It is derived from the
+// canonical shared endpoint configuration without persisting the endpoint.
+func ollamaProviderConfigurationID(endpoint string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(endpoint)))
+	return "ollama-" + hex.EncodeToString(digest[:12])
+}
+
 func (client ollamaProviderAPIClient) get(ctx context.Context, endpoint, apiPath string, maximum int) ([]byte, int, error) {
 	apiURL, err := ollamaAPIURL(endpoint, apiPath)
 	if err != nil {
@@ -115,6 +144,83 @@ func (client ollamaProviderAPIClient) get(ctx context.Context, endpoint, apiPath
 		return nil, response.StatusCode, err
 	}
 	return body, response.StatusCode, nil
+}
+
+func (client ollamaProviderAPIClient) postJSON(ctx context.Context, endpoint, apiPath string, payload any, maximum int) ([]byte, int, error) {
+	apiURL, err := ollamaAPIURL(endpoint, apiPath)
+	if err != nil {
+		return nil, 0, err
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, 0, fmt.Errorf("encode Ollama request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL.String(), strings.NewReader(string(encoded)))
+	if err != nil {
+		return nil, 0, fmt.Errorf("create Ollama request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.httpClient().Do(request)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer response.Body.Close()
+	body, err := readBoundedOllamaBody(ctx, response.Body, maximum)
+	if err != nil {
+		return nil, response.StatusCode, err
+	}
+	return body, response.StatusCode, nil
+}
+
+func (client ollamaProviderAPIClient) loadedModels(ctx context.Context, endpoint string) ([]ollamaResidentModel, error) {
+	body, status, err := client.get(ctx, endpoint, "/api/ps", ollamaPSMaxResponseBody)
+	if err != nil {
+		return nil, err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("Ollama process endpoint returned HTTP status %d", status)
+	}
+	var response ollamaPSResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, errors.New("Ollama process endpoint returned a malformed response")
+	}
+	if response.Models == nil {
+		return nil, errors.New("Ollama process endpoint omitted its models list")
+	}
+	for _, model := range response.Models {
+		if strings.TrimSpace(model.Name) == "" && strings.TrimSpace(model.Model) == "" {
+			return nil, errors.New("Ollama process endpoint returned a model without an identity")
+		}
+	}
+	return response.Models, nil
+}
+
+func (client ollamaProviderAPIClient) warmModel(ctx context.Context, endpoint, model string) error {
+	body, status, err := client.postJSON(ctx, endpoint, "/api/generate", ollamaWarmupRequest{
+		Model:     model,
+		Stream:    false,
+		KeepAlive: ollamaModelKeepAlive,
+	}, ollamaGenerateMaxBody)
+	if err != nil {
+		return err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return fmt.Errorf("Ollama warmup endpoint returned HTTP status %d", status)
+	}
+	var response struct {
+		Done  bool   `json:"done"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return errors.New("Ollama warmup endpoint returned a malformed response")
+	}
+	if strings.TrimSpace(response.Error) != "" {
+		return errors.New("Ollama rejected model warmup")
+	}
+	if !response.Done {
+		return errors.New("Ollama warmup did not complete")
+	}
+	return nil
 }
 
 func testOllamaConnection(ctx context.Context, endpoint string, client ollamaProviderAPIClient) ollamaConnectionTestResult {
@@ -315,6 +421,28 @@ func (h SettingsHandler) ListOllamaModels(c *gin.Context) {
 		status = http.StatusServiceUnavailable
 	} else if result.State == "invalid_response" {
 		status = http.StatusBadGateway
+	}
+	c.JSON(status, result)
+}
+
+func (h SettingsHandler) OllamaRuntimeStatus(c *gin.Context) {
+	if err := MigrateOllamaProviderSettings(h.db); err != nil {
+		c.JSON(http.StatusInternalServerError, aiModelRuntimeStatus{State: "unavailable", Diagnostic: "Ollama provider configuration is unavailable", Models: []aiModelRuntimeModel{}, Operations: []aiModelRuntimeOperation{}})
+		return
+	}
+	configuration, err := loadOllamaProviderConfiguration(h.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, aiModelRuntimeStatus{State: "unavailable", Diagnostic: "Ollama provider configuration is unavailable", Models: []aiModelRuntimeModel{}, Operations: []aiModelRuntimeOperation{}})
+		return
+	}
+	if configuration.State != ollamaProviderStateConfigured {
+		c.JSON(http.StatusServiceUnavailable, aiModelRuntimeStatus{State: "unavailable", Diagnostic: "Ollama provider configuration is not ready", Models: []aiModelRuntimeModel{}, Operations: []aiModelRuntimeOperation{}})
+		return
+	}
+	result := h.aiModelLifecycle.runtimeStatus(c.Request.Context(), configuration.Endpoint)
+	status := http.StatusOK
+	if result.State != "available" {
+		status = http.StatusServiceUnavailable
 	}
 	c.JSON(status, result)
 }

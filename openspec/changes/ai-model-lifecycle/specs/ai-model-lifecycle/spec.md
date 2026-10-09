@@ -28,6 +28,24 @@ The backend SHALL report one lifecycle state for an exact shared-provider config
 - **WHEN** bounded /api/ps discovery fails or returns malformed data
 - **THEN** the backend reports unavailable residency and a bounded diagnostic rather than a false empty list
 
+### Requirement: Runtime status is bounded and observational
+
+The bounded backend runtime projection at `GET /api/settings/ollama/runtime` SHALL distinguish installed and resident models, include lifecycle states and reported Ollama expiry timestamps, expose active Translation operations and bounded failures/resource waits, and include observation freshness or an explicit unavailable diagnostic. The projection SHALL use a five-second cache and a three-second request deadline. #266 Settings UI and model selection are outside this change.
+
+#### Scenario: Runtime observation is unavailable
+
+- **WHEN** Ollama installed or residency discovery is unavailable or malformed
+- **THEN** runtime status reports unavailable with a bounded diagnostic rather than an empty model list
+
+### Requirement: Production activation stays gated on verified resource authority
+
+`MVFORGE_AI_MODEL_LIFECYCLE_ENABLED` SHALL default to false. If explicitly enabled, protected Translation SHALL still require a configured capacity domain and a positive #265 decision before every warmup and inference. Missing/stale telemetry, missing measured model estimates, unavailable #256 critical-service authority, or unavailable #265 admission SHALL never become a grant and SHALL never fall back to legacy unadmitted Ollama requests. Production activation SHALL wait until #256 inputs and target-NAS model calibration are verified. This gate does not implement resource policy or #256 observation collection.
+
+#### Scenario: NAS admission evidence is not yet available
+
+- **WHEN** the lifecycle feature is enabled but #265 reports missing/stale resource or critical-service evidence
+- **THEN** Translation remains visibly waiting or denied and issues no model-affecting provider request
+
 ### Requirement: Warmup and inference use the shared provider only on demand
 
 The lifecycle SHALL use the #261 shared Ollama endpoint and bounded transport. It SHALL request warmup only for an explicit operation that has passed its feature/source gates and resource admission. Warmup SHALL POST /api/generate with the exact selected model, stream:false, keep_alive, and no prompt. The default keep_alive SHALL be 30 minutes and SHALL also be supplied to Translation /api/chat inference. Warmup readiness requires a successful bounded generate response and a matching exact model entry from /api/ps. Residency already observed in /api/ps skips warmup but does not skip inference admission.
@@ -61,9 +79,9 @@ The lifecycle SHALL NOT download or pull models, select a fallback, restart the 
 
 ### Requirement: Every model load and inference requires #265 admission
 
-#265 SHALL own the provider-neutral admission interface and implementation. The interface SHALL accept only the shared provider/configuration identity, exact model ID, stable consumer/workflow ID, and purpose (load or inference), and SHALL return an opaque lease and an outcome of ADMITTED, WAITING, DENIED, or UNAVAILABLE with a bounded reason and optional retry guidance. It SHALL provide lease release. #265 SHALL NOT import #264 lifecycle types or call back into the lifecycle manager. The final package and signature belong to #265.
+#265 owns the merged provider-neutral service in `backend/internal/airesource`. #264 SHALL depend on a narrow acyclic interface over `Admit`, `Await`, `CancelWait`, and `Release`. Requests SHALL carry the configured capacity domain, shared provider configuration identity, exact model ID, consumer, stable workflow ID, unique request ID for each admission attempt, purpose, and operation deadline. Decisions SHALL be ADMITTED with an opaque lease, WAITING with an opaque ticket, DENIED, or UNAVAILABLE. #264 SHALL NOT duplicate thresholds, estimates, telemetry interpretation, fairness, or admission policy; #265 SHALL NOT import #264 lifecycle types or call back into the lifecycle manager.
 
-The lifecycle manager SHALL make no RAM, VRAM, host pressure, resident-model, concurrency, or priority decision. It SHALL require ADMITTED before /api/generate and before every /api/chat inference, including inference for an already resident model. It SHALL map WAITING to WAITING_FOR_RESOURCES and use #265 retry guidance. DENIED SHALL stop the attempt without automatic retry. If the admission port is missing, errors, or returns UNAVAILABLE, the operation SHALL visibly wait with reason admission_unavailable, remain cancellable, and issue no generate or inference request. It SHALL not poll or retry the missing authority automatically. The five-minute readiness window SHALL begin only after ADMITTED; #265 controls resource-wait duration.
+The lifecycle manager SHALL make no RAM, VRAM, host pressure, resident-model, concurrency, or priority decision. It SHALL require ADMITTED before /api/generate and before every /api/chat inference, including inference against a resident model. It SHALL map WAITING to WAITING_FOR_RESOURCES, await/cancel the opaque ticket, and release opaque leases idempotently. DENIED SHALL fail the attempt without automatic retry. UNAVAILABLE SHALL remain a visible cancellable WAITING_FOR_RESOURCES operation until cancellation or its operation deadline, with no admission polling or model-affecting provider request. A later explicit retry SHALL use a new Translation operation identity and fresh admission request IDs. Missing or stale host/provider telemetry, an unmeasured model estimate, unavailable critical-service guard, missing capacity domain, or unavailable admission service SHALL never become a grant. The five-minute readiness window SHALL begin only after MODEL_LOAD admission; #265 controls resource-wait duration.
 
 #### Scenario: Resource authority grants admission
 
@@ -92,7 +110,7 @@ The lifecycle manager SHALL make no RAM, VRAM, host pressure, resident-model, co
 
 ### Requirement: Same-model warmup is singleflight, cancellable, and bounded
 
-Concurrent requests for the same shared-provider configuration identity and exact model ID SHALL join one warmup attempt. Waiters SHALL have independent cancellation. Cancelling one waiter SHALL not cancel warmup required by other waiters. When all waiters cancel, lifecycle SHALL cancel its request context, reconcile /api/ps before another attempt, and never resume a cancelled consumer. The default readiness window SHALL be five minutes after admission, including warmup and residency confirmation. Polling and retries SHALL be bounded; after timeout, automatic attempts SHALL stop until an explicit permitted retry. Resource waits owned by #265 are outside this readiness window.
+Concurrent requests for the same shared-provider configuration identity and exact model ID SHALL join one warmup attempt. Waiters SHALL have independent cancellation. Cancelling one waiter SHALL not cancel warmup required by other waiters. When all waiters cancel, lifecycle SHALL cancel its request context, reconcile /api/ps before another attempt, and never resume a cancelled consumer. A later retry SHALL wait for cancellation reconciliation to finish. The default readiness window SHALL be five minutes after admission, including warmup and residency confirmation. The flight SHALL make one generate request and use bounded /api/ps polling; it SHALL not automatically repeat a failed warmup. Resource waits owned by #265 are outside this readiness window.
 
 #### Scenario: Concurrent consumers request one model
 
@@ -149,14 +167,14 @@ Before first inference, the backend SHALL transactionally compare operation ID, 
 
 ### Requirement: Translation publication reconciles SQLite and files without assuming atomicity
 
-Translation SHALL stage and validate all outputs before publication. Before changing final files, it SHALL persist a publication intent containing operation ID, source revision, exact target paths, staged-file fingerprints, and expected final-file state. After all final files are promoted and the source is rechecked, artifact metadata and PUBLICATION_COMMITTED/COMPLETED SHALL be recorded in one SQLite transaction. The specification SHALL treat filesystem promotion and SQLite commit as separate systems with a crash window between them.
+Translation SHALL stage and validate all outputs before publication. Before changing final files, it SHALL persist a publication intent containing operation ID, source revision, exact target paths, staged-file fingerprints, and expected final-file state. After all final files are promoted and the source is rechecked, the operation's PUBLICATION_COMMITTED marker SHALL be recorded in SQLite. Asset Info Translation V1 has no separate artifact-metadata callback; if one is added later, it SHALL share that SQLite transaction. The specification SHALL treat filesystem promotion and SQLite commit as separate systems with a crash window between them.
 
-Startup SHALL accept completion only when the committed SQLite operation/artifact metadata and all expected final-file fingerprints agree. If a publication intent exists without the committed marker, or if any committed artifact is missing or mismatched, startup SHALL mark RECOVERY_REQUIRED and SHALL inspect files read-only for bounded diagnostics. It SHALL NOT automatically infer, publish, republish, roll back, delete, or clean staged/final/backup files after an ambiguous restart. If an in-process rollback cannot be verified, the same recovery-required state applies.
+Startup SHALL accept completion only when the committed SQLite operation marker and all expected final-file fingerprints agree. For a PUBLISHING row without the committed marker, recovery SHALL inspect final paths read-only. If every exact expected fingerprint matches, it MAY record PUBLICATION_COMMITTED in SQLite without changing files; this reconciles a completed promotion after a crash. If any expected output is missing, unreadable, or mismatched, startup SHALL mark RECOVERY_REQUIRED and preserve all evidence. It SHALL NOT automatically infer, publish, republish, roll back, delete, or clean staged/final/backup files after an ambiguous restart. If an in-process rollback cannot be verified, the same recovery-required state applies.
 
 #### Scenario: Crash after file promotion but before SQLite commit
 
 - **WHEN** startup finds a publication intent without a committed marker
-- **THEN** it reconciles file fingerprints for diagnostics, preserves the files, and marks RECOVERY_REQUIRED without a second publication
+- **THEN** it records PUBLICATION_COMMITTED only if every expected final fingerprint matches; otherwise it preserves files and marks RECOVERY_REQUIRED without a second publication
 
 #### Scenario: SQLite commit completed and files match
 
