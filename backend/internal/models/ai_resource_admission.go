@@ -13,6 +13,7 @@ type AIResourceAdmissionRecord struct {
 	ProviderConfigurationID string    `json:"-" gorm:"not null"`
 	ModelID                 string    `json:"-" gorm:"not null"`
 	ConsumerID              string    `json:"-" gorm:"not null"`
+	WorkflowID              string    `json:"-" gorm:"not null;default:''"`
 	RequestID               string    `json:"-" gorm:"not null"`
 	Purpose                 string    `json:"-" gorm:"not null"`
 	State                   string    `json:"-" gorm:"not null;index:idx_ai_resource_domain_state"`

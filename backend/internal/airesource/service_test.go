@@ -83,7 +83,114 @@ func serviceObservation(now time.Time, available int64, guard GuardStatus) Obser
 
 func serviceRequest(requestID string, purpose Purpose, modelID string) Request {
 	return Request{CapacityDomain: "nas-a", ProviderConfigurationID: "provider-a", ModelID: modelID,
-		ConsumerID: "test-consumer", RequestID: requestID, Purpose: purpose}
+		ConsumerID: "test-consumer", WorkflowID: "workflow-1", RequestID: requestID, Purpose: purpose}
+}
+
+type legacyAIResourceAdmissionRecord struct {
+	ID                      uint      `gorm:"primaryKey"`
+	RequestKey              string    `gorm:"not null;uniqueIndex"`
+	LeaseID                 string    `gorm:"index"`
+	WaitID                  string    `gorm:"index"`
+	CapacityDomain          string    `gorm:"not null;index:idx_ai_resource_domain_state"`
+	ProviderConfigurationID string    `gorm:"not null"`
+	ModelID                 string    `gorm:"not null"`
+	ConsumerID              string    `gorm:"not null"`
+	RequestID               string    `gorm:"not null"`
+	Purpose                 string    `gorm:"not null"`
+	State                   string    `gorm:"not null;index:idx_ai_resource_domain_state"`
+	ReasonCode              string    `gorm:"not null;default:''"`
+	ContextTokens           int64     `gorm:"not null;default:0"`
+	Sequences               int64     `gorm:"not null;default:0"`
+	OperationDeadline       time.Time `gorm:"not null"`
+	EvaluatedHostObservedAt time.Time
+	WaitDeadline            time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+}
+
+func (legacyAIResourceAdmissionRecord) TableName() string { return "ai_resource_admission_records" }
+
+func TestAdmissionRecordMigrationPreservesExistingAttempt(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:airesource-migration-%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}, &legacyAIResourceAdmissionRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: SettingsKey, Value: settingsValue(t, serviceSettings())}).Error; err != nil {
+		t.Fatal(err)
+	}
+	request := serviceRequest("attempt-1", PurposeInference, "model-a")
+	legacy := legacyAIResourceAdmissionRecord{RequestKey: requestKey(request), LeaseID: "legacy-lease", CapacityDomain: request.CapacityDomain,
+		ProviderConfigurationID: request.ProviderConfigurationID, ModelID: request.ModelID, ConsumerID: request.ConsumerID, RequestID: request.RequestID,
+		Purpose: string(request.Purpose), State: stateAdmitted, OperationDeadline: time.Now().UTC().Add(time.Minute)}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AIResourceAdmissionRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	var migrated models.AIResourceAdmissionRecord
+	if err := db.Where("request_key = ?", legacy.RequestKey).First(&migrated).Error; err != nil {
+		t.Fatal(err)
+	}
+	if migrated.State != stateAdmitted || migrated.RequestID != legacy.RequestID || migrated.WorkflowID != "" {
+		t.Fatalf("adding workflow identity must preserve the existing lease row and default the new field: %+v", migrated)
+	}
+	service := NewService(db)
+	if err := service.PublishObservation(context.Background(), serviceObservation(time.Now().UTC(), 20*testGiB, GuardAllow)); err != nil {
+		t.Fatal(err)
+	}
+	reattached := service.Admit(context.Background(), request)
+	if reattached.Status != Admitted || reattached.Lease == nil || reattached.Lease.id != legacy.LeaseID {
+		t.Fatalf("legacy active lease must remain idempotent after workflow identity migration: %+v", reattached)
+	}
+	if err := db.Where("request_key = ?", legacy.RequestKey).First(&migrated).Error; err != nil {
+		t.Fatal(err)
+	}
+	if migrated.WorkflowID != request.WorkflowID {
+		t.Fatalf("reattaching must persist the workflow identity for the legacy attempt: %+v", migrated)
+	}
+}
+
+func TestServiceUnavailableAttemptCanRetryAfterTelemetryRecovery(t *testing.T) {
+	db, service := newServiceFixture(t, serviceSettings())
+	firstAttempt := serviceRequest("inference-attempt-1", PurposeInference, "model-a")
+	first := service.Admit(context.Background(), firstAttempt)
+	if first.Status != Unavailable || first.Lease != nil || first.Reason != "resource_observation_unavailable" {
+		t.Fatalf("missing telemetry must leave the first attempt unavailable without a lease: %+v", first)
+	}
+
+	now := time.Now().UTC()
+	if err := service.PublishObservation(context.Background(), serviceObservation(now, 20*testGiB, GuardAllow)); err != nil {
+		t.Fatal(err)
+	}
+	retry := firstAttempt
+	retry.RequestID = "inference-attempt-2"
+	second := service.Admit(context.Background(), retry)
+	if second.Status != Admitted || second.Lease == nil {
+		t.Fatalf("explicit retry with a new attempt identity must be reevaluated after telemetry recovery: %+v", second)
+	}
+	duplicate := service.Admit(context.Background(), retry)
+	if duplicate.Status != Admitted || duplicate.Lease == nil || duplicate.Lease.id != second.Lease.id {
+		t.Fatalf("duplicate active retry must reattach to the original lease: first=%+v duplicate=%+v", second, duplicate)
+	}
+	stillUnavailable := service.Admit(context.Background(), firstAttempt)
+	if stillUnavailable.Status != Unavailable || stillUnavailable.Lease != nil || stillUnavailable.Reason != first.Reason {
+		t.Fatalf("the original terminal attempt must remain unavailable and must not gain a lease: %+v", stillUnavailable)
+	}
+
+	var records []models.AIResourceAdmissionRecord
+	if err := db.Order("request_id").Find(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || records[0].WorkflowID != firstAttempt.WorkflowID || records[1].WorkflowID != firstAttempt.WorkflowID || records[0].RequestID == records[1].RequestID {
+		t.Fatalf("retry must retain workflow identity while persisting a distinct admission attempt: %+v", records)
+	}
+	if err := service.Release(context.Background(), *second.Lease); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestServiceIdempotentLeaseAndRelease(t *testing.T) {

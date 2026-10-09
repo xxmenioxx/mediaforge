@@ -34,7 +34,8 @@ type Request struct {
 	ProviderConfigurationID string    `json:"providerConfigurationId"`
 	ModelID                 string    `json:"modelId"`
 	ConsumerID              string    `json:"consumerId"`
-	RequestID               string    `json:"requestId"`
+	WorkflowID              string    `json:"workflowId"` // Stable across explicit retries for the same workflow.
+	RequestID               string    `json:"requestId"`  // Unique to one admission attempt; keep WorkflowID stable when retrying.
 	Purpose                 Purpose   `json:"purpose"`
 	ContextTokens           int64     `json:"contextTokens,omitempty"`
 	Sequences               int64     `json:"sequences,omitempty"`

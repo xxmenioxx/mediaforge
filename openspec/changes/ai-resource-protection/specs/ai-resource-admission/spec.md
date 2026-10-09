@@ -6,7 +6,7 @@ This capability admits MVForge model loads and inference only when shared host c
 
 ### Requirement: AI consumers use one provider-neutral admission contract
 
-The backend SHALL expose a resource-admission contract owned independently of provider and lifecycle implementations. A request SHALL identify an opaque capacity domain, provider configuration identity, exact model ID, stable consumer ID, purpose (`MODEL_LOAD` or `INFERENCE`), and any workload hints required by the resource estimator. The contract SHALL NOT import or expose #264 lifecycle types, choose a model, resolve a provider endpoint, or issue provider requests.
+The backend SHALL expose a resource-admission contract owned independently of provider and lifecycle implementations. A request SHALL identify an opaque capacity domain, provider configuration identity, exact model ID, stable consumer ID, stable workflow ID, per-attempt request ID, purpose (`MODEL_LOAD` or `INFERENCE`), and any workload hints required by the resource estimator. A new explicit attempt SHALL use a new request ID while retaining the workflow ID. Repeating an active request ID SHALL reattach to its existing lease or wait; a terminal `UNAVAILABLE` request ID SHALL remain terminal. The contract SHALL NOT import or expose #264 lifecycle types, choose a model, resolve a provider endpoint, or issue provider requests.
 
 Each decision SHALL be exactly one of `ADMITTED`, `WAITING`, `DENIED`, or `UNAVAILABLE`. `ADMITTED` SHALL include an opaque lease. `WAITING` SHALL include an opaque wait handle and SHALL NOT include a lease. `DENIED` SHALL identify a terminal policy reason for that attempt. `UNAVAILABLE` SHALL identify a missing, stale, or failed admission authority or required capacity signal. No consumer SHALL interpret an error or unavailable result as permission to proceed.
 
@@ -21,6 +21,10 @@ Each decision SHALL be exactly one of `ADMITTED`, `WAITING`, `DENIED`, or `UNAVA
 #### Scenario: Admission authority is absent or errors
 - **WHEN** a consumer cannot obtain a decision from the resource-admission service
 - **THEN** it receives no implicit grant and issues no model-affecting provider request
+
+#### Scenario: Retry an unavailable admission after telemetry recovers
+- **WHEN** an attempt returns `UNAVAILABLE`, required telemetry recovers, and the same workflow submits a new request ID
+- **THEN** admission reevaluates the new attempt, while repeating the original request ID remains `UNAVAILABLE`
 
 ### Requirement: Residency, model loading, and inference have independent limits
 
@@ -92,7 +96,7 @@ The service SHALL return `WAITING` without blocking a Queue, FFmpeg, or provider
 
 Every admitted request SHALL receive a purpose-scoped opaque lease that consumers cannot forge or reinterpret. `Release` SHALL be explicit and idempotent. A model-load lease SHALL be released after the lifecycle owner completes or reconciles the warmup against the provider resident census; it SHALL not authorize inference. An inference lease SHALL cover exactly one MVForge provider request and SHALL be released on completion or confirmed cancellation. Releasing a lease SHALL never unload a model or restart a provider.
 
-The service SHALL persist the minimal lease and wait identity needed for idempotent reacquisition and crash recovery, keyed by stable consumer/request identity and purpose. On restart it SHALL withhold new grants until required host and provider telemetry is fresh, restore unexpired reservations, and count provider-reported residents including external models. An uncertain inference reservation SHALL remain held through the bounded provider-request deadline plus cleanup grace; restart SHALL NOT immediately treat it as idle. A lifecycle recovery SHALL be able to reacquire the same logical request without allocating a duplicate lease.
+The service SHALL persist the minimal lease and wait identity needed for idempotent reacquisition and crash recovery, keyed by stable consumer/request-attempt identity and purpose while retaining and validating the workflow identity. On restart it SHALL withhold new grants until required host and provider telemetry is fresh, restore unexpired reservations, and count provider-reported residents including external models. An uncertain inference reservation SHALL remain held through the bounded provider-request deadline plus cleanup grace; restart SHALL NOT immediately treat it as idle. A lifecycle recovery SHALL be able to reacquire the same logical request ID without allocating a duplicate lease.
 
 #### Scenario: A lease is released twice
 - **WHEN** a consumer repeats `Release` for the same lease

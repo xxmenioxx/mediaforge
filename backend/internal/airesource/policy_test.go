@@ -15,7 +15,7 @@ func policyFixture(now time.Time, total, available int64) (Settings, Request, Ob
 		KVCacheBytesPerToken: 64 * 1024, DefaultContextTokens: 1024, MaximumContextTokens: 8192,
 		Source: "benchmark", Revision: "nas-fixture-v1",
 	}}
-	request := Request{CapacityDomain: "nas-a", ProviderConfigurationID: "provider-a", ModelID: "model-a", ConsumerID: "consumer", RequestID: "request", Purpose: PurposeModelLoad}
+	request := Request{CapacityDomain: "nas-a", ProviderConfigurationID: "provider-a", ModelID: "model-a", ConsumerID: "consumer", WorkflowID: "workflow", RequestID: "request", Purpose: PurposeModelLoad}
 	observation := Observation{
 		CapacityDomain: "nas-a",
 		Host:           HostObservation{AvailableMemoryKnown: true, TotalMemoryBytes: total, AvailableMemoryBytes: available, ObservedAt: now, Metrics: map[string]MetricObservation{}},
@@ -58,6 +58,12 @@ func TestResourcePolicy24GiBHeadroomAndCriticalPressure(t *testing.T) {
 	decision = evaluate(settings, request, observation, nil, now)
 	if decision.Status != Unavailable || decision.Reason != "critical_service_guard_unavailable" {
 		t.Fatalf("unknown critical-service state must fail closed: %+v", decision)
+	}
+	observation.Critical.Status = GuardAllow
+	observation.Critical.Source = ""
+	decision = evaluate(settings, request, observation, nil, now)
+	if decision.Status != Unavailable || decision.Reason != "critical_service_guard_unavailable" {
+		t.Fatalf("missing #256 critical-service guard must fail closed: %+v", decision)
 	}
 }
 

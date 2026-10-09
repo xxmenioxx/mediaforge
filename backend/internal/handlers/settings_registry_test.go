@@ -125,7 +125,7 @@ func TestAIResourceProtectionStatusAndPreviewExposeUnknownAuthorities(t *testing
 		t.Fatalf("MVForge policy must not claim Ollama server values: %#v", server)
 	}
 
-	previewBody := `{"capacityDomain":"nas-a","providerConfigurationId":"provider-a","modelId":"model-a","consumerId":"settings-preview","requestId":"preview-1","purpose":"MODEL_LOAD"}`
+	previewBody := `{"capacityDomain":"nas-a","providerConfigurationId":"provider-a","modelId":"model-a","consumerId":"settings-preview","workflowId":"settings-workflow","requestId":"preview-1","purpose":"MODEL_LOAD"}`
 	previewResponse := httptest.NewRecorder()
 	router.ServeHTTP(previewResponse, httptest.NewRequest(http.MethodPost, "/settings/ai-resource-protection/preview", strings.NewReader(previewBody)))
 	if previewResponse.Code != http.StatusOK {

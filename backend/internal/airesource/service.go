@@ -65,6 +65,13 @@ func (s *Service) Admit(ctx context.Context, request Request) Decision {
 		}
 		var prior models.AIResourceAdmissionRecord
 		if err := tx.Where("request_key = ?", key).First(&prior).Error; err == nil {
+			if prior.WorkflowID == "" {
+				// Backfill records created before workflow identity was persisted.
+				prior.WorkflowID = request.WorkflowID
+				if err := tx.Save(&prior).Error; err != nil {
+					return err
+				}
+			}
 			if prior.State == stateWaiting && !settings.Enabled {
 				prior.State, prior.ReasonCode = stateDenied, "protection_disabled"
 				if err := tx.Save(&prior).Error; err != nil {
@@ -627,7 +634,7 @@ func (s *Service) signal(waitID string) {
 }
 
 func validateRequest(request Request) string {
-	fields := []string{request.CapacityDomain, request.ProviderConfigurationID, request.ModelID, request.ConsumerID, request.RequestID}
+	fields := []string{request.CapacityDomain, request.ProviderConfigurationID, request.ModelID, request.ConsumerID, request.WorkflowID, request.RequestID}
 	for _, field := range fields {
 		if strings.TrimSpace(field) == "" || len(field) > 256 {
 			return "request_identity_invalid"
@@ -653,6 +660,7 @@ func normalizeRequest(request Request) Request {
 	request.ProviderConfigurationID = strings.TrimSpace(request.ProviderConfigurationID)
 	request.ModelID = strings.TrimSpace(request.ModelID)
 	request.ConsumerID = strings.TrimSpace(request.ConsumerID)
+	request.WorkflowID = strings.TrimSpace(request.WorkflowID)
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	return request
 }
@@ -743,14 +751,14 @@ func admissionRecord(request Request, key, leaseID, waitID, state, reason string
 	return models.AIResourceAdmissionRecord{
 		RequestKey: key, LeaseID: leaseID, WaitID: waitID, CapacityDomain: request.CapacityDomain,
 		ProviderConfigurationID: request.ProviderConfigurationID, ModelID: request.ModelID,
-		ConsumerID: request.ConsumerID, RequestID: request.RequestID, Purpose: string(request.Purpose),
+		ConsumerID: request.ConsumerID, WorkflowID: request.WorkflowID, RequestID: request.RequestID, Purpose: string(request.Purpose),
 		State: state, ReasonCode: reason, ContextTokens: request.ContextTokens, Sequences: request.Sequences,
 		OperationDeadline: request.OperationDeadline, CreatedAt: now, UpdatedAt: now,
 	}
 }
 
 func priorDecision(record models.AIResourceAdmissionRecord, request Request, key string) Decision {
-	if record.ProviderConfigurationID != request.ProviderConfigurationID || record.ModelID != request.ModelID || record.ContextTokens != request.ContextTokens || record.Sequences != request.Sequences {
+	if record.WorkflowID != request.WorkflowID || record.ProviderConfigurationID != request.ProviderConfigurationID || record.ModelID != request.ModelID || record.ContextTokens != request.ContextTokens || record.Sequences != request.Sequences {
 		return Decision{Status: Denied, Reason: "request_identity_conflict"}
 	}
 	return decisionFromRecord(record, key)
@@ -777,7 +785,7 @@ func decisionFromRecord(record models.AIResourceAdmissionRecord, key string) Dec
 
 func requestFromRecord(record models.AIResourceAdmissionRecord) Request {
 	return Request{CapacityDomain: record.CapacityDomain, ProviderConfigurationID: record.ProviderConfigurationID, ModelID: record.ModelID,
-		ConsumerID: record.ConsumerID, RequestID: record.RequestID, Purpose: Purpose(record.Purpose), ContextTokens: record.ContextTokens,
+		ConsumerID: record.ConsumerID, WorkflowID: record.WorkflowID, RequestID: record.RequestID, Purpose: Purpose(record.Purpose), ContextTokens: record.ContextTokens,
 		Sequences: record.Sequences, OperationDeadline: record.OperationDeadline}
 }
 
