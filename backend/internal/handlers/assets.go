@@ -6661,6 +6661,10 @@ func mediaFileFingerprint(filePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return mediaFileFingerprintForOpenFile(file, info)
+}
+
+func mediaFileFingerprintForOpenFile(file *os.File, info os.FileInfo) (string, error) {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "%d:", info.Size())
 	const sampleSize int64 = 1 << 20

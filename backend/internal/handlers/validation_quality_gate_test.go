@@ -142,6 +142,17 @@ func TestResultArtifactIdentityBindsFrozenExecutionAndDetectsReplacement(t *test
 	if !ok || identity.ArtifactID != "job-result:"+strconv.FormatUint(uint64(job.ID), 10)+":execution:12" || identity.GenerationVersion != 1 {
 		t.Fatalf("canonical Result identity missing or malformed: %#v", artifact["resultIdentity"])
 	}
+	if !strings.HasPrefix(identity.OutputRevision, "result-output-revision-v2-") || identity.OutputRevisionEvidence == nil || identity.OutputRevisionEvidence.ContentRevision != identity.OutputRevision || identity.OutputRevisionEvidence.SizeBytes <= 0 || identity.OutputRevisionEvidence.ContentSHA256 == "" || identity.OutputRevisionEvidence.BoundedFingerprint == "" {
+		t.Fatalf("Result content revision evidence was not persisted: %#v", artifact["resultIdentity"])
+	}
+	identityWithoutDiagnostics := map[string]any{}
+	for key, value := range unknownRecord(artifact["resultIdentity"]) {
+		identityWithoutDiagnostics[key] = value
+	}
+	delete(identityWithoutDiagnostics, "outputRevisionEvidence")
+	if _, complete := resultIdentityFromArtifact(map[string]any{"resultIdentity": identityWithoutDiagnostics}); complete {
+		t.Fatal("v2 Result identity without its persisted content evidence was accepted")
+	}
 	resultManifest := unknownRecord(artifact["artifacts"])
 	primary := unknownRecord(resultManifest["primary"])
 	if stringFromUnknown(primary["path"]) != output || stringFromUnknown(primary["status"]) != "ready" {
@@ -150,6 +161,27 @@ func TestResultArtifactIdentityBindsFrozenExecutionAndDetectsReplacement(t *test
 	binding, ok := resultBindingFromArtifact(artifact)
 	if !ok || binding.ExecutionNumber != 12 || binding.ExecutionPlanID != plan.ID || binding.ExecutionPlanVersion != plan.Version || binding.FrozenQueueFingerprint == "" {
 		t.Fatalf("Result artifact is not bound to the frozen execution: %#v", artifact["executionBinding"])
+	}
+	if err := os.Chmod(output, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	validationFindings, _ := evaluateValidationRules(db, job, artifact, identity, binding)
+	identityPass := false
+	for _, finding := range validationFindings {
+		if finding.Key == "artifact.identity" {
+			identityPass = finding.State == "PASS" && !finding.Overrideable
+			if !identityPass {
+				t.Fatalf("chmod-only Result metadata change failed or became overrideable: %#v", finding)
+			}
+			expected, expectedOK := finding.Expected.(*resultOutputRevisionEvidence)
+			actual, actualOK := finding.Actual.(*resultOutputRevisionEvidence)
+			if !expectedOK || !actualOK || expected.ContentRevision != actual.ContentRevision || expected.Filesystem.Mode == actual.Filesystem.Mode {
+				t.Fatalf("Validation did not preserve content evidence while reporting the chmod: expected=%#v actual=%#v", finding.Expected, finding.Actual)
+			}
+		}
+	}
+	if !identityPass {
+		t.Fatal("Validation omitted the canonical artifact.identity finding")
 	}
 	currentRevision, err := resultOutputRevisionForPath(output)
 	if err != nil || currentRevision != identity.OutputRevision {
@@ -172,11 +204,219 @@ func TestResultArtifactIdentityBindsFrozenExecutionAndDetectsReplacement(t *test
 	if err := db.Save(&job).Error; err != nil {
 		t.Fatal(err)
 	}
+	var canonicalRun models.ValidationRun
+	if err := db.Where("run_id = ? AND job_id = ?", job.ValidationRunID, job.ID).First(&canonicalRun).Error; err != nil || !runMatchesResult(canonicalRun, artifact) {
+		t.Fatalf("canonical ValidationRun did not match its Result generation: run=%#v err=%v", canonicalRun, err)
+	}
+	staleGenerationToken := canonicalRun
+	staleGenerationToken.ResultGenerationToken += "-stale"
+	if runMatchesResult(staleGenerationToken, artifact) {
+		t.Fatal("Result generation token mismatch was accepted")
+	}
+	staleGenerationVersion := canonicalRun
+	staleGenerationVersion.ResultGenerationVersion++
+	if runMatchesResult(staleGenerationVersion, artifact) {
+		t.Fatal("Result generation version mismatch was accepted")
+	}
 	if err := os.WriteFile(output, []byte("replacement output generation"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	changedFindings, _ := evaluateValidationRules(db, job, artifact, identity, binding)
+	identityFailed := false
+	for _, finding := range changedFindings {
+		if finding.Key == "artifact.identity" {
+			identityFailed = finding.State == "FAIL" && !finding.Overrideable
+			if !identityFailed {
+				t.Fatalf("changed Result content did not remain blocking and non-overrideable: %#v", finding)
+			}
+		}
+	}
+	if !identityFailed {
+		t.Fatal("Validation omitted artifact.identity after Result content changed")
+	}
 	if allowed, reason := canonicalRunAllowsPublish(db, job, false); allowed || reason == "" {
 		t.Fatalf("replaced output was allowed to publish: allowed=%t reason=%q", allowed, reason)
+	}
+}
+
+func TestResultOutputRevisionV2IgnoresFilesystemMetadata(t *testing.T) {
+	root := t.TempDir()
+	output := filepath.Join(root, "output.mkv")
+	content := []byte(strings.Repeat("stable media content ", 256))
+	if err := os.WriteFile(output, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original, err := resultOutputRevisionEvidenceForPath(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(original.ContentRevision, "result-output-revision-v2-") {
+		t.Fatalf("new Result output revision has no v2 prefix: %q", original.ContentRevision)
+	}
+
+	metadataOnly := *original
+	metadataOnly.Filesystem.ModifiedAtUnixNano++
+	metadataOnly.Filesystem.Mode ^= 0o111
+	metadataOnly.Filesystem.Device = "different-device"
+	metadataOnly.Filesystem.Inode = "different-inode"
+	metadataRevision, err := resultOutputRevisionV2ForEvidence(&metadataOnly)
+	if err != nil || metadataRevision != original.ContentRevision {
+		t.Fatalf("filesystem diagnostics changed the v2 content revision: original=%q metadata=%q err=%v", original.ContentRevision, metadataRevision, err)
+	}
+
+	if err := os.Chmod(output, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	changedTime := time.Unix(1_700_000_000, 0)
+	if err := os.Chtimes(output, changedTime, changedTime); err != nil {
+		t.Fatal(err)
+	}
+	chmodEvidence, err := resultOutputRevisionEvidenceForPath(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chmodEvidence.ContentRevision != original.ContentRevision || chmodEvidence.Filesystem.Mode == original.Filesystem.Mode || chmodEvidence.Filesystem.ModifiedAtUnixNano == original.Filesystem.ModifiedAtUnixNano {
+		t.Fatalf("chmod/mtime-only change was not isolated from content identity: original=%#v after=%#v", original, chmodEvidence)
+	}
+
+	replacement := filepath.Join(root, "replacement.mkv")
+	if err := os.WriteFile(replacement, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, output); err != nil {
+		t.Fatal(err)
+	}
+	replacementEvidence, err := resultOutputRevisionEvidenceForPath(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacementEvidence.ContentRevision != original.ContentRevision {
+		t.Fatalf("same-content inode replacement changed the v2 revision: original=%q replacement=%q", original.ContentRevision, replacementEvidence.ContentRevision)
+	}
+	if original.Filesystem.Inode != "" && replacementEvidence.Filesystem.Inode != "" && original.Filesystem.Inode == replacementEvidence.Filesystem.Inode {
+		t.Fatalf("test replacement did not change inode: %#v", replacementEvidence.Filesystem)
+	}
+	currentEvidence, err := resultOutputRevisionForIdentity(output, original.ContentRevision)
+	if err != nil || currentEvidence.ContentRevision != original.ContentRevision {
+		t.Fatalf("same content with changed filesystem identity did not match: evidence=%#v err=%v", currentEvidence, err)
+	}
+}
+
+func TestResultOutputRevisionV2RejectsChangedContentTruncationAndMissingOutput(t *testing.T) {
+	root := t.TempDir()
+	output := filepath.Join(root, "output.mkv")
+	content := []byte(strings.Repeat("bounded bytes", 256))
+	if err := os.WriteFile(output, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original, err := resultOutputRevisionEvidenceForPath(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mutated := append([]byte(nil), content...)
+	mutated[0] ^= 0xff
+	if err := os.WriteFile(output, mutated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := resultOutputRevisionForIdentity(output, original.ContentRevision)
+	if err != nil || changed.ContentRevision == original.ContentRevision {
+		t.Fatalf("same-size content mutation retained the Result revision: evidence=%#v err=%v", changed, err)
+	}
+
+	if err := os.WriteFile(output, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	truncated, err := resultOutputRevisionForIdentity(output, original.ContentRevision)
+	if err != nil || truncated.ContentRevision == original.ContentRevision || truncated.SizeBytes == original.SizeBytes {
+		t.Fatalf("truncation retained the Result revision: evidence=%#v err=%v", truncated, err)
+	}
+
+	if err := os.Remove(output); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resultOutputRevisionForIdentity(output, original.ContentRevision); err == nil {
+		t.Fatal("missing Result output was accepted")
+	}
+}
+
+func TestResultOutputRevisionDetectsContentChangesOutsideBoundedSamples(t *testing.T) {
+	root := t.TempDir()
+	output := filepath.Join(root, "large-output.mkv")
+	content := make([]byte, 8<<20)
+	for index := range content {
+		content[index] = byte(index % 251)
+	}
+	if err := os.WriteFile(output, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original, err := resultOutputRevisionEvidenceForPath(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content[2<<20] ^= 0xff // outside mediaFileFingerprint's first, middle, and final samples
+	if err := os.WriteFile(output, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := resultOutputRevisionForIdentity(output, original.ContentRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.BoundedFingerprint != original.BoundedFingerprint {
+		t.Fatalf("test mutation unexpectedly changed the bounded sample: before=%q after=%q", original.BoundedFingerprint, changed.BoundedFingerprint)
+	}
+	if changed.ContentSHA256 == original.ContentSHA256 || changed.ContentRevision == original.ContentRevision {
+		t.Fatalf("unsampled byte mutation retained the canonical content identity: before=%#v after=%#v", original, changed)
+	}
+}
+
+func TestLegacyResultOutputRevisionV1KeepsMetadataSensitiveSemantics(t *testing.T) {
+	root := t.TempDir()
+	output := filepath.Join(root, "legacy-output.mkv")
+	if err := os.WriteFile(output, []byte("legacy result content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := resultOutputRevisionEvidenceForPath(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRevision, err := resultOutputRevisionV1ForEvidence(evidence)
+	if err != nil || !strings.HasPrefix(legacyRevision, "result-output-revision-v1-") {
+		t.Fatalf("legacy revision fixture was not v1: revision=%q err=%v", legacyRevision, err)
+	}
+	legacyCurrent, err := resultOutputRevisionForIdentity(output, legacyRevision)
+	if err != nil || legacyCurrent.ContentRevision != legacyRevision {
+		t.Fatalf("unchanged v1 Result did not retain its original revision semantics: current=%#v err=%v", legacyCurrent, err)
+	}
+	if err := os.Chmod(output, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	legacyAfterChmod, err := resultOutputRevisionForIdentity(output, legacyRevision)
+	if err != nil || legacyAfterChmod.ContentRevision == legacyRevision {
+		t.Fatalf("legacy v1 Result was silently upgraded to metadata-independent semantics: current=%#v err=%v", legacyAfterChmod, err)
+	}
+	newRevision, err := resultOutputRevisionForPath(output)
+	if err != nil || newRevision == legacyRevision || !strings.HasPrefix(newRevision, "result-output-revision-v2-") {
+		t.Fatalf("new v2 semantics were not versioned separately from v1: revision=%q err=%v", newRevision, err)
+	}
+}
+
+func TestResultOutputRevisionRejectsUnreadableOutput(t *testing.T) {
+	root := t.TempDir()
+	output := filepath.Join(root, "unreadable.mkv")
+	if err := os.WriteFile(output, []byte("unreadable output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(output, 0); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(output)
+	if err == nil {
+		_ = file.Close()
+		t.Skip("current test process can read mode-zero files")
+	}
+	if _, err := resultOutputRevisionEvidenceForPath(output); err == nil {
+		t.Fatal("unreadable Result output was accepted")
 	}
 }
 
