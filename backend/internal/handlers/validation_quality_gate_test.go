@@ -223,6 +223,41 @@ func TestValidationRuleCategoriesUseStableEvidenceFindings(t *testing.T) {
 	}
 }
 
+func TestAddChapterFindingUsesExplicitOutputEvidence(t *testing.T) {
+	tests := []struct {
+		name          string
+		chaptersKept  bool
+		chapterPolicy ChapterPolicy
+		probe         models.JSONMap
+		wantState     string
+		wantActual    any
+	}{
+		{name: "keep with output chapters", chaptersKept: true, probe: models.JSONMap{"chapters": []any{models.JSONMap{"id": 0}}}, wantState: "PASS", wantActual: 1},
+		{name: "keep with real chapter loss", chaptersKept: true, probe: models.JSONMap{"chapters": []any{}}, wantState: "FAIL", wantActual: 0},
+		{name: "remove with no output chapters", chapterPolicy: ChapterPolicyRemove, probe: models.JSONMap{"chapters": []any{}}, wantState: "PASS", wantActual: 0},
+		{name: "missing chapter evidence", chaptersKept: true, probe: models.JSONMap{"streams": []any{}}, wantState: "UNVERIFIED"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			trackPlan, err := resolvedTrackPlanMap(ResolvedTrackPlan{ChaptersKept: test.chaptersKept, ChapterPolicy: test.chapterPolicy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			job := models.QueueJob{TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: trackPlan}}
+			var got validationFinding
+			add := func(key string, expected, actual any, severity, disposition, state string, actionable, overrideable bool, explanation string, refs ...string) {
+				if key == "chapters.actions" {
+					got = validationFinding{Key: key, Expected: expected, Actual: actual, State: state}
+				}
+			}
+			addChapterFinding(add, job, test.probe)
+			if got.Key == "" || got.State != test.wantState || got.Actual != test.wantActual {
+				t.Fatalf("chapter finding=%#v, want state=%s actual=%#v", got, test.wantState, test.wantActual)
+			}
+		})
+	}
+}
+
 func TestValidationRetryAppendsImmutableRunsForSameResult(t *testing.T) {
 	db := testEncodeTestDB(t, "quality-gate-run-retry", &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
 	root := t.TempDir()
