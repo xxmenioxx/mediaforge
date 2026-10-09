@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anuelvs/mvforge/backend/internal/database"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -804,6 +805,9 @@ func TestAutoPublisherRecoversOnlyUnattemptedValidationIdentityRace(t *testing.T
 	_, stored := prepareBlockedValidationIdentityRace(t, fixture)
 	if stored.ValidationRunID != "" || stored.State != PublicationBlocked || stored.FailureCode != "identity_changed" || stored.AttemptCount != 0 || stored.FencingGeneration != 0 || stored.OriginalArchiveStatus != "pending" {
 		t.Fatalf("fixture does not match the zero-attempt race state: %#v", stored)
+	}
+	if err := database.Migrate(fixture.db); err != nil {
+		t.Fatalf("install production Publisher identity trigger: %v", err)
 	}
 	if err := fixture.db.Create(&models.AppSetting{Key: "pipelineAutomation", Value: models.JSONMap{"autoPublisherEnabled": true}}).Error; err != nil {
 		t.Fatal(err)

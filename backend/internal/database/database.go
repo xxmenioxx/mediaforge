@@ -333,7 +333,10 @@ func migratePublisherAppendOnly(db *gorm.DB) error {
 			}
 		}
 	}
-	if err := db.Exec(`CREATE TRIGGER IF NOT EXISTS publisher_publications_identity_no_update
+	if err := db.Exec(`DROP TRIGGER IF EXISTS publisher_publications_identity_no_update`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`CREATE TRIGGER publisher_publications_identity_no_update
 		BEFORE UPDATE ON publisher_publications
 		WHEN OLD.publication_id IS NOT NEW.publication_id
 			OR OLD.queue_job_id IS NOT NEW.queue_job_id
@@ -349,7 +352,47 @@ func migratePublisherAppendOnly(db *gorm.DB) error {
 			OR OLD.result_generation_token IS NOT NEW.result_generation_token
 			OR OLD.result_generation_version IS NOT NEW.result_generation_version
 			OR OLD.result_output_revision IS NOT NEW.result_output_revision
-			OR OLD.validation_run_id IS NOT NEW.validation_run_id
+			OR (
+				OLD.validation_run_id IS NOT NEW.validation_run_id
+				AND NOT (
+					OLD.validation_run_id = ''
+					AND NEW.validation_run_id IS NOT NULL
+					AND NEW.validation_run_id <> ''
+					AND OLD.state = 'BLOCKED'
+					AND OLD.failure_code = 'identity_changed'
+					AND OLD.attempt_count = 0
+					AND OLD.fencing_generation = 0
+					AND COALESCE(OLD.active_attempt_id, '') = ''
+					AND OLD.lease_expires_at IS NULL
+					AND OLD.published_at IS NULL
+					AND OLD.original_archive_status = 'pending'
+					AND NEW.state = 'READY'
+					AND COALESCE(NEW.failure_code, '') = ''
+					AND COALESCE(NEW.failure_summary, '') = ''
+					AND NEW.attempt_count = 0
+					AND NEW.fencing_generation = 0
+					AND COALESCE(NEW.active_attempt_id, '') = ''
+					AND NEW.lease_expires_at IS NULL
+					AND NEW.published_at IS NULL
+					AND NEW.original_archive_status = 'pending'
+					AND OLD.active_attempt_id IS NEW.active_attempt_id
+					AND OLD.id IS NEW.id
+					AND OLD.hold_reason IS NEW.hold_reason
+					AND OLD.manifest IS NEW.manifest
+					AND OLD.original_archived_path IS NEW.original_archived_path
+					AND OLD.original_archive_source_path IS NEW.original_archive_source_path
+					AND OLD.original_archive_temporary_path IS NEW.original_archive_temporary_path
+					AND OLD.original_archive_size_bytes IS NEW.original_archive_size_bytes
+					AND OLD.original_archive_device IS NEW.original_archive_device
+					AND OLD.original_archive_inode IS NEW.original_archive_inode
+					AND OLD.original_archive_temp_device IS NEW.original_archive_temp_device
+					AND OLD.original_archive_temp_inode IS NEW.original_archive_temp_inode
+					AND OLD.original_archive_claim_id IS NEW.original_archive_claim_id
+					AND OLD.original_archive_lease_expires_at IS NEW.original_archive_lease_expires_at
+					AND OLD.original_archive_fencing_generation IS NEW.original_archive_fencing_generation
+					AND OLD.original_archive_error IS NEW.original_archive_error
+				)
+			)
 			OR OLD.validation_override_event_ids IS NOT NEW.validation_override_event_ids
 			OR OLD.source_asset_record_id IS NOT NEW.source_asset_record_id
 			OR OLD.source_asset_record_created_at IS NOT NEW.source_asset_record_created_at
