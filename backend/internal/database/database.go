@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anuelvs/mvforge/backend/internal/airesource"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
@@ -76,6 +77,8 @@ func Migrate(db *gorm.DB) error {
 		&models.PublisherAuditEvent{},
 		&models.AssetPublishedOutbox{},
 		&models.JellyfinIntegrationOutcome{},
+		&models.AIResourceAdmissionRecord{},
+		&models.AIResourceAdmissionCounter{},
 	); err != nil {
 		return err
 	}
@@ -846,6 +849,10 @@ func seedSettings(db *gorm.DB) error {
 				"fallbackProfile":  "desktop_safe",
 				"overrides":        models.JSONMap{},
 			},
+		},
+		{
+			Key:   airesource.SettingsKey,
+			Value: airesource.DefaultSettingsValue(),
 		},
 		{
 			Key: "workingHours",

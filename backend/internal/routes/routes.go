@@ -207,6 +207,8 @@ func New(db *gorm.DB) *gin.Engine {
 		api.DELETE("/queue/jobs/:id", queue.Dismiss)
 		api.DELETE("/queue/batches/:batchId", queue.DismissBatch)
 		api.GET("/settings", settings.List)
+		api.GET("/settings/ai-resource-protection/status", settings.AIResourceProtectionStatus)
+		api.POST("/settings/ai-resource-protection/preview", settings.PreviewAIResourceAdmission)
 		api.POST("/settings/batch", settings.BatchUpdate)
 		api.POST("/settings/:key", settings.Update)
 		api.POST("/settings/ollama/test-connection", settings.TestOllamaConnection)
