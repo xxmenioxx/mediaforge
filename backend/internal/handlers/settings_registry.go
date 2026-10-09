@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/anuelvs/mvforge/backend/internal/airesource"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
@@ -62,7 +63,7 @@ func buildSettingDefinitions() map[string]settingDefinition {
 		{"originalRetentionPolicy", "archive"},
 		{"subtitleSettings", "pipeline"}, {translationSettingsKey, "pipeline"},
 		{jellyfinSettingsKey, "providers-integrations"}, {ollamaProviderSettingsKey, "providers-integrations"},
-		{"runtimePolicy", "runtime"}, {"remoteExecutors", "runtime"},
+		{"runtimePolicy", "runtime"}, {"remoteExecutors", "runtime"}, {airesource.SettingsKey, "runtime"},
 		{"directPlay", "pipeline"}, {"workingHours", "pipeline"},
 		{analysisPolicySettingKey, "analysis"}, {profileSampleEstimatePolicySettingKey, "analysis"},
 		{assetDefaultsSettingKey, "asset-defaults"}, {"audioEnhancementProfiles", "assets"}, {"trackProfiles", "assets"},
@@ -75,6 +76,9 @@ func buildSettingDefinitions() map[string]settingDefinition {
 	})
 	definitions["runtimePolicy"] = withValidation(definitions["runtimePolicy"], func(_ settingsMutationContext, value models.JSONMap) error {
 		return runtimeinfo.ValidateRuntimePolicyValue(value)
+	})
+	definitions[airesource.SettingsKey] = withNormalizer(definitions[airesource.SettingsKey], func(_ settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
+		return airesource.NormalizeSettingsValue(value)
 	})
 	definitions[testEncodePolicySettingKey] = withValidation(definitions[testEncodePolicySettingKey], func(_ settingsMutationContext, value models.JSONMap) error {
 		return validateTestEncodePolicyValue(value)

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/anuelvs/mvforge/backend/internal/airesource"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -12,9 +14,10 @@ import (
 )
 
 type SettingsHandler struct {
-	db               *gorm.DB
-	secrets          ProtectedSecretSource
-	ollamaHTTPClient *http.Client
+	db                *gorm.DB
+	secrets           ProtectedSecretSource
+	ollamaHTTPClient  *http.Client
+	resourceAdmission *airesource.Service
 }
 
 const (
@@ -60,7 +63,48 @@ type SettingsBatchInput struct {
 }
 
 func NewSettingsHandler(db *gorm.DB) SettingsHandler {
-	return SettingsHandler{db: db, secrets: gormProtectedSecretSource{}}
+	return NewSettingsHandlerWithAdmission(db, airesource.NewService(db))
+}
+
+func NewSettingsHandlerWithAdmission(db *gorm.DB, admission *airesource.Service) SettingsHandler {
+	return SettingsHandler{db: db, secrets: gormProtectedSecretSource{}, resourceAdmission: admission}
+}
+
+func (h SettingsHandler) AIResourceProtectionStatus(c *gin.Context) {
+	policy, err := h.resourceAdmission.Policy(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "resource policy unavailable"})
+		return
+	}
+	counters, err := h.resourceAdmission.Outcomes(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "resource admission status unavailable"})
+		return
+	}
+	reasons, err := h.resourceAdmission.OutcomeReasons(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "resource admission reason status unavailable"})
+		return
+	}
+	domain := strings.TrimSpace(c.Query("capacityDomain"))
+	ollamaConfiguration := gin.H{"state": "unknown", "maxLoadedModels": nil, "numParallel": nil}
+	c.JSON(http.StatusOK, gin.H{
+		"policy":                    policy,
+		"outcomes":                  counters,
+		"outcomeReasons":            reasons,
+		"observations":              h.resourceAdmission.ObservationStatus(domain, time.Now().UTC()),
+		"ollamaServerConfiguration": ollamaConfiguration,
+	})
+}
+
+func (h SettingsHandler) PreviewAIResourceAdmission(c *gin.Context) {
+	var request airesource.Request
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	decision := h.resourceAdmission.Preview(c.Request.Context(), request)
+	c.JSON(http.StatusOK, gin.H{"decision": decision.Status, "reason": decision.Reason})
 }
 
 func (h SettingsHandler) List(c *gin.Context) {
