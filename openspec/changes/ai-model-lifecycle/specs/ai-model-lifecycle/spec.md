@@ -88,6 +88,11 @@ The lifecycle manager SHALL make no RAM, VRAM, host pressure, resident-model, co
 - **WHEN** #265 returns ADMITTED with an opaque lease
 - **THEN** lifecycle may perform only the admitted load or inference operation and releases the lease according to the #265 contract
 
+#### Scenario: Cancellation races with an admission grant
+
+- **WHEN** the caller is cancelled while `Admit` or `Await` returns ADMITTED, or `CancelWait` reports that the wait was granted
+- **THEN** the consumer stops and every returned lease is explicitly released through #265's idempotent `Release` contract before cancellation is returned
+
 #### Scenario: Resource authority asks the caller to wait
 
 - **WHEN** #265 returns WAITING with retry guidance
@@ -138,7 +143,17 @@ Lifecycle SHALL not own Translation operation state. The existing Translation op
 
 On backend startup, a complete supported checkpoint in either pre-inference WAITING_FOR_RESOURCES or WAITING_FOR_MODEL phase MAY be reconstructed under the same operation ID. Recovery SHALL re-resolve the canonical source and require identity/revision equality, resolve the current #261 configuration and require the captured non-secret configuration revision and exact model identity, and confirm that cancellation is false. Recovery SHALL reacquire #265 admission. If admission remains unavailable or waiting, the operation remains visibly waiting without polling automatically or contacting Ollama; after admission is granted, it proceeds through WAITING_FOR_MODEL and the five-minute readiness deadline begins. Incomplete, unknown-version, cancelled, changed-source, or changed-model checkpoints SHALL fail closed without provider work. Cancellation SHALL be persisted and SHALL win races with readiness.
 
-Before first inference, the backend SHALL transactionally compare operation ID, row version, phase, source/model checkpoint, and cancellation state, then persist INFERENCE_STARTED. If restart observes INFERENCE_STARTED or a later nonterminal phase without a committed outcome, it SHALL mark RECOVERY_REQUIRED and SHALL NOT repeat inference. An explicit retry SHALL create a fresh operation ID under the existing retry contract.
+Before the first provider request, the backend SHALL transactionally compare operation ID, row version, phase, source/model checkpoint, and cancellation state, then persist INFERENCE_STARTED. Before every later batch request, it SHALL reacquire a distinct #265 INFERENCE lease and revalidate cancellation, source revision, exact model, and provider configuration. Readiness or resource-wait callbacks after the first request SHALL NOT regress the durable phase from INFERENCE_STARTED. INFERENCE_STARTED is monotonic until publication advances the checkpoint or uncertainty moves it to RECOVERY_REQUIRED. If a later batch fails or restart observes INFERENCE_STARTED or a later nonterminal phase without a committed outcome, the operation SHALL become RECOVERY_REQUIRED and SHALL NOT repeat inference. An explicit retry SHALL create a fresh operation ID under the existing retry contract.
+
+#### Scenario: Multi-batch Translation keeps inference state monotonic
+
+- **WHEN** an explicit Translation operation issues multiple provider batch requests
+- **THEN** each request has its own admitted and released INFERENCE lease, source/model/cancellation checks run before every request, and readiness callbacks never lower the checkpoint from INFERENCE_STARTED
+
+#### Scenario: A later batch has an uncertain outcome
+
+- **WHEN** a provider request after the first batch fails or the backend restarts before a durable completed outcome
+- **THEN** the original operation becomes RECOVERY_REQUIRED and restart does not issue another inference request or publication
 
 #### Scenario: Translation is waiting when the backend restarts
 

@@ -418,22 +418,24 @@ func (l *aiModelLifecycle) admit(ctx context.Context, request airesource.Request
 		}
 		return nil, fmt.Errorf("%w: %s", errResourceAdmissionUnavailable, reason)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	decision := l.admission.Admit(ctx, request)
-	var waitHandle *airesource.WaitHandle
+	waitHandle := decision.Wait
+	if err := ctx.Err(); err != nil {
+		return nil, l.cancelledAdmissionError(err, waitHandle, decision)
+	}
 	if decision.Status == airesource.Waiting {
 		if decision.Wait == nil {
 			return nil, errors.New("resource admission returned WAITING without a wait ticket")
 		}
-		waitHandle = decision.Wait
 		if onWaiting != nil {
 			onWaiting(boundedAdmissionReason(decision.Reason))
 		}
 		decision = l.admission.Await(ctx, *decision.Wait)
-		if ctx.Err() != nil {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = l.admission.CancelWait(cancelCtx, *waitHandle)
-			cancel()
-			return nil, ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return nil, l.cancelledAdmissionError(err, waitHandle, decision)
 		}
 	}
 	switch decision.Status {
@@ -441,9 +443,16 @@ func (l *aiModelLifecycle) admit(ctx context.Context, request airesource.Request
 		if decision.Lease == nil {
 			return nil, errors.New("resource admission returned ADMITTED without a lease")
 		}
+		if err := ctx.Err(); err != nil {
+			return nil, l.cancelledAdmissionError(err, waitHandle, decision)
+		}
 		return decision.Lease, nil
 	case airesource.Waiting:
-		return nil, errors.New("resource admission remained WAITING after its bounded wait")
+		waitErr := errors.New("resource admission remained WAITING after its bounded wait")
+		if cleanupErr := l.cancelAdmissionAndRelease(waitHandle, decision); cleanupErr != nil {
+			return nil, errors.Join(waitErr, fmt.Errorf("resource admission wait cleanup failed: %w", cleanupErr))
+		}
+		return nil, waitErr
 	case airesource.Denied:
 		return nil, fmt.Errorf("resource admission denied the request: %s", boundedAdmissionReason(decision.Reason))
 	case airesource.Unavailable:
@@ -455,6 +464,48 @@ func (l *aiModelLifecycle) admit(ctx context.Context, request airesource.Request
 	default:
 		return nil, errors.New("resource admission returned an unknown decision")
 	}
+}
+
+func (l *aiModelLifecycle) cancelledAdmissionError(ctxErr error, waitHandle *airesource.WaitHandle, decisions ...airesource.Decision) error {
+	if cleanupErr := l.cancelAdmissionAndRelease(waitHandle, decisions...); cleanupErr != nil {
+		return errors.Join(ctxErr, fmt.Errorf("resource admission cleanup after cancellation failed: %w", cleanupErr))
+	}
+	return ctxErr
+}
+
+func (l *aiModelLifecycle) cancelAdmissionAndRelease(waitHandle *airesource.WaitHandle, decisions ...airesource.Decision) error {
+	var cleanupErrors []error
+	if waitHandle != nil {
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cancelDecision := l.admission.CancelWait(cancelCtx, *waitHandle)
+		cancel()
+		switch cancelDecision.Status {
+		case airesource.Admitted:
+			if cancelDecision.Lease == nil {
+				cleanupErrors = append(cleanupErrors, errors.New("admission cancellation returned ADMITTED without a lease"))
+			}
+		case airesource.Denied:
+		case airesource.Waiting, airesource.Unavailable:
+			cleanupErrors = append(cleanupErrors, errors.New("admission wait cancellation could not be confirmed"))
+		default:
+			cleanupErrors = append(cleanupErrors, errors.New("admission wait cancellation returned an unknown outcome"))
+		}
+		// CancelWait can win a grant race and return the granted lease. Keep it
+		// alongside any lease returned by Admit/Await so every grant is released.
+		decisions = append(decisions, cancelDecision)
+	}
+	for _, decision := range decisions {
+		if decision.Lease == nil {
+			continue
+		}
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := l.admission.Release(releaseCtx, *decision.Lease)
+		cancel()
+		if err != nil {
+			cleanupErrors = append(cleanupErrors, errors.New("resource admission lease release failed after cancellation"))
+		}
+	}
+	return errors.Join(cleanupErrors...)
 }
 
 func boundedAdmissionReason(reason string) string {
@@ -767,8 +818,20 @@ func updateTranslationCheckpointPhase(db *gorm.DB, operationID, phase, reason st
 		if err := tx.First(&checkpoint, "operation_id = ?", operationID).Error; err != nil {
 			return err
 		}
-		if checkpoint.Cancelled || checkpoint.ExecutionPhase == "PUBLICATION_COMMITTED" || checkpoint.ExecutionPhase == "RECOVERY_REQUIRED" {
+		if checkpoint.Cancelled || checkpoint.ExecutionPhase == "PUBLICATION_COMMITTED" {
 			return errors.New("Translation checkpoint no longer accepts phase updates")
+		}
+		if checkpoint.ExecutionPhase == "RECOVERY_REQUIRED" {
+			return nil
+		}
+		if checkpoint.InferenceStarted || checkpoint.ExecutionPhase == "INFERENCE_STARTED" || checkpoint.ExecutionPhase == "PUBLISHING" {
+			if phase == "FAILED" || phase == "RECOVERY_REQUIRED" {
+				phase = "RECOVERY_REQUIRED"
+			} else {
+				// Per-batch readiness and admission callbacks must not move a
+				// checkpoint back before the first inference request.
+				return nil
+			}
 		}
 		result := tx.Model(&models.TranslationOperationCheckpoint{}).Where(
 			"operation_id = ? AND row_version = ? AND cancelled = ? AND execution_phase = ?",
@@ -796,7 +859,16 @@ func markTranslationInferenceStarted(db *gorm.DB, operationID, configurationRevi
 		if err := tx.First(&checkpoint, "operation_id = ?", operationID).Error; err != nil {
 			return err
 		}
-		if checkpoint.Cancelled || checkpoint.ExecutionPhase != "READY" || checkpoint.SelectedModel != model || checkpoint.ProviderConfigurationRevision != configurationRevision || !checkpoint.Deadline.After(time.Now()) {
+		if checkpoint.Cancelled || checkpoint.SelectedModel != model || checkpoint.ProviderConfigurationRevision != configurationRevision || !checkpoint.Deadline.After(time.Now()) {
+			return errors.New("Translation checkpoint no longer authorizes inference")
+		}
+		if checkpoint.InferenceStarted {
+			if checkpoint.ExecutionPhase == "INFERENCE_STARTED" {
+				return nil
+			}
+			return errors.New("Translation inference checkpoint phase is inconsistent")
+		}
+		if checkpoint.ExecutionPhase != "READY" {
 			return errors.New("Translation checkpoint no longer authorizes inference")
 		}
 		result := tx.Model(&models.TranslationOperationCheckpoint{}).Where(

@@ -33,6 +33,330 @@ func (provider *lifecycleTestProvider) Translate(context.Context, TranslationBat
 	return TranslationBatchResult{Cues: []TranslatedCue{}}, provider.err
 }
 
+type checkpointRecordingTranslationProvider struct {
+	db          *gorm.DB
+	operationID string
+	failAt      int
+	failure     error
+	calls       int
+	phases      []string
+	rowVersions []uint64
+}
+
+func (provider *checkpointRecordingTranslationProvider) Translate(_ context.Context, batch TranslationBatch) (TranslationBatchResult, error) {
+	provider.calls++
+	var checkpoint models.TranslationOperationCheckpoint
+	if err := provider.db.First(&checkpoint, "operation_id = ?", provider.operationID).Error; err != nil {
+		return TranslationBatchResult{}, err
+	}
+	provider.phases = append(provider.phases, checkpoint.ExecutionPhase)
+	provider.rowVersions = append(provider.rowVersions, checkpoint.RowVersion)
+	if checkpoint.ExecutionPhase != "INFERENCE_STARTED" || !checkpoint.InferenceStarted {
+		return TranslationBatchResult{}, fmt.Errorf("provider request %d observed non-monotonic checkpoint phase %q", provider.calls, checkpoint.ExecutionPhase)
+	}
+	if provider.calls == provider.failAt {
+		if provider.failure != nil {
+			return TranslationBatchResult{}, provider.failure
+		}
+		return TranslationBatchResult{}, errors.New("simulated uncertain provider outcome")
+	}
+	result := TranslationBatchResult{ContractVersion: batch.ContractVersion}
+	for _, cue := range batch.Cues {
+		result.Cues = append(result.Cues, TranslatedCue{ID: cue.ID, Text: cue.Text + " translated"})
+	}
+	return result, nil
+}
+
+type admissionRaceStub struct {
+	admitFn   func(context.Context, airesource.Request) airesource.Decision
+	awaitFn   func(context.Context, airesource.WaitHandle) airesource.Decision
+	cancelFn  func(context.Context, airesource.WaitHandle) airesource.Decision
+	releaseFn func(context.Context, airesource.Lease) error
+}
+
+func (stub *admissionRaceStub) Admit(ctx context.Context, request airesource.Request) airesource.Decision {
+	return stub.admitFn(ctx, request)
+}
+
+func (stub *admissionRaceStub) Await(ctx context.Context, handle airesource.WaitHandle) airesource.Decision {
+	return stub.awaitFn(ctx, handle)
+}
+
+func (stub *admissionRaceStub) CancelWait(ctx context.Context, handle airesource.WaitHandle) airesource.Decision {
+	return stub.cancelFn(ctx, handle)
+}
+
+func (stub *admissionRaceStub) Release(ctx context.Context, lease airesource.Lease) error {
+	return stub.releaseFn(ctx, lease)
+}
+
+func TestAIModelLifecycleAdmitReleasesGrantedLeaseAfterCancellationRace(t *testing.T) {
+	t.Run("cancel wait returns grant", func(t *testing.T) {
+		awaitEntered := make(chan struct{})
+		resumeAwait := make(chan struct{})
+		cancelWaitEntered := make(chan struct{}, 1)
+		released := make(chan airesource.Lease, 2)
+		grantedLease := new(airesource.Lease)
+		admission := &admissionRaceStub{
+			admitFn: func(context.Context, airesource.Request) airesource.Decision {
+				return airesource.Decision{Status: airesource.Waiting, Wait: new(airesource.WaitHandle)}
+			},
+			awaitFn: func(context.Context, airesource.WaitHandle) airesource.Decision {
+				close(awaitEntered)
+				<-resumeAwait
+				return airesource.Decision{Status: airesource.Waiting}
+			},
+			cancelFn: func(context.Context, airesource.WaitHandle) airesource.Decision {
+				cancelWaitEntered <- struct{}{}
+				return airesource.Decision{Status: airesource.Admitted, Lease: grantedLease}
+			},
+			releaseFn: func(_ context.Context, lease airesource.Lease) error {
+				released <- lease
+				return nil
+			},
+		}
+		manager := &aiModelLifecycle{admission: admission, capacityDomain: "nas-test"}
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() {
+			_, err := manager.admit(ctx, airesource.Request{}, nil)
+			result <- err
+		}()
+		select {
+		case <-awaitEntered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("admission did not reach the Await barrier")
+		}
+		cancel()
+		close(resumeAwait)
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled admission error = %v", err)
+		}
+		select {
+		case <-cancelWaitEntered:
+		default:
+			t.Fatal("cancellation did not reconcile the wait ticket")
+		}
+		select {
+		case <-released:
+		default:
+			t.Fatal("ADMITTED lease returned by CancelWait was not released")
+		}
+		select {
+		case <-released:
+			t.Fatal("grant lease was released more than once")
+		default:
+		}
+	})
+
+	t.Run("direct admission returns grant after cancellation", func(t *testing.T) {
+		admitEntered := make(chan struct{})
+		returnGrant := make(chan struct{})
+		released := make(chan airesource.Lease, 1)
+		admission := &admissionRaceStub{
+			admitFn: func(context.Context, airesource.Request) airesource.Decision {
+				close(admitEntered)
+				<-returnGrant
+				return airesource.Decision{Status: airesource.Admitted, Lease: new(airesource.Lease)}
+			},
+			awaitFn: func(context.Context, airesource.WaitHandle) airesource.Decision {
+				t.Fatal("direct ADMITTED result unexpectedly awaited")
+				return airesource.Decision{}
+			},
+			cancelFn: func(context.Context, airesource.WaitHandle) airesource.Decision {
+				t.Fatal("direct ADMITTED result unexpectedly cancelled a wait")
+				return airesource.Decision{}
+			},
+			releaseFn: func(_ context.Context, lease airesource.Lease) error {
+				released <- lease
+				return nil
+			},
+		}
+		manager := &aiModelLifecycle{admission: admission, capacityDomain: "nas-test"}
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() {
+			_, err := manager.admit(ctx, airesource.Request{}, nil)
+			result <- err
+		}()
+		select {
+		case <-admitEntered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("admission did not reach the grant barrier")
+		}
+		cancel()
+		close(returnGrant)
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled direct admission error = %v", err)
+		}
+		select {
+		case <-released:
+		default:
+			t.Fatal("direct ADMITTED lease was not released after cancellation")
+		}
+	})
+}
+
+func TestTranslationMultiBatchCheckpointStaysMonotonicAndRecoversFailure(t *testing.T) {
+	var apiCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ps" {
+			http.NotFound(w, r)
+			return
+		}
+		apiCalls.Add(1)
+		_, _ = w.Write([]byte(`{"models":[{"name":"fixture-model:latest"}]}`))
+	}))
+	defer server.Close()
+	db, admission, endpoint, _ := newLifecycleResourceFixtureWithEndpoint(t, server.URL, lifecycleTestModel, 1, true, true)
+	const operationID = "translation-multi-batch-checkpoint"
+	defer deleteSubtitleTranslationOperation(operationID)
+	configurationRevision := providerConfigurationRevision(endpoint, lifecycleTestModel)
+	source := subtitleTranslationSourceResponse{
+		Type: "external", SourceIdentity: "external:/fixture/source.en.srt:revision-a",
+		SourceRevision: "revision-a", Representation: translationRepresentationSRT,
+		ExternalPath: "/fixture/source.en.srt", Codec: "srt", Language: "eng",
+	}
+	request := subtitleTranslationOperationRequest{
+		AssetPath: "/fixture/source.mkv", SourceType: "external", SourceReference: source.ExternalPath,
+		Format: translationRepresentationSRT, SourceIdentity: source.SourceIdentity, SourceRevision: source.SourceRevision,
+		RequestedSourceLanguage: "en", TargetLocale: "es-MX", RequestedRepresentation: translationRepresentationSRT,
+		Provider: translationProviderOllama, ProviderModel: lifecycleTestModel,
+		ContextMode: "none", ContextSource: "none",
+	}
+	if err := createTranslationCheckpoint(db, operationID, request, configurationRevision, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateTranslationCheckpointPhase(db, operationID, "READY", ""); err != nil {
+		t.Fatal(err)
+	}
+	manager := newAIModelLifecycle(db, admission, server.Client(), true, "nas-a")
+	providerFailure := errors.New("simulated uncertain provider outcome")
+	provider := &checkpointRecordingTranslationProvider{
+		db: db, operationID: operationID, failAt: 2, failure: providerFailure,
+	}
+	var validationCalls atomic.Int32
+	validate := func(ctx context.Context) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var checkpoint models.TranslationOperationCheckpoint
+		if err := db.First(&checkpoint, "operation_id = ?", operationID).Error; err != nil {
+			return err
+		}
+		if checkpoint.SourceIdentity != request.SourceIdentity || checkpoint.SourceRevision != request.SourceRevision ||
+			checkpoint.SelectedModel != request.ProviderModel || checkpoint.ProviderConfigurationRevision != configurationRevision {
+			return errors.New("source or selected model changed before provider request")
+		}
+		validationCalls.Add(1)
+		return nil
+	}
+	phaseUpdates := make(chan struct {
+		requested string
+		durable   string
+		err       error
+	}, 8)
+	onPhase := func(phase, reason string) {
+		if phase != "WAITING_FOR_RESOURCES" && phase != "WAITING_FOR_MODEL" && phase != "READY" && phase != "FAILED" {
+			return
+		}
+		err := updateTranslationCheckpointPhase(db, operationID, phase, reason)
+		var checkpoint models.TranslationOperationCheckpoint
+		if err == nil {
+			err = db.First(&checkpoint, "operation_id = ?", operationID).Error
+		}
+		phaseUpdates <- struct {
+			requested string
+			durable   string
+			err       error
+		}{requested: phase, durable: checkpoint.ExecutionPhase, err: err}
+	}
+	protectedProvider := lifecycleTranslationProvider{
+		manager: manager, provider: provider, endpoint: endpoint,
+		configurationRevision: configurationRevision, model: lifecycleTestModel,
+		operationID: operationID, workflowID: translationAdmissionWorkflowID(request),
+		validate: validate,
+		markInferenceStarted: func() error {
+			return markTranslationInferenceStarted(db, operationID, configurationRevision, lifecycleTestModel)
+		},
+		onInferenceError: func() {
+			markTranslationRecoveryRequired(db, operationID, "provider_inference_outcome_uncertain")
+		},
+		onPhase: onPhase,
+	}
+	settings := defaultTranslationSettings()
+	settings.MaxCuesPerRequest = 1
+	content := []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n\n2\n00:00:02,000 --> 00:00:03,000\nWorld\n")
+	var batchCheckpoints []models.TranslationOperationCheckpoint
+	_, err := executeTextTranslation(context.Background(), source, content, request, protectedProvider, settings, nil, func(_, _ int) {
+		var checkpoint models.TranslationOperationCheckpoint
+		if queryErr := db.First(&checkpoint, "operation_id = ?", operationID).Error; queryErr == nil {
+			batchCheckpoints = append(batchCheckpoints, checkpoint)
+		}
+	})
+	if !errors.Is(err, providerFailure) {
+		t.Fatalf("multi-batch Translation error = %v, want simulated provider failure", err)
+	}
+	if provider.calls != 2 || len(provider.phases) != 2 || provider.phases[0] != "INFERENCE_STARTED" || provider.phases[1] != "INFERENCE_STARTED" {
+		t.Fatalf("provider request checkpoints = calls:%d phases:%v", provider.calls, provider.phases)
+	}
+	if len(provider.rowVersions) != 2 || provider.rowVersions[1] != provider.rowVersions[0] {
+		t.Fatalf("second batch changed the durable inference checkpoint row version: %v", provider.rowVersions)
+	}
+	if len(batchCheckpoints) != 1 || batchCheckpoints[0].ExecutionPhase != "INFERENCE_STARTED" || !batchCheckpoints[0].InferenceStarted {
+		t.Fatalf("checkpoint after first successful batch = %+v", batchCheckpoints)
+	}
+	if validationCalls.Load() != 2 {
+		t.Fatalf("source/model revalidation calls = %d, want one before each request", validationCalls.Load())
+	}
+	readySnapshots := make([]string, 0, 2)
+	for len(phaseUpdates) > 0 {
+		update := <-phaseUpdates
+		if update.err != nil {
+			t.Fatalf("persist lifecycle phase %s: %v", update.requested, update.err)
+		}
+		if update.requested == "READY" {
+			readySnapshots = append(readySnapshots, update.durable)
+		}
+	}
+	if len(readySnapshots) != 2 || readySnapshots[0] != "READY" || readySnapshots[1] != "INFERENCE_STARTED" {
+		t.Fatalf("readiness callbacks regressed durable phase across batches: %v", readySnapshots)
+	}
+	var inferenceAdmissions []models.AIResourceAdmissionRecord
+	if err := db.Where("purpose = ?", string(airesource.PurposeInference)).Order("id asc").Find(&inferenceAdmissions).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(inferenceAdmissions) != 2 || inferenceAdmissions[0].RequestID == inferenceAdmissions[1].RequestID {
+		t.Fatalf("per-batch inference admissions = %+v", inferenceAdmissions)
+	}
+	for _, admissionRecord := range inferenceAdmissions {
+		if admissionRecord.State != "RELEASED" {
+			t.Fatalf("inference lease was not released after its provider request: %+v", admissionRecord)
+		}
+	}
+	var checkpoint models.TranslationOperationCheckpoint
+	if err := db.First(&checkpoint, "operation_id = ?", operationID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.ExecutionPhase != "RECOVERY_REQUIRED" || !checkpoint.InferenceStarted {
+		t.Fatalf("uncertain second request checkpoint = %+v", checkpoint)
+	}
+	handler := AssetHandler{db: db, aiModelLifecycle: &AIModelLifecycle{manager: manager}}
+	handler.recoverProtectedTranslationOperations()
+	if provider.calls != 2 {
+		t.Fatalf("restart recovery replayed an uncertain provider request: calls=%d", provider.calls)
+	}
+	subtitleExtractionOperations.RLock()
+	recovered := subtitleExtractionOperations.items[operationID]
+	subtitleExtractionOperations.RUnlock()
+	if recovered == nil || recovered.Status != "error" || recovered.Phase != "recovery_required" {
+		t.Fatalf("uncertain multi-batch operation recovery = %+v", recovered)
+	}
+	if apiCalls.Load() < 2 {
+		t.Fatalf("residency was not independently observed for each batch: calls=%d", apiCalls.Load())
+	}
+}
+
 func newLifecycleResourceFixture(t *testing.T, model string, maxInferences int, enabled, resident bool) (*gorm.DB, *airesource.Service, string, string) {
 	t.Helper()
 	endpoint := "http://ollama.lifecycle.test"

@@ -70,6 +70,8 @@ On backend startup, recovery SHALL reconstruct the same operation ID from a supp
 
 Recovery SHALL create a new operation-owned workspace after validation and SHALL NOT trust a persisted temporary path. Missing fields, unsupported checkpoint versions, changed identity/revision/model/configuration, cancellation, or failure to acquire admission SHALL fail closed without resumed inference. A path change is acceptable only when the canonical resolver proves identical source identity and revision. If the process restarts in INFERENCE_STARTED or any later nonterminal phase without a durable result, recovery SHALL mark RECOVERY_REQUIRED and SHALL NOT replay inference. Explicit retry after failure SHALL use a fresh operation ID and re-resolve current source/model according to the existing retry contract.
 
+For multi-batch Translation, the first provider request SHALL be preceded by the durable INFERENCE_STARTED compare-and-set. Each subsequent batch SHALL reacquire a distinct #265 INFERENCE lease and revalidate cancellation, source identity/revision, exact model, and provider configuration immediately before its request. Readiness and resource-wait callbacks for later batches SHALL NOT move the durable execution phase back to READY or a pre-inference wait state. If any batch has an uncertain outcome, the original operation SHALL become RECOVERY_REQUIRED and recovery SHALL NOT replay any batch or publish an uncertain result.
+
 #### Scenario: Complete wait resumes after restart
 
 - **WHEN** backend startup finds a complete uncancelled pre-inference WAITING_FOR_RESOURCES or WAITING_FOR_MODEL record and source, revision, provider configuration, and exact model checks pass
@@ -89,6 +91,16 @@ Recovery SHALL create a new operation-owned workspace after validation and SHALL
 
 - **WHEN** the durable phase is INFERENCE_STARTED or later but there is no complete durable result
 - **THEN** recovery marks RECOVERY_REQUIRED and makes no automatic duplicate inference call
+
+#### Scenario: Multi-batch requests preserve inference checkpoint
+
+- **WHEN** Translation sends a second or later provider batch
+- **THEN** it uses a new inference lease while the checkpoint remains INFERENCE_STARTED and the source, model, configuration, and cancellation checks run again
+
+#### Scenario: A later batch fails with uncertain outcome
+
+- **WHEN** a provider batch after the first request fails before a durable result is available
+- **THEN** the original operation is RECOVERY_REQUIRED and restart does not repeat inference or publication
 
 ### Requirement: Translation publication has a durable intent and fail-closed reconciliation
 
