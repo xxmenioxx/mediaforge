@@ -104,6 +104,84 @@ func TestValidationDurationTimelineUsesStringProbeEvidenceAndExistingTolerance(t
 	}
 }
 
+func TestQualityGateVideoPropertiesUsesCanonicalHEVCBitstreamEvidence(t *testing.T) {
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"hevcLevel": "4.0", "hevcTier": "main",
+		"hevcLevelEffective": "4.0", "hevcLevelTier": "main",
+	}}
+	outputProbe := models.JSONMap{"streams": []any{models.JSONMap{
+		"codec_type": "video", "codec_name": "hevc", "level": 120, "tier": "high",
+		"width": 1920, "height": 1080, "avg_frame_rate": "24/1", "field_order": "progressive",
+		"pix_fmt": "yuv420p", "bits_per_raw_sample": "8",
+	}}}
+	video := firstStreamByType(outputProbe, "video")
+	evidence := testHEVCBitstreamEvidence("4.0", "main")
+
+	db := testEncodeTestDB(t, "quality-gate-hevc-video-properties-pass", &models.QueueJob{}, &models.ExecutionPlan{})
+	expected, actual, state := evaluateFrozenVideoProperties(db, models.QueueJob{}, resultExecutionBinding{}, profile, video, outputProbe, evidence)
+	if state != "PASS" || actual["level"] != "4.0" || actual["tier"] != "main" {
+		t.Fatalf("matching frozen HEVC bitstream did not pass: state=%s expected=%#v actual=%#v", state, expected, actual)
+	}
+
+	canonical := evaluateCanonicalFidelity(fidelityAuthority{name: "queue_profile_snapshot", profile: profile, worker: map[string]interface{}(profile.WorkerConfig)}, nil, outputProbe, evidence)
+	canonicalFields := unknownRecord(canonical["fields"])
+	for _, name := range []string{"hevcLevel", "hevcTier"} {
+		field := unknownRecord(canonicalFields[name])
+		actualKey := map[string]string{"hevcLevel": "level", "hevcTier": "tier"}[name]
+		if field["actual"] != actual[actualKey] || field["status"] != "passed" {
+			t.Fatalf("video.properties and canonical Frame Fidelity disagree for %s: property=%#v canonical=%#v", name, actual[actualKey], field)
+		}
+	}
+
+	t.Run("level mismatch fails", func(t *testing.T) {
+		db := testEncodeTestDB(t, "quality-gate-hevc-video-properties-level-mismatch", &models.QueueJob{}, &models.ExecutionPlan{})
+		_, actual, state := evaluateFrozenVideoProperties(db, models.QueueJob{}, resultExecutionBinding{}, profile, video, outputProbe, testHEVCBitstreamEvidence("4.1", "main"))
+		if state != "FAIL" || actual["level"] != "4.1" {
+			t.Fatalf("HEVC Level mismatch was not blocking: state=%s actual=%#v", state, actual)
+		}
+	})
+
+	t.Run("tier mismatch fails", func(t *testing.T) {
+		db := testEncodeTestDB(t, "quality-gate-hevc-video-properties-tier-mismatch", &models.QueueJob{}, &models.ExecutionPlan{})
+		_, actual, state := evaluateFrozenVideoProperties(db, models.QueueJob{}, resultExecutionBinding{}, profile, video, outputProbe, testHEVCBitstreamEvidence("4.0", "high"))
+		if state != "FAIL" || actual["tier"] != "high" {
+			t.Fatalf("HEVC Tier mismatch was not blocking: state=%s actual=%#v", state, actual)
+		}
+	})
+
+	t.Run("unavailable evidence stays unverified", func(t *testing.T) {
+		db := testEncodeTestDB(t, "quality-gate-hevc-video-properties-unavailable", &models.QueueJob{}, &models.ExecutionPlan{})
+		unavailable := models.JSONMap{
+			"levelEvidenceAvailable": false, "tierEvidenceAvailable": false,
+			"generalLevel": "4.0", "generalTier": "main",
+		}
+		_, actual, state := evaluateFrozenVideoProperties(db, models.QueueJob{}, resultExecutionBinding{}, profile, video, outputProbe, unavailable)
+		if state != "UNVERIFIED" || actual["level"] != "" || actual["tier"] != "" {
+			t.Fatalf("unavailable HEVC bitstream evidence was inferred: state=%s actual=%#v", state, actual)
+		}
+	})
+
+	t.Run("generic ffprobe level is not HEVC authority", func(t *testing.T) {
+		db := testEncodeTestDB(t, "quality-gate-hevc-video-properties-probe-level", &models.QueueJob{}, &models.ExecutionPlan{})
+		_, actual, state := evaluateFrozenVideoProperties(db, models.QueueJob{}, resultExecutionBinding{}, profile, video, outputProbe, nil)
+		if state != "UNVERIFIED" || actual["level"] != "" {
+			t.Fatalf("generic ffprobe level=120 was treated as HEVC Level evidence: state=%s actual=%#v", state, actual)
+		}
+	})
+
+	t.Run("non-HEVC codec ignores HEVC fields", func(t *testing.T) {
+		db := testEncodeTestDB(t, "quality-gate-hevc-video-properties-non-hevc", &models.QueueJob{}, &models.ExecutionPlan{})
+		nonHEVC := models.Profile{VideoCodec: "h264", WorkerConfig: profile.WorkerConfig}
+		nonHEVCProbe := models.JSONMap{"streams": []any{models.JSONMap{
+			"codec_type": "video", "codec_name": "h264", "level": 120, "tier": "high",
+		}}}
+		_, actual, state := evaluateFrozenVideoProperties(db, models.QueueJob{}, resultExecutionBinding{}, nonHEVC, firstStreamByType(nonHEVCProbe, "video"), nonHEVCProbe, nil)
+		if state != "PASS" || actual["level"] != "" || actual["tier"] != "" {
+			t.Fatalf("non-HEVC video properties were affected by HEVC fields: state=%s actual=%#v", state, actual)
+		}
+	})
+}
+
 func TestResultArtifactIdentityBindsFrozenExecutionAndDetectsReplacement(t *testing.T) {
 	db := testEncodeTestDB(t, "quality-gate-result-identity", &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
 	root := t.TempDir()

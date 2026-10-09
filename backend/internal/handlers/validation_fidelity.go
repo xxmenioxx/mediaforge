@@ -606,8 +606,17 @@ func fidelityActualValue(name string, actual canonicalFidelitySource) any {
 }
 
 func fidelityActualValueWithHEVCEvidence(name string, evidence models.JSONMap) any {
+	if evidence == nil {
+		return nil
+	}
 	if name == "hevcLevel" {
+		if evidence["levelEvidenceAvailable"] != true {
+			return nil
+		}
 		return normalizedHEVCLevel(stringFromUnknown(evidence["generalLevel"]))
+	}
+	if evidence["tierEvidenceAvailable"] != true {
+		return nil
 	}
 	return strings.ToLower(strings.TrimSpace(stringFromUnknown(evidence["generalTier"])))
 }

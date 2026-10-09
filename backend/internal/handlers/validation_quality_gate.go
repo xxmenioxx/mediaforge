@@ -283,6 +283,10 @@ func evaluateValidationRules(db *gorm.DB, job models.QueueJob, artifact map[stri
 	}
 
 	outputProbe := unknownRecord(artifact["outputProbe"])
+	var hevcEvidence models.JSONMap
+	if outputProbe != nil && outputProbe["error"] == nil {
+		hevcEvidence = hevcBitstreamEvidenceForValidation(job.OutputPath, outputProbe)
+	}
 	if outputProbe == nil || outputProbe["error"] != nil {
 		add("duration.timeline", "measured output duration and timeline", nil, "error", "blocking", "UNVERIFIED", true, true, "The worker Result artifact has no usable output probe evidence.", "result.outputProbe")
 		add("video.properties", "frozen video properties", nil, "error", "blocking", "UNVERIFIED", true, true, "Output video properties are unavailable in the Result evidence.", "result.outputProbe")
@@ -325,7 +329,7 @@ func evaluateValidationRules(db *gorm.DB, job models.QueueJob, artifact map[stri
 			if profileErr != nil {
 				add("video.properties", "frozen ProfileSnapshot properties", actual, "error", "blocking", "UNVERIFIED", true, true, "Frozen video expectations could not be restored.", "result.outputProbe", "queue.profileSnapshot")
 			} else {
-				expected, actualVideo, state := evaluateFrozenVideoProperties(db, job, binding, profile, video, outputProbe)
+				expected, actualVideo, state := evaluateFrozenVideoProperties(db, job, binding, profile, video, outputProbe, hevcEvidence)
 				add("video.properties", expected, actualVideo, "error", "blocking", state, state != "PASS", true, "Output codec, frozen profile constraints, and required frame properties are compared with the active ExecutionPlan and Queue snapshots.", "result.outputProbe", "queue.profileSnapshot", "executionPlan")
 			}
 		}
@@ -353,7 +357,7 @@ func evaluateValidationRules(db *gorm.DB, job models.QueueJob, artifact map[stri
 			smart := validateSmartUpscaleOutput(profile, firstVideoFrameCharacteristics(sourceProbe), firstVideoFrameCharacteristics(outputProbe))
 			restoration := validateRestorationOutput(profile, firstVideoFrameCharacteristics(sourceProbe), firstVideoFrameCharacteristics(outputProbe), smart)
 			authority := fidelityAuthority{name: "queue_profile_snapshot", profile: profile, worker: map[string]interface{}(profile.WorkerConfig)}
-			frameReport = evaluateCanonicalFidelity(authority, sourceProbe, outputProbe, nil, colorReport, smart, restoration)
+			frameReport = evaluateCanonicalFidelity(authority, sourceProbe, outputProbe, hevcEvidence, colorReport, smart, restoration)
 		}
 	}
 	addChapterFinding(add, job, outputProbe)
@@ -414,7 +418,7 @@ func addTrackFindings(add func(string, any, any, string, string, string, bool, b
 	add("attachments.stream_actions", expectedAttachments, actualAttachments, "error", "blocking", attachmentState, attachmentState != "PASS", true, "Output attachments are compared with the frozen attachment keep/remove action.", "queue.trackSnapshot", "result.outputProbe")
 }
 
-func evaluateFrozenVideoProperties(db *gorm.DB, job models.QueueJob, binding resultExecutionBinding, profile models.Profile, video models.JSONMap, outputProbe models.JSONMap) (models.JSONMap, models.JSONMap, string) {
+func evaluateFrozenVideoProperties(db *gorm.DB, job models.QueueJob, binding resultExecutionBinding, profile models.Profile, video models.JSONMap, outputProbe models.JSONMap, hevcEvidence models.JSONMap) (models.JSONMap, models.JSONMap, string) {
 	expectedCodec := normalizeVideoCodec(profile.VideoCodec)
 	if plan, ok := activeExecutionPlanForValidation(db, job, binding); ok {
 		if planned := normalizeVideoCodec(plan.SelectedEncoder); planned != "" {
@@ -430,17 +434,23 @@ func evaluateFrozenVideoProperties(db *gorm.DB, job models.QueueJob, binding res
 		expectedCodec = ""
 	}
 	actualCodec := normalizeVideoCodec(stringFromUnknown(video["codec_name"]))
-	expectedLevel := strings.TrimSpace(stringFromUnknown(profile.WorkerConfig["hevcLevel"]))
+	expectedLevel := strings.TrimSpace(stringFromUnknown(profile.WorkerConfig["hevcLevelEffective"]))
+	if expectedLevel == "" {
+		expectedLevel = strings.TrimSpace(stringFromUnknown(profile.WorkerConfig["hevcLevel"]))
+	}
 	if expectedLevel == "" {
 		expectedLevel = strings.TrimSpace(stringFromUnknown(profile.WorkerConfig["level"]))
 	}
-	expectedTier := strings.TrimSpace(stringFromUnknown(profile.WorkerConfig["hevcTier"]))
+	expectedTier := strings.TrimSpace(stringFromUnknown(profile.WorkerConfig["hevcLevelTier"]))
+	if expectedTier == "" {
+		expectedTier = strings.TrimSpace(stringFromUnknown(profile.WorkerConfig["hevcTier"]))
+	}
 	if expectedCodec != "hevc" {
 		expectedLevel = ""
 		expectedTier = ""
 	}
-	actualLevel := normalizedProbeLevel(video["level"])
-	actualTier := strings.TrimSpace(stringFromUnknown(video["tier"]))
+	actualLevel := stringFromUnknown(fidelityActualValueWithHEVCEvidence("hevcLevel", hevcEvidence))
+	actualTier := stringFromUnknown(fidelityActualValueWithHEVCEvidence("hevcTier", hevcEvidence))
 	expected := models.JSONMap{"codec": expectedCodec, "level": expectedLevel, "tier": expectedTier}
 	actual := models.JSONMap{
 		"codec": stringFromUnknown(video["codec_name"]), "normalizedCodec": actualCodec,
@@ -482,7 +492,7 @@ func evaluateFrozenVideoProperties(db *gorm.DB, job models.QueueJob, binding res
 	if sourceProbe != nil {
 		color, _ := validateJobColorPolicyFrozen(job, sourceProbe, outputProbe)
 		authority := fidelityAuthority{name: "queue_profile_snapshot", profile: profile, worker: map[string]interface{}(profile.WorkerConfig)}
-		frameReport = evaluateCanonicalFidelity(authority, sourceProbe, outputProbe, nil, color)
+		frameReport = evaluateCanonicalFidelity(authority, sourceProbe, outputProbe, hevcEvidence, color)
 		if frameExpected := unknownRecord(frameReport["expected"]); frameExpected != nil {
 			expected["frameProperties"] = frameExpected
 		}
@@ -527,17 +537,6 @@ func normalizeVideoCodec(value string) string {
 	default:
 		return value
 	}
-}
-
-func normalizedProbeLevel(value any) string {
-	if value == nil {
-		return ""
-	}
-	level := workerIntValue(value, 0)
-	if level > 0 {
-		return fmt.Sprintf("%d.%d", level/10, level%10)
-	}
-	return strings.TrimSpace(stringFromUnknown(value))
 }
 
 func normalizeLevelString(value string) string {
