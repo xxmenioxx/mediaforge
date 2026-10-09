@@ -654,6 +654,31 @@ func TestPublisherChangedResultBytesPersistBlockedPublication(t *testing.T) {
 	}
 }
 
+func TestPublisherAcceptsMetadataOnlyResultChangesUsingValidationRevision(t *testing.T) {
+	fixture := newPublisherDeliveryFixture(t, false)
+	artifact, _, err := readLatestJobArtifact(fixture.db, fixture.job, "result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, ok := resultIdentityFromArtifact(artifact)
+	if !ok || !strings.HasPrefix(identity.OutputRevision, "result-output-revision-v2-") {
+		t.Fatalf("fixture did not produce a v2 Result identity: %#v", artifact["resultIdentity"])
+	}
+	if err := os.Chmod(fixture.output, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, reason := canonicalRunAllowsPublish(fixture.db, fixture.job, true); !allowed {
+		t.Fatalf("Publisher rejected unchanged content after chmod: %s", reason)
+	}
+	currentEvidence, err := resultOutputRevisionForIdentity(fixture.output, identity.OutputRevision)
+	if err != nil || currentEvidence.ContentRevision != identity.OutputRevision {
+		t.Fatalf("Publisher did not resolve the Validation content revision: evidence=%#v err=%v", currentEvidence, err)
+	}
+	if _, err := (PublisherHandler{db: fixture.db}).publishQueueJobWithMode(fixture.job, true, false); err != nil {
+		t.Fatalf("Publisher rejected the same chmod-only output accepted by Validation: %v", err)
+	}
+}
+
 func TestPublisherMissingValidationRunPersistsBlockedPublication(t *testing.T) {
 	fixture := newPublisherDeliveryFixture(t, false)
 	fixture.job.ValidationRunID = "validation-run:replaced"
