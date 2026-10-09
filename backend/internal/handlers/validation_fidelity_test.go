@@ -342,6 +342,26 @@ func TestCanonicalFrameFidelityHEVCCodecAliasesUseFrozenLevelTier(t *testing.T) 
 	}
 }
 
+func TestCanonicalFrameFidelityRequiresAvailableHEVCBitstreamEvidence(t *testing.T) {
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "hevcLevelEffective": "4.0", "hevcLevelTier": "main",
+	}}
+	output := fidelityFrameProbe("hevc", "yuv420p", "24/1", "progressive")
+	output["streams"].([]interface{})[0].(map[string]any)["level"] = 120
+	unavailable := models.JSONMap{
+		"levelEvidenceAvailable": false, "tierEvidenceAvailable": false,
+		"generalLevel": "4.0", "generalTier": "main",
+	}
+	report := runCanonicalFidelity(t, profile, fidelityFrameProbe("mpeg2video", "yuv420p", "24/1", "progressive"), output, unavailable)
+	fields := report["fields"].(models.JSONMap)
+	for _, name := range []string{"hevcLevel", "hevcTier"} {
+		field := fields[name].(models.JSONMap)
+		if field["status"] != "unverified" || field["actual"] != nil {
+			t.Fatalf("unavailable bitstream evidence was treated as authoritative for %s: %#v", name, field)
+		}
+	}
+}
+
 func TestCanonicalFrameFidelityX265TenBitQSVUsesMain10Semantics(t *testing.T) {
 	profile := models.Profile{VideoCodec: "x265_10bit", WorkerConfig: models.JSONMap{
 		"videoEncoder": "hevc_qsv", "pixFmt": "p010le", "effectiveOutputFrameRate": "24/1", "effectiveOutputProgressive": true,
