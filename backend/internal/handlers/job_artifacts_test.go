@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,6 +76,80 @@ func TestJobArtifactMatchesJobRequiresSameIDAndMediaPath(t *testing.T) {
 	if jobArtifactMatchesJob(wrongJob, job) {
 		t.Fatalf("expected artifact with different job id to be ignored")
 	}
+}
+
+func TestResultArtifactPersistsChapterProbeForValidation(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is required to generate chaptered test media")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe is required to inspect chaptered test media")
+	}
+
+	root := t.TempDir()
+	metadataPath := filepath.Join(root, "chapters.ffmeta")
+	metadata := ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1\nSTART=0\nEND=1\ntitle=Opening\n"
+	if err := os.WriteFile(metadataPath, []byte(metadata), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(root, "chaptered.mkv")
+	command := exec.Command(
+		ffmpegPath,
+		"-v", "error",
+		"-f", "lavfi", "-i", "color=c=black:s=16x16:r=1:d=1",
+		"-f", "ffmetadata", "-i", metadataPath,
+		"-map", "0:v:0", "-map_metadata", "1", "-map_chapters", "1",
+		"-c:v", "mpeg4", "-t", "1", "-y", outputPath,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("generate chaptered test media: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	probe := ffprobeJSON(outputPath)
+	chapters, ok := probe["chapters"].([]any)
+	if !ok || len(chapters) != 1 {
+		t.Fatalf("ffprobeJSON chapter evidence=%#v, want one chapter", probe["chapters"])
+	}
+
+	db := testEncodeTestDB(t, "result-artifact-output-probe-chapters", &models.QueueJob{}, &models.ExecutionPlan{})
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"resultsReportsPath": filepath.Join(root, "results")}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	trackPlan, err := resolvedTrackPlanMap(ResolvedTrackPlan{ChaptersKept: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{
+		MediaPath: filepath.Join(root, "source.mkv"), OutputPath: outputPath,
+		TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: trackPlan},
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJobResultArtifact(db, job, map[string]any{"status": "processing"}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, _, err := readLatestJobArtifact(db, job, "result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputProbe := unknownRecord(artifact["outputProbe"])
+	persistedChapters, ok := outputProbe["chapters"].([]any)
+	if !ok || len(persistedChapters) != 1 {
+		t.Fatalf("Result outputProbe chapter evidence=%#v, want one chapter", outputProbe["chapters"])
+	}
+
+	findings, _ := evaluateValidationRules(db, job, artifact, resultArtifactIdentity{}, resultExecutionBinding{})
+	for _, finding := range findings {
+		if finding.Key == "chapters.actions" {
+			if finding.State != "PASS" || finding.Actual != 1 {
+				t.Fatalf("Validation chapter finding=%#v, want PASS with one output chapter", finding)
+			}
+			return
+		}
+	}
+	t.Fatal("Validation did not emit chapters.actions")
 }
 
 func TestNormalizeAnalysisRecordHDRCorrectsTenBitSDR(t *testing.T) {

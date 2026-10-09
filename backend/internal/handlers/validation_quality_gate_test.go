@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,93 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+func TestValidationProbeDurationParsesSupportedValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe map[string]any
+		want  float64
+	}{
+		{name: "ffprobe numeric string", probe: map[string]any{"format": map[string]any{"duration": "7415.449000"}}, want: 7415.449},
+		{name: "float64", probe: map[string]any{"format": map[string]any{"duration": float64(12.5)}}, want: 12.5},
+		{name: "float32", probe: map[string]any{"format": map[string]any{"duration": float32(12.5)}}, want: 12.5},
+		{name: "int", probe: map[string]any{"format": map[string]any{"duration": int(12)}}, want: 12},
+		{name: "int64", probe: map[string]any{"format": map[string]any{"duration": int64(12)}}, want: 12},
+		{name: "json number", probe: map[string]any{"format": map[string]any{"duration": json.Number("12.5")}}, want: 12.5},
+		{name: "invalid string", probe: map[string]any{"format": map[string]any{"duration": "invalid"}}},
+		{name: "not available string", probe: map[string]any{"format": map[string]any{"duration": "N/A"}}},
+		{name: "empty string", probe: map[string]any{"format": map[string]any{"duration": ""}}},
+		{name: "nil duration", probe: map[string]any{"format": map[string]any{"duration": nil}}},
+		{name: "NaN", probe: map[string]any{"format": map[string]any{"duration": math.NaN()}}},
+		{name: "positive infinity", probe: map[string]any{"format": map[string]any{"duration": math.Inf(1)}}},
+		{name: "zero", probe: map[string]any{"format": map[string]any{"duration": 0}}},
+		{name: "negative", probe: map[string]any{"format": map[string]any{"duration": -1}}},
+		{name: "missing duration", probe: map[string]any{"format": map[string]any{}}},
+		{name: "missing format", probe: map[string]any{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := validationProbeDuration(test.probe); got != test.want {
+				t.Fatalf("validationProbeDuration()=%v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestValidationDurationTimelineUsesStringProbeEvidenceAndExistingTolerance(t *testing.T) {
+	tests := []struct {
+		name           string
+		sourceDuration any
+		outputDuration any
+		wantState      string
+	}{
+		{name: "job 2148 durations within tolerance", sourceDuration: "7415.449000", outputDuration: "7415.455000", wantState: "PASS"},
+		{name: "duration mismatch outside tolerance", sourceDuration: "7415.449000", outputDuration: "7600.000000", wantState: "FAIL"},
+		{name: "unavailable duration evidence", sourceDuration: "7415.449000", outputDuration: "N/A", wantState: "UNVERIFIED"},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := testEncodeTestDB(t, "quality-gate-duration-strings-"+strconv.Itoa(index), &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
+			root := t.TempDir()
+			if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{
+				"resultsReportsPath": filepath.Join(root, "results"),
+				"asIsReportsPath":    filepath.Join(root, "as-is"),
+			}}).Error; err != nil {
+				t.Fatal(err)
+			}
+			outputPath := filepath.Join(root, "output.mkv")
+			if err := os.WriteFile(outputPath, []byte("disposable validation fixture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			executionNumber := uint(12)
+			job := models.QueueJob{MediaPath: filepath.Join(root, "source.mkv"), OutputPath: outputPath, Status: JobStatusCompleted, ExecutionNumber: &executionNumber, ProfileSnapshot: models.JSONMap{}, TrackProfileSnapshot: models.JSONMap{}}
+			if err := db.Create(&job).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := writeJobArtifact(db, job, "as-is", jobArtifact{
+				Job:         job,
+				SourceProbe: map[string]any{"format": map[string]any{"duration": test.sourceDuration}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			artifact := map[string]any{
+				"job":         map[string]any{"executionNumber": executionNumber},
+				"outputProbe": map[string]any{"format": map[string]any{"duration": test.outputDuration}},
+			}
+			findings, _ := evaluateValidationRules(db, job, artifact, resultArtifactIdentity{}, resultExecutionBinding{ExecutionNumber: executionNumber})
+			for _, finding := range findings {
+				if finding.Key == "duration.timeline" {
+					if finding.State != test.wantState {
+						t.Fatalf("duration.timeline state=%s, want %s (expected=%v actual=%v)", finding.State, test.wantState, finding.Expected, finding.Actual)
+					}
+					return
+				}
+			}
+			t.Fatal("duration.timeline finding is missing")
+		})
+	}
+}
 
 func TestResultArtifactIdentityBindsFrozenExecutionAndDetectsReplacement(t *testing.T) {
 	db := testEncodeTestDB(t, "quality-gate-result-identity", &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
@@ -220,6 +308,41 @@ func TestValidationRuleCategoriesUseStableEvidenceFindings(t *testing.T) {
 	}
 	if byKey["sidecars.package"].State != "NOT_APPLICABLE" || byKey["duration.timeline"].State != "UNVERIFIED" {
 		t.Fatalf("missing evidence was not kept explicit: sidecars=%s duration=%s", byKey["sidecars.package"].State, byKey["duration.timeline"].State)
+	}
+}
+
+func TestAddChapterFindingUsesExplicitOutputEvidence(t *testing.T) {
+	tests := []struct {
+		name          string
+		chaptersKept  bool
+		chapterPolicy ChapterPolicy
+		probe         models.JSONMap
+		wantState     string
+		wantActual    any
+	}{
+		{name: "keep with output chapters", chaptersKept: true, probe: models.JSONMap{"chapters": []any{models.JSONMap{"id": 0}}}, wantState: "PASS", wantActual: 1},
+		{name: "keep with real chapter loss", chaptersKept: true, probe: models.JSONMap{"chapters": []any{}}, wantState: "FAIL", wantActual: 0},
+		{name: "remove with no output chapters", chapterPolicy: ChapterPolicyRemove, probe: models.JSONMap{"chapters": []any{}}, wantState: "PASS", wantActual: 0},
+		{name: "missing chapter evidence", chaptersKept: true, probe: models.JSONMap{"streams": []any{}}, wantState: "UNVERIFIED"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			trackPlan, err := resolvedTrackPlanMap(ResolvedTrackPlan{ChaptersKept: test.chaptersKept, ChapterPolicy: test.chapterPolicy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			job := models.QueueJob{TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: trackPlan}}
+			var got validationFinding
+			add := func(key string, expected, actual any, severity, disposition, state string, actionable, overrideable bool, explanation string, refs ...string) {
+				if key == "chapters.actions" {
+					got = validationFinding{Key: key, Expected: expected, Actual: actual, State: state}
+				}
+			}
+			addChapterFinding(add, job, test.probe)
+			if got.Key == "" || got.State != test.wantState || got.Actual != test.wantActual {
+				t.Fatalf("chapter finding=%#v, want state=%s actual=%#v", got, test.wantState, test.wantActual)
+			}
+		})
 	}
 }
 
