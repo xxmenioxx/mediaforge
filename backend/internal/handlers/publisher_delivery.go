@@ -189,6 +189,9 @@ func (h PublisherHandler) handoffAndPublishWithReason(job models.QueueJob, autom
 	if job.Status != JobStatusCompleted {
 		return PublishResult{}, publishError{Status: http.StatusConflict, Message: "job must be completed before publishing"}
 	}
+	if allowed, reason := canonicalRunAllowsPublish(h.db, job, automatic); !allowed {
+		return PublishResult{}, publishError{Status: http.StatusConflict, Message: reason}
+	}
 	identity, resultIdentity, err := publisherIdentityForJob(h.db, job, automatic)
 	if err != nil {
 		return PublishResult{}, err
@@ -221,10 +224,6 @@ func (h PublisherHandler) handoffAndPublishWithReason(job models.QueueJob, autom
 				return PublishResult{}, publishError{Status: http.StatusConflict, Message: "required subtitle artifacts are not ready for publication: " + check.Message}
 			}
 		}
-	}
-	if allowed, reason := canonicalRunAllowsPublish(h.db, job, automatic); !allowed {
-		h.markPublicationBlocked(publication, "handoff_ineligible", reason, actorSource, actorID)
-		return PublishResult{}, publishError{Status: http.StatusConflict, Message: reason}
 	}
 	if publication.State == PublicationBlocked {
 		if automatic {
@@ -410,6 +409,15 @@ func (h PublisherHandler) persistPublicationIdentity(candidate models.PublisherP
 			sourceRecordIdentityChanged = true
 		}
 		if current.ExecutionNumber != candidate.ExecutionNumber || current.ExecutionPlanID != candidate.ExecutionPlanID || current.ExecutionPlanVersion != candidate.ExecutionPlanVersion || current.ExecutionPlanFingerprint != candidate.ExecutionPlanFingerprint || current.ResultArtifactID != candidate.ResultArtifactID || current.ResultGenerationToken != candidate.ResultGenerationToken || current.ResultGenerationVersion != candidate.ResultGenerationVersion || current.ResultOutputRevision != candidate.ResultOutputRevision || current.ValidationRunID != candidate.ValidationRunID || !publisherJSONListsEqual(current.ValidationOverrideEventIDs, candidate.ValidationOverrideEventIDs) || sourceRecordIdentityChanged || current.SourceAssetRecordCreatedAt != candidate.SourceAssetRecordCreatedAt || current.SourceAssetRecordModifiedAt != candidate.SourceAssetRecordModifiedAt || current.SourceAssetRecordSizeBytes != candidate.SourceAssetRecordSizeBytes || filepath.Clean(current.DestinationRoot) != filepath.Clean(candidate.DestinationRoot) || filepath.Clean(current.DestinationPath) != filepath.Clean(candidate.DestinationPath) || current.PublishMode != candidate.PublishMode {
+			if current.ValidationRunID == "" && candidate.ValidationRunID != "" {
+				recovered, ok, recoveryErr := h.recoverUnattemptedValidationIdentity(current, candidate)
+				if recoveryErr != nil {
+					return current, recoveryErr
+				}
+				if ok {
+					return recovered, nil
+				}
+			}
 			if current.State != PublicationPublished {
 				h.markPublicationBlocked(current, "identity_changed", "Queue execution, Result, Validation, or frozen destination identity changed.", publicationActorSystem, publicationActorSystem)
 			}
@@ -441,6 +449,139 @@ func (h PublisherHandler) persistPublicationIdentity(candidate models.PublisherP
 		return current, err
 	}
 	return candidate, nil
+}
+
+func samePublisherIdentityExceptValidationRun(current, candidate models.PublisherPublication) bool {
+	sourceRecordIdentityChanged := (current.SourceAssetRecordID == nil) != (candidate.SourceAssetRecordID == nil)
+	if current.SourceAssetRecordID != nil && candidate.SourceAssetRecordID != nil && *current.SourceAssetRecordID != *candidate.SourceAssetRecordID {
+		sourceRecordIdentityChanged = true
+	}
+	return current.QueueJobID == candidate.QueueJobID &&
+		current.ExecutionNumber == candidate.ExecutionNumber &&
+		current.ExecutionPlanID == candidate.ExecutionPlanID &&
+		current.ExecutionPlanVersion == candidate.ExecutionPlanVersion &&
+		current.ExecutionPlanFingerprint == candidate.ExecutionPlanFingerprint &&
+		current.LibraryID == candidate.LibraryID &&
+		filepath.Clean(current.DestinationRoot) == filepath.Clean(candidate.DestinationRoot) &&
+		filepath.Clean(current.DestinationPath) == filepath.Clean(candidate.DestinationPath) &&
+		current.PublishMode == candidate.PublishMode &&
+		current.ResultArtifactID == candidate.ResultArtifactID &&
+		current.ResultGenerationToken == candidate.ResultGenerationToken &&
+		current.ResultGenerationVersion == candidate.ResultGenerationVersion &&
+		current.ResultOutputRevision == candidate.ResultOutputRevision &&
+		publisherJSONListsEqual(current.ValidationOverrideEventIDs, candidate.ValidationOverrideEventIDs) &&
+		!sourceRecordIdentityChanged &&
+		current.SourceAssetRecordCreatedAt == candidate.SourceAssetRecordCreatedAt &&
+		current.SourceAssetRecordModifiedAt == candidate.SourceAssetRecordModifiedAt &&
+		current.SourceAssetRecordSizeBytes == candidate.SourceAssetRecordSizeBytes &&
+		filepath.Clean(current.SourcePath) == filepath.Clean(candidate.SourcePath) &&
+		publisherJSONListsEqual(current.Manifest, candidate.Manifest)
+}
+
+func publisherManifestHasNoMutation(manifest models.JSONList) bool {
+	entries, err := manifestEntries(manifest)
+	if err != nil || len(entries) == 0 {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Temporary != "" || entry.Backup != "" || entry.SizeBytes != 0 || entry.Device != 0 || entry.Inode != 0 || entry.PreviousSizeBytes != 0 || entry.PreviousDevice != 0 || entry.PreviousInode != 0 || entry.Outcome != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func publisherArchiveIsUntouched(publication models.PublisherPublication) bool {
+	return publication.OriginalArchiveStatus == "pending" &&
+		publication.OriginalArchivedPath == "" &&
+		publication.OriginalArchiveSourcePath == "" &&
+		publication.OriginalArchiveTemporaryPath == "" &&
+		publication.OriginalArchiveSizeBytes == 0 &&
+		publication.OriginalArchiveDevice == 0 &&
+		publication.OriginalArchiveInode == 0 &&
+		publication.OriginalArchiveTempDevice == 0 &&
+		publication.OriginalArchiveTempInode == 0 &&
+		publication.OriginalArchiveClaimID == "" &&
+		publication.OriginalArchiveLeaseExpiresAt == nil &&
+		publication.OriginalArchiveFencingGeneration == 0 &&
+		publication.OriginalArchiveError == ""
+}
+
+func (h PublisherHandler) recoverUnattemptedValidationIdentity(current, candidate models.PublisherPublication) (models.PublisherPublication, bool, error) {
+	if current.ValidationRunID != "" || candidate.ValidationRunID == "" ||
+		current.State != PublicationBlocked || current.FailureCode != "identity_changed" ||
+		current.AttemptCount != 0 || current.FencingGeneration != 0 || current.ActiveAttemptID != "" || current.LeaseExpiresAt != nil ||
+		current.PublishedAt != nil || !publisherArchiveIsUntouched(current) || !publisherManifestHasNoMutation(current.Manifest) ||
+		!samePublisherIdentityExceptValidationRun(current, candidate) {
+		return current, false, nil
+	}
+	eventID, err := publisherToken("publisher-action")
+	if err != nil {
+		return current, false, err
+	}
+	now := time.Now().UTC()
+	recovered := false
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		var fresh models.PublisherPublication
+		if err := tx.Where("publication_id = ?", current.PublicationID).First(&fresh).Error; err != nil {
+			return err
+		}
+		if fresh.ValidationRunID != "" || fresh.State != PublicationBlocked || fresh.FailureCode != "identity_changed" ||
+			fresh.AttemptCount != 0 || fresh.FencingGeneration != 0 || fresh.ActiveAttemptID != "" || fresh.LeaseExpiresAt != nil ||
+			fresh.PublishedAt != nil || !publisherArchiveIsUntouched(fresh) || !publisherManifestHasNoMutation(fresh.Manifest) ||
+			!samePublisherIdentityExceptValidationRun(fresh, candidate) {
+			return nil
+		}
+		var attempts, evidence int64
+		if err := tx.Model(&models.PublisherPublicationAttempt{}).Where("publication_id = ?", fresh.PublicationID).Count(&attempts).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.PublisherAttemptEvidence{}).Where("publication_id = ?", fresh.PublicationID).Count(&evidence).Error; err != nil {
+			return err
+		}
+		if attempts != 0 || evidence != 0 {
+			return nil
+		}
+		updated := tx.Model(&models.PublisherPublication{}).
+			Where("publication_id = ? AND state = ? AND failure_code = ? AND validation_run_id = '' AND attempt_count = 0 AND fencing_generation = 0", fresh.PublicationID, PublicationBlocked, "identity_changed").
+			Updates(map[string]any{"validation_run_id": candidate.ValidationRunID, "state": PublicationReady, "failure_code": "", "failure_summary": "", "updated_at": now})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected != 1 {
+			return nil
+		}
+		jobUpdate := tx.Model(&models.QueueJob{}).Where("id = ? AND execution_number = ?", fresh.QueueJobID, fresh.ExecutionNumber).
+			Updates(map[string]any{"publication_id": fresh.PublicationID, "publication_state": PublicationReady, "publication_summary": "Validation identity was recovered before any Publisher attempt."})
+		if jobUpdate.Error != nil {
+			return jobUpdate.Error
+		}
+		if jobUpdate.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		var auditCount int64
+		if err := tx.Model(&models.PublisherAuditEvent{}).Where("publication_id = ?", fresh.PublicationID).Count(&auditCount).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&models.PublisherAuditEvent{
+			EventID: eventID, PublicationID: fresh.PublicationID, Version: int(auditCount + 1),
+			Action: "recover_validation_identity", ActorSource: publicationActorSystem, ActorID: publicationActorSystem,
+			Reason:     "Recovered an empty ValidationRun binding before any publication attempt or filesystem mutation.",
+			Parameters: models.JSONMap{"recovery": "zero_attempt_validation_handoff_race", "validationRunId": candidate.ValidationRunID},
+			CreatedAt:  now,
+		}).Error; err != nil {
+			return err
+		}
+		recovered = true
+		return nil
+	})
+	if err != nil || !recovered {
+		return current, recovered, err
+	}
+	if err := h.db.Where("publication_id = ?", current.PublicationID).First(&current).Error; err != nil {
+		return models.PublisherPublication{}, false, err
+	}
+	return current, true, nil
 }
 
 func (h PublisherHandler) appendPublicationAudit(publicationID, action, reason string, parameters models.JSONMap) error {

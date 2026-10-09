@@ -631,7 +631,7 @@ func TestPublisherProvenanceTransactionFailureKeepsPromotedFilesRecoverable(t *t
 	}
 }
 
-func TestPublisherChangedResultBytesPersistBlockedPublication(t *testing.T) {
+func TestPublisherChangedResultBytesDoNotPersistPublication(t *testing.T) {
 	fixture := newPublisherDeliveryFixture(t, false)
 	if err := os.WriteFile(fixture.output, []byte("changed after Validation"), 0o600); err != nil {
 		t.Fatal(err)
@@ -639,12 +639,12 @@ func TestPublisherChangedResultBytesPersistBlockedPublication(t *testing.T) {
 	if _, err := (PublisherHandler{db: fixture.db}).publishQueueJobWithMode(fixture.job, false, false); err == nil {
 		t.Fatal("Publisher accepted Result bytes changed after Validation")
 	}
-	var publication models.PublisherPublication
-	if err := fixture.db.Where("queue_job_id = ?", fixture.job.ID).First(&publication).Error; err != nil {
-		t.Fatal("stale handoff did not persist its publication identity:", err)
+	var count int64
+	if err := fixture.db.Model(&models.PublisherPublication{}).Where("queue_job_id = ?", fixture.job.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
 	}
-	if publication.State != PublicationBlocked || publication.FailureCode != "handoff_ineligible" {
-		t.Fatalf("stale Result was not persisted as BLOCKED: %#v", publication)
+	if count != 0 {
+		t.Fatalf("stale Result created %d PublisherPublication rows", count)
 	}
 	if _, err := os.Stat(fixture.destination); !os.IsNotExist(err) {
 		t.Fatalf("stale Result reached the final destination: %v", err)
@@ -679,21 +679,251 @@ func TestPublisherAcceptsMetadataOnlyResultChangesUsingValidationRevision(t *tes
 	}
 }
 
-func TestPublisherMissingValidationRunPersistsBlockedPublication(t *testing.T) {
+func TestPublisherMissingValidationRunDoesNotPersistPublication(t *testing.T) {
 	fixture := newPublisherDeliveryFixture(t, false)
-	fixture.job.ValidationRunID = "validation-run:replaced"
+	fixture.job.ValidationRunID = ""
 	if err := fixture.db.Save(&fixture.job).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (PublisherHandler{db: fixture.db}).publishQueueJobWithMode(fixture.job, false, false); err == nil {
-		t.Fatal("Publisher accepted a replaced ValidationRun binding")
+		t.Fatal("Publisher accepted a handoff without a canonical ValidationRun")
 	}
+	var count int64
+	if err := fixture.db.Model(&models.PublisherPublication{}).Where("queue_job_id = ?", fixture.job.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("missing canonical ValidationRun created %d PublisherPublication rows", count)
+	}
+}
+
+func TestAutoPublisherWaitsForCanonicalValidationBeforeFirstHandoff(t *testing.T) {
+	fixture := newPublisherDeliveryFixture(t, false)
+	var validation models.ValidationRun
+	if err := fixture.db.Where("run_id = ?", fixture.job.ValidationRunID).First(&validation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Delete(&validation).Error; err != nil {
+		t.Fatal(err)
+	}
+	fixture.job.ValidationRunID = ""
+	fixture.job.ValidationOutcome = ""
+	fixture.job.ValidationStatus = ""
+	fixture.job.Stage = JobStageValidating
+	if err := fixture.db.Save(&fixture.job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Create(&models.AppSetting{Key: "pipelineAutomation", Value: models.JSONMap{"autoPublisherEnabled": true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	auto := &AutoPublisher{db: fixture.db}
+	auto.tick()
+	var publications int64
+	if err := fixture.db.Model(&models.PublisherPublication{}).Where("queue_job_id = ?", fixture.job.ID).Count(&publications).Error; err != nil {
+		t.Fatal(err)
+	}
+	if publications != 0 {
+		t.Fatalf("completed Queue job without canonical Validation created %d publication rows", publications)
+	}
+
+	artifact, _, err := readLatestJobArtifact(fixture.db, fixture.job, "result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultIdentity, identityOK := resultIdentityFromArtifact(artifact)
+	binding, bindingOK := resultBindingFromArtifact(artifact)
+	if !identityOK || !bindingOK {
+		t.Fatalf("canonical Result identity unavailable: %#v", artifact)
+	}
+	validation.RunID = "validation-run:auto-publisher-race:" + t.Name()
+	validation.JobID = fixture.job.ID
+	validation.ExecutionNumber = *fixture.job.ExecutionNumber
+	validation.ExecutionPlanID = binding.ExecutionPlanID
+	validation.ExecutionPlanVersion = binding.ExecutionPlanVersion
+	validation.ExecutionPlanFingerprint = binding.ExecutionPlanFingerprint
+	validation.ResultArtifactID = resultIdentity.ArtifactID
+	validation.ResultGenerationToken = resultIdentity.GenerationToken
+	validation.ResultGenerationVersion = resultIdentity.GenerationVersion
+	validation.ResultOutputRevision = resultIdentity.OutputRevision
+	validation.Outcome = "PASS"
+	validation.CreatedAt = time.Now().UTC()
+	if err := fixture.db.Create(&validation).Error; err != nil {
+		t.Fatal(err)
+	}
+	fixture.job.ValidationRunID = validation.RunID
+	fixture.job.ValidationOutcome = "PASS"
+	fixture.job.ValidationStatus = ValidationStatusPassed
+	fixture.job.Stage = JobStageReadyToPublish
+	if err := fixture.db.Save(&fixture.job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	auto.tick()
 	var publication models.PublisherPublication
-	if err := fixture.db.Where("queue_job_id = ?", fixture.job.ID).First(&publication).Error; err != nil {
-		t.Fatal("stale Validation handoff did not persist its publication identity:", err)
+	if err := fixture.db.Where("queue_job_id = ? AND execution_number = ?", fixture.job.ID, *fixture.job.ExecutionNumber).First(&publication).Error; err != nil {
+		t.Fatal("ready Queue execution did not create its Publisher identity:", err)
 	}
-	if publication.State != PublicationBlocked || publication.FailureCode != "handoff_ineligible" {
-		t.Fatalf("stale ValidationRun was not persisted as BLOCKED: %#v", publication)
+	if publication.ValidationRunID != fixture.job.ValidationRunID {
+		t.Fatalf("publication ValidationRunID=%q, want exact Queue ValidationRunID %q", publication.ValidationRunID, fixture.job.ValidationRunID)
+	}
+}
+
+func prepareBlockedValidationIdentityRace(t *testing.T, fixture publisherDeliveryFixture) (PublisherHandler, models.PublisherPublication) {
+	t.Helper()
+	handler := PublisherHandler{db: fixture.db}
+	unbound := fixture.job
+	unbound.ValidationRunID = ""
+	candidate, resultIdentity, err := publisherIdentityForJob(fixture.db, unbound, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := handler.persistPublicationIdentity(candidate, resultIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Updates(map[string]any{
+		"state": PublicationBlocked, "failure_code": "identity_changed", "failure_summary": "Queue Validation identity changed before an attempt.",
+		"attempt_count": 0, "fencing_generation": 0, "original_archive_status": "pending",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.QueueJob{}).Where("id = ?", fixture.job.ID).Updates(map[string]any{
+		"publication_state": PublicationBlocked, "publication_summary": "Queue Validation identity changed before an attempt.",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Where("publication_id = ?", publication.PublicationID).First(&publication).Error; err != nil {
+		t.Fatal(err)
+	}
+	return handler, publication
+}
+
+func TestAutoPublisherRecoversOnlyUnattemptedValidationIdentityRace(t *testing.T) {
+	fixture := newPublisherDeliveryFixture(t, false)
+	_, stored := prepareBlockedValidationIdentityRace(t, fixture)
+	if stored.ValidationRunID != "" || stored.State != PublicationBlocked || stored.FailureCode != "identity_changed" || stored.AttemptCount != 0 || stored.FencingGeneration != 0 || stored.OriginalArchiveStatus != "pending" {
+		t.Fatalf("fixture does not match the zero-attempt race state: %#v", stored)
+	}
+	if err := fixture.db.Create(&models.AppSetting{Key: "pipelineAutomation", Value: models.JSONMap{"autoPublisherEnabled": true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	(&AutoPublisher{db: fixture.db}).tick()
+
+	var recovered models.PublisherPublication
+	if err := fixture.db.Where("publication_id = ?", stored.PublicationID).First(&recovered).Error; err != nil {
+		t.Fatal(err)
+	}
+	if recovered.State != PublicationPublished || recovered.ValidationRunID != fixture.job.ValidationRunID || recovered.AttemptCount != 1 || recovered.FencingGeneration != 1 {
+		t.Fatalf("bounded Validation identity recovery did not proceed through a normal Publisher attempt: %#v", recovered)
+	}
+	var audit models.PublisherAuditEvent
+	if err := fixture.db.Where("publication_id = ? AND action = ?", stored.PublicationID, "recover_validation_identity").First(&audit).Error; err != nil {
+		t.Fatal("Validation identity recovery was not audited:", err)
+	}
+	if fmt.Sprint(audit.Parameters["recovery"]) != "zero_attempt_validation_handoff_race" || fmt.Sprint(audit.Parameters["validationRunId"]) != fixture.job.ValidationRunID {
+		t.Fatalf("recovery audit does not identify the bounded repair: %#v", audit.Parameters)
+	}
+}
+
+func TestPublisherValidationIdentityRecoveryRejectsChangedOrMutatedState(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*testing.T, publisherDeliveryFixture, models.PublisherPublication)
+	}{
+		{name: "execution", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("execution_number", publication.ExecutionNumber+1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "plan", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("execution_plan_fingerprint", publication.ExecutionPlanFingerprint+"-changed").Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "result", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("result_artifact_id", publication.ResultArtifactID+"-changed").Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "destination", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("destination_path", filepath.Join(fixture.libraryRoot, "changed.mkv")).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "source identity", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			changedID := uint(999)
+			if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("source_asset_record_id", changedID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "non-empty different ValidationRunID", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("validation_run_id", "validation-run:different").Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "attempt count", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("attempt_count", 1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "attempt row", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			attempt := models.PublisherPublicationAttempt{AttemptID: "attempt:recovery-negative", PublicationID: publication.PublicationID, FencingGeneration: 1, ActorSource: publicationActorSystem, ActorID: publicationActorSystem, CreatedAt: time.Now().UTC()}
+			if err := fixture.db.Create(&attempt).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "fencing generation", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("fencing_generation", 1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "attempt evidence", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			evidence := models.PublisherAttemptEvidence{EvidenceID: "attempt-evidence:recovery-negative", PublicationID: publication.PublicationID, AttemptID: "attempt:recovery-negative", FencingGeneration: 0, Version: 1, Phase: "claim", Outcome: "acquired", CreatedAt: time.Now().UTC()}
+			if err := fixture.db.Create(&evidence).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "archive started", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("original_archive_status", "archiving").Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "filesystem mutation", mutate: func(t *testing.T, fixture publisherDeliveryFixture, publication models.PublisherPublication) {
+			mutated := models.JSONList{models.JSONMap{"kind": "primary", "source": fixture.output, "final": fixture.destination, "required": true, "promote": true, "temporary": filepath.Join(fixture.root, "staged", "artifact.part")}}
+			if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", publication.PublicationID).Update("manifest", mutated).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newPublisherDeliveryFixture(t, false)
+			handler, publication := prepareBlockedValidationIdentityRace(t, fixture)
+			candidate, _, err := publisherIdentityForJob(fixture.db, fixture.job, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(t, fixture, publication)
+			if err := fixture.db.Where("publication_id = ?", publication.PublicationID).First(&publication).Error; err != nil {
+				t.Fatal(err)
+			}
+			expectedValidationRunID := publication.ValidationRunID
+			_, recovered, err := handler.recoverUnattemptedValidationIdentity(publication, candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recovered {
+				t.Fatal("recovery accepted a changed or mutated publication identity")
+			}
+			if err := fixture.db.Where("publication_id = ?", publication.PublicationID).First(&publication).Error; err != nil {
+				t.Fatal(err)
+			}
+			if publication.ValidationRunID != expectedValidationRunID || publication.State != PublicationBlocked {
+				t.Fatalf("rejected recovery changed the stored identity/state: %#v", publication)
+			}
+		})
 	}
 }
 
