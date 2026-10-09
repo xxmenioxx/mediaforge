@@ -394,7 +394,16 @@ func validationProbeDuration(probe map[string]any) float64 {
 	if format == nil {
 		return 0
 	}
-	value := numberFromUnknown(format["duration"])
+	rawDuration := format["duration"]
+	value := math.NaN()
+	if durationString, ok := rawDuration.(string); ok {
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(durationString), 64)
+		if err == nil {
+			value = parsed
+		}
+	} else {
+		value = numberFromUnknown(rawDuration)
+	}
 	if value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0
 	}
