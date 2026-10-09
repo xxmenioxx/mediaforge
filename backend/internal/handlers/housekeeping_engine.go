@@ -720,10 +720,40 @@ func protectedRawDirectories(db *gorm.DB, root string) (map[string]struct{}, err
 	}
 	if db.Migrator().HasTable(&models.QueueJob{}) {
 		var jobs []models.QueueJob
-		if err := db.Select("media_path, output_path, published_path, planned_published_path, replacement_target_path, original_archived_path, subtitle_artifacts").Find(&jobs).Error; err != nil {
+		if err := db.Select("id, media_path, output_path, published_path, planned_published_path, replacement_target_path, original_archived_path, subtitle_artifacts, status, stage, validation_status, validation_outcome, validation_actionable, validation_override, published_at, started_at, finished_at").Find(&jobs).Error; err != nil {
 			return nil, err
 		}
+		activeReservations := map[uint]struct{}{}
+		if db.Migrator().HasTable(&models.SchedulerReservation{}) {
+			var reservations []struct {
+				JobID uint
+			}
+			if err := db.Model(&models.SchedulerReservation{}).Select("job_id").Where("state IN ?", []string{scheduler.ReservationStateLocked, scheduler.ReservationStateActive}).Find(&reservations).Error; err != nil {
+				return nil, err
+			}
+			for _, reservation := range reservations {
+				activeReservations[reservation.JobID] = struct{}{}
+			}
+		}
+		activePublisherJobs := map[uint]struct{}{}
+		if db.Migrator().HasTable(&models.PublisherPublication{}) {
+			var publications []struct {
+				QueueJobID uint
+			}
+			now := time.Now().UTC()
+			if err := db.Model(&models.PublisherPublication{}).Select("queue_job_id").Where("TRIM(active_attempt_id) <> '' OR lease_expires_at > ? OR original_archive_lease_expires_at > ?", now, now).Find(&publications).Error; err != nil {
+				return nil, err
+			}
+			for _, publication := range publications {
+				activePublisherJobs[publication.QueueJobID] = struct{}{}
+			}
+		}
 		for _, job := range jobs {
+			_, hasActiveReservation := activeReservations[job.ID]
+			_, hasActivePublisher := activePublisherJobs[job.ID]
+			if !jobHasActiveHousekeepingReferencesFromJob(&job) && !hasActiveReservation && !hasActivePublisher {
+				continue
+			}
 			for _, path := range []string{job.MediaPath, job.OutputPath, job.PublishedPath, job.PlannedPublishedPath, job.ReplacementTargetPath, job.OriginalArchivedPath} {
 				add(path, false)
 			}
@@ -1718,7 +1748,7 @@ func jobHasActiveHousekeepingReferencesFromJob(job *models.QueueJob) bool {
 	if job == nil {
 		return false
 	}
-	if strings.TrimSpace(job.WorkerName) != "" || (job.StartedAt != nil && job.FinishedAt == nil) {
+	if isProtectedHousekeepingJob(job) || (job.StartedAt != nil && job.FinishedAt == nil) {
 		return true
 	}
 	return false

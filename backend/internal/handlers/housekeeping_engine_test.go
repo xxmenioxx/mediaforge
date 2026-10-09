@@ -91,6 +91,9 @@ func housekeepingCreateJob(t *testing.T, db *gorm.DB, status string, overrides m
 	if overrides.PublishedAt != nil {
 		job.PublishedAt = overrides.PublishedAt
 	}
+	if overrides.StartedAt != nil {
+		job.StartedAt = overrides.StartedAt
+	}
 	if overrides.FinishedAt == nil {
 		job.FinishedAt = &old
 	} else {
@@ -163,17 +166,66 @@ func TestHousekeepingPublishedWorkspaceCleanupAndUnpublishedProtection(t *testin
 	}
 }
 
+func TestHousekeepingTerminalWorkerProvenanceDoesNotBlockWorkspaceOrLogRetention(t *testing.T) {
+	db, roots := newHousekeepingTestDB(t)
+	old := housekeepingOldTime()
+	jobs := []models.QueueJob{
+		housekeepingCreateJob(t, db, JobStatusCompleted, models.QueueJob{WorkerName: "local-worker", PublishedAt: &old, StartedAt: &old, FinishedAt: &old}),
+		housekeepingCreateJob(t, db, JobStatusFailed, models.QueueJob{WorkerName: "local-worker", StartedAt: &old, FinishedAt: &old}),
+		housekeepingCreateJob(t, db, JobStatusCanceled, models.QueueJob{WorkerName: "local-worker", StartedAt: &old, FinishedAt: &old}),
+	}
+	workspaces := map[uint]string{}
+	logs := map[uint]string{}
+	for _, job := range jobs {
+		workspaces[job.ID] = housekeepingWorkspace(t, roots.work, job.ID, "retained-output.bin")
+		logs[job.ID] = filepath.Join(roots.logs, fmt.Sprintf("job-%d.log", job.ID))
+		housekeepingWriteFile(t, logs[job.ID], "historical worker log")
+	}
+
+	report, err := RunHousekeeping(db, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range jobs {
+		if _, err := os.Lstat(workspaces[job.ID]); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("terminal workspace %d with historical WorkerName remains: %v", job.ID, err)
+		}
+		if _, err := os.Lstat(logs[job.ID]); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("terminal job log %d with historical WorkerName remains: %v", job.ID, err)
+		}
+		for path, kind := range map[string]string{workspaces[job.ID]: housekeepingKindWorkspace, logs[job.ID]: housekeepingKindJobLog} {
+			candidate, ok := housekeepingCandidateByPath(report, path, kind)
+			if !ok || !candidate.SafeToDelete {
+				t.Errorf("terminal job %d was not cleanup eligible for %s: %#v", job.ID, kind, candidate)
+			}
+		}
+	}
+	var historicalJobs int64
+	if err := db.Model(&models.QueueJob{}).Count(&historicalJobs).Error; err != nil || historicalJobs != int64(len(jobs)) {
+		t.Fatalf("QueueJob history or WorkerName provenance changed: count=%d err=%v", historicalJobs, err)
+	}
+}
+
 func TestHousekeepingFailedCanceledRetentionAndActiveOwnershipGuards(t *testing.T) {
 	db, roots := newHousekeepingTestDB(t)
 	failed := housekeepingCreateJob(t, db, JobStatusFailed, models.QueueJob{})
 	canceled := housekeepingCreateJob(t, db, JobStatusCanceled, models.QueueJob{})
-	worker := housekeepingCreateJob(t, db, JobStatusFailed, models.QueueJob{WorkerName: "worker-a"})
 	reserved := housekeepingCreateJob(t, db, JobStatusFailed, models.QueueJob{})
+	processStarted := housekeepingOldTime()
+	process := housekeepingCreateJob(t, db, JobStatusFailed, models.QueueJob{WorkerName: "local-worker", StartedAt: &processStarted})
+	if err := db.Model(&process).UpdateColumn("finished_at", nil).Error; err != nil {
+		t.Fatal(err)
+	}
 	paths := map[uint]string{
 		failed.ID:   housekeepingWorkspace(t, roots.work, failed.ID, "failed.bin"),
 		canceled.ID: housekeepingWorkspace(t, roots.work, canceled.ID, "canceled.bin"),
-		worker.ID:   housekeepingWorkspace(t, roots.work, worker.ID, "worker.bin"),
 		reserved.ID: housekeepingWorkspace(t, roots.work, reserved.ID, "reserved.bin"),
+		process.ID:  housekeepingWorkspace(t, roots.work, process.ID, "process.bin"),
+	}
+	logs := map[uint]string{}
+	for _, job := range []models.QueueJob{reserved, process} {
+		logs[job.ID] = filepath.Join(roots.logs, fmt.Sprintf("job-%d.log", job.ID))
+		housekeepingWriteFile(t, logs[job.ID], "owned by active lifecycle")
 	}
 	if err := db.Create(&models.SchedulerReservation{JobID: reserved.ID, AssetKey: reserved.MediaPath, State: "active", WorkerName: "worker-b"}).Error; err != nil {
 		t.Fatal(err)
@@ -188,13 +240,20 @@ func TestHousekeepingFailedCanceledRetentionAndActiveOwnershipGuards(t *testing.
 			t.Errorf("expired terminal workspace %d remains: %v", id, err)
 		}
 	}
-	for _, id := range []uint{worker.ID, reserved.ID} {
+	for _, id := range []uint{reserved.ID, process.ID} {
 		if _, err := os.Stat(paths[id]); err != nil {
 			t.Errorf("active ownership workspace %d was removed: %v", id, err)
 		}
 		candidate, ok := housekeepingCandidateByPath(report, paths[id], housekeepingKindWorkspace)
 		if !ok || candidate.SafeToDelete || candidate.BlockedReason == "" {
 			t.Errorf("active ownership was not reported for job %d: %#v", id, candidate)
+		}
+		if _, err := os.Stat(logs[id]); err != nil {
+			t.Errorf("active ownership job log %d was removed: %v", id, err)
+		}
+		logCandidate, ok := housekeepingCandidateByPath(report, logs[id], housekeepingKindJobLog)
+		if !ok || logCandidate.SafeToDelete || logCandidate.BlockedReason == "" {
+			t.Errorf("active ownership was not reported for job log %d: %#v", id, logCandidate)
 		}
 	}
 }
@@ -376,17 +435,43 @@ func TestHousekeepingRawDirectoriesRequireLiteralEmptinessAndProtectReferences(t
 	}
 	assetReferenceDir := filepath.Join(roots.raw, "asset-referenced")
 	queueReferenceDir := filepath.Join(roots.raw, "queue-referenced")
-	if err := os.MkdirAll(assetReferenceDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(queueReferenceDir, 0o755); err != nil {
-		t.Fatal(err)
+	queuedReferenceDir := filepath.Join(roots.raw, "queued-reference")
+	processReferenceDir := filepath.Join(roots.raw, "active-process-reference")
+	reservedReferenceDir := filepath.Join(roots.raw, "active-reservation-reference")
+	publisherReferenceDir := filepath.Join(roots.raw, "active-publisher-reference")
+	for _, path := range []string{assetReferenceDir, queueReferenceDir, queuedReferenceDir, processReferenceDir, reservedReferenceDir, publisherReferenceDir} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := db.Create(&models.AssetRecord{Path: filepath.Join(assetReferenceDir, "current.mkv"), RootPath: roots.raw, Status: "unprocessed", Missing: false}).Error; err != nil {
 		t.Fatal(err)
 	}
 	old := housekeepingOldTime()
-	if err := db.Create(&models.QueueJob{MediaPath: filepath.Join(queueReferenceDir, "restore-target.mkv"), Status: JobStatusFailed, FinishedAt: &old}).Error; err != nil {
+	historicalPublished := housekeepingCreateJob(t, db, JobStatusCompleted, models.QueueJob{
+		MediaPath: filepath.Join(queueReferenceDir, "restore-target.mkv"), WorkerName: "local-worker", PublishedAt: &old, StartedAt: &old, FinishedAt: &old,
+	})
+	if historicalPublished.WorkerName != "local-worker" {
+		t.Fatal("historical QueueJob WorkerName provenance was not retained")
+	}
+	housekeepingCreateJob(t, db, JobStatusQueued, models.QueueJob{MediaPath: filepath.Join(queuedReferenceDir, "queued.mkv")})
+	processJob := housekeepingCreateJob(t, db, JobStatusFailed, models.QueueJob{MediaPath: filepath.Join(processReferenceDir, "processing.mkv"), WorkerName: "local-worker", StartedAt: &old})
+	if err := db.Model(&processJob).UpdateColumn("finished_at", nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	reservedJob := housekeepingCreateJob(t, db, JobStatusCompleted, models.QueueJob{MediaPath: filepath.Join(reservedReferenceDir, "reserved.mkv"), PublishedAt: &old, StartedAt: &old, FinishedAt: &old})
+	if err := db.Create(&models.SchedulerReservation{JobID: reservedJob.ID, AssetKey: reservedJob.MediaPath, State: "active", WorkerName: "local-worker"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	publisherJob := housekeepingCreateJob(t, db, JobStatusCompleted, models.QueueJob{MediaPath: filepath.Join(publisherReferenceDir, "publishing.mkv"), PublishedAt: &old, StartedAt: &old, FinishedAt: &old})
+	if err := db.Create(&models.PublisherPublication{
+		PublicationID: "active-publisher-publication", QueueJobID: publisherJob.ID, ExecutionNumber: 1,
+		ExecutionPlanID: 1, ExecutionPlanVersion: 1, ExecutionPlanFingerprint: "plan-fingerprint", LibraryID: 1,
+		DestinationRoot: roots.library, DestinationPath: filepath.Join(roots.library, "published.mkv"), PublishMode: "standard",
+		ResultArtifactID: "result-artifact", ResultGenerationToken: "generation-token", ResultGenerationVersion: 1,
+		ResultOutputRevision: "output-revision", ValidationRunID: "validation-run", SourcePath: publisherJob.MediaPath,
+		State: "publishing", ActiveAttemptID: "attempt-1", Manifest: models.JSONList{},
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -402,9 +487,18 @@ func TestHousekeepingRawDirectoriesRequireLiteralEmptinessAndProtectReferences(t
 	if _, err := os.Stat(roots.raw); err != nil {
 		t.Fatalf("configured RAW root was removed: %v", err)
 	}
-	for _, path := range []string{assetReferenceDir, queueReferenceDir, filepath.Join(roots.raw, "contains-mkv"), filepath.Join(roots.raw, "contains-mp4"), filepath.Join(roots.raw, "contains-srt"), filepath.Join(roots.raw, "contains-nfo"), filepath.Join(roots.raw, "contains-artwork")} {
+	if _, err := os.Lstat(queueReferenceDir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("historical published QueueJob kept an empty RAW directory: %v", err)
+	}
+	for _, path := range []string{assetReferenceDir, queuedReferenceDir, processReferenceDir, reservedReferenceDir, publisherReferenceDir, filepath.Join(roots.raw, "contains-mkv"), filepath.Join(roots.raw, "contains-mp4"), filepath.Join(roots.raw, "contains-srt"), filepath.Join(roots.raw, "contains-nfo"), filepath.Join(roots.raw, "contains-artwork")} {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("nonempty or referenced RAW directory was removed: %s (%v)", path, err)
+		}
+	}
+	for _, path := range []string{queuedReferenceDir, processReferenceDir, reservedReferenceDir, publisherReferenceDir} {
+		candidate, ok := housekeepingCandidateByPath(report, path, housekeepingKindEmptyDirectory)
+		if !ok || candidate.SafeToDelete {
+			t.Errorf("current Queue ownership did not protect RAW directory %s: %#v", path, candidate)
 		}
 	}
 	if _, ok := housekeepingCandidateByPath(report, roots.raw, housekeepingKindEmptyDirectory); ok {
