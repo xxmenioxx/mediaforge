@@ -1179,6 +1179,7 @@ func ffprobeJSON(path string) map[string]any {
 		"-print_format", "json",
 		"-show_format",
 		"-show_streams",
+		"-show_chapters",
 		path,
 	).Output()
 	if err != nil {

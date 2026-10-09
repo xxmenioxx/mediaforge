@@ -574,12 +574,17 @@ func addArtifactChecks(add func(string, any, any, string, string, string, bool, 
 
 func addChapterFinding(add func(string, any, any, string, string, string, bool, bool, string, ...string), job models.QueueJob, probe models.JSONMap) {
 	plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
-	if !ok || probe == nil {
+	if !ok || probe == nil || probe["error"] != nil {
 		add("chapters.actions", "frozen chapter policy", nil, "warning", "advisory", "UNVERIFIED", true, true, "Chapter expectations or output probe evidence are unavailable.", "queue.profileSnapshot", "result.outputProbe")
 		return
 	}
+	chapters, ok := probe["chapters"].([]any)
+	if !ok {
+		add("chapters.actions", "frozen chapter policy", nil, "warning", "advisory", "UNVERIFIED", true, true, "Chapter output evidence is unavailable.", "queue.profileSnapshot", "result.outputProbe")
+		return
+	}
 	expected := plan.ChaptersKept
-	actual := len(anySlice(probe["chapters"]))
+	actual := len(chapters)
 	state := "PASS"
 	if expected && actual == 0 {
 		state = "FAIL"
