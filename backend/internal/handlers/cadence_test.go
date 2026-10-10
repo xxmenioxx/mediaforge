@@ -45,6 +45,10 @@ func progressiveCadenceWindow(fps float64, repeated bool) InterlaceWindow {
 	return InterlaceWindow{Status: "progressive", FrameSignals: cadenceSignals(fps, repeats, "stable_every_5_frames", true)}
 }
 
+func interlacedCadenceWindow(fps float64) InterlaceWindow {
+	return InterlaceWindow{Status: "interlaced", FrameSignals: cadenceSignals(fps, 0, "", false)}
+}
+
 func progressiveFrameStructureWindow(fps float64, repeated bool) FrameStructureWindow {
 	window := progressiveCadenceWindow(fps, repeated)
 	return FrameStructureWindow{FrameSignals: window.FrameSignals}
@@ -107,6 +111,62 @@ func TestAnalyzeCadencePreservesNativeProgressive(t *testing.T) {
 	}})
 	if analysis.Type != "native_progressive" || recommendCadence(analysis).Operation != "preserve" {
 		t.Fatalf("expected native progressive cadence, got %#v", analysis)
+	}
+}
+
+func TestAnalyzeCadencePreservesInterlacedMPEG2DeclaredRate(t *testing.T) {
+	interlace := InterlaceAnalysis{Status: "interlaced", Confidence: .99, Windows: []InterlaceWindow{
+		interlacedCadenceWindow(30000.0 / 1001.0), interlacedCadenceWindow(29.97),
+	}}
+	analysis := analyzeCadence("mpeg2video", "30000/1001", interlace)
+	if analysis.Type != "interlaced" || analysis.FrameRateMismatch || analysis.ContradictorySamples != 0 {
+		t.Fatalf("interlaced MPEG-2 samples were misclassified against soft telecine: %#v", analysis)
+	}
+	if !nearFPS(analysis.EffectiveFPS, 30000.0/1001.0, .01) || recommendCadence(analysis).Operation != "preserve" {
+		t.Fatalf("interlaced MPEG-2 declared and measured rates should be preserved: %#v", analysis)
+	}
+}
+
+func TestAutomaticCadencePreserveAccountsForBwdifOutputMode(t *testing.T) {
+	interlace := InterlaceAnalysis{Status: "interlaced", Confidence: .99, Windows: []InterlaceWindow{
+		interlacedCadenceWindow(30000.0 / 1001.0), interlacedCadenceWindow(29.97),
+	}}
+	analysis := analyzeCadence("mpeg2video", "30000/1001", interlace)
+	recommendation := recommendCadence(analysis)
+	tests := []struct {
+		name           string
+		filter         string
+		wantFrameRate  string
+		wantUnknownFPS bool
+	}{
+		{name: "send frame preserves input rate", filter: "bwdif=mode=send_frame:parity=tff:deint=interlaced", wantFrameRate: "30000/1001"},
+		{name: "send field rate is unresolved", filter: "bwdif=mode=send_field:parity=tff:deint=interlaced", wantUnknownFPS: true},
+		{name: "unsupported mode is unresolved", filter: "bwdif=mode=unknown:parity=tff:deint=interlaced", wantUnknownFPS: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := models.Profile{WorkerConfig: models.JSONMap{
+				"cadenceMode": "auto", "fieldStructureMode": "auto", "videoFilters": test.filter,
+			}}
+			resolved := profileWithCadenceOutputDecision(profile, analysis, recommendation, interlace)
+			if got := workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]); got != test.wantFrameRate {
+				t.Fatalf("effective output FPS=%q want %q: %#v", got, test.wantFrameRate, resolved.WorkerConfig)
+			}
+			if got := profileWorkerBool(resolved, "effectiveOutputFrameRateUnknown", false); got != test.wantUnknownFPS {
+				t.Fatalf("effective output FPS unknown=%t want %t: %#v", got, test.wantUnknownFPS, resolved.WorkerConfig)
+			}
+		})
+	}
+}
+
+func TestAutomaticCadencePreserveKeepsProgressiveMPEG2AtDeclaredRate(t *testing.T) {
+	analysis := analyzeCadence("mpeg2video", "30000/1001", InterlaceAnalysis{Status: "progressive", Confidence: .99, Windows: []InterlaceWindow{
+		progressiveCadenceWindow(30000.0/1001.0, false), progressiveCadenceWindow(29.97, false),
+	}})
+	profile := models.Profile{WorkerConfig: models.JSONMap{"cadenceMode": "auto", "fieldStructureMode": "auto"}}
+	resolved := profileWithCadenceOutputDecision(profile, analysis, recommendCadence(analysis))
+	if got := workerStringValue(resolved.WorkerConfig["effectiveOutputFrameRate"]); got != "30000/1001" || profileWorkerBool(resolved, "effectiveOutputFrameRateUnknown", true) {
+		t.Fatalf("reliable progressive MPEG-2 source rate was not preserved: %#v", resolved.WorkerConfig)
 	}
 }
 
