@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -30,6 +31,38 @@ type publisherDeliveryFixture struct {
 	output      string
 	original    string
 	sidecar     string
+}
+
+func assertQueueStageSequence(t *testing.T, job models.QueueJob, expected ...string) {
+	t.Helper()
+	encoded, err := json.Marshal(job.StageHistory)
+	if err != nil {
+		t.Fatalf("marshal stage history: %v", err)
+	}
+	var history []struct {
+		Stage string `json:"stage"`
+		At    string `json:"at"`
+	}
+	if err := json.Unmarshal(encoded, &history); err != nil {
+		t.Fatalf("decode stage history: %v", err)
+	}
+	if len(history) != len(expected) {
+		t.Fatalf("stage history %q has %d events, want exactly %d: %q", encoded, len(history), len(expected), expected)
+	}
+	var previous time.Time
+	for index, event := range history {
+		if event.Stage != expected[index] {
+			t.Fatalf("stage history %q has stage %q at position %d, want %q", encoded, event.Stage, index, expected[index])
+		}
+		at, err := time.Parse(time.RFC3339, event.At)
+		if err != nil {
+			t.Fatalf("stage %q has no valid persisted transition timestamp %q: %v", event.Stage, event.At, err)
+		}
+		if !previous.IsZero() && at.Before(previous) {
+			t.Fatalf("stage transition timestamps are out of order: %v before %v", at, previous)
+		}
+		previous = at
+	}
 }
 
 func newPublisherDeliveryFixture(t *testing.T, requiredSidecar bool) publisherDeliveryFixture {
@@ -197,6 +230,10 @@ func TestPublisherDeliveryCommitsRequiredSidecarArchiveAndStableOutbox(t *testin
 	if job.PublicationState != PublicationPublished || job.OriginalArchiveStatus != "complete" || job.PublishedAt == nil {
 		t.Fatalf("Queue projection was not committed: %#v", job)
 	}
+	if job.Status != JobStatusCompleted || job.Stage != JobStageCompleted || job.OriginalArchivedPath != publication.OriginalArchivedPath {
+		t.Fatalf("terminal archive projection is incomplete: %#v", job)
+	}
+	assertQueueStageSequence(t, job, JobStagePublishing, JobStageArchivingOriginal, JobStageCompleted)
 	var archivedSource models.AssetRecord
 	if err := fixture.db.First(&archivedSource, *publication.SourceAssetRecordID).Error; err != nil || !archivedSource.Missing {
 		t.Fatalf("#174 source inventory was not updated after successful archive: record=%#v err=%v", archivedSource, err)
@@ -495,6 +532,11 @@ func TestPublisherExpiredClaimRecoveryFencesStaleOwnerAfterFinalRename(t *testin
 	if recovered.State != PublicationPublished || recovered.FencingGeneration != 2 || recovered.ActiveAttemptID != "" || recovered.AttemptCount != 1 {
 		t.Fatalf("recovery did not commit through a new fence: %#v", recovered)
 	}
+	var recoveredJob models.QueueJob
+	if err := fixture.db.First(&recoveredJob, fixture.job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertQueueStageSequence(t, recoveredJob, JobStagePublishing, JobStageArchivingOriginal, JobStageCompleted)
 	var attempts []models.PublisherPublicationAttempt
 	if err := fixture.db.Where("publication_id = ?", publication.PublicationID).Find(&attempts).Error; err != nil {
 		t.Fatal(err)
@@ -1004,12 +1046,32 @@ func TestPublisherOriginalArchiveClaimFencesExpiredOwner(t *testing.T) {
 	if err := fixture.db.Model(&publication).Updates(map[string]any{"state": PublicationPublished, "original_archive_status": "pending"}).Error; err != nil {
 		t.Fatal(err)
 	}
+	publishedAt := time.Now().UTC()
+	plannedDestination := filepath.Join(fixture.archiveRoot, "planned-original.mkv")
+	if err := fixture.db.Model(&models.QueueJob{}).Where("id = ?", fixture.job.ID).Updates(map[string]any{
+		"published_at": publishedAt, "published_path": fixture.destination,
+		"publication_id": publication.PublicationID, "publication_state": PublicationPublished,
+		"original_archive_status": "pending", "original_archived_path": plannedDestination, "stage": JobStagePublishing,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := fixture.db.First(&publication, publication.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	first, acquired, err := claimOriginalArchive(fixture.db, publication)
 	if err != nil || !acquired {
 		t.Fatalf("first archive claim acquired=%v err=%v", acquired, err)
+	}
+	var activeJob models.QueueJob
+	if err := fixture.db.First(&activeJob, fixture.job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if activeJob.OriginalArchiveStatus != "archiving" || activeJob.Stage != JobStageArchivingOriginal || activeJob.OriginalArchivedPath != "" {
+		t.Fatalf("archive claim was not projected as an active, uncommitted archive: %#v", activeJob)
+	}
+	assertQueueStageSequence(t, activeJob, JobStageArchivingOriginal)
+	if open, err := NewQueueHandler(fixture.db).assetHasOpenJob(fixture.original, 0); err != nil || !open {
+		t.Fatalf("slow archive was not protected as active work: open=%t err=%v", open, err)
 	}
 	if _, acquired, err := claimOriginalArchive(fixture.db, publication); err != nil || acquired {
 		t.Fatalf("concurrent archive claim acquired=%v err=%v", acquired, err)
@@ -1029,6 +1091,62 @@ func TestPublisherOriginalArchiveClaimFencesExpiredOwner(t *testing.T) {
 	}
 	if err := assertOriginalArchiveLease(fixture.db, second, false); err != nil {
 		t.Fatalf("reacquired archive owner was not authorized: %v", err)
+	}
+	if err := fixture.db.Model(&models.PublisherPublication{}).Where("publication_id = ?", second.PublicationID).Update("original_archived_path", plannedDestination).Error; err != nil {
+		t.Fatal(err)
+	}
+	(PublisherHandler{db: fixture.db}).recordArchiveOutcome(fixture.job, second, "failed", plannedDestination, fixture.original, "test archive failure")
+	if err := fixture.db.First(&activeJob, fixture.job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if activeJob.OriginalArchiveStatus != "failed" || activeJob.Stage != JobStageCompleted || activeJob.OriginalArchivedPath != "" || !strings.Contains(activeJob.PublicationSummary, "test archive failure") {
+		t.Fatalf("failed archive outcome was not terminal without exposing its planned path: %#v", activeJob)
+	}
+	assertQueueStageSequence(t, activeJob, JobStageArchivingOriginal, JobStageCompleted)
+	if open, err := NewQueueHandler(fixture.db).assetHasOpenJob(fixture.original, 0); err != nil || open {
+		t.Fatalf("terminal failed archive remained active: open=%t err=%v", open, err)
+	}
+}
+
+func TestPublisherNotApplicableArchiveCompletesLifecycle(t *testing.T) {
+	fixture := newPublisherDeliveryFixture(t, false)
+	candidate, identity, err := publisherIdentityForJob(fixture.db, fixture.job, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := (PublisherHandler{db: fixture.db}).persistPublicationIdentity(candidate, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&publication).Updates(map[string]any{"state": PublicationPublished, "original_archive_status": "pending"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	publishedAt := time.Now().UTC()
+	if err := fixture.db.Model(&models.QueueJob{}).Where("id = ?", fixture.job.ID).Updates(map[string]any{
+		"published_at": publishedAt, "published_path": fixture.destination,
+		"publication_id": publication.PublicationID, "publication_state": PublicationPublished,
+		"original_archive_status": "pending", "stage": JobStagePublishing,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.First(&publication, publication.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := claimOriginalArchive(fixture.db, publication)
+	if err != nil || !ok {
+		t.Fatalf("archive claim acquired=%v err=%v", ok, err)
+	}
+	(PublisherHandler{db: fixture.db}).recordArchiveOutcome(fixture.job, claimed, "not_applicable", "", "", "No original source was associated.")
+	var job models.QueueJob
+	if err := fixture.db.First(&job, fixture.job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != JobStatusCompleted || job.Stage != JobStageCompleted || job.OriginalArchiveStatus != "not_applicable" || job.OriginalArchivedPath != "" {
+		t.Fatalf("not-applicable archive did not finish with an independent state: %#v", job)
+	}
+	assertQueueStageSequence(t, job, JobStageArchivingOriginal, JobStageCompleted)
+	if open, err := NewQueueHandler(fixture.db).assetHasOpenJob(fixture.original, 0); err != nil || open {
+		t.Fatalf("not-applicable archive remained active: open=%t err=%v", open, err)
 	}
 }
 

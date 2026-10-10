@@ -62,18 +62,19 @@ const (
 	assetCorrelationResolved   = "resolved"
 	assetCorrelationUnresolved = "unresolved"
 
-	assetActionReasonUnsupported         = "unsupported"
-	assetActionReasonIdentityUnresolved  = "identity_unresolved"
-	assetActionReasonActiveWork          = "active_work"
-	assetActionReasonMissing             = "missing"
-	assetActionReasonUnsafeRoot          = "unsafe_root"
-	assetActionReasonUnknownProvenance   = "unknown_provenance"
-	assetActionReasonPublicationConflict = "publication_conflict"
-	assetActionReasonRequiresReview      = "needs_review"
-	assetActionReasonNotRaw              = "not_raw"
-	assetActionReasonNotLibrary          = "not_library"
-	assetActionReasonNoOriginal          = "original_unavailable"
-	assetActionReasonAlreadyArchived     = "already_archived"
+	assetActionReasonUnsupported           = "unsupported"
+	assetActionReasonIdentityUnresolved    = "identity_unresolved"
+	assetActionReasonActiveWork            = "active_work"
+	assetActionReasonOriginalArchiveActive = "original_archive_in_progress"
+	assetActionReasonMissing               = "missing"
+	assetActionReasonUnsafeRoot            = "unsafe_root"
+	assetActionReasonUnknownProvenance     = "unknown_provenance"
+	assetActionReasonPublicationConflict   = "publication_conflict"
+	assetActionReasonRequiresReview        = "needs_review"
+	assetActionReasonNotRaw                = "not_raw"
+	assetActionReasonNotLibrary            = "not_library"
+	assetActionReasonNoOriginal            = "original_unavailable"
+	assetActionReasonAlreadyArchived       = "already_archived"
 )
 
 // AssetLifecycleProjection is a read model over existing AssetRecord,
@@ -213,6 +214,7 @@ type AssetActionGuardContext struct {
 	Missing                      bool
 	HasActiveQueue               bool
 	HasActiveMaintenance         bool
+	OriginalArchiveActive        bool
 	RootSafe                     bool
 	ProvenanceKnown              bool
 	PublicationConflict          bool
@@ -383,6 +385,9 @@ func ResolveAssetLifecycleProjection(input AssetLifecycleProjectionInput) AssetL
 	}
 
 	rootSafe := assetLifecycleRootSafe(record, location, libraries, input.ArchiveRoot)
+	originalArchiveActive := currentQueue != nil && currentQueue.job != nil &&
+		currentQueue.job.Status == JobStatusCompleted && currentQueue.job.PublicationState == PublicationPublished &&
+		(currentQueue.job.OriginalArchiveStatus == "pending" || currentQueue.job.OriginalArchiveStatus == "archiving")
 	originalIdentityKnown, originalAvailable, originalRootSafe := false, false, false
 	for _, archived := range projection.ArchivedOriginals {
 		if archived.Relationship == "current" {
@@ -400,6 +405,7 @@ func ResolveAssetLifecycleProjection(input AssetLifecycleProjectionInput) AssetL
 		Missing:                      record.Missing,
 		HasActiveQueue:               activeQueue,
 		HasActiveMaintenance:         activeMaintenance,
+		OriginalArchiveActive:        originalArchiveActive,
 		RootSafe:                     rootSafe,
 		ProvenanceKnown:              projection.Provenance != AssetProvenanceLegacyOrUnknown,
 		PublicationConflict:          projection.CurrentPublication.State == assetCurrentPublicationConflict,
@@ -520,8 +526,13 @@ func ResolveAssetActionCapabilities(state AssetActionGuardContext) AssetActionCa
 	}
 	if state.HasActiveQueue || state.HasActiveMaintenance {
 		setAssetActionCapabilityReasons(&capabilities, assetActionReasonActiveWork,
-			&capabilities.Rename, &capabilities.Move, &capabilities.Reconvert,
+			&capabilities.Move, &capabilities.Reconvert,
 			&capabilities.Archive, &capabilities.Restore, &capabilities.DeleteOriginal)
+		reason := assetActionReasonActiveWork
+		if state.OriginalArchiveActive && !state.PublicationConflict {
+			reason = assetActionReasonOriginalArchiveActive
+		}
+		capabilities.Rename = AssetActionCapability{Reason: reason}
 	}
 
 	if state.Location == AssetLocationRaw && state.QueueEligible {
@@ -868,7 +879,9 @@ func resolveActiveOperation(record models.AssetRecord, location string, jobs []m
 		if job.DismissedAt != nil {
 			continue
 		}
-		if job.Status == JobStatusQueued || job.Status == JobStatusRunning || (job.Status == JobStatusCompleted && job.PublishedAt == nil) {
+		if job.Status == JobStatusQueued || job.Status == JobStatusRunning ||
+			(job.Status == JobStatusCompleted && job.PublishedAt == nil) ||
+			(job.Status == JobStatusCompleted && job.PublicationState == PublicationPublished && (job.OriginalArchiveStatus == "pending" || job.OriginalArchiveStatus == "archiving")) {
 			activeQueue = append(activeQueue, job)
 		}
 	}
@@ -885,7 +898,16 @@ func resolveActiveOperation(record models.AssetRecord, location string, jobs []m
 	sort.SliceStable(activeMaintenance, func(left, right int) bool { return activeMaintenance[left].ID > activeMaintenance[right].ID })
 	if len(activeQueue) > 0 {
 		job := activeQueue[0]
-		return &AssetActiveOperation{Kind: "queue", ID: itoaAssetLifecycle(job.ID), Status: job.Status, Stage: job.Stage}, true, len(activeMaintenance) > 0
+		stage := job.Stage
+		if job.PublicationState == PublicationPublished {
+			switch job.OriginalArchiveStatus {
+			case "pending":
+				stage = JobStagePublishing
+			case "archiving":
+				stage = JobStageArchivingOriginal
+			}
+		}
+		return &AssetActiveOperation{Kind: "queue", ID: itoaAssetLifecycle(job.ID), Status: job.Status, Stage: stage}, true, len(activeMaintenance) > 0
 	}
 	if len(activeMaintenance) > 0 {
 		operation := activeMaintenance[0]
@@ -1297,7 +1319,7 @@ func (h AssetHandler) assetHasActiveWork(record models.AssetRecord) (bool, error
 	if h.db.Migrator().HasTable(&models.QueueJob{}) {
 		if err := h.db.Model(&models.QueueJob{}).
 			Where("dismissed_at IS NULL").
-			Where("(status IN ? OR (status = ? AND published_at IS NULL))", []string{JobStatusQueued, JobStatusRunning}, JobStatusCompleted).
+			Where("(status IN ? OR (status = ? AND published_at IS NULL) OR (status = ? AND publication_state = ? AND original_archive_status IN ?))", []string{JobStatusQueued, JobStatusRunning}, JobStatusCompleted, JobStatusCompleted, PublicationPublished, []string{"pending", "archiving"}).
 			Where("source_asset_record_id = ? OR media_path IN ? OR published_path IN ? OR planned_published_path IN ? OR replacement_target_path IN ? OR original_archived_path IN ?", record.ID, paths, paths, paths, paths, paths).
 			Count(&queueCount).Error; err != nil {
 			return false, err

@@ -29,20 +29,28 @@ func TestAssetHasOpenJobBlocksOnlyActiveLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := NewQueueHandler(db)
+	publishedAt := time.Now().UTC()
 	tests := []struct {
-		status      string
-		publishedAt *time.Time
-		want        bool
+		status           string
+		publishedAt      *time.Time
+		publicationState string
+		archiveStatus    string
+		want             bool
 	}{
 		{status: JobStatusQueued, want: true},
 		{status: JobStatusRunning, want: true},
 		{status: JobStatusCompleted, want: true},
 		{status: JobStatusFailed, want: false},
 		{status: JobStatusCanceled, want: false},
+		{status: JobStatusCompleted, publishedAt: &publishedAt, publicationState: PublicationPublished, archiveStatus: "pending", want: true},
+		{status: JobStatusCompleted, publishedAt: &publishedAt, publicationState: PublicationPublished, archiveStatus: "archiving", want: true},
+		{status: JobStatusCompleted, publishedAt: &publishedAt, publicationState: PublicationPublished, archiveStatus: "complete", want: false},
+		{status: JobStatusCompleted, publishedAt: &publishedAt, publicationState: PublicationPublished, archiveStatus: "failed", want: false},
+		{status: JobStatusCompleted, publishedAt: &publishedAt, publicationState: PublicationPublished, archiveStatus: "not_applicable", want: false},
 	}
 	for index, test := range tests {
 		path := fmt.Sprintf("/media/asset-%d.mkv", index)
-		if err := db.Create(&models.QueueJob{MediaPath: path, Status: test.status, PublishedAt: test.publishedAt}).Error; err != nil {
+		if err := db.Create(&models.QueueJob{MediaPath: path, Status: test.status, PublishedAt: test.publishedAt, PublicationState: test.publicationState, OriginalArchiveStatus: test.archiveStatus}).Error; err != nil {
 			t.Fatal(err)
 		}
 		got, err := handler.assetHasOpenJob(path, 0)
@@ -52,8 +60,15 @@ func TestAssetHasOpenJobBlocksOnlyActiveLifecycle(t *testing.T) {
 		if got != test.want {
 			t.Errorf("status %s open=%v, want %v", test.status, got, test.want)
 		}
+		validation, err := newQueueBatchValidationContext(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := validation.assetHasOpenJob(path, 0); got != test.want {
+			t.Errorf("batch validation status %s open=%v, want %v", test.status, got, test.want)
+		}
 	}
-	publishedAt := time.Now()
+	publishedAt = time.Now()
 	path := "/media/published.mkv"
 	if err := db.Create(&models.QueueJob{MediaPath: path, Status: JobStatusCompleted, PublishedAt: &publishedAt}).Error; err != nil {
 		t.Fatal(err)

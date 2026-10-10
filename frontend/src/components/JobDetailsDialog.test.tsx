@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { QueueJob } from '../api/types';
 
 vi.mock('../api/client', () => ({
@@ -15,6 +15,11 @@ vi.mock('../api/client', () => ({
 }));
 
 import { JobDetailsDialog } from './JobDetailsDialog';
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 function jobWithSidecars(): QueueJob {
   return {
@@ -37,6 +42,37 @@ function jobWithSidecars(): QueueJob {
 }
 
 describe('JobDetailsDialog subtitle stage', () => {
+  it('shows an active archive stage without treating legacy completed history as terminal', async () => {
+    const job: QueueJob = {
+      ...jobWithSidecars(),
+      status: 'completed',
+      stage: 'completed',
+      publicationState: 'PUBLISHED',
+      originalArchiveStatus: 'archiving',
+      stageHistory: [{ stage: 'completed', at: '2026-08-30T12:00:00Z' }],
+    };
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobDetailsDialog job={job} onClose={() => undefined} /></QueryClientProvider>);
+
+    expect(await screen.findByText('archiving original')).toBeTruthy();
+    expect(screen.getAllByText('not recorded').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/2026/)).toBeNull();
+  });
+
+  it('exposes archive failure summary separately from successful publication', async () => {
+    const job: QueueJob = {
+      ...jobWithSidecars(),
+      status: 'completed',
+      publicationState: 'PUBLISHED',
+      originalArchiveStatus: 'failed',
+      publicationSummary: 'Original archive move failed.',
+    };
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobDetailsDialog job={job} onClose={() => undefined} /></QueryClientProvider>);
+    fireEvent.click(screen.getByRole('tab', { name: 'Planned result' }));
+
+    expect((await screen.findAllByText('Original archive move failed.')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Failed').length).toBeGreaterThan(0);
+  });
+
   it('shows canonical sidecar identities and truthful generation states inside the subtitle stage', async () => {
     render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobDetailsDialog job={jobWithSidecars()} onClose={() => undefined} /></QueryClientProvider>);
 

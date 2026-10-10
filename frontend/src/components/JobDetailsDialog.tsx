@@ -30,6 +30,7 @@ import { WorkspaceFeedback } from './WorkspaceFeedback';
 import { getMVForgeTokens } from '../theme/theme';
 import { hasDeterminateQueueProgress, queueStagePresentation, queueStatusColor, queueStatusLabel } from '../utils/queuePresentation';
 import { AVTimingSummary } from './AVTimingSummary';
+import { originalArchiveStatusLabel } from '../utils/queueLifecycle';
 
 type JobDetailsDialogProps = {
   job: QueueJob | null;
@@ -108,6 +109,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
               {hasDeterminateProgress ? <Chip label={`Progress ${job.progress}%`} color={job.status === 'running' ? 'info' : 'default'} size="small" variant="outlined" /> : null}
               {job.validationStatus === 'warning' ? <Chip label="Validation warning" color="warning" size="small" /> : null}
               {job.validationStatus === 'failed' ? <Chip label="Validation failed" color="error" size="small" /> : null}
+              <Chip label={`Original archive · ${originalArchiveStatusLabel(job.originalArchiveStatus)}`} size="small" variant="outlined" color={job.originalArchiveStatus === 'failed' ? 'error' : 'default'} />
               {job.workerName ? <Chip label={job.workerName} size="small" variant="outlined" /> : null}
             </CompactActionGroup>
           </Stack>
@@ -181,6 +183,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
                   ['Output path', job.publishedPath || job.outputPath || 'Pending'],
                   ['Published path', job.publishedPath || 'Not published yet'],
                   ['Archived original', job.originalArchivedPath || 'Not archived yet'],
+                  ['Original archive status', originalArchiveStatusLabel(job.originalArchiveStatus)],
                   ['Validation', validationSummary(job, resultPayload)],
                   ['Elapsed', elapsedSummary(job, resultPayload)],
                   ['Final video', streamSummary(firstStream(outputProbe, 'video')) || expectedVideoSummary(profile)],
@@ -189,6 +192,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
 				  ['Sidecar artifacts', subtitleArtifactSummary(subtitleArtifacts)],
                 ]}
               />
+              {job.originalArchiveStatus === 'failed' && job.publicationSummary ? <Alert severity="error">{job.publicationSummary}</Alert> : null}
               <AVTimingSummary report={job.validationReport} />
               <ChangeSummary job={job} sourceProbe={sourceProbe} outputProbe={outputProbe} profile={profile} result={resultPayload} />
               {streamPlan ? <ArtifactBlock title="Resolved stream plan" value={streamPlan} /> : null}
@@ -300,12 +304,12 @@ const pipelineStages = [
   'publishing', 'archiving_original', 'analyzing_final', 'cleaning_workspace', 'completed', 'failed', 'canceled',
 ] as const;
 
-type PipelineStageState = 'pending' | 'active' | 'success' | 'warning' | 'error' | 'skipped';
+type PipelineStageState = 'pending' | 'active' | 'success' | 'warning' | 'error' | 'skipped' | 'not recorded';
 
 function PipelineStages({ job }: { job: QueueJob }) {
   const history = normalizedStageHistory(job);
-  const currentIndex = pipelineStages.indexOf(job.stage as (typeof pipelineStages)[number]);
   const terminal = job.status === 'completed' || job.status === 'failed' || job.status === 'canceled';
+  const archiveStillActive = job.originalArchiveStatus === 'pending' || job.originalArchiveStatus === 'archiving';
   const failedHistoryIndex = history.findIndex((item) => item.stage === 'failed');
   const failedStage = failedHistoryIndex > 0 ? history[failedHistoryIndex - 1].stage : '';
   return (
@@ -313,9 +317,9 @@ function PipelineStages({ job }: { job: QueueJob }) {
       <Typography color="text.secondary">
         Persisted lifecycle stages for this execution. Durations are calculated from the recorded stage transitions.
       </Typography>
-      {pipelineStages.map((stage, index) => {
-        const event = history.find((item) => item.stage === stage);
-        const state = pipelineStageState(job, stage, index, currentIndex, Boolean(event), terminal, failedStage);
+      {pipelineStages.map((stage) => {
+        const event = stage === 'completed' && archiveStillActive ? undefined : history.find((item) => item.stage === stage);
+        const state = pipelineStageState(job, stage, Boolean(event), terminal, failedStage);
         return (
           <Box key={stage} sx={{
             display: 'grid',
@@ -335,12 +339,13 @@ function PipelineStages({ job }: { job: QueueJob }) {
               {event?.at ? <Typography variant="caption" color="text.secondary">{new Date(event.at).toLocaleString()}</Typography> : null}
             </Stack>
             <Chip size="small" color={pipelineStageColor(state)} variant={state === 'active' ? 'filled' : 'outlined'} label={state} sx={{ gridColumn: { xs: '2', md: 'auto' }, justifySelf: 'start' }} />
-            <Typography variant="caption" color="text.secondary" align="right" sx={{ gridColumn: { xs: '2', md: 'auto' } }}>{event ? stageDuration(history, event, job) : '—'}</Typography>
+            <Typography variant="caption" color="text.secondary" align="right" sx={{ gridColumn: { xs: '2', md: 'auto' } }}>{event ? stageDuration(history, event, job, state === 'active') : '—'}</Typography>
 			{stage === 'preparing_subtitles' && job.subtitleArtifacts?.length ? <SubtitleArtifactStages artifacts={job.subtitleArtifacts} /> : null}
           </Box>
         );
       })}
       {job.status === 'failed' && job.errorMessage ? <Alert severity="error">{job.errorMessage}</Alert> : null}
+      {job.originalArchiveStatus === 'failed' && job.publicationSummary ? <Alert severity="error">{job.publicationSummary}</Alert> : null}
       {job.validationStatus === 'warning' ? <Alert severity="warning">Validation completed with warnings. Review the Final result tab for details.</Alert> : null}
     </Stack>
   );
@@ -389,14 +394,15 @@ function normalizedStageHistory(job: QueueJob) {
   });
 }
 
-function pipelineStageState(job: QueueJob, stage: string, index: number, currentIndex: number, visited: boolean, terminal: boolean, failedStage: string): PipelineStageState {
+function pipelineStageState(job: QueueJob, stage: string, visited: boolean, terminal: boolean, failedStage: string): PipelineStageState {
   if (stage === 'validating' && visited && job.validationStatus === 'warning') return 'warning';
   if (job.status === 'failed' && (stage === job.stage || stage === failedStage)) return 'error';
   if (job.status === 'canceled' && stage === job.stage) return 'warning';
   if (!terminal && stage === job.stage) return 'active';
+  if (stage === 'publishing' && job.publicationState === 'PUBLISHING') return 'active';
+  if (stage === 'archiving_original' && job.originalArchiveStatus === 'archiving') return 'active';
   if (visited) return 'success';
-  if (terminal || (currentIndex >= 0 && index < currentIndex)) return 'skipped';
-  return 'pending';
+  return 'not recorded';
 }
 
 function pipelineStageIcon(state: PipelineStageState) {
@@ -415,11 +421,12 @@ function pipelineStageColor(state: PipelineStageState): 'default' | 'info' | 'su
   return 'default';
 }
 
-function stageDuration(history: Array<{ stage: string; at: string }>, event: { stage: string; at: string }, job: QueueJob) {
+function stageDuration(history: Array<{ stage: string; at: string }>, event: { stage: string; at: string }, job: QueueJob, active: boolean) {
   const index = history.indexOf(event);
   const started = Date.parse(event.at);
   const next = history[index + 1];
-  const ended = next ? Date.parse(next.at) : job.finishedAt ? Date.parse(job.finishedAt) : Date.now();
+  if (!next && !active && !job.finishedAt) return '—';
+  const ended = next ? Date.parse(next.at) : active ? Date.now() : job.finishedAt ? Date.parse(job.finishedAt) : Date.now();
   return formatSeconds(Math.max(0, (ended - started) / 1000)) || '< 1s';
 }
 

@@ -3842,23 +3842,55 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "media path is outside configured libraries"})
 		return
 	}
-	if h.db.Migrator().HasTable(&models.QueueJob{}) {
-		hasOpenJob, checkErr := (QueueHandler{db: h.db}).assetHasOpenJob(resolvedPath, 0)
+	var record models.AssetRecord
+	recordFound := false
+	if h.db.Migrator().HasTable(&models.AssetRecord{}) {
+		if err := h.db.Where("path = ?", resolvedPath).First(&record).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		} else if err == nil {
+			recordFound = true
+		}
+	}
+	if recordFound {
+		// Check the canonical asset identity and both its source and published
+		// paths. The RAW MediaPath can differ from this Library path while
+		// Publisher is still archiving the original.
+		active, checkErr := h.assetHasActiveWork(record)
 		if checkErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": checkErr.Error()})
 			return
 		}
-		if hasOpenJob {
+		if active {
+			if maintenance, checkErr := activeAssetMaintenance(h.db, resolvedPath); checkErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": checkErr.Error()})
+				return
+			} else if maintenance {
+				c.JSON(http.StatusConflict, gin.H{"error": "asset has active maintenance"})
+				return
+			}
 			c.JSON(http.StatusConflict, gin.H{"error": "asset has an open Queue job"})
 			return
 		}
-	}
-	if active, checkErr := activeAssetMaintenance(h.db, resolvedPath); checkErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": checkErr.Error()})
-		return
-	} else if active {
-		c.JSON(http.StatusConflict, gin.H{"error": "asset has active maintenance"})
-		return
+	} else {
+		if h.db.Migrator().HasTable(&models.QueueJob{}) {
+			hasOpenJob, checkErr := (QueueHandler{db: h.db}).assetHasOpenJob(resolvedPath, 0)
+			if checkErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": checkErr.Error()})
+				return
+			}
+			if hasOpenJob {
+				c.JSON(http.StatusConflict, gin.H{"error": "asset has an open Queue job"})
+				return
+			}
+		}
+		if active, checkErr := activeAssetMaintenance(h.db, resolvedPath); checkErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": checkErr.Error()})
+			return
+		} else if active {
+			c.JSON(http.StatusConflict, gin.H{"error": "asset has active maintenance"})
+			return
+		}
 	}
 	fileName := strings.TrimSpace(input.FileName)
 	if fileName == "" || fileName != filepath.Base(fileName) || fileName == "." || fileName == ".." {
@@ -3868,11 +3900,6 @@ func (h AssetHandler) Rename(c *gin.Context) {
 	target := filepath.Join(filepath.Dir(resolvedPath), fileName)
 	if filepath.Clean(target) == filepath.Clean(resolvedPath) {
 		c.JSON(http.StatusOK, gin.H{"oldPath": resolvedPath, "path": target, "fileName": fileName})
-		return
-	}
-	var record models.AssetRecord
-	if err := h.db.Where("path = ?", resolvedPath).First(&record).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	plan, err := buildManualAssetRenamePlan(resolvedPath, target, record.ID)
