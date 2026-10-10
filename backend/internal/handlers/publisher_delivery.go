@@ -700,6 +700,13 @@ func (h PublisherHandler) claimPublication(publicationID, actorSource, actorID s
 		if result.RowsAffected != 1 {
 			return nil
 		}
+		var job models.QueueJob
+		if err := tx.First(&job, publication.QueueJobID).Error; err != nil {
+			return err
+		}
+		if err := transitionJobStage(tx, &job, JobStagePublishing); err != nil {
+			return err
+		}
 		if !recovery {
 			attempt := models.PublisherPublicationAttempt{AttemptID: owner.attemptID, PublicationID: publicationID, FencingGeneration: owner.fence, ActorSource: actorSource, ActorID: actorID, CreatedAt: now}
 			if err := tx.Create(&attempt).Error; err != nil {
@@ -1633,18 +1640,37 @@ func claimOriginalArchive(db *gorm.DB, publication models.PublisherPublication) 
 	}
 	now := time.Now().UTC()
 	nextFence := publication.OriginalArchiveFencingGeneration + 1
-	result := db.Model(&models.PublisherPublication{}).
-		Where("publication_id = ? AND state = ? AND original_archive_fencing_generation = ?", publication.PublicationID, PublicationPublished, publication.OriginalArchiveFencingGeneration).
-		Where("(original_archive_status IN ? OR (original_archive_status = ? AND original_archive_lease_expires_at IS NOT NULL AND original_archive_lease_expires_at <= ?))", []string{"pending", "failed"}, "archiving", now).
-		Updates(map[string]any{"original_archive_status": "archiving", "original_archive_claim_id": claimID, "original_archive_lease_expires_at": now.Add(publisherArchiveLease), "original_archive_fencing_generation": nextFence, "updated_at": now})
-	if result.Error != nil {
-		return publication, false, result.Error
-	}
-	if result.RowsAffected != 1 {
-		return publication, false, nil
-	}
-	if err := db.Where("publication_id = ?", publication.PublicationID).First(&publication).Error; err != nil {
+	claimed := false
+	err = db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&models.PublisherPublication{}).
+			Where("publication_id = ? AND state = ? AND original_archive_fencing_generation = ?", publication.PublicationID, PublicationPublished, publication.OriginalArchiveFencingGeneration).
+			Where("(original_archive_status IN ? OR (original_archive_status = ? AND original_archive_lease_expires_at IS NOT NULL AND original_archive_lease_expires_at <= ?))", []string{"pending", "failed"}, "archiving", now).
+			Updates(map[string]any{"original_archive_status": "archiving", "original_archive_claim_id": claimID, "original_archive_lease_expires_at": now.Add(publisherArchiveLease), "original_archive_fencing_generation": nextFence, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return nil
+		}
+		claimed = true
+		var job models.QueueJob
+		if err := tx.First(&job, publication.QueueJobID).Error; err != nil {
+			return err
+		}
+		job.OriginalArchiveStatus = "archiving"
+		if err := tx.Model(&job).Updates(map[string]any{"original_archive_status": "archiving", "original_archived_path": ""}).Error; err != nil {
+			return err
+		}
+		if err := transitionJobStage(tx, &job, JobStageArchivingOriginal); err != nil {
+			return err
+		}
+		return tx.Where("publication_id = ?", publication.PublicationID).First(&publication).Error
+	})
+	if err != nil {
 		return publication, false, err
+	}
+	if !claimed {
+		return publication, false, nil
 	}
 	return publication, true, nil
 }
@@ -2000,7 +2026,7 @@ func (h PublisherHandler) commitPublishedPackage(job models.QueueJob, publicatio
 				return err
 			}
 		}
-		if err := tx.Model(&models.QueueJob{}).Where("id = ?", job.ID).Updates(map[string]any{"published_path": job.PublishedPath, "published_at": now, "published_size_bytes": job.PublishedSizeBytes, "publication_id": publication.PublicationID, "publication_state": PublicationPublished, "publication_summary": job.PublicationSummary, "original_archive_status": "pending", "stage": JobStageCompleted}).Error; err != nil {
+		if err := tx.Model(&models.QueueJob{}).Where("id = ?", job.ID).Updates(map[string]any{"published_path": job.PublishedPath, "published_at": now, "published_size_bytes": job.PublishedSizeBytes, "publication_id": publication.PublicationID, "publication_state": PublicationPublished, "publication_summary": job.PublicationSummary, "original_archive_status": "pending"}).Error; err != nil {
 			return err
 		}
 		return nil
@@ -2302,12 +2328,17 @@ func (h PublisherHandler) recordArchiveOutcome(job models.QueueJob, publication 
 	if err := h.db.First(&job, publication.QueueJobID).Error; err != nil {
 		return
 	}
-	job.OriginalArchivedPath = destination
+	if status == "complete" {
+		job.OriginalArchivedPath = destination
+	} else {
+		job.OriginalArchivedPath = ""
+	}
 	job.OriginalArchiveStatus = status
 	job.PublicationID = publication.PublicationID
 	job.PublicationState = PublicationPublished
 	job.PublicationSummary = "Published; original archive " + status + "."
 	if status == "failed" {
+		job.PublicationSummary = "Published; original archive failed: " + publisherBoundedText(message, 500)
 		job.Notes = appendNote(job.Notes, "Original archive failed after publication: "+publisherBoundedText(message, 500))
 	}
 	var library models.Library
@@ -2325,9 +2356,12 @@ func (h PublisherHandler) recordArchiveOutcome(job models.QueueJob, publication 
 			}
 		}
 		updates := map[string]any{
-			"original_archived_path": destination, "original_archive_source_path": source,
-			"original_archive_status": status, "original_archive_claim_id": "",
+			"original_archive_source_path": source,
+			"original_archive_status":      status, "original_archive_claim_id": "",
 			"original_archive_lease_expires_at": nil, "original_archive_error": "", "updated_at": now,
+		}
+		if status == "complete" {
+			updates["original_archived_path"] = destination
 		}
 		if status == "failed" {
 			updates["original_archive_error"] = publisherBoundedText(message, 1000)
@@ -2344,7 +2378,15 @@ func (h PublisherHandler) recordArchiveOutcome(job models.QueueJob, publication 
 		if publicationResult.RowsAffected != 1 {
 			return errors.New("original archive claim expired before outcome persistence")
 		}
-		if err := tx.Model(&models.QueueJob{}).Where("id = ?", job.ID).Updates(map[string]any{"original_archived_path": destination, "original_archive_status": status, "publication_state": PublicationPublished, "publication_summary": job.PublicationSummary, "notes": job.Notes}).Error; err != nil {
+		var queueJob models.QueueJob
+		if err := tx.First(&queueJob, job.ID).Error; err != nil {
+			return err
+		}
+		queueUpdates := map[string]any{"original_archived_path": job.OriginalArchivedPath, "original_archive_status": status, "publication_state": PublicationPublished, "publication_summary": job.PublicationSummary, "notes": job.Notes}
+		if err := tx.Model(&queueJob).Updates(queueUpdates).Error; err != nil {
+			return err
+		}
+		if err := transitionJobStage(tx, &queueJob, JobStageCompleted); err != nil {
 			return err
 		}
 		return ensureAssetPublishedOutbox(tx, publication, destination, status, now)

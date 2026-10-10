@@ -85,7 +85,7 @@ func newQueueBatchValidationContext(db *gorm.DB) (*queueBatchValidationContext, 
 	if err := db.
 		Where("dismissed_at IS NULL").
 		Where("status IN ?", []string{JobStatusQueued, JobStatusRunning, JobStatusCompleted}).
-		Where("published_at IS NULL").
+		Where("(published_at IS NULL OR (status = ? AND publication_state = ? AND original_archive_status IN ?))", JobStatusCompleted, PublicationPublished, []string{"pending", "archiving"}).
 		Find(&validation.openJobs).Error; err != nil {
 		return nil, err
 	}
@@ -2341,7 +2341,7 @@ func (h QueueHandler) assetHasOpenJob(mediaPath string, excludeID uint) (bool, e
 	query := h.db.
 		Where("dismissed_at IS NULL").
 		Where("status IN ?", []string{JobStatusQueued, JobStatusRunning, JobStatusCompleted}).
-		Where("published_at IS NULL")
+		Where("(published_at IS NULL OR (status = ? AND publication_state = ? AND original_archive_status IN ?))", JobStatusCompleted, PublicationPublished, []string{"pending", "archiving"})
 	if excludeID != 0 {
 		query = query.Where("id <> ?", excludeID)
 	}

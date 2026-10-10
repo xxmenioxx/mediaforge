@@ -322,6 +322,22 @@ func TestRenameAssetRejectsActiveWorkForThatAsset(t *testing.T) {
 			want: "open Queue job",
 		},
 		{
+			name: "Publisher archive pending",
+			seed: func(db *gorm.DB, path string) error {
+				publishedAt := time.Now().UTC()
+				return db.Create(&models.QueueJob{MediaPath: path, Status: JobStatusCompleted, PublishedAt: &publishedAt, PublicationState: PublicationPublished, OriginalArchiveStatus: "pending"}).Error
+			},
+			want: "open Queue job",
+		},
+		{
+			name: "Publisher archive active",
+			seed: func(db *gorm.DB, path string) error {
+				publishedAt := time.Now().UTC()
+				return db.Create(&models.QueueJob{MediaPath: path, Status: JobStatusCompleted, PublishedAt: &publishedAt, PublicationState: PublicationPublished, OriginalArchiveStatus: "archiving"}).Error
+			},
+			want: "open Queue job",
+		},
+		{
 			name: "maintenance",
 			seed: func(db *gorm.DB, path string) error {
 				return db.Create(&models.AssetMaintenanceOperation{ID: "rename-active-maintenance", AssetPath: path, Status: maintenanceStatusRunning, Phase: "running"}).Error

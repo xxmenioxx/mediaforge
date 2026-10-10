@@ -93,6 +93,7 @@ import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
 import { assetInfoDiscardDraft, assetInfoDocumentsEqual, assetInfoEditDocument, assetInfoHydrationReconciliation, assetInfoRefreshReconciliation, assetInfoSaveFailureReconciliation, assetInfoSaveReconciliation, assetInfoTracksSaveReconciliation, assetTracksPatch, mergeAssetTracks, type AssetInfoEditDocument } from '../utils/assetInfoEditing';
+import { hasNonTerminalQueueLifecycle, originalArchiveStatusLabel } from '../utils/queueLifecycle';
 import { patchAssetInventoryAsset } from '../utils/assetInventoryPatch';
 import { effectiveVideoProfileLabel, hidePreConversionActionsForAsset, testEncodeConfigurationReason, testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
 import { customUpscaleHeightError, smartUpscaleControlsDisabled } from '../upscale';
@@ -243,12 +244,12 @@ export function AssetsPage() {
   const jobs = useQuery({
     queryKey: ['queueJobs'],
     queryFn: api.queueJobs,
-    refetchInterval: (query) => query.state.data?.some((job) => job.status === 'queued' || job.status === 'running') ? 3000 : false,
+    refetchInterval: (query) => hasNonTerminalQueueLifecycle(query.state.data) ? 3000 : false,
   });
   const assets = useQuery({
     queryKey: ['assets'],
     queryFn: api.assets,
-    refetchInterval: jobs.data?.some((job) => job.status === 'queued' || job.status === 'running') ? 3000 : false,
+    refetchInterval: () => hasNonTerminalQueueLifecycle(jobs.data) ? 3000 : false,
   });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
@@ -6269,6 +6270,10 @@ async function generateExternalSubtitle(
                   <Stack spacing={1.5} sx={{ pt: 1.5 }}>
                     <Typography variant="h3">Original retention</Typography>
                     <Typography>{lifecyclePresentationValue(asset.lifecycle?.original, 'unknown')}</Typography>
+                    {associatedJob ? <>
+                      <Typography>Original archive · {originalArchiveStatusLabel(associatedJob.originalArchiveStatus)}</Typography>
+                      {associatedJob.originalArchiveStatus === 'failed' && associatedJob.publicationSummary ? <Alert severity="error">{associatedJob.publicationSummary}</Alert> : null}
+                    </> : null}
                     {asset.lifecycle?.archivedOriginals?.length ? asset.lifecycle.archivedOriginals.map((original) => (
                       <ArchivedOriginalDetails
                         key={`${original.queueJobId}-${original.assetRecordId ?? original.path}`}

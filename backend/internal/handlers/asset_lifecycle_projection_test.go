@@ -335,6 +335,54 @@ func TestResolveAssetLifecycleProjectionActionCapabilitiesAreAdvisory(t *testing
 	}
 }
 
+func TestPublishedArchiveLifecycleIsActiveAssetWork(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:asset-published-archive-active?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.QueueJob{}); err != nil {
+		t.Fatal(err)
+	}
+	publishedAt := lifecycleTestTime(time.Minute)
+	tests := []struct {
+		status         string
+		stage          string
+		projectedStage string
+		want           bool
+	}{
+		{status: "pending", stage: JobStageCompleted, projectedStage: JobStagePublishing, want: true},
+		{status: "archiving", stage: JobStageCompleted, projectedStage: JobStageArchivingOriginal, want: true},
+		{status: "complete", stage: JobStageCompleted, want: false},
+		{status: "failed", stage: JobStageCompleted, want: false},
+		{status: "not_applicable", stage: JobStageCompleted, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.status, func(t *testing.T) {
+			path := "/media/raw/published-" + test.status + ".mkv"
+			record := models.AssetRecord{ID: 91, Path: path}
+			job := models.QueueJob{
+				MediaPath: path, Status: JobStatusCompleted, Stage: test.stage,
+				PublishedAt: publishedAt, PublicationState: PublicationPublished,
+				OriginalArchiveStatus: test.status,
+			}
+			if err := db.Create(&job).Error; err != nil {
+				t.Fatal(err)
+			}
+			active, err := (AssetHandler{db: db}).assetHasActiveWork(record)
+			if err != nil || active != test.want {
+				t.Fatalf("asset active work=%t want=%t err=%v", active, test.want, err)
+			}
+			operation, hasQueue, hasMaintenance := resolveActiveOperation(record, "", []models.QueueJob{job}, nil)
+			if hasQueue != test.want || hasMaintenance || (operation != nil) != test.want {
+				t.Fatalf("active operation=%#v queue=%t maintenance=%t want=%t", operation, hasQueue, hasMaintenance, test.want)
+			}
+			if test.want && operation.Stage != test.projectedStage {
+				t.Fatalf("active archive stage=%q want=%q", operation.Stage, test.projectedStage)
+			}
+		})
+	}
+}
+
 func TestArchivedOriginalProjectionUsesCanonicalCreatedAtAndExistingRetention(t *testing.T) {
 	raw := lifecycleTestRawRecord(50, "/media/raw/anime/Show/S01/E01.mkv")
 	library := lifecycleTestLibraryRecord(51, "/media/library/anime/Show/S01/E01.mkv")
