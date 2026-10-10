@@ -271,7 +271,56 @@ func TestQualityGateVideoPropertiesPersistsCanonicalFieldOutcomes(t *testing.T) 
 	})
 }
 
-func evaluateQualityGateVideoPropertiesFixture(t *testing.T, profile models.Profile, sourceProbe, outputProbe models.JSONMap, hevcEvidence models.JSONMap) (string, models.JSONMap) {
+func TestQualityGatePixelSemanticPolicyUsesCanonicalPixelFormatField(t *testing.T) {
+	worker := models.JSONMap{
+		"pixFmt": "p010le", "profile": "main10", "videoEncoder": "hevc_qsv", "hevcLevelEffective": "4.0", "hevcLevelTier": "main",
+		"effectiveOutputFrameRate": "30000/1001", "effectiveCadenceOperation": "preserve",
+		"effectiveOutputProgressive": true, "effectiveOutputWidth": 1920, "effectiveOutputHeight": 1080,
+		"effectiveOutputSAR": "1:1", "effectiveOutputDAR": "16:9",
+		"finalColorPolicy": "preserve", "effectiveFinalColorPolicy": "preserve",
+	}
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: worker}
+	sourceProbe, outputProbe := main10VideoProbeWithoutColorMetadata()
+	firstStreamByType(outputProbe, "video")["pix_fmt"] = "yuv422p10le"
+
+	defaultRule := validationpolicy.DefaultPolicy().Rules["video.properties"]
+	if !defaultRule.Fields["pixelFormat"] {
+		t.Fatal("Default policy must enable canonical pixelFormat semantics")
+	}
+	defaultState, defaultActual := evaluateQualityGateVideoPropertiesFixture(t, profile, sourceProbe, outputProbe, testHEVCBitstreamEvidence("4.0", "main"), defaultRule.Fields)
+	defaultFields := unknownRecord(defaultActual["fields"])
+	pixel := unknownRecord(defaultFields["pixelFormat"])
+	bitDepth := unknownRecord(defaultFields["bitDepth"])
+	if defaultState != "FAIL" || pixel["policyEnabled"] != true || pixel["status"] != "mismatch" {
+		t.Fatalf("Default did not include the chroma semantic mismatch in the composite result: state=%s pixel=%#v", defaultState, pixel)
+	}
+	if bitDepth["policyEnabled"] != true || bitDepth["status"] != "passed" {
+		t.Fatalf("pixel semantic mismatch should leave independently passing bit-depth evidence enabled: %#v", bitDepth)
+	}
+
+	t.Run("custom disables only pixel semantics", func(t *testing.T) {
+		custom := validationpolicy.Normalize(map[string]any{
+			"preset": validationpolicy.Custom, "basedOn": validationpolicy.Default,
+			"rules": map[string]any{"video.properties": map[string]any{"fields": map[string]any{"pixelFormat": false, "bitDepth": true}}},
+		})
+		customRule := custom.Rules["video.properties"]
+		if custom.Preset != validationpolicy.Custom || custom.BasedOn != validationpolicy.Default || customRule.Fields["pixelFormat"] || !customRule.Fields["bitDepth"] {
+			t.Fatalf("Custom pixelFormat edit did not preserve independent bitDepth policy: %#v", customRule)
+		}
+		customState, customActual := evaluateQualityGateVideoPropertiesFixture(t, profile, sourceProbe, outputProbe, testHEVCBitstreamEvidence("4.0", "main"), customRule.Fields)
+		customFields := unknownRecord(customActual["fields"])
+		pixel := unknownRecord(customFields["pixelFormat"])
+		bitDepth := unknownRecord(customFields["bitDepth"])
+		if pixel["policyEnabled"] != false || pixel["status"] != "mismatch" {
+			t.Fatalf("disabled pixelFormat must remain persisted as mismatch evidence: %#v", pixel)
+		}
+		if bitDepth["policyEnabled"] != true || bitDepth["status"] != "passed" || customState != "PASS" {
+			t.Fatalf("disabled pixelFormat still affected composite state or disabled bitDepth: state=%s bitDepth=%#v", customState, bitDepth)
+		}
+	})
+}
+
+func evaluateQualityGateVideoPropertiesFixture(t *testing.T, profile models.Profile, sourceProbe, outputProbe models.JSONMap, hevcEvidence models.JSONMap, fieldPolicies ...map[string]bool) (string, models.JSONMap) {
 	t.Helper()
 	root := t.TempDir()
 	dbName := strings.NewReplacer("/", "-", " ", "-").Replace(t.Name())
@@ -294,7 +343,7 @@ func evaluateQualityGateVideoPropertiesFixture(t *testing.T, profile models.Prof
 		t.Fatalf("write synthetic frozen source evidence: %v", err)
 	}
 	video := firstStreamByType(outputProbe, "video")
-	_, actual, state := evaluateFrozenVideoProperties(db, job, resultExecutionBinding{ExecutionNumber: executionNumber}, profile, video, outputProbe, hevcEvidence)
+	_, actual, state := evaluateFrozenVideoProperties(db, job, resultExecutionBinding{ExecutionNumber: executionNumber}, profile, video, outputProbe, hevcEvidence, fieldPolicies...)
 	return state, actual
 }
 

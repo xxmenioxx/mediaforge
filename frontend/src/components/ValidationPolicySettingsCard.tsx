@@ -118,7 +118,7 @@ const ruleDescriptions: Record<string, {
 
 const fidelityFieldLabels: Record<string, string> = {
   codec: 'Codec', width: 'Width', height: 'Height', sampleAspectRatio: 'SAR', displayAspectRatio: 'DAR',
-  frameRate: 'Frame rate and cadence', fieldStructure: 'Field structure', pixelSemantic: 'Pixel semantics',
+  frameRate: 'Frame rate and cadence', fieldStructure: 'Field structure', pixelFormat: 'Pixel semantics',
   bitDepth: 'Bit depth', chromaLocation: 'Chroma location', hevcLevel: 'HEVC level', hevcTier: 'HEVC tier', colorPolicy: 'Color contract',
 };
 

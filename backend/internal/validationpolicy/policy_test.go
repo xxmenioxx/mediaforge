@@ -39,6 +39,19 @@ func TestDefaultIsFactoryPreset(t *testing.T) {
 	}
 }
 
+func TestDefaultAndStrictEnableCanonicalPixelFormatPolicyField(t *testing.T) {
+	for _, preset := range []string{Default, Strict} {
+		policy := Normalize(mustPolicyMap(t, Factory(preset)))
+		fields := policy.Rules["video.properties"].Fields
+		if !fields["pixelFormat"] {
+			t.Errorf("%s policy does not enable canonical pixelFormat field: %#v", preset, fields)
+		}
+		if _, exists := fields["pixelSemantic"]; exists {
+			t.Errorf("%s policy retains obsolete pixelSemantic alias: %#v", preset, fields)
+		}
+	}
+}
+
 func TestPresetDefinitionsKeepDistinctExplicitSemantics(t *testing.T) {
 	for _, preset := range []string{Disabled, Basic, Default, Strict} {
 		t.Run(preset, func(t *testing.T) {

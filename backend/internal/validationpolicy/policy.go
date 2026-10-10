@@ -49,7 +49,7 @@ var mandatoryRules = map[string]bool{
 
 var fidelityFields = []string{
 	"codec", "width", "height", "sampleAspectRatio", "displayAspectRatio",
-	"frameRate", "fieldStructure", "pixelSemantic", "bitDepth", "chromaLocation",
+	"frameRate", "fieldStructure", "pixelFormat", "bitDepth", "chromaLocation",
 	"hevcLevel", "hevcTier", "colorPolicy",
 }
 

@@ -36,6 +36,24 @@ describe('ValidationPolicySettingsCard', () => {
     expect(screen.getByRole('button', { name: 'Advanced rule editor' })).toBeTruthy();
   });
 
+  it('shows Pixel semantics for the canonical pixelFormat policy field', async () => {
+    const value = policyValue();
+    const videoRule = {
+      enabled: true, disposition: 'blocking' as const, overrideable: true,
+      fields: { pixelFormat: true, bitDepth: true }, warningPenalty: 5, failurePenalty: 25,
+    };
+    value.rules['video.properties'] = videoRule;
+    Object.values(value.presetDefaults ?? {}).forEach((preset) => {
+      if (preset) preset.rules['video.properties'] = videoRule;
+    });
+    const user = userEvent.setup();
+    render(<ValidationPolicySettingsCard value={value as unknown as Record<string, unknown>} saving={false} onSave={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Advanced rule editor' }));
+    expect(screen.getByText('Pixel semantics')).toBeTruthy();
+    expect(screen.getByText('Bit depth')).toBeTruthy();
+  });
+
   it('selects named preset defaults, transitions edits to Custom, and restores the base preset', async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
