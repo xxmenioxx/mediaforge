@@ -146,9 +146,10 @@ function ValidationRunDetails({ job }: { job: Pick<ValidationSummary, 'id' | 'va
           <Chip label={`${run.actorId} · ${new Date(run.createdAt).toLocaleString()}`} variant="outlined" />
         </Stack>
         {detail.data?.overrides.map((event) => <Alert key={event.eventId} severity="warning">Override by {event.actorId}: {event.reason} · {event.ruleKeys.join(', ')}</Alert>)}
-        <Table size="small"><TableHead><TableRow><TableCell>Rule</TableCell><TableCell>Outcome</TableCell><TableCell>Expected</TableCell><TableCell>Actual</TableCell><TableCell>Finding</TableCell></TableRow></TableHead>
+        <Table size="small"><TableHead><TableRow><TableCell>Rule</TableCell><TableCell>Outcome</TableCell><TableCell>Field evidence</TableCell><TableCell>Expected</TableCell><TableCell>Actual</TableCell><TableCell>Finding</TableCell></TableRow></TableHead>
           <TableBody>{run.findings.map((finding) => <TableRow key={finding.key}>
             <TableCell>{finding.key}</TableCell><TableCell><Chip size="small" label={finding.state} color={finding.state === 'FAIL' ? 'error' : finding.state === 'PASS' ? 'success' : 'warning'} /></TableCell>
+            <TableCell sx={{ minWidth: 210, verticalAlign: 'top' }}><ValidationFieldEvidence finding={finding} /></TableCell>
             <TableCell sx={{ maxWidth: 210, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{displayValue(finding.expected)}</TableCell>
             <TableCell sx={{ maxWidth: 210, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{displayValue(finding.actual)}</TableCell>
             <TableCell>{finding.explanation}<Typography variant="caption" display="block" color="text.secondary">{finding.evidenceReferences.join(' · ')}</Typography></TableCell>
@@ -159,6 +160,42 @@ function ValidationRunDetails({ job }: { job: Pick<ValidationSummary, 'id' | 'va
       </> : null}
     </Stack>
   );
+}
+
+function ValidationFieldEvidence({ finding }: { finding: ValidationFinding }) {
+  const fields = validationPropertyFields(finding);
+  if (fields.length === 0) return '—';
+  return <Stack spacing={0.65}>
+    {fields.map(([name, field]) => {
+      const status = String(field.status ?? 'unverified').toLowerCase();
+      const reason = String(field.reason ?? '').trim();
+      const statusLabel: Record<string, string> = {
+        passed: 'PASS', mismatch: 'FAIL', unverified: 'UNVERIFIED', not_applicable: 'N/A', review_required: 'REVIEW',
+      };
+      const statusColor = status === 'passed' ? 'success' : status === 'mismatch' ? 'error' : status === 'not_applicable' ? 'default' : 'warning';
+      return <Stack key={name} spacing={0.15}>
+        <Stack direction="row" spacing={0.7} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Typography variant="caption" fontWeight={700}>{name}</Typography>
+          <Chip size="small" label={statusLabel[status] ?? status.toUpperCase()} color={statusColor} />
+        </Stack>
+        {['mismatch', 'unverified', 'review_required'].includes(status) && reason ? <Typography variant="caption" color="text.secondary">{reason}</Typography> : null}
+      </Stack>;
+    })}
+  </Stack>;
+}
+
+function validationPropertyFields(finding: ValidationFinding): Array<[string, Record<string, unknown>]> {
+  if (finding.key !== 'video.properties' || !isObjectRecord(finding.actual)) return [];
+  const fields = finding.actual.fields;
+  if (!isObjectRecord(fields)) return [];
+  return Object.entries(fields).reduce<Array<[string, Record<string, unknown>]>>((rows, [name, value]) => {
+    if (isObjectRecord(value)) rows.push([name, value]);
+    return rows;
+  }, []);
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function OverrideDialog({ open, onClose, findings, selected, setSelected, reason, setReason, pending, error, onSave }: {

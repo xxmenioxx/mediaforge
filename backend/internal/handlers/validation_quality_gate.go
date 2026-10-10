@@ -459,34 +459,13 @@ func evaluateFrozenVideoProperties(db *gorm.DB, job models.QueueJob, binding res
 		"pixelFormat": video["pix_fmt"], "bitDepth": video["bits_per_raw_sample"],
 		"colorSpace": video["color_space"], "colorTransfer": video["color_transfer"], "colorPrimaries": video["color_primaries"],
 	}
-	state := "PASS"
-	hasExpectation := expectedCodec != ""
-	if expectedCodec == "" {
-		state = "UNVERIFIED"
-	}
-	if expectedCodec != "" && actualCodec != expectedCodec {
-		state = "FAIL"
-	}
-	if expectedLevel != "" {
-		hasExpectation = true
-		normalizedExpected := normalizeLevelString(expectedLevel)
-		if actualLevel == "" {
-			if state != "FAIL" {
-				state = "UNVERIFIED"
-			}
-		} else if normalizeLevelString(actualLevel) != normalizedExpected {
-			state = "FAIL"
-		}
-	}
-	if expectedTier != "" {
-		hasExpectation = true
-		if actualTier == "" {
-			if state != "FAIL" {
-				state = "UNVERIFIED"
-			}
-		} else if !strings.EqualFold(actualTier, expectedTier) {
-			state = "FAIL"
-		}
+	fields := models.JSONMap{
+		"codec": canonicalFidelityField("codec", nil, fidelityExpectation{
+			value: expectedCodec, state: fidelityAuthorityTransform, authority: "queue_profile_snapshot",
+			reason: "frozen selected video codec", applicable: true, required: true, unreliable: expectedCodec == "",
+		}, actualCodec),
+		"hevcLevel": videoPropertyExpectationField("hevcLevel", expectedLevel, actualLevel),
+		"hevcTier":  videoPropertyExpectationField("hevcTier", expectedTier, actualTier),
 	}
 	frameReport := models.JSONMap{}
 	if sourceProbe != nil {
@@ -499,26 +478,63 @@ func evaluateFrozenVideoProperties(db *gorm.DB, job models.QueueJob, binding res
 		if frameActual := unknownRecord(frameReport["actual"]); frameActual != nil {
 			actual["frameProperties"] = frameActual
 		}
-		for _, raw := range unknownRecord(frameReport["fields"]) {
-			field := unknownRecord(raw)
-			if field["required"] != true {
-				continue
-			}
-			hasExpectation = true
-			switch stringFromUnknown(field["status"]) {
-			case "mismatch":
-				state = "FAIL"
-			case "unverified":
-				if state != "FAIL" {
-					state = "UNVERIFIED"
-				}
-			}
+		for name, raw := range unknownRecord(frameReport["fields"]) {
+			fields[name] = raw
+		}
+	} else if frozenColorContractRequiresEvidenceWithoutSource(map[string]interface{}(profile.WorkerConfig)) {
+		color, _ := validateJobColorPolicyFrozen(job, map[string]any{}, outputProbe)
+		if stringFromUnknown(color["status"]) == "not_applicable" {
+			color["status"] = "unverified"
+			color["required"] = true
+			color["reason"] = "The frozen color contract cannot be evaluated because Result source-probe evidence is unavailable."
+		} else if stringFromUnknown(color["status"]) == "unverified" {
+			color["reason"] = "Result source-probe evidence is unavailable. " + stringFromUnknown(color["reason"])
+		}
+		if colorField := canonicalColorPolicyField(color); colorField != nil {
+			fields["colorPolicy"] = colorField
 		}
 	}
-	if !hasExpectation && state == "PASS" {
-		state = "UNVERIFIED"
-	}
+	actual["fields"] = fields
+	state := aggregateVideoPropertiesValidationState(fields)
 	return expected, actual, state
+}
+
+func videoPropertyExpectationField(name, expected, actual string) models.JSONMap {
+	if strings.TrimSpace(expected) == "" {
+		return canonicalFidelityField(name, nil, fidelityExpectation{
+			state: fidelityAuthorityNotApplicable, authority: "queue_profile_snapshot",
+			reason: "no frozen HEVC expectation", applicable: false,
+		}, actual)
+	}
+	return canonicalFidelityField(name, nil, fidelityExpectation{
+		value: expected, state: fidelityAuthorityTransform, authority: "queue_profile_snapshot",
+		reason: "frozen HEVC expectation", applicable: true, required: true,
+	}, actual)
+}
+
+func aggregateVideoPropertiesValidationState(fields models.JSONMap) string {
+	required := false
+	unverified := false
+	for _, raw := range fields {
+		field := unknownRecord(raw)
+		if field == nil || field["required"] != true {
+			continue
+		}
+		required = true
+		switch strings.ToLower(strings.TrimSpace(stringFromUnknown(field["status"]))) {
+		case "mismatch":
+			return "FAIL"
+		case "passed":
+		case "unverified":
+			unverified = true
+		default:
+			unverified = true
+		}
+	}
+	if !required || unverified {
+		return "UNVERIFIED"
+	}
+	return "PASS"
 }
 
 func normalizeVideoCodec(value string) string {

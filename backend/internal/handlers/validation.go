@@ -748,14 +748,9 @@ func validateJobColorPolicyWithOverrides(job models.QueueJob, overrideEntries ma
 	if outputProbe == nil {
 		outputProbe = ffprobeJSON(job.OutputPath)
 	}
-	source := firstVideoColorCharacteristics(sourceProbe)
-	output := firstVideoColorCharacteristics(outputProbe)
+	source := firstVideoFrameCharacteristics(sourceProbe)
+	output := firstVideoFrameCharacteristics(outputProbe)
 	report := models.JSONMap{"requestedPolicy": policy, "source": source, "output": output}
-	if len(source) == 0 || len(output) == 0 {
-		report["status"] = "unverified"
-		return report, "Final color policy could not be verified because source or output color metadata is incomplete."
-	}
-	expected := cloneJSONMap(source)
 	effective := "preserve"
 	sourceStream := MediaStream{
 		ColorSpace: stringFromUnknown(source["colorSpace"]), ColorTransfer: stringFromUnknown(source["colorTransfer"]),
@@ -771,17 +766,118 @@ func validateJobColorPolicyWithOverrides(job models.QueueJob, overrideEntries ma
 			effective = "normalize_bt709"
 		}
 	}
+	expected := models.JSONMap{}
 	if effective == "normalize_bt709" {
 		expected = models.JSONMap{"colorSpace": "bt709", "colorTransfer": "bt709", "colorPrimaries": "bt709", "colorRange": "tv"}
+	} else if worker != nil {
+		expected = frozenOutputColorExpectation(worker)
+	}
+	conversionRequired := workerColorConversionConfigured(worker)
+	if len(expected) == 0 && !conversionRequired {
+		expected = reliableSourceColorExpectation(source)
 	}
 	report["effectivePolicy"] = effective
 	report["expected"] = expected
-	matches := colorCharacteristicsMatch(expected, output)
-	report["status"] = map[bool]string{true: "passed", false: "mismatch"}[matches]
-	if !matches {
-		return report, "Final output color characteristics do not match the effective color policy."
+	required := len(expected) > 0 || conversionRequired
+	report["required"] = required
+	if !required {
+		report["status"] = "not_applicable"
+		report["reason"] = "No reliable source color metadata or frozen color contract is available."
+		return report, ""
 	}
+	if len(expected) == 0 {
+		report["status"] = "unverified"
+		report["reason"] = "A frozen color conversion is required, but its expected output characteristics are unavailable."
+		return report, "A frozen color conversion is required, but its expected output characteristics are unavailable."
+	}
+	missing, mismatch := false, false
+	for key, expectedValue := range expected {
+		actualValue := strings.TrimSpace(stringFromUnknown(output[key]))
+		if actualValue == "" {
+			missing = true
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(stringFromUnknown(expectedValue)), actualValue) {
+			mismatch = true
+		}
+	}
+	if mismatch {
+		report["status"] = "mismatch"
+		report["reason"] = "Output color metadata differs from the frozen color contract."
+		return report, "Output color metadata differs from the frozen color contract."
+	}
+	if missing {
+		report["status"] = "unverified"
+		report["reason"] = "Required frozen color evidence is unavailable in the output."
+		return report, "Required frozen color evidence is unavailable in the output."
+	}
+	report["status"] = "passed"
+	report["reason"] = "Output color metadata matches the frozen color contract."
 	return report, ""
+}
+
+func reliableSourceColorExpectation(source models.JSONMap) models.JSONMap {
+	expected := models.JSONMap{}
+	fields := []struct {
+		key, value, kind string
+	}{
+		{"colorSpace", stringFromUnknown(source["colorSpace"]), "matrix"},
+		{"colorTransfer", stringFromUnknown(source["colorTransfer"]), "transfer"},
+		{"colorPrimaries", stringFromUnknown(source["colorPrimaries"]), "primaries"},
+		{"colorRange", stringFromUnknown(source["colorRange"]), "range"},
+	}
+	for _, field := range fields {
+		value := strings.TrimSpace(field.value)
+		if value == "" {
+			continue
+		}
+		if canonical, supported := colorspaceColorAlias(value, field.kind); supported {
+			expected[field.key] = canonical
+		}
+	}
+	return expected
+}
+
+func frozenOutputColorExpectation(worker map[string]interface{}) models.JSONMap {
+	expected := models.JSONMap{}
+	fields := []struct{ key, workerKey string }{
+		{"colorSpace", "outputColorSpace"},
+		{"colorTransfer", "outputColorTransfer"},
+		{"colorPrimaries", "outputColorPrimaries"},
+		{"colorRange", "outputColorRange"},
+	}
+	for _, field := range fields {
+		if value := strings.TrimSpace(stringFromUnknown(worker[field.workerKey])); value != "" {
+			expected[field.key] = value
+		}
+	}
+	return expected
+}
+
+func workerColorConversionConfigured(worker map[string]interface{}) bool {
+	if worker == nil {
+		return false
+	}
+	if strings.TrimSpace(stringFromUnknown(worker["automaticColorConversion"])) != "" {
+		return true
+	}
+	filters := strings.ToLower(stringFromUnknown(worker["videoFilters"]))
+	return strings.Contains(filters, "colorspace=") || strings.Contains(filters, "zscale=") || strings.Contains(filters, "tonemap=")
+}
+
+func frozenColorContractRequiresEvidenceWithoutSource(worker map[string]interface{}) bool {
+	if worker == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(stringFromUnknown(worker["effectiveFinalColorPolicy"])), "normalize_bt709") ||
+		len(frozenOutputColorExpectation(worker)) > 0 || workerColorConversionConfigured(worker) {
+		return true
+	}
+	if strings.TrimSpace(stringFromUnknown(worker["effectiveFinalColorPolicy"])) != "" {
+		return false
+	}
+	policy := strings.ToLower(strings.TrimSpace(stringFromUnknown(worker["finalColorPolicy"])))
+	return policy == "normalize_bt709" || policy == "automatic"
 }
 
 // validateJobFrameFidelity records the characteristics that are not purely a

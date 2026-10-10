@@ -182,6 +182,128 @@ func TestQualityGateVideoPropertiesUsesCanonicalHEVCBitstreamEvidence(t *testing
 	})
 }
 
+func TestQualityGateVideoPropertiesPersistsCanonicalFieldOutcomes(t *testing.T) {
+	worker := models.JSONMap{
+		"pixFmt": "p010le", "profile": "main10", "videoEncoder": "hevc_qsv", "hevcLevelEffective": "4.0", "hevcLevelTier": "main",
+		"effectiveOutputFrameRate": "30000/1001", "effectiveCadenceOperation": "preserve",
+		"effectiveOutputProgressive": true, "effectiveOutputWidth": 1920, "effectiveOutputHeight": 1080,
+		"effectiveOutputSAR": "1:1", "effectiveOutputDAR": "16:9",
+		"finalColorPolicy": "preserve", "effectiveFinalColorPolicy": "preserve",
+	}
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: worker}
+	sourceProbe, outputProbe := main10VideoProbeWithoutColorMetadata()
+	state, actual := evaluateQualityGateVideoPropertiesFixture(t, profile, sourceProbe, outputProbe, testHEVCBitstreamEvidence("4.0", "main"))
+	fields := unknownRecord(actual["fields"])
+	if state != "PASS" || fields == nil {
+		t.Fatalf("verified Main10 properties with optional absent color metadata should pass: state=%s actual=%#v", state, actual)
+	}
+	for _, name := range []string{"codec", "width", "height", "frameRate", "fieldStructure", "pixelFormat", "bitDepth", "hevcLevel", "hevcTier"} {
+		if field := unknownRecord(fields[name]); field == nil || field["status"] != "passed" {
+			t.Fatalf("expected canonical field %s to pass: %#v", name, fields[name])
+		}
+	}
+	color := unknownRecord(fields["colorPolicy"])
+	if color == nil || color["status"] != "not_applicable" || color["required"] != false || !strings.Contains(stringFromUnknown(color["reason"]), "No reliable source color metadata") {
+		t.Fatalf("optional color metadata did not retain actionable not-applicable evidence: %#v", color)
+	}
+	if aggregateVideoPropertiesValidationState(fields) != state {
+		t.Fatalf("top-level state=%s disagrees with persisted canonical fields=%#v", state, fields)
+	}
+
+	t.Run("explicit color contract remains unverified when absent", func(t *testing.T) {
+		requiredWorker := cloneJSONMap(worker)
+		requiredWorker["finalColorPolicy"] = "normalize_bt709"
+		requiredWorker["effectiveFinalColorPolicy"] = "normalize_bt709"
+		requiredProfile := models.Profile{VideoCodec: "hevc", WorkerConfig: requiredWorker}
+		state, actual := evaluateQualityGateVideoPropertiesFixture(t, requiredProfile, sourceProbe, outputProbe, testHEVCBitstreamEvidence("4.0", "main"))
+		fields := unknownRecord(actual["fields"])
+		color := unknownRecord(fields["colorPolicy"])
+		if state != "UNVERIFIED" || color["status"] != "unverified" || color["required"] != true {
+			t.Fatalf("missing required color evidence must block: state=%s fields=%#v", state, fields)
+		}
+		if aggregateVideoPropertiesValidationState(fields) != state {
+			t.Fatalf("top-level state=%s disagrees with persisted canonical fields=%#v", state, fields)
+		}
+	})
+
+	t.Run("explicit color contract stays fail closed without source probe", func(t *testing.T) {
+		requiredWorker := cloneJSONMap(worker)
+		requiredWorker["finalColorPolicy"] = "normalize_bt709"
+		requiredWorker["effectiveFinalColorPolicy"] = "normalize_bt709"
+		requiredProfile := models.Profile{VideoCodec: "hevc", WorkerConfig: requiredWorker}
+		state, actual := evaluateQualityGateVideoPropertiesFixture(t, requiredProfile, nil, outputProbe, testHEVCBitstreamEvidence("4.0", "main"))
+		fields := unknownRecord(actual["fields"])
+		color := unknownRecord(fields["colorPolicy"])
+		if state != "UNVERIFIED" || color["status"] != "unverified" || color["required"] != true || !strings.Contains(stringFromUnknown(color["reason"]), "source-probe evidence is unavailable") {
+			t.Fatalf("missing frozen source evidence must not erase an explicit color contract: state=%s fields=%#v", state, fields)
+		}
+	})
+
+	t.Run("explicit color mismatch fails", func(t *testing.T) {
+		requiredWorker := cloneJSONMap(worker)
+		requiredWorker["finalColorPolicy"] = "normalize_bt709"
+		requiredWorker["effectiveFinalColorPolicy"] = "normalize_bt709"
+		requiredProfile := models.Profile{VideoCodec: "hevc", WorkerConfig: requiredWorker}
+		mismatchedOutput := main10ColorProbe("bt2020nc", "smpte2084", "bt2020", "tv")
+		state, actual := evaluateQualityGateVideoPropertiesFixture(t, requiredProfile, sourceProbe, mismatchedOutput, testHEVCBitstreamEvidence("4.0", "main"))
+		fields := unknownRecord(actual["fields"])
+		color := unknownRecord(fields["colorPolicy"])
+		if state != "FAIL" || color["status"] != "mismatch" || color["required"] != true {
+			t.Fatalf("frozen color mismatch must fail: state=%s fields=%#v", state, fields)
+		}
+		if aggregateVideoPropertiesValidationState(fields) != state {
+			t.Fatalf("top-level state=%s disagrees with persisted canonical fields=%#v", state, fields)
+		}
+	})
+}
+
+func evaluateQualityGateVideoPropertiesFixture(t *testing.T, profile models.Profile, sourceProbe, outputProbe models.JSONMap, hevcEvidence models.JSONMap) (string, models.JSONMap) {
+	t.Helper()
+	root := t.TempDir()
+	dbName := strings.NewReplacer("/", "-", " ", "-").Replace(t.Name())
+	db := testEncodeTestDB(t, "quality-gate-video-fields-"+dbName, &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{
+		"resultsReportsPath": filepath.Join(root, "results"), "asIsReportsPath": filepath.Join(root, "as-is"),
+	}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	executionNumber := uint(1)
+	job := models.QueueJob{
+		MediaPath: filepath.Join(root, "synthetic-source.mkv"), OutputPath: filepath.Join(root, "synthetic-result.mkv"),
+		Status: JobStatusCompleted, ExecutionNumber: &executionNumber,
+		ProfileSnapshot: models.JSONMap{"workerConfig": profile.WorkerConfig},
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJobArtifact(db, job, "as-is", jobArtifact{Job: job, Profile: profile, SourceProbe: sourceProbe}); err != nil {
+		t.Fatalf("write synthetic frozen source evidence: %v", err)
+	}
+	video := firstStreamByType(outputProbe, "video")
+	_, actual, state := evaluateFrozenVideoProperties(db, job, resultExecutionBinding{ExecutionNumber: executionNumber}, profile, video, outputProbe, hevcEvidence)
+	return state, actual
+}
+
+func main10VideoProbeWithoutColorMetadata() (models.JSONMap, models.JSONMap) {
+	sourceStream := map[string]any{
+		"codec_type": "video", "codec_name": "hevc", "profile": "Main 10", "width": 1920, "height": 1080,
+		"avg_frame_rate": "30000/1001", "field_order": "progressive", "sample_aspect_ratio": "1:1",
+		"display_aspect_ratio": "16:9", "pix_fmt": "yuv420p10le", "chroma_location": "left",
+	}
+	outputStream := make(map[string]any, len(sourceStream))
+	for key, value := range sourceStream {
+		outputStream[key] = value
+	}
+	return models.JSONMap{"streams": []any{sourceStream}}, models.JSONMap{"streams": []any{outputStream}}
+}
+
+func main10ColorProbe(matrix, transfer, primaries, colorRange string) models.JSONMap {
+	_, output := main10VideoProbeWithoutColorMetadata()
+	stream := firstStreamByType(output, "video")
+	stream["color_space"], stream["color_transfer"], stream["color_primaries"], stream["color_range"] = matrix, transfer, primaries, colorRange
+	return output
+}
+
 func TestResultArtifactIdentityBindsFrozenExecutionAndDetectsReplacement(t *testing.T) {
 	db := testEncodeTestDB(t, "quality-gate-result-identity", &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
 	root := t.TempDir()

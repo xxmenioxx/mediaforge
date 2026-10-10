@@ -100,6 +100,14 @@ func TestValidateJobPersistsSiblingColorAndFrameFidelityReports(t *testing.T) {
 	for _, finding := range returned.Findings {
 		if finding.Key == "video.properties" && finding.State == "FAIL" {
 			failedRule = true
+			actual, actualOK := validationReportRecord(finding.Actual)
+			fields, fieldsOK := validationReportRecord(actual["fields"])
+			if !actualOK || !fieldsOK || len(fields) == 0 {
+				t.Fatalf("video.properties field evidence was not persisted in the finding: actual=%#v", finding.Actual)
+			}
+			if got := aggregateVideoPropertiesValidationState(models.JSONMap(fields)); got != finding.State {
+				t.Fatalf("persisted field evidence aggregates to %s, top-level state is %s: %#v", got, finding.State, fields)
+			}
 		}
 	}
 	if !failedRule {
