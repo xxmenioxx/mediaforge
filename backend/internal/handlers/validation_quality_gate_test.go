@@ -2,17 +2,20 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/anuelvs/mvforge/backend/internal/validationpolicy"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -54,10 +57,12 @@ func TestValidationDurationTimelineUsesStringProbeEvidenceAndExistingTolerance(t
 		name           string
 		sourceDuration any
 		outputDuration any
+		maxPercent     float64
 		wantState      string
 	}{
 		{name: "job 2148 durations within tolerance", sourceDuration: "7415.449000", outputDuration: "7415.455000", wantState: "PASS"},
 		{name: "duration mismatch outside tolerance", sourceDuration: "7415.449000", outputDuration: "7600.000000", wantState: "FAIL"},
+		{name: "custom duration tolerance is consumed", sourceDuration: "100.000000", outputDuration: "104.000000", maxPercent: 5, wantState: "PASS"},
 		{name: "unavailable duration evidence", sourceDuration: "7415.449000", outputDuration: "N/A", wantState: "UNVERIFIED"},
 	}
 	for index, test := range tests {
@@ -90,7 +95,16 @@ func TestValidationDurationTimelineUsesStringProbeEvidenceAndExistingTolerance(t
 				"job":         map[string]any{"executionNumber": executionNumber},
 				"outputProbe": map[string]any{"format": map[string]any{"duration": test.outputDuration}},
 			}
-			findings, _ := evaluateValidationRules(db, job, artifact, resultArtifactIdentity{}, resultExecutionBinding{ExecutionNumber: executionNumber})
+			var selectedPolicy []validationpolicy.Policy
+			if test.maxPercent > 0 {
+				policy := validationpolicy.DefaultPolicy()
+				rule := policy.Rules["duration.timeline"]
+				rule.Thresholds["maxPercent"] = test.maxPercent
+				policy.Rules["duration.timeline"] = rule
+				policy.Preset, policy.BasedOn = validationpolicy.Custom, validationpolicy.Default
+				selectedPolicy = append(selectedPolicy, policy)
+			}
+			findings, _ := evaluateValidationRules(db, job, artifact, resultArtifactIdentity{}, resultExecutionBinding{ExecutionNumber: executionNumber}, selectedPolicy...)
 			for _, finding := range findings {
 				if finding.Key == "duration.timeline" {
 					if finding.State != test.wantState {
@@ -820,6 +834,28 @@ func TestValidationRetryAppendsImmutableRunsForSameResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if first.Run.PolicyPreset != validationpolicy.Default || first.Run.PolicyFingerprint == "" || first.Run.PolicySnapshot["policyVersion"] != validationpolicy.PolicyVersion {
+		t.Fatalf("ValidationRun did not freeze its default policy: %#v", first.Run)
+	}
+	oldOverride := models.ValidationOverride{
+		EventID: "validation-override:retry-old-run", ValidationRunID: first.Run.RunID, Scope: "rule",
+		ResultArtifactID: first.Run.ResultArtifactID, ResultGenerationToken: first.Run.ResultGenerationToken,
+		ResultGenerationVersion: first.Run.ResultGenerationVersion, ResultOutputRevision: first.Run.ResultOutputRevision,
+		PolicySchemaVersion: first.Run.PolicySchemaVersion, PolicyVersion: first.Run.PolicyVersion, PolicyFingerprint: first.Run.PolicyFingerprint,
+		ActorSource: "deployment", ActorID: "local_operator", RuleKeys: models.JSONList{"duration.timeline"},
+		RequestedHandoff: "publisher", OverrideVersion: validationOverrideV1, CreatedAt: time.Now().UTC(),
+	}
+	if err := db.Create(&oldOverride).Error; err != nil {
+		t.Fatal(err)
+	}
+	changedPolicy := validationpolicy.DefaultPolicy()
+	durationPolicy := changedPolicy.Rules["duration.timeline"]
+	durationPolicy.Thresholds["maxPercent"] = 3
+	changedPolicy.Rules["duration.timeline"] = durationPolicy
+	changedPolicy.Preset, changedPolicy.BasedOn = validationpolicy.Custom, validationpolicy.Default
+	if err := db.Create(&models.AppSetting{Key: "validation", Value: validationPolicyJSONMap(changedPolicy)}).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := db.First(&job, job.ID).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -827,8 +863,24 @@ func TestValidationRetryAppendsImmutableRunsForSameResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.First(&job, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
 	if first.Run.RunID == second.Run.RunID || first.Run.ResultGenerationToken != second.Run.ResultGenerationToken || first.Run.ResultOutputRevision != second.Run.ResultOutputRevision {
 		t.Fatalf("retry changed Result identity or reused ValidationRun: first=%#v second=%#v", first.Run, second.Run)
+	}
+	if second.Run.PolicyPreset != validationpolicy.Custom || second.Run.PolicyFingerprint == first.Run.PolicyFingerprint {
+		t.Fatalf("explicit revalidation did not freeze the new policy: first=%#v second=%#v", first.Run, second.Run)
+	}
+	var unchangedFirst models.ValidationRun
+	if err := db.Where("run_id = ?", first.Run.RunID).First(&unchangedFirst).Error; err != nil {
+		t.Fatal(err)
+	}
+	if unchangedFirst.PolicyFingerprint != first.Run.PolicyFingerprint || unchangedFirst.PolicySnapshot["preset"] != validationpolicy.Default {
+		t.Fatalf("settings change rewrote historical ValidationRun policy: %#v", unchangedFirst)
+	}
+	if allowed, reason := canonicalRunAllowsPublish(db, job, false); allowed || reason == "" {
+		t.Fatalf("override from the previous ValidationRun authorized revalidation: allowed=%t reason=%q", allowed, reason)
 	}
 	var count int64
 	if err := db.Model(&models.ValidationRun{}).Where("job_id = ?", job.ID).Count(&count).Error; err != nil || count != 2 {
@@ -1243,6 +1295,7 @@ func TestValidationOutcomeReductionUsesRulesAndDispositionNotScore(t *testing.T)
 	}{
 		{name: "clean pass", findings: []validationFinding{{Disposition: "blocking", State: "PASS"}, {Disposition: "blocking", State: "NOT_APPLICABLE"}}, want: "PASS"},
 		{name: "advisory warning", findings: []validationFinding{{Disposition: "advisory", State: "WARNING", Actionable: true}}, want: "PASS_WITH_WARNINGS"},
+		{name: "blocking warning requires review", findings: []validationFinding{{Disposition: "blocking", State: "WARNING", Actionable: true}}, want: "REVIEW_REQUIRED"},
 		{name: "unresolved blocking evidence", findings: []validationFinding{{Disposition: "blocking", State: "UNVERIFIED"}}, want: "REVIEW_REQUIRED"},
 		{name: "known blocking violation wins", findings: []validationFinding{{Disposition: "blocking", State: "UNVERIFIED"}, {Disposition: "blocking", State: "FAIL"}}, want: "FAIL"},
 	}
@@ -1253,6 +1306,20 @@ func TestValidationOutcomeReductionUsesRulesAndDispositionNotScore(t *testing.T)
 				t.Fatalf("outcome=%q want=%q", outcome, test.want)
 			}
 		})
+	}
+}
+
+func TestValidationScoreIsInformationalOnly(t *testing.T) {
+	policy := validationpolicy.DefaultPolicy()
+	rule := policy.Rules["duration.timeline"]
+	rule.FailurePenalty = 100
+	policy.Rules["duration.timeline"] = rule
+	finding := validationFinding{Key: "duration.timeline", Disposition: "blocking", State: "FAIL", Actionable: true}
+	if score := validationDisplayScore([]validationFinding{finding}, policy); score != 0 {
+		t.Fatalf("informational score=%d, want 0", score)
+	}
+	if outcome, _ := reduceValidationOutcome([]validationFinding{finding}); outcome != "FAIL" {
+		t.Fatalf("score configuration changed canonical outcome to %s", outcome)
 	}
 }
 
@@ -1268,7 +1335,7 @@ func TestProfileQualificationPassDoesNotBypassFinalValidationFailure(t *testing.
 	}
 }
 
-func TestOverrideUsesServerActorRequiresReasonAndCannotOverrideIdentity(t *testing.T) {
+func TestOverrideUsesServerActorAllowsEmptyReasonAndCannotOverrideIdentity(t *testing.T) {
 	db := testEncodeTestDB(t, "quality-gate-override-actor", &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
 	root := t.TempDir()
 	output := filepath.Join(root, "output.mkv")
@@ -1309,7 +1376,7 @@ func TestOverrideUsesServerActorRequiresReasonAndCannotOverrideIdentity(t *testi
 	t.Cleanup(func() { gin.SetMode(previousGinMode) })
 	router := gin.New()
 	router.POST("/validation/jobs/:id/overrides", NewValidationHandler(db).CreateOverride)
-	requestBody := `{"reason":"Accept this measured timeline exception","ruleKeys":["duration.timeline"],"requestedHandoff":"publisher","actorId":"client_admin"}`
+	requestBody := `{"scope":"rule","reason":"","ruleKeys":["duration.timeline"],"requestedHandoff":"publisher","actorId":"client_admin"}`
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/validation/jobs/"+strconv.FormatUint(uint64(job.ID), 10)+"/overrides", strings.NewReader(requestBody)))
 	if recorder.Code != http.StatusCreated {
@@ -1319,8 +1386,53 @@ func TestOverrideUsesServerActorRequiresReasonAndCannotOverrideIdentity(t *testi
 	if err := json.Unmarshal(recorder.Body.Bytes(), &event); err != nil {
 		t.Fatal(err)
 	}
-	if event.ActorSource != "deployment" || event.ActorID != "local_operator" || event.Reason == "" || len(event.RuleKeys) != 1 || event.OverrideVersion != validationOverrideV1 || event.CreatedAt.IsZero() {
+	if event.ActorSource != "deployment" || event.ActorID != "local_operator" || event.Reason != "" || len(event.RuleKeys) != 1 || event.Scope != "rule" || event.OverrideVersion != validationOverrideV1 || event.CreatedAt.IsZero() {
 		t.Fatalf("override audit event is incomplete or trusted client actor: %#v", event)
+	}
+	if event.ResultArtifactID != gate.Run.ResultArtifactID || event.ResultGenerationToken != gate.Run.ResultGenerationToken || event.ResultGenerationVersion != gate.Run.ResultGenerationVersion || event.ResultOutputRevision != gate.Run.ResultOutputRevision || event.PolicyVersion != gate.Run.PolicyVersion || event.PolicyFingerprint != gate.Run.PolicyFingerprint {
+		t.Fatalf("override is not bound to exact Result and policy identity: %#v", event)
+	}
+	var existingOverrides []models.ValidationOverride
+	if err := db.Where("validation_run_id = ?", gate.Run.RunID).Find(&existingOverrides).Error; err != nil {
+		t.Fatal(err)
+	}
+	covered, _ := validationOverrideCoverage(existingOverrides, gate.Run, false)
+	wantKeys := make([]string, 0)
+	for key := range overrideableUnresolvedFindings(gate.Findings) {
+		if !covered[key] {
+			wantKeys = append(wantKeys, key)
+		}
+	}
+	sort.Strings(wantKeys)
+	if len(wantKeys) == 0 {
+		t.Fatal("test precondition: no unresolved overrideable findings remain for skip-all")
+	}
+	allBody, err := json.Marshal(map[string]any{"scope": "all_overrideable", "reason": "", "ruleKeys": wantKeys, "requestedHandoff": "publisher"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/validation/jobs/"+strconv.FormatUint(uint64(job.ID), 10)+"/overrides", strings.NewReader(string(allBody))))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("skip-all status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var allEvent models.ValidationOverride
+	if err := json.Unmarshal(recorder.Body.Bytes(), &allEvent); err != nil {
+		t.Fatal(err)
+	}
+	if allEvent.Scope != "all_overrideable" || len(allEvent.RuleKeys) != len(wantKeys) {
+		t.Fatalf("skip-all did not store its exact selected scope: %#v", allEvent)
+	}
+	for index, expected := range wantKeys {
+		if fmt.Sprint(allEvent.RuleKeys[index]) != expected {
+			t.Fatalf("skip-all key %d=%v want %s", index, allEvent.RuleKeys[index], expected)
+		}
+	}
+	staleBody := `{"scope":"all_overrideable","reason":"","ruleKeys":["duration.timeline"],"requestedHandoff":"publisher"}`
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/validation/jobs/"+strconv.FormatUint(uint64(job.ID), 10)+"/overrides", strings.NewReader(staleBody)))
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("stale skip-all scope status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var unchanged models.ValidationRun
 	if err := db.Where("run_id = ?", gate.Run.RunID).First(&unchanged).Error; err != nil {

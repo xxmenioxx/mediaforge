@@ -12,6 +12,7 @@ import (
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/runtimeinfo"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
+	"github.com/anuelvs/mvforge/backend/internal/validationpolicy"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -81,6 +82,9 @@ func Migrate(db *gorm.DB) error {
 		&models.AIResourceAdmissionCounter{},
 		&models.TranslationOperationCheckpoint{},
 	); err != nil {
+		return err
+	}
+	if err := migrateValidationPolicySetting(db); err != nil {
 		return err
 	}
 	if err := seedOCRDictionaryEntries(db); err != nil {
@@ -922,11 +926,8 @@ func seedSettings(db *gorm.DB) error {
 			Value: models.JSONMap{"autoEnabled": true, "intervalHours": 24, "failedRetentionDays": 7, "canceledRetentionDays": 3, "orphanRetentionDays": 7},
 		},
 		{
-			Key: "validation",
-			Value: models.JSONMap{
-				"minimumScore":         90,
-				"requireDurationMatch": true,
-			},
+			Key:   "validation",
+			Value: validationPolicySettingValue(validationpolicy.DefaultPolicy()),
 		},
 		{
 			Key: "cancellationPolicy",

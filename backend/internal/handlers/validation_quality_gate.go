@@ -16,6 +16,7 @@ import (
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
+	"github.com/anuelvs/mvforge/backend/internal/validationpolicy"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -99,6 +100,7 @@ type historyPublisherAttemptSummary struct {
 }
 
 type validationOverrideRequest struct {
+	Scope            string   `json:"scope"`
 	Reason           string   `json:"reason"`
 	RuleKeys         []string `json:"ruleKeys"`
 	RequestedHandoff string   `json:"requestedHandoff"`
@@ -117,9 +119,10 @@ func (h ValidationHandler) validateAndPersist(job models.QueueJob, actorSourceIn
 	if !identityOK || !bindingOK || artifactExecutionNumber(artifact) != binding.ExecutionNumber {
 		return validationGateResult{}, fmt.Errorf("Result artifact is historical or unbound; queue a new execution to create a canonical Result")
 	}
-	findings, report := evaluateValidationRules(h.db, job, artifact, identity, binding)
+	policy := resolveCurrentValidationPolicy(h.db)
+	findings, report := evaluateValidationRules(h.db, job, artifact, identity, binding, policy)
 	outcome, actionable := reduceValidationOutcome(findings)
-	score := validationDisplayScore(findings)
+	score := validationDisplayScore(findings, policy)
 	runToken := make([]byte, 16)
 	if _, err := rand.Read(runToken); err != nil {
 		return validationGateResult{}, err
@@ -147,7 +150,10 @@ func (h ValidationHandler) validateAndPersist(job models.QueueJob, actorSourceIn
 		ResultGenerationVersion: identity.GenerationVersion, ResultOutputRevision: identity.OutputRevision,
 		SchemaVersion: validationSchemaVersion, ValidatorVersion: validationEngineVersion,
 		RulesetID: validationRulesetID, RulesetVersion: validationRulesetVersion,
-		ActorSource: actorSource, ActorID: actorID,
+		PolicySchemaVersion: policy.SchemaVersion, PolicyVersion: policy.PolicyVersion,
+		PolicyPreset: policy.Preset, PolicyFingerprint: validationpolicy.Fingerprint(policy),
+		PolicySnapshot: validationPolicyJSONMap(policy),
+		ActorSource:    actorSource, ActorID: actorID,
 		Outcome: outcome, Score: score, ActionableWarnings: actionable,
 		Findings: models.JSONList{}, Report: report, CreatedAt: createdAt,
 	}
@@ -238,7 +244,11 @@ func resultManifestEvidence(job models.QueueJob, artifact map[string]any) (model
 	return sidecars, expected, actual, matched
 }
 
-func evaluateValidationRules(db *gorm.DB, job models.QueueJob, artifact map[string]any, identity resultArtifactIdentity, binding resultExecutionBinding) ([]validationFinding, models.JSONMap) {
+func evaluateValidationRules(db *gorm.DB, job models.QueueJob, artifact map[string]any, identity resultArtifactIdentity, binding resultExecutionBinding, policies ...validationpolicy.Policy) ([]validationFinding, models.JSONMap) {
+	policy := resolveCurrentValidationPolicy(db)
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
 	findings := make([]validationFinding, 0, 12)
 	add := func(key string, expected, actual any, severity, disposition, state string, actionable, overrideable bool, explanation string, refs ...string) {
 		findings = append(findings, validationFinding{Key: key, Expected: expected, Actual: actual, Severity: severity, Disposition: disposition, State: state, Actionable: actionable, Overrideable: overrideable, Explanation: explanation, EvidenceReferences: refs})
@@ -301,25 +311,30 @@ func evaluateValidationRules(db *gorm.DB, job models.QueueJob, artifact map[stri
 		expectedDuration := validationProbeDuration(sourceProbe)
 		if expectedDuration <= 0 || actualDuration <= 0 {
 			add("duration.timeline", expectedDuration, actualDuration, "error", "blocking", "UNVERIFIED", true, true, "Expected or actual timeline duration is unavailable from the frozen evidence.", "result.outputProbe", "queue.sourceEvidence")
-		} else if absFloat(actualDuration-expectedDuration) > maxFloat(2, expectedDuration*0.02) {
-			add("duration.timeline", expectedDuration, actualDuration, "error", "blocking", "FAIL", true, true, "Output duration differs from the source timeline beyond the bounded tolerance.", "result.outputProbe", "queue.sourceEvidence")
 		} else {
-			add("duration.timeline", expectedDuration, actualDuration, "info", "blocking", "PASS", false, false, "Output duration is within the bounded timeline tolerance.", "result.outputProbe", "queue.sourceEvidence")
+			durationPolicy := policy.Rules["duration.timeline"]
+			maxDurationDifference := maxFloat(durationPolicy.Thresholds["maxAbsoluteSeconds"], expectedDuration*durationPolicy.Thresholds["maxPercent"]/100)
+			if absFloat(actualDuration-expectedDuration) > maxDurationDifference {
+				add("duration.timeline", expectedDuration, actualDuration, "error", "blocking", "FAIL", true, true, "Output duration differs from the source timeline beyond the bounded tolerance.", "result.outputProbe", "queue.sourceEvidence")
+			} else {
+				add("duration.timeline", expectedDuration, actualDuration, "info", "blocking", "PASS", false, false, "Output duration is within the bounded timeline tolerance.", "result.outputProbe", "queue.sourceEvidence")
+			}
 		}
 		streamPlan, planAvailable := resolvedStreamPlanForJobValidation(db, job)
 		sourceTiming, outputTiming := avTimingFromProbe(sourceProbe), avTimingFromProbe(outputProbe)
 		sourceTiming, outputTiming = avTimingForQueueValidation(sourceTiming, outputTiming, streamPlan, planAvailable)
-		timingReport := validateAVTiming(sourceTiming, outputTiming)
-		timingState, timingDisposition, timingSeverity, timingActionable := "PASS", "blocking", "info", false
+		avPolicy := policy.Rules["timeline.av_alignment"]
+		timingReport := validateAVTimingWithThresholds(sourceTiming, outputTiming, avPolicy.Thresholds["passFrames"], avPolicy.Thresholds["warningFrames"])
+		timingState, timingSeverity, timingActionable := "PASS", "info", false
 		switch stringFromUnknown(timingReport["status"]) {
 		case "unverified":
 			timingState, timingSeverity, timingActionable = "UNVERIFIED", "error", true
 		case "mismatch":
 			timingState, timingSeverity, timingActionable = "FAIL", "error", true
 		case "warning":
-			timingState, timingDisposition, timingSeverity, timingActionable = "WARNING", "advisory", "warning", true
+			timingState, timingSeverity, timingActionable = "WARNING", "warning", true
 		}
-		add("timeline.av_alignment", sourceTiming, outputTiming, timingSeverity, timingDisposition, timingState, timingActionable, timingState != "PASS", "Measured A/V timestamp and frame timing uses the worker Result probe and source AS-IS evidence.", "result.outputProbe", "queue.sourceEvidence", "queue.trackSnapshot")
+		add("timeline.av_alignment", sourceTiming, outputTiming, timingSeverity, "blocking", timingState, timingActionable, true, "Measured A/V timestamp and frame timing uses the worker Result probe and source AS-IS evidence.", "result.outputProbe", "queue.sourceEvidence", "queue.trackSnapshot")
 		video := firstStreamByType(outputProbe, "video")
 		if video == nil {
 			add("video.properties", "at least one planned video stream", 0, "critical", "blocking", "FAIL", true, false, "The output contains no video stream for the frozen conversion plan.", "result.outputProbe", "executionPlan")
@@ -329,7 +344,7 @@ func evaluateValidationRules(db *gorm.DB, job models.QueueJob, artifact map[stri
 			if profileErr != nil {
 				add("video.properties", "frozen ProfileSnapshot properties", actual, "error", "blocking", "UNVERIFIED", true, true, "Frozen video expectations could not be restored.", "result.outputProbe", "queue.profileSnapshot")
 			} else {
-				expected, actualVideo, state := evaluateFrozenVideoProperties(db, job, binding, profile, video, outputProbe, hevcEvidence)
+				expected, actualVideo, state := evaluateFrozenVideoProperties(db, job, binding, profile, video, outputProbe, hevcEvidence, policy.Rules["video.properties"].Fields)
 				add("video.properties", expected, actualVideo, "error", "blocking", state, state != "PASS", true, "Output codec, frozen profile constraints, and required frame properties are compared with the active ExecutionPlan and Queue snapshots.", "result.outputProbe", "queue.profileSnapshot", "executionPlan")
 			}
 		}
@@ -361,10 +376,11 @@ func evaluateValidationRules(db *gorm.DB, job models.QueueJob, artifact map[stri
 		}
 	}
 	addChapterFinding(add, job, outputProbe)
-	add("publication.readiness", "complete Result package with no blocking findings", "evaluated from findings", "info", "blocking", "PASS", false, false, "Publisher performs destination and filesystem checks; Validation only checks the produced package and rule findings.", "result.identity", "result.outputProbe", "queue.subtitleArtifacts")
-	setPublicationReadiness(findings)
+	add("publication.readiness", "current Result and rule findings", "evaluated by the canonical rule reducer", "info", "advisory", "NOT_APPLICABLE", false, false, "Publisher performs the effective handoff decision and destination/filesystem checks.", "result.identity", "result.outputProbe", "queue.subtitleArtifacts")
+	applyValidationPolicy(findings, policy)
 
-	report := models.JSONMap{"rulesetId": validationRulesetID, "rulesetVersion": validationRulesetVersion, "findings": findings}
+	report := models.JSONMap{"rulesetId": validationRulesetID, "rulesetVersion": validationRulesetVersion, "findings": findings,
+		"validationPolicy": validationPolicyJSONMap(policy), "policyFingerprint": validationpolicy.Fingerprint(policy)}
 	if len(colorReport) > 0 {
 		report["colorPolicy"] = colorReport
 	}
@@ -418,7 +434,7 @@ func addTrackFindings(add func(string, any, any, string, string, string, bool, b
 	add("attachments.stream_actions", expectedAttachments, actualAttachments, "error", "blocking", attachmentState, attachmentState != "PASS", true, "Output attachments are compared with the frozen attachment keep/remove action.", "queue.trackSnapshot", "result.outputProbe")
 }
 
-func evaluateFrozenVideoProperties(db *gorm.DB, job models.QueueJob, binding resultExecutionBinding, profile models.Profile, video models.JSONMap, outputProbe models.JSONMap, hevcEvidence models.JSONMap) (models.JSONMap, models.JSONMap, string) {
+func evaluateFrozenVideoProperties(db *gorm.DB, job models.QueueJob, binding resultExecutionBinding, profile models.Profile, video models.JSONMap, outputProbe models.JSONMap, hevcEvidence models.JSONMap, fieldPolicies ...map[string]bool) (models.JSONMap, models.JSONMap, string) {
 	expectedCodec := normalizeVideoCodec(profile.VideoCodec)
 	if plan, ok := activeExecutionPlanForValidation(db, job, binding); ok {
 		if planned := normalizeVideoCodec(plan.SelectedEncoder); planned != "" {
@@ -494,6 +510,16 @@ func evaluateFrozenVideoProperties(db *gorm.DB, job models.QueueJob, binding res
 			fields["colorPolicy"] = colorField
 		}
 	}
+	if len(fieldPolicies) > 0 {
+		for name, raw := range fields {
+			field := unknownRecord(raw)
+			if field == nil {
+				continue
+			}
+			field["policyEnabled"] = fieldPolicies[0][name]
+			fields[name] = models.JSONMap(field)
+		}
+	}
 	actual["fields"] = fields
 	state := aggregateVideoPropertiesValidationState(fields)
 	return expected, actual, state
@@ -515,9 +541,17 @@ func videoPropertyExpectationField(name, expected, actual string) models.JSONMap
 func aggregateVideoPropertiesValidationState(fields models.JSONMap) string {
 	required := false
 	unverified := false
+	disabled := 0
 	for _, raw := range fields {
 		field := unknownRecord(raw)
-		if field == nil || field["required"] != true {
+		if field == nil {
+			continue
+		}
+		if field["policyEnabled"] == false {
+			disabled++
+			continue
+		}
+		if field["required"] != true {
 			continue
 		}
 		required = true
@@ -530,6 +564,9 @@ func aggregateVideoPropertiesValidationState(fields models.JSONMap) string {
 		default:
 			unverified = true
 		}
+	}
+	if len(fields) > 0 && disabled == len(fields) {
+		return "NOT_APPLICABLE"
 	}
 	if !required || unverified {
 		return "UNVERIFIED"
@@ -613,36 +650,6 @@ func addChapterFinding(add func(string, any, any, string, string, string, bool, 
 	add("chapters.actions", expected, actual, "warning", "advisory", state, state != "PASS", true, "Output chapter presence is checked against the frozen chapter policy.", "queue.profileSnapshot", "result.outputProbe")
 }
 
-func setPublicationReadiness(findings []validationFinding) {
-	readiness := -1
-	for i := range findings {
-		if findings[i].Key == "publication.readiness" {
-			readiness = i
-			break
-		}
-	}
-	if readiness < 0 {
-		return
-	}
-	for _, finding := range findings {
-		if finding.Key == "publication.readiness" || finding.Disposition != "blocking" {
-			continue
-		}
-		if finding.State == "FAIL" {
-			findings[readiness].State = "FAIL"
-			findings[readiness].Actionable = true
-			findings[readiness].Actual = "blocked by " + finding.Key
-			return
-		}
-		if finding.State == "REVIEW_REQUIRED" || finding.State == "UNVERIFIED" {
-			findings[readiness].State = "REVIEW_REQUIRED"
-			findings[readiness].Actionable = true
-			findings[readiness].Actual = "unresolved at " + finding.Key
-			return
-		}
-	}
-}
-
 func reduceValidationOutcome(findings []validationFinding) (string, bool) {
 	unresolved := false
 	warning := false
@@ -652,6 +659,9 @@ func reduceValidationOutcome(findings []validationFinding) (string, bool) {
 			return models.QualityOutcomeFail, hasActionableFinding(findings)
 		}
 		if finding.Disposition == "blocking" && (finding.State == "REVIEW_REQUIRED" || finding.State == "UNVERIFIED") {
+			unresolved = true
+		}
+		if finding.Disposition == "blocking" && finding.State == "WARNING" {
 			unresolved = true
 		}
 		if finding.State == "WARNING" || (finding.Disposition == "advisory" && (finding.State == "FAIL" || finding.State == "UNVERIFIED" || finding.State == "REVIEW_REQUIRED")) {
@@ -670,20 +680,49 @@ func reduceValidationOutcome(findings []validationFinding) (string, bool) {
 	return models.QualityOutcomePass, false
 }
 
-func validationDisplayScore(findings []validationFinding) int {
+func validationDisplayScore(findings []validationFinding, policies ...validationpolicy.Policy) int {
+	policy := validationpolicy.DefaultPolicy()
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
 	score := 100
 	for _, finding := range findings {
 		switch {
-		case finding.State == "FAIL" && finding.Disposition == "blocking":
-			score -= 25
-		case finding.State == "WARNING" || finding.State == "UNVERIFIED":
-			score -= 5
+		case finding.State == "FAIL":
+			score -= policy.Rules[finding.Key].FailurePenalty
+		case finding.State == "WARNING" || finding.State == "UNVERIFIED" || finding.State == "REVIEW_REQUIRED":
+			score -= policy.Rules[finding.Key].WarningPenalty
 		}
 	}
 	if score < 0 {
 		return 0
 	}
 	return score
+}
+
+func applyValidationPolicy(findings []validationFinding, policy validationpolicy.Policy) {
+	for index := range findings {
+		finding := &findings[index]
+		if finding.Key == "publication.readiness" {
+			continue
+		}
+		rule, ok := policy.Rules[finding.Key]
+		if !ok {
+			finding.Disposition = "blocking"
+			finding.Overrideable = false
+			finding.Explanation += " This rule has no recognized policy entry and is treated as a non-overrideable blocking check."
+			continue
+		}
+		finding.Disposition = rule.Disposition
+		finding.Overrideable = rule.Overrideable && !validationpolicy.IsMandatory(finding.Key)
+		if !rule.Enabled && !validationpolicy.IsMandatory(finding.Key) {
+			finding.State = "NOT_APPLICABLE"
+			finding.Actionable = false
+			finding.Severity = "info"
+			finding.Overrideable = false
+			finding.Explanation += " Quality Validation for this rule is disabled by the frozen policy."
+		}
+	}
 }
 
 func hasActionableFinding(findings []validationFinding) bool {
@@ -874,7 +913,23 @@ func (h ValidationHandler) RunDetail(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"run": run, "overrides": overrides})
+	currentPolicy := resolveCurrentValidationPolicy(h.db)
+	currentPolicyView, _ := projectValidationPolicySetting(settingsMutationContext{}, validationPolicyJSONMap(currentPolicy))
+	effectiveHandoff := "HISTORICAL_ONLY"
+	var job models.QueueJob
+	if err := h.db.First(&job, run.JobID).Error; err == nil && job.ValidationRunID == run.RunID {
+		effectiveHandoff = "BLOCKED"
+		if allowed, _ := canonicalRunAllowsPublish(h.db, job, false); allowed {
+			effectiveHandoff = "ALLOWED"
+			if ids, err := canonicalEligibleOverrideEventIDs(h.db, job, false); err == nil && len(ids) > 0 && (run.Outcome == "FAIL" || run.Outcome == "REVIEW_REQUIRED") {
+				effectiveHandoff = "ALLOWED_BY_OVERRIDE"
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"run": run, "overrides": overrides, "effectiveHandoff": effectiveHandoff,
+		"currentPolicy": currentPolicyView, "policyCurrent": run.PolicyFingerprint != "" && run.PolicyFingerprint == validationpolicy.Fingerprint(currentPolicy),
+	})
 }
 
 func (h ValidationHandler) ReviewList(c *gin.Context) {
@@ -1058,12 +1113,23 @@ func (h ValidationHandler) CreateOverride(c *gin.Context) {
 	}
 	var request validationOverrideRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "override request must include a reason and rule scope"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "override request must include a rule scope"})
 		return
 	}
 	request.Reason = strings.TrimSpace(request.Reason)
-	if request.Reason == "" || len(request.Reason) > 2000 || len(request.RuleKeys) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "override requires a reason and at least one rule key"})
+	if len(request.Reason) > 2000 || len(request.RuleKeys) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "override requires at least one rule key; reason is optional and limited to 2000 characters"})
+		return
+	}
+	request.Scope = strings.TrimSpace(request.Scope)
+	if request.Scope == "" {
+		request.Scope = "rule"
+		if len(request.RuleKeys) > 1 {
+			request.Scope = "all_overrideable"
+		}
+	}
+	if request.Scope != "rule" && request.Scope != "all_overrideable" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scope must be rule or all_overrideable"})
 		return
 	}
 	requestedHandoff := strings.TrimSpace(request.RequestedHandoff)
@@ -1076,6 +1142,10 @@ func (h ValidationHandler) CreateOverride(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "job has no canonical ValidationRun"})
 		return
 	}
+	if run.PolicyFingerprint == "" || run.PolicyVersion == "" {
+		c.JSON(http.StatusConflict, gin.H{"error": "this historical ValidationRun has no frozen policy identity and cannot accept a new override"})
+		return
+	}
 	var artifact map[string]any
 	artifact, _, err := readLatestJobArtifact(h.db, job, "result")
 	identity, identityOK := resultIdentityFromArtifact(artifact)
@@ -1084,23 +1154,25 @@ func (h ValidationHandler) CreateOverride(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "Result identity changed; requeue execution before recording an override"})
 		return
 	}
-	allowed := map[string]validationFinding{}
-	var findings []validationFinding
-	for _, raw := range run.Findings {
-		encoded, _ := json.Marshal(raw)
-		var finding validationFinding
-		if json.Unmarshal(encoded, &finding) == nil {
-			findings = append(findings, finding)
-			allowed[finding.Key] = finding
-		}
+	findings := validationFindingsForRun(run)
+	allowed := overrideableUnresolvedFindings(findings)
+	var existing []models.ValidationOverride
+	if err := h.db.Where("validation_run_id = ?", run.RunID).Order("created_at asc, id asc").Find(&existing).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "override audit events could not be read"})
+		return
 	}
+	covered, _ := validationOverrideCoverage(existing, run, false)
 	seen := map[string]bool{}
 	keys := make([]string, 0, len(request.RuleKeys))
 	for _, key := range request.RuleKeys {
 		key = strings.TrimSpace(key)
 		finding, ok := allowed[key]
-		if !ok || !finding.Overrideable || finding.State == "PASS" || finding.State == "NOT_APPLICABLE" || nonOverrideableValidationRule(finding.Key) {
+		if !ok || !finding.Overrideable || nonOverrideableValidationRule(finding.Key) {
 			c.JSON(http.StatusConflict, gin.H{"error": "override scope contains a non-overrideable or unknown rule"})
+			return
+		}
+		if covered[key] {
+			c.JSON(http.StatusConflict, gin.H{"error": "override scope includes a finding that is already skipped"})
 			return
 		}
 		if !seen[key] {
@@ -1113,6 +1185,23 @@ func (h ValidationHandler) CreateOverride(c *gin.Context) {
 		return
 	}
 	sort.Strings(keys)
+	if request.Scope == "rule" && len(keys) != 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "rule scope must contain exactly one rule key"})
+		return
+	}
+	if request.Scope == "all_overrideable" {
+		expected := make([]string, 0, len(allowed))
+		for key := range allowed {
+			if !covered[key] {
+				expected = append(expected, key)
+			}
+		}
+		sort.Strings(expected)
+		if len(expected) == 0 || !sameStringSlices(keys, expected) {
+			c.JSON(http.StatusConflict, gin.H{"error": "skip-all scope changed; refresh findings and confirm the exact current rule keys"})
+			return
+		}
+	}
 	var eventToken [16]byte
 	if _, err := rand.Read(eventToken[:]); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1120,6 +1209,10 @@ func (h ValidationHandler) CreateOverride(c *gin.Context) {
 	}
 	event := models.ValidationOverride{
 		EventID: "validation-override:" + hex.EncodeToString(eventToken[:]), ValidationRunID: run.RunID,
+		Scope:            request.Scope,
+		ResultArtifactID: run.ResultArtifactID, ResultGenerationToken: run.ResultGenerationToken,
+		ResultGenerationVersion: run.ResultGenerationVersion, ResultOutputRevision: run.ResultOutputRevision,
+		PolicySchemaVersion: run.PolicySchemaVersion, PolicyVersion: run.PolicyVersion, PolicyFingerprint: run.PolicyFingerprint,
 		ActorSource: "deployment", ActorID: "local_operator", Reason: request.Reason,
 		RuleKeys: models.JSONList{}, RequestedHandoff: requestedHandoff,
 		OverrideVersion: validationOverrideV1, CreatedAt: time.Now().UTC(),
@@ -1141,13 +1234,84 @@ func (h ValidationHandler) CreateOverride(c *gin.Context) {
 	c.JSON(http.StatusCreated, event)
 }
 
-func nonOverrideableValidationRule(key string) bool {
-	switch key {
-	case "artifact.identity", "artifact.integrity", "artifact.manifest", "execution.binding":
+func validationFindingsForRun(run models.ValidationRun) []validationFinding {
+	findings := make([]validationFinding, 0, len(run.Findings))
+	for _, raw := range run.Findings {
+		encoded, _ := json.Marshal(raw)
+		var finding validationFinding
+		if json.Unmarshal(encoded, &finding) == nil && finding.Key != "" {
+			findings = append(findings, finding)
+		}
+	}
+	return findings
+}
+
+func isUnresolvedValidationState(state string) bool {
+	switch state {
+	case "FAIL", "WARNING", "REVIEW_REQUIRED", "UNVERIFIED":
 		return true
 	default:
 		return false
 	}
+}
+
+func overrideableUnresolvedFindings(findings []validationFinding) map[string]validationFinding {
+	result := make(map[string]validationFinding)
+	for _, finding := range findings {
+		if finding.Overrideable && isUnresolvedValidationState(finding.State) && !nonOverrideableValidationRule(finding.Key) {
+			result[finding.Key] = finding
+		}
+	}
+	return result
+}
+
+func validationOverrideCoverage(events []models.ValidationOverride, run models.ValidationRun, automatic bool) (map[string]bool, []string) {
+	covered := map[string]bool{}
+	eventIDs := []string{}
+	for _, event := range events {
+		if event.ValidationRunID != run.RunID || event.ResultArtifactID != run.ResultArtifactID ||
+			event.ResultGenerationToken != run.ResultGenerationToken || event.ResultGenerationVersion != run.ResultGenerationVersion ||
+			event.ResultOutputRevision != run.ResultOutputRevision || event.PolicySchemaVersion != run.PolicySchemaVersion || event.PolicyVersion != run.PolicyVersion ||
+			event.PolicyFingerprint != run.PolicyFingerprint || event.ActorSource == "" || event.ActorID == "" || event.CreatedAt.IsZero() {
+			continue
+		}
+		if event.Scope == "rule" && len(event.RuleKeys) != 1 || event.Scope == "all_overrideable" && len(event.RuleKeys) == 0 ||
+			(event.Scope != "rule" && event.Scope != "all_overrideable") {
+			continue
+		}
+		if automatic && event.RequestedHandoff != "automatic" || !automatic && event.RequestedHandoff != "publisher" {
+			continue
+		}
+		contributed := false
+		for _, raw := range event.RuleKeys {
+			key := strings.TrimSpace(fmt.Sprint(raw))
+			if key == "" || key == "<nil>" {
+				continue
+			}
+			covered[key] = true
+			contributed = true
+		}
+		if contributed {
+			eventIDs = append(eventIDs, event.EventID)
+		}
+	}
+	return covered, eventIDs
+}
+
+func sameStringSlices(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func nonOverrideableValidationRule(key string) bool {
+	return validationpolicy.IsMandatory(key)
 }
 
 func runMatchesResult(run models.ValidationRun, artifact map[string]any) bool {
@@ -1173,59 +1337,34 @@ func canonicalRunAllowsPublish(db *gorm.DB, job models.QueueJob, automatic bool)
 	if err != nil || evidence.ContentRevision != identity.OutputRevision {
 		return false, "output has changed since Validation; queue a new execution"
 	}
-	if run.Outcome == "PASS" {
-		if automatic && !automaticValidationOutcomeAllowed(db, run) {
-			return false, "PASS is not enabled for automatic advancement"
-		}
-		return true, ""
-	}
-	if run.Outcome == "PASS_WITH_WARNINGS" && !run.ActionableWarnings {
-		if !automatic || automaticValidationOutcomeAllowed(db, run) {
-			return true, ""
-		}
-	}
 	var overrides []models.ValidationOverride
-	if db.Where("validation_run_id = ?", run.RunID).Find(&overrides).Error != nil {
+	if db.Where("validation_run_id = ?", run.RunID).Order("created_at asc, id asc").Find(&overrides).Error != nil {
 		return false, "override audit events could not be read"
 	}
-	covered := map[string]bool{}
-	coveredAutomatic := map[string]bool{}
-	for _, event := range overrides {
-		for _, raw := range event.RuleKeys {
-			key := fmt.Sprint(raw)
-			if event.RequestedHandoff == "publisher" || event.RequestedHandoff == "automatic" {
-				covered[key] = true
-			}
-			if event.RequestedHandoff == "automatic" {
-				coveredAutomatic[key] = true
-			}
-		}
-	}
-	var findings []validationFinding
-	for _, raw := range run.Findings {
-		encoded, _ := json.Marshal(raw)
-		var finding validationFinding
-		if json.Unmarshal(encoded, &finding) == nil {
-			findings = append(findings, finding)
-		}
-	}
+	covered, _ := validationOverrideCoverage(overrides, run, automatic)
+	findings := validationFindingsForRun(run)
+	hasBlockingFinding := false
 	for _, finding := range findings {
-		if finding.Disposition == "blocking" && (finding.State == "FAIL" || finding.State == "REVIEW_REQUIRED" || finding.State == "UNVERIFIED") {
-			if nonOverrideableValidationRule(finding.Key) || !finding.Overrideable || (automatic && !coveredAutomatic[finding.Key]) || (!automatic && !covered[finding.Key]) {
-				return false, "blocking Validation finding has no eligible override: " + finding.Key
-			}
+		if finding.Key == "publication.readiness" || finding.Disposition != "blocking" || !isUnresolvedValidationState(finding.State) {
+			continue
+		}
+		hasBlockingFinding = true
+		if nonOverrideableValidationRule(finding.Key) || !finding.Overrideable || !covered[finding.Key] {
+			return false, "blocking Validation finding has no eligible override: " + finding.Key
 		}
 	}
 	if automatic {
-		policyAllows := automaticValidationOutcomeAllowed(db, run)
+		if !automaticValidationOutcomeAllowed(db, run) {
+			return false, "Validation outcome is not enabled for automatic advancement"
+		}
 		for _, finding := range findings {
-			if finding.Actionable && finding.State != "PASS" && !coveredAutomatic[finding.Key] {
+			if finding.Actionable && isUnresolvedValidationState(finding.State) && !covered[finding.Key] {
 				return false, "actionable Validation finding blocks automatic advancement: " + finding.Key
 			}
 		}
-		if !policyAllows && !hasActionableFinding(findings) {
-			return false, "Validation outcome is not enabled for automatic advancement"
-		}
+	}
+	if (run.Outcome == "FAIL" || run.Outcome == "REVIEW_REQUIRED") && !hasBlockingFinding {
+		return false, "ValidationRun outcome is inconsistent with its canonical findings"
 	}
 	return true, ""
 }
@@ -1243,14 +1382,10 @@ func canonicalEligibleOverrideEventIDs(db *gorm.DB, job models.QueueJob, automat
 		return nil, err
 	}
 	needed := map[string]bool{}
-	for _, raw := range run.Findings {
-		encoded, _ := json.Marshal(raw)
-		var finding validationFinding
-		if json.Unmarshal(encoded, &finding) != nil {
-			continue
-		}
+	for _, finding := range validationFindingsForRun(run) {
 		blockingOverride := finding.Disposition == "blocking" && (finding.State == "FAIL" || finding.State == "REVIEW_REQUIRED" || finding.State == "UNVERIFIED") && finding.Overrideable && !nonOverrideableValidationRule(finding.Key)
-		automaticActionableOverride := automatic && finding.Actionable && finding.State != "PASS"
+		blockingOverride = blockingOverride || finding.Disposition == "blocking" && finding.State == "WARNING" && finding.Overrideable && !nonOverrideableValidationRule(finding.Key)
+		automaticActionableOverride := automatic && finding.Actionable && isUnresolvedValidationState(finding.State)
 		if blockingOverride || automaticActionableOverride {
 			needed[finding.Key] = true
 		}
@@ -1265,19 +1400,19 @@ func canonicalEligibleOverrideEventIDs(db *gorm.DB, job models.QueueJob, automat
 	seen := map[string]bool{}
 	ids := make([]string, 0, len(needed))
 	for _, event := range overrides {
-		if automatic && event.RequestedHandoff != "automatic" || !automatic && event.RequestedHandoff != "publisher" && event.RequestedHandoff != "automatic" {
+		coverage, eventIDs := validationOverrideCoverage([]models.ValidationOverride{event}, run, automatic)
+		if len(eventIDs) == 0 || seen[event.EventID] {
 			continue
 		}
-		for _, raw := range event.RuleKeys {
-			if !needed[fmt.Sprint(raw)] || seen[event.EventID] {
-				continue
+		for key := range coverage {
+			if needed[key] {
+				seen[event.EventID] = true
+				ids = append(ids, event.EventID)
+				if len(ids) > 20 {
+					return nil, fmt.Errorf("canonical Validation authorization requires more than 20 override evidence references")
+				}
+				break
 			}
-			seen[event.EventID] = true
-			ids = append(ids, event.EventID)
-			if len(ids) > 20 {
-				return nil, fmt.Errorf("canonical Validation authorization requires more than 20 override evidence references")
-			}
-			break
 		}
 	}
 	return ids, nil

@@ -1642,6 +1642,30 @@ export type ValidationFinding = {
   evidenceReferences: string[];
 };
 
+export type ValidationPreset = 'disabled' | 'basic' | 'default' | 'strict' | 'custom';
+
+export type ValidationRulePolicy = {
+  enabled: boolean;
+  disposition: 'blocking' | 'advisory';
+  overrideable: boolean;
+  thresholds?: Record<string, number>;
+  fields?: Record<string, boolean>;
+  warningPenalty: number;
+  failurePenalty: number;
+};
+
+export type ValidationPolicy = {
+  schemaVersion: number;
+  policyVersion: string;
+  preset: ValidationPreset;
+  basedOn?: Exclude<ValidationPreset, 'custom'>;
+  rules: Record<string, ValidationRulePolicy>;
+  differenceCount?: number;
+  differences?: string[];
+  presetDefaults?: Partial<Record<Exclude<ValidationPreset, 'custom'>, ValidationPolicy>>;
+  autoAdvanceOutcomes?: string[];
+};
+
 export type ValidationRun = {
   id: number;
   runId: string;
@@ -1657,6 +1681,11 @@ export type ValidationRun = {
   validatorVersion: string;
   rulesetId: string;
   rulesetVersion: string;
+  policySchemaVersion: number;
+  policyVersion: string;
+  policyPreset: string;
+  policyFingerprint: string;
+  policySnapshot?: ValidationPolicy;
   actorSource: string;
   actorId: string;
   outcome: ValidationResult['outcome'];
@@ -1670,6 +1699,14 @@ export type ValidationRun = {
 export type ValidationOverride = {
   eventId: string;
   validationRunId: string;
+  scope: 'rule' | 'all_overrideable' | string;
+  resultArtifactId: string;
+  resultGenerationToken: string;
+  resultGenerationVersion: number;
+  resultOutputRevision: string;
+  policySchemaVersion: number;
+  policyVersion: string;
+  policyFingerprint: string;
   actorSource: string;
   actorId: string;
   reason: string;
@@ -1682,6 +1719,9 @@ export type ValidationOverride = {
 export type ValidationRunDetail = {
   run: ValidationRun;
   overrides: ValidationOverride[];
+  effectiveHandoff: 'ALLOWED' | 'ALLOWED_BY_OVERRIDE' | 'BLOCKED' | 'HISTORICAL_ONLY' | string;
+  currentPolicy: ValidationPolicy;
+  policyCurrent: boolean;
 };
 
 export type ValidationSummary = Pick<QueueJob,

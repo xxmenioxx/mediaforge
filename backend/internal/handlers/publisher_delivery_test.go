@@ -993,17 +993,25 @@ func TestPublisherIdentityBindsEligibleValidationOverrideEvent(t *testing.T) {
 		ResultGenerationToken: identity.GenerationToken, ResultGenerationVersion: identity.GenerationVersion,
 		ResultOutputRevision: identity.OutputRevision, SchemaVersion: validationSchemaVersion,
 		ValidatorVersion: validationEngineVersion, RulesetID: validationRulesetID, RulesetVersion: validationRulesetVersion,
-		ActorSource: publicationActorSystem, ActorID: publicationActorSystem, Outcome: "FAIL",
-		Findings: models.JSONList{models.JSONMap{"key": "duration.timeline", "disposition": "blocking", "state": "FAIL", "overrideable": true}},
-		Report:   models.JSONMap{}, CreatedAt: time.Now().UTC(),
+		PolicySchemaVersion: 1, PolicyVersion: "validation-policy-v1", PolicyPreset: "custom", PolicyFingerprint: "sha256:test-policy",
+		PolicySnapshot: models.JSONMap{"schemaVersion": 1, "policyVersion": "validation-policy-v1", "preset": "custom"},
+		ActorSource:    publicationActorSystem, ActorID: publicationActorSystem, Outcome: "FAIL",
+		Findings: models.JSONList{
+			models.JSONMap{"key": "duration.timeline", "disposition": "blocking", "state": "FAIL", "overrideable": true},
+			models.JSONMap{"key": "video.properties", "disposition": "blocking", "state": "UNVERIFIED", "overrideable": true},
+		},
+		Report: models.JSONMap{}, CreatedAt: time.Now().UTC(),
 	}
 	if err := fixture.db.Create(&run).Error; err != nil {
 		t.Fatal(err)
 	}
 	override := models.ValidationOverride{
 		EventID: "validation-override:publisher-54", ValidationRunID: run.RunID,
+		Scope: "all_overrideable", ResultArtifactID: run.ResultArtifactID, ResultGenerationToken: run.ResultGenerationToken,
+		ResultGenerationVersion: run.ResultGenerationVersion, ResultOutputRevision: run.ResultOutputRevision,
+		PolicySchemaVersion: run.PolicySchemaVersion, PolicyVersion: run.PolicyVersion, PolicyFingerprint: run.PolicyFingerprint,
 		ActorSource: publicationActorOperator, ActorID: publicationActorOperator,
-		Reason: "Reviewed exception", RuleKeys: models.JSONList{"duration.timeline"},
+		Reason: "Reviewed exception", RuleKeys: models.JSONList{"duration.timeline", "video.properties"},
 		RequestedHandoff: "publisher", OverrideVersion: "v1", CreatedAt: time.Now().UTC(),
 	}
 	if err := fixture.db.Create(&override).Error; err != nil {
@@ -1030,6 +1038,99 @@ func TestPublisherIdentityBindsEligibleValidationOverrideEvent(t *testing.T) {
 	}
 	if fmt.Sprint(event.Payload["validationOverrideEventIds"]) != "[validation-override:publisher-54]" {
 		t.Fatalf("AssetPublished omitted canonical override provenance: %#v", event.Payload)
+	}
+}
+
+func TestPublisherRejectsNonOverrideableAndStaleOverrides(t *testing.T) {
+	tests := []struct {
+		name          string
+		findingKey    string
+		findingState  string
+		wrongRun      bool
+		wrongResult   bool
+		wrongHandoff  bool
+		replaceResult bool
+		legacyMinimum bool
+		noOverride    bool
+	}{
+		{name: "crafted mandatory identity skip", findingKey: "artifact.integrity", findingState: "FAIL"},
+		{name: "wrong ValidationRun", findingKey: "duration.timeline", findingState: "FAIL", wrongRun: true},
+		{name: "wrong Result identity", findingKey: "duration.timeline", findingState: "FAIL", wrongResult: true},
+		{name: "wrong handoff target", findingKey: "duration.timeline", findingState: "FAIL", wrongHandoff: true},
+		{name: "new Result invalidates existing skip", findingKey: "duration.timeline", findingState: "FAIL", replaceResult: true},
+		{name: "legacy minimumScore cannot authorize failure", findingKey: "duration.timeline", findingState: "FAIL", legacyMinimum: true, noOverride: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPublisherDeliveryFixture(t, false)
+			artifact, _, err := readLatestJobArtifact(fixture.db, fixture.job, "result")
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity, identityOK := resultIdentityFromArtifact(artifact)
+			binding, bindingOK := resultBindingFromArtifact(artifact)
+			if !identityOK || !bindingOK {
+				t.Fatalf("canonical Result identity unavailable: %#v", artifact)
+			}
+			run := models.ValidationRun{
+				RunID: "validation-run:publisher-reject:" + strings.ReplaceAll(test.name, " ", "-"), JobID: fixture.job.ID,
+				ExecutionNumber: *fixture.job.ExecutionNumber, ExecutionPlanID: binding.ExecutionPlanID,
+				ExecutionPlanVersion: binding.ExecutionPlanVersion, ExecutionPlanFingerprint: binding.ExecutionPlanFingerprint,
+				ResultArtifactID: identity.ArtifactID, ResultGenerationToken: identity.GenerationToken,
+				ResultGenerationVersion: identity.GenerationVersion, ResultOutputRevision: identity.OutputRevision,
+				SchemaVersion: validationSchemaVersion, ValidatorVersion: validationEngineVersion,
+				RulesetID: validationRulesetID, RulesetVersion: validationRulesetVersion,
+				PolicySchemaVersion: 1, PolicyVersion: "validation-policy-v1", PolicyPreset: "custom", PolicyFingerprint: "sha256:publisher-reject",
+				PolicySnapshot: models.JSONMap{"schemaVersion": 1, "policyVersion": "validation-policy-v1", "preset": "custom"},
+				ActorSource:    "deployment", ActorID: "local_operator", Outcome: "FAIL", Score: 100,
+				Findings: models.JSONList{models.JSONMap{"key": test.findingKey, "disposition": "blocking", "state": test.findingState, "overrideable": true}},
+				Report:   models.JSONMap{}, CreatedAt: time.Now().UTC(),
+			}
+			if err := fixture.db.Create(&run).Error; err != nil {
+				t.Fatal(err)
+			}
+			if test.legacyMinimum {
+				if err := fixture.db.Create(&models.AppSetting{Key: "validation", Value: models.JSONMap{"minimumScore": 0}}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			event := models.ValidationOverride{
+				EventID:         "validation-override:publisher-reject:" + strings.ReplaceAll(test.name, " ", "-"),
+				ValidationRunID: run.RunID, Scope: "rule", ResultArtifactID: run.ResultArtifactID,
+				ResultGenerationToken: run.ResultGenerationToken, ResultGenerationVersion: run.ResultGenerationVersion,
+				ResultOutputRevision: run.ResultOutputRevision, PolicySchemaVersion: run.PolicySchemaVersion,
+				PolicyVersion: run.PolicyVersion, PolicyFingerprint: run.PolicyFingerprint,
+				ActorSource: "deployment", ActorID: "local_operator", RuleKeys: models.JSONList{test.findingKey},
+				RequestedHandoff: "publisher", OverrideVersion: validationOverrideV1, CreatedAt: time.Now().UTC(),
+			}
+			if test.wrongRun {
+				event.ValidationRunID = "validation-run:wrong"
+			}
+			if test.wrongResult {
+				event.ResultOutputRevision = "result:wrong-revision"
+			}
+			if test.wrongHandoff {
+				event.RequestedHandoff = "automatic"
+			}
+			if !test.noOverride {
+				if err := fixture.db.Create(&event).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			job := fixture.job
+			job.ValidationRunID = run.RunID
+			if err := fixture.db.Save(&job).Error; err != nil {
+				t.Fatal(err)
+			}
+			if test.replaceResult {
+				if err := writeJobResultArtifact(fixture.db, job, map[string]any{"status": "completed", "replacement": true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if allowed, reason := canonicalRunAllowsPublish(fixture.db, job, false); allowed || reason == "" {
+				t.Fatalf("unsafe/stale override authorized Publisher: allowed=%t reason=%q", allowed, reason)
+			}
+		})
 	}
 }
 

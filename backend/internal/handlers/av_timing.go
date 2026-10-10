@@ -258,6 +258,10 @@ func avTimingForSelectedAudio(source, output avTimingEvidence, inputIndexes []in
 }
 
 func validateAVTiming(source, output avTimingEvidence) models.JSONMap {
+	return validateAVTimingWithThresholds(source, output, initialAVTimingTolerance.ValidatedFrames, initialAVTimingTolerance.MismatchFrames)
+}
+
+func validateAVTimingWithThresholds(source, output avTimingEvidence, passFrames, warningFrames float64) models.JSONMap {
 	report := models.JSONMap{"status": "unverified", "source": source, "output": output, "tracks": []models.JSONMap{}, "driftStatus": "not_measured"}
 	if len(source.Audio) == 0 && len(output.Audio) == 0 {
 		report["status"] = "not_applicable"
@@ -271,8 +275,11 @@ func validateAVTiming(source, output avTimingEvidence) models.JSONMap {
 	if fps <= 0 {
 		return report
 	}
+	if passFrames < 0 || warningFrames < passFrames {
+		passFrames, warningFrames = initialAVTimingTolerance.ValidatedFrames, initialAVTimingTolerance.MismatchFrames
+	}
 	frameDurationMs := 1000 / fps
-	toleranceMs := frameDurationMs * initialAVTimingTolerance.ValidatedFrames
+	toleranceMs := frameDurationMs * passFrames
 	trackCount := min(len(source.Audio), len(output.Audio))
 	tracks := make([]models.JSONMap, 0, trackCount)
 	overall := "validated"
@@ -298,8 +305,8 @@ func validateAVTiming(source, output avTimingEvidence) models.JSONMap {
 		introduced := outputOffset - sourceOffset
 		equivalentFrames := introduced / frameDurationMs
 		status := "validated"
-		validatedBoundaryMs := frameDurationMs * initialAVTimingTolerance.ValidatedFrames
-		mismatchBoundaryMs := frameDurationMs * initialAVTimingTolerance.MismatchFrames
+		validatedBoundaryMs := frameDurationMs * passFrames
+		mismatchBoundaryMs := frameDurationMs * warningFrames
 		quantizationToleranceMs := avTimingQuantizationToleranceMs(
 			frameDurationMs,
 			*source.Video, source.Audio[index], *output.Video, output.Audio[index],
@@ -326,8 +333,8 @@ func validateAVTiming(source, output avTimingEvidence) models.JSONMap {
 	report["frameRateUsed"] = output.FrameRate
 	report["frameDurationMs"] = frameDurationMs
 	report["toleranceMs"] = toleranceMs
-	report["toleranceFrames"] = initialAVTimingTolerance.ValidatedFrames
-	report["mismatchFrames"] = initialAVTimingTolerance.MismatchFrames
+	report["toleranceFrames"] = passFrames
+	report["mismatchFrames"] = warningFrames
 	report["tracks"] = tracks
 	report["driftStatus"] = "not_measured"
 	return report

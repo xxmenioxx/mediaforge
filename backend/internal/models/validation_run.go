@@ -20,6 +20,11 @@ type ValidationRun struct {
 	ValidatorVersion         string    `json:"validatorVersion" gorm:"not null"`
 	RulesetID                string    `json:"rulesetId" gorm:"not null"`
 	RulesetVersion           string    `json:"rulesetVersion" gorm:"not null"`
+	PolicySchemaVersion      int       `json:"policySchemaVersion" gorm:"not null;default:0"`
+	PolicyVersion            string    `json:"policyVersion" gorm:"not null;default:''"`
+	PolicyPreset             string    `json:"policyPreset" gorm:"not null;default:''"`
+	PolicyFingerprint        string    `json:"policyFingerprint" gorm:"not null;default:'';index"`
+	PolicySnapshot           JSONMap   `json:"policySnapshot" gorm:"type:json"`
 	ActorSource              string    `json:"actorSource" gorm:"not null"`
 	ActorID                  string    `json:"actorId" gorm:"not null"`
 	Outcome                  string    `json:"outcome" gorm:"not null;index"`
@@ -34,14 +39,22 @@ type ValidationRun struct {
 // server assigns ActorSource and ActorID; clients provide only the reason and
 // requested rule scope.
 type ValidationOverride struct {
-	ID               uint      `json:"id" gorm:"primaryKey"`
-	EventID          string    `json:"eventId" gorm:"not null;uniqueIndex"`
-	ValidationRunID  string    `json:"validationRunId" gorm:"not null;index"`
-	ActorSource      string    `json:"actorSource" gorm:"not null"`
-	ActorID          string    `json:"actorId" gorm:"not null"`
-	Reason           string    `json:"reason" gorm:"not null"`
-	RuleKeys         JSONList  `json:"ruleKeys" gorm:"type:json;not null"`
-	RequestedHandoff string    `json:"requestedHandoff" gorm:"not null"`
-	OverrideVersion  string    `json:"overrideVersion" gorm:"not null"`
-	CreatedAt        time.Time `json:"createdAt" gorm:"not null;index"`
+	ID                      uint      `json:"id" gorm:"primaryKey"`
+	EventID                 string    `json:"eventId" gorm:"not null;uniqueIndex"`
+	ValidationRunID         string    `json:"validationRunId" gorm:"not null;index"`
+	Scope                   string    `json:"scope" gorm:"not null;default:'rule'"`
+	ResultArtifactID        string    `json:"resultArtifactId" gorm:"not null;default:'';index"`
+	ResultGenerationToken   string    `json:"resultGenerationToken" gorm:"not null;default:'';index"`
+	ResultGenerationVersion int       `json:"resultGenerationVersion" gorm:"not null;default:0"`
+	ResultOutputRevision    string    `json:"resultOutputRevision" gorm:"not null;default:'';index"`
+	PolicySchemaVersion     int       `json:"policySchemaVersion" gorm:"not null;default:0"`
+	PolicyVersion           string    `json:"policyVersion" gorm:"not null;default:''"`
+	PolicyFingerprint       string    `json:"policyFingerprint" gorm:"not null;default:'';index"`
+	ActorSource             string    `json:"actorSource" gorm:"not null"`
+	ActorID                 string    `json:"actorId" gorm:"not null"`
+	Reason                  string    `json:"reason" gorm:"not null"`
+	RuleKeys                JSONList  `json:"ruleKeys" gorm:"type:json;not null"`
+	RequestedHandoff        string    `json:"requestedHandoff" gorm:"not null"`
+	OverrideVersion         string    `json:"overrideVersion" gorm:"not null"`
+	CreatedAt               time.Time `json:"createdAt" gorm:"not null;index"`
 }
