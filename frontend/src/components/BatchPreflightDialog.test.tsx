@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   edit: vi.fn(),
   update: vi.fn(),
   accept: vi.fn(),
+  remove: vi.fn(),
+  discard: vi.fn(),
+  getCandidate: vi.fn(),
   preview: vi.fn(),
   testEncode: vi.fn(),
   waitPreview: vi.fn(),
@@ -21,6 +24,9 @@ vi.mock('../api/client', () => ({
     editQueueBatchPreflight: mocks.edit,
     updateQueueBatchPreflight: mocks.update,
     acceptQueueBatchPreflight: mocks.accept,
+    removeQueueBatchPreflightAsset: mocks.remove,
+    discardQueueBatchPreflight: mocks.discard,
+    getQueueBatchPreflight: mocks.getCandidate,
     createCompatiblePreviewRequest: mocks.preview,
     createTestEncode: mocks.testEncode,
     compatibleAssetPreviewUrl: mocks.previewURL,
@@ -61,6 +67,7 @@ function candidate(overrides: Partial<QueueBatchPreflightResponse> = {}): QueueB
     id: 'candidate-1',
     revision: 1,
     resolved: true,
+    status: 'active',
     batchId: 'batch-1',
     batchName: 'Season 1',
     assets: [{
@@ -99,6 +106,9 @@ describe('BatchPreflightDialog', () => {
     mocks.edit.mockImplementation(async (id: string, revision: number) => candidate({ revision: revision + 1, resolved: false }));
     mocks.update.mockImplementation(async (id: string, input: { revision: number; batchName: string; jobs: unknown[] }) => candidate({ revision: input.revision + 1, batchName: input.batchName }));
     mocks.accept.mockImplementation(async (id: string, revision: number) => candidate({ revision: revision + 1, assets: candidate().assets.map((asset) => ({ ...asset, status: 'queued' as const, queuedJobId: 32 })) }));
+    mocks.remove.mockImplementation(async (_id: string, revision: number) => candidate({ revision: revision + 1 }));
+    mocks.discard.mockImplementation(async (_id: string, revision: number) => candidate({ revision: revision + 1, status: 'discarded', assets: [] }));
+    mocks.getCandidate.mockImplementation(async () => candidate());
     mocks.preview.mockResolvedValue({ requestId: 'preview-1' });
     mocks.waitPreview.mockResolvedValue({ state: 'ready' });
     mocks.previewURL.mockReturnValue('/preview/preview-1');
@@ -109,7 +119,7 @@ describe('BatchPreflightDialog', () => {
 
   it('preserves edit inputs, invalidates and resolves again, then accepts the ready identity', async () => {
     const onAccepted = vi.fn();
-    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={onAccepted} />);
+    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={onAccepted} onDiscarded={vi.fn()} />);
 
     expect(screen.getByText('Frozen profile v3')).toBeTruthy();
     expect(screen.getByText(/video: path_assignment/)).toBeTruthy();
@@ -143,7 +153,7 @@ describe('BatchPreflightDialog', () => {
   });
 
   it('passes the exact candidate plan to Preview and Test Encode and opens LAB with its identity', async () => {
-    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} />);
+    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
 
     const previewWindow = { location: { href: '' } };
     mocks.open.mockReturnValue(previewWindow);
@@ -167,5 +177,93 @@ describe('BatchPreflightDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open LAB with candidate context' }));
     expect(mocks.open).toHaveBeenLastCalledWith('/profile-lab?preflightCandidateId=candidate-1&preflightRevision=1&assetId=asset-1', '_blank', 'noopener,noreferrer');
+  });
+
+  it('keeps Close, Discard candidate, and Discard edits as separate actions', async () => {
+    const onClose = vi.fn();
+    render(<BatchPreflightDialog candidate={candidate()} onClose={onClose} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(mocks.discard).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await screen.findByRole('button', { name: 'Discard edits & re-resolve' });
+    expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Discard candidate' })).toBeTruthy();
+  });
+
+  it('persists removal of a blocked candidate asset', async () => {
+    const base = candidate();
+    const blocked = { ...base.assets[0], id: 'asset-blocked', mediaPath: '/raw/missing.mkv', status: 'blocked' as const, plan: undefined, blockers: ['Source asset is missing or unreadable'] };
+    const onDiscarded = vi.fn();
+    mocks.remove.mockResolvedValue(candidate({ revision: 2, assets: [base.assets[0]] }));
+    render(<BatchPreflightDialog candidate={candidate({ assets: [base.assets[0], blocked] })} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={onDiscarded} />);
+
+    const removeButton = screen.getAllByRole('button', { name: 'Remove from candidate' }).at(-1)!;
+    fireEvent.click(removeButton);
+
+    await waitFor(() => expect(mocks.remove).toHaveBeenCalledWith('candidate-1', 1, 'asset-blocked'));
+    expect(onDiscarded).not.toHaveBeenCalled();
+  });
+
+  it('offers removal for every unqueued review status', () => {
+    const base = candidate();
+    const review = { ...base.assets[0], id: 'asset-review', mediaPath: '/raw/review.mkv', status: 'requires_review' as const };
+    const blocked = { ...base.assets[0], id: 'asset-blocked', mediaPath: '/raw/blocked.mkv', status: 'blocked' as const, blockers: ['Missing source'] };
+    render(<BatchPreflightDialog candidate={candidate({ assets: [base.assets[0], review, blocked] })} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    expect(screen.getAllByRole('button', { name: 'Remove from candidate' })).toHaveLength(3);
+  });
+
+  it('confirms and discards pending assets while preserving accepted work', async () => {
+    const onDiscarded = vi.fn();
+    const discarded = candidate({ revision: 2, status: 'discarded', assets: [
+      { ...candidate().assets[0], status: 'queued', queuedJobId: 32 },
+    ] });
+    mocks.discard.mockResolvedValue(discarded);
+    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={onDiscarded} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard candidate' }));
+    expect(screen.getByText(/Previously accepted Queue jobs remain unchanged/)).toBeTruthy();
+    expect(mocks.discard).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard pending assets' }));
+
+    await waitFor(() => expect(mocks.discard).toHaveBeenCalledWith('candidate-1', 1));
+    expect(onDiscarded).toHaveBeenCalledWith(discarded);
+  });
+
+  it('keeps unresolved assets after partial acceptance and Close does not discard them', async () => {
+    const initial = candidate();
+    const blocked = { ...initial.assets[0], id: 'asset-blocked', mediaPath: '/raw/blocked.mkv', status: 'blocked' as const, blockers: ['Source is missing'] };
+    const accepted = candidate({
+      revision: 2,
+      status: 'active',
+      assets: [{ ...initial.assets[0], status: 'queued', queuedJobId: 32 }, blocked],
+    });
+    const onAccepted = vi.fn();
+    const onClose = vi.fn();
+    mocks.accept.mockResolvedValue(accepted);
+    render(<BatchPreflightDialog candidate={candidate({ assets: [initial.assets[0], blocked] })} onClose={onClose} onAccepted={onAccepted} onDiscarded={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Accept & Queue (1)' }));
+    await waitFor(() => expect(mocks.accept).toHaveBeenCalledWith('candidate-1', 1, ['asset-1']));
+    expect(onAccepted).toHaveBeenCalledWith(accepted);
+    expect(screen.getByText(/1 queued; 1 remain in this candidate/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(mocks.discard).not.toHaveBeenCalled();
+  });
+
+  it('offers an explicit reload after a stale revision error', async () => {
+    mocks.remove.mockRejectedValue(new Error('Queue Preflight revision is stale'));
+    mocks.getCandidate.mockResolvedValue(candidate({ revision: 2 }));
+    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from candidate' }));
+    expect(await screen.findByText('Queue Preflight revision is stale')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reload latest candidate' }));
+    await waitFor(() => expect(mocks.getCandidate).toHaveBeenCalledWith('candidate-1'));
+    await waitFor(() => expect(screen.queryByText('Queue Preflight revision is stale')).toBeNull());
   });
 });

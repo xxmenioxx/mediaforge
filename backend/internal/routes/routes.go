@@ -203,6 +203,8 @@ func New(db *gorm.DB) *gin.Engine {
 		api.PUT("/queue/preflights/:id", queue.UpdateBatchPreflight)
 		api.POST("/queue/preflights/:id/edit", queue.EditBatchPreflight)
 		api.POST("/queue/preflights/:id/accept", queue.AcceptBatchPreflight)
+		api.POST("/queue/preflights/:id/remove", queue.RemoveBatchPreflightAsset)
+		api.POST("/queue/preflights/:id/discard", queue.DiscardBatchPreflight)
 		api.POST("/queue/batches", queue.RequireBatchPreflight)
 		api.POST("/queue/selected-assets", queue.QueueSelectedAssets)
 		api.POST("/assets/queue-remaining/preview", queue.QueueRemainingPreview)

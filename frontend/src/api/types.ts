@@ -1845,7 +1845,7 @@ export type QueueBatchPreflightAsset = {
   batchId: string;
   batchName: string;
   input: QueueJobInput;
-  status: 'ready' | 'review' | 'blocked' | 'queued';
+  status: 'ready' | 'review' | 'requires_review' | 'blocked' | 'queued';
   blockers: string[];
   warnings: string[];
   queuedJobId?: number;
@@ -1856,6 +1856,7 @@ export type QueueBatchPreflightResponse = {
   id: string;
   revision: number;
   resolved: boolean;
+  status: 'active' | 'completed' | 'discarded';
   batchId: string;
   batchName: string;
   assets: QueueBatchPreflightAsset[];

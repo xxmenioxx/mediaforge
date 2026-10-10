@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,21 +10,23 @@ import type { Asset, AssetGroup, AssetInventory, AssetPath, ExternalSubtitle, Pr
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return {
+    ApiRequestError: actual.ApiRequestError,
     api: {
       ...actual.api,
     queueJobs: vi.fn(), assets: vi.fn(), profiles: vi.fn(), libraries: vi.fn(), settings: vi.fn(), snapshotOperations: vi.fn(),
     latestSnapshot: vi.fn(), startSnapshotOperation: vi.fn(), snapshotOperation: vi.fn(), externalAssetSubtitles: vi.fn(), extractAssetSubtitles: vi.fn(), assetMetadataSidecars: vi.fn(), trackMaintenanceInventory: vi.fn(), subtitleEligibility: vi.fn(), subtitleExtractionOperations: vi.fn(),
     suggestProfile: vi.fn(), runtimeState: vi.fn(), workerNodes: vi.fn(), recommendEncoderQuality: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
-    configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), queueRemainingPreview: vi.fn(), queueRemainingCommit: vi.fn(), createQueueBatch: vi.fn(), preflightSelectedAssets: vi.fn(), acceptQueueBatchPreflight: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
+    configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), queueRemainingPreview: vi.fn(), queueRemainingCommit: vi.fn(), createQueueBatch: vi.fn(), preflightSelectedAssets: vi.fn(), getQueueBatchPreflight: vi.fn(), acceptQueueBatchPreflight: vi.fn(), removeQueueBatchPreflightAsset: vi.fn(), discardQueueBatchPreflight: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
     updateAssetConversion: vi.fn(), updateAssetTracks: vi.fn(), updateAssetMetadata: vi.fn(), updateAssetEdit: vi.fn(), testEncodes: vi.fn(),
     jobArtifacts: vi.fn(), executionPlans: vi.fn(),
     },
   };
 });
 
-import { api } from '../api/client';
+import { ApiRequestError, api } from '../api/client';
 import { AssetsPage } from './AssetsPage';
+import { openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_STORAGE_KEY } from '../utils/queueBatchPreflightEvents';
 
 afterEach(() => {
   cleanup();
@@ -108,7 +110,7 @@ function activeQueueJob(id: number, mediaPath: string): QueueJob {
 
 function testBatchPreflightCandidate(assetIds: number[], readyIds = assetIds, queuedIds: number[] = []) {
   return {
-    id: 'candidate-raw-test', revision: queuedIds.length ? 2 : 1, resolved: true, batchId: 'batch-raw-test', batchName: 'Akira',
+    id: 'candidate-raw-test', revision: queuedIds.length ? 2 : 1, resolved: true, status: 'active', batchId: 'batch-raw-test', batchName: 'Akira',
     assets: assetIds.map((assetId) => {
       const mediaPath = assetId === 1 ? '/media/raw/movies/Akira/Akira.mkv' : '/media/raw/movies/Akira/extras/Trailer.mkv';
       return {
@@ -222,10 +224,15 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.jobArtifacts).mockResolvedValue({ resultPath: '/reports/job-101.json', asIsPath: '' } as never);
     vi.mocked(api.executionPlans).mockResolvedValue([]);
     vi.mocked(api.preflightSelectedAssets).mockImplementation(async (assetIds) => testBatchPreflightCandidate(assetIds) as never);
-    vi.mocked(api.acceptQueueBatchPreflight).mockImplementation(async (_candidateId, _revision, selectedAssetIds) => {
-      const queuedIds = selectedAssetIds.map((id) => Number(id.replace('asset-', '')));
-      return testBatchPreflightCandidate(queuedIds, [], queuedIds) as never;
+    vi.mocked(api.acceptQueueBatchPreflight).mockImplementation(async (_candidateId, revision, selectedAssetIds) => {
+      const selected = new Set(selectedAssetIds);
+      const current = testBatchPreflightCandidate([1, 2]);
+      const assets = current.assets.map((asset) => selected.has(asset.id) ? { ...asset, status: 'queued' as const, queuedJobId: Number(asset.id.replace('asset-', '')) + 100 } : asset);
+      return { ...current, revision: revision + 1, status: assets.every((asset) => asset.status === 'queued') ? 'completed' : 'active', assets } as never;
     });
+    vi.mocked(api.getQueueBatchPreflight).mockImplementation(async () => testBatchPreflightCandidate([1]) as never);
+    vi.mocked(api.removeQueueBatchPreflightAsset).mockImplementation(async () => testBatchPreflightCandidate([1]) as never);
+    vi.mocked(api.discardQueueBatchPreflight).mockImplementation(async (_candidateID, revision) => ({ ...testBatchPreflightCandidate([]), revision: revision + 1, status: 'discarded' }) as never);
     vi.mocked(api.profileAssignments).mockResolvedValue([]);
     vi.mocked(api.updateProfileAssignment).mockResolvedValue({ status: 'inherited' });
     vi.mocked(api.assetScopeConfigurations).mockResolvedValue([]);
@@ -1819,6 +1826,7 @@ describe('Unprocessed Assets hierarchy', () => {
     await user.click(within(batchPreflight).getByRole('button', { name: 'Accept & Queue (2)' }));
     await waitFor(() => expect(api.acceptQueueBatchPreflight).toHaveBeenCalledWith('candidate-raw-test', 1, ['asset-1', 'asset-2']));
     await waitFor(() => expect(vi.mocked(api.assets).mock.calls.length).toBeGreaterThan(assetCallsBeforeQueue));
+    expect(window.localStorage.getItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY)).toBeNull();
     expect(vi.mocked(api.assetScopeConfigurations).mock.calls.length).toBe(scopeCallsBeforeQueue);
     await user.click(within(batchPreflight).getByRole('button', { name: 'Close' }));
     expect(screen.getByRole('checkbox', { name: 'Select title Akira' })).toHaveProperty('checked', true);
@@ -1956,5 +1964,111 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(persisted.has('original')).toBe(false);
     expect(persisted.get('mediaArea')).toBe('anime');
     expect(persisted.get('search')).toBe('Akira');
+  });
+
+  it('keeps a closed candidate saved across remount and resumes only on explicit action', async () => {
+    const user = userEvent.setup();
+    const candidate = { ...testBatchPreflightCandidate([1]), id: 'candidate-closed-resume' };
+    window.localStorage.removeItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY);
+    const first = renderAssetsPage();
+    openQueueBatchPreflight(candidate as never);
+    const dialog = await screen.findByRole('dialog', { name: 'Batch Preflight · Akira' });
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog', { name: 'Batch Preflight · Akira' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Resume Preflight' })).toBeTruthy();
+    expect(api.getQueueBatchPreflight).not.toHaveBeenCalled();
+
+    first.unmount();
+    renderAssetsPage();
+    expect(screen.queryByRole('dialog', { name: 'Batch Preflight · Akira' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Resume Preflight' })).toBeTruthy();
+    expect(api.getQueueBatchPreflight).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Resume Preflight' }));
+    expect(await screen.findByRole('dialog', { name: 'Batch Preflight · Akira' })).toBeTruthy();
+    expect(api.getQueueBatchPreflight).toHaveBeenCalledWith('candidate-closed-resume');
+  });
+
+  it('retains the saved candidate reference after partial Accept & Queue and Close', async () => {
+    const user = userEvent.setup();
+    window.localStorage.removeItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY);
+    const partial = { ...testBatchPreflightCandidate([1, 2], [1]), id: 'candidate-partial' };
+    vi.mocked(api.acceptQueueBatchPreflight).mockResolvedValue({
+      ...partial,
+      revision: 2,
+      status: 'active',
+      assets: partial.assets.map((asset) => asset.id === 'asset-1' ? { ...asset, status: 'queued', queuedJobId: 101 } : asset),
+    } as never);
+    renderAssetsPage();
+    openQueueBatchPreflight(partial as never);
+    const dialog = await screen.findByRole('dialog', { name: 'Batch Preflight · Akira' });
+    await user.click(within(dialog).getByRole('button', { name: 'Accept & Queue (1)' }));
+    await waitFor(() => expect(api.acceptQueueBatchPreflight).toHaveBeenCalledWith('candidate-partial', 1, ['asset-1']));
+    expect(within(dialog).getByText(/1 queued; 1 remain in this candidate/)).toBeTruthy();
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+
+    expect(window.localStorage.getItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY)).toBe('candidate-partial');
+    expect(screen.getByRole('button', { name: 'Resume Preflight' })).toBeTruthy();
+  });
+
+  it('does not let an earlier Resume GET overwrite a newer candidate event', async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY, 'candidate-old');
+    let resolveOld: ((candidate: unknown) => void) | undefined;
+    vi.mocked(api.getQueueBatchPreflight).mockImplementation(() => new Promise((resolve) => { resolveOld = resolve; }) as never);
+    renderAssetsPage();
+    await user.click(await screen.findByRole('button', { name: 'Resume Preflight' }));
+    await waitFor(() => expect(api.getQueueBatchPreflight).toHaveBeenCalledWith('candidate-old'));
+
+    const newer = { ...testBatchPreflightCandidate([2]), id: 'candidate-newer', batchName: 'New candidate' };
+    openQueueBatchPreflight(newer as never);
+    const newDialog = await screen.findByRole('dialog', { name: 'Batch Preflight · New candidate' });
+    await act(async () => resolveOld?.({ ...testBatchPreflightCandidate([1]), id: 'candidate-old', batchName: 'Old candidate' }));
+
+    expect(newDialog).toBeTruthy();
+    expect(screen.queryByRole('dialog', { name: 'Batch Preflight · Old candidate' })).toBeNull();
+  });
+
+  it('clears a saved reference when explicit Resume finds no candidate', async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY, 'missing-candidate');
+    vi.mocked(api.getQueueBatchPreflight).mockRejectedValue(new ApiRequestError('Queue Preflight candidate was not found', 404));
+    renderAssetsPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Resume Preflight' }));
+    expect(await screen.findByText(/saved candidate no longer exists/i)).toBeTruthy();
+    expect(window.localStorage.getItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Resume Preflight' })).toBeNull();
+  });
+
+  it('clears a saved reference when Resume returns a terminal candidate', async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY, 'discarded-candidate');
+    vi.mocked(api.getQueueBatchPreflight).mockResolvedValue({
+      ...testBatchPreflightCandidate([]), id: 'discarded-candidate', status: 'discarded',
+    } as never);
+    renderAssetsPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Resume Preflight' }));
+    expect(await screen.findByText(/candidate was discarded and cannot be resumed/i)).toBeTruthy();
+    expect(window.localStorage.getItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY)).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('does not restore a discarded candidate from a late open event', async () => {
+    const user = userEvent.setup();
+    window.localStorage.removeItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY);
+    const original = { ...testBatchPreflightCandidate([1]), id: 'candidate-discarded-late' };
+    vi.mocked(api.discardQueueBatchPreflight).mockResolvedValue({ ...original, revision: 2, status: 'discarded', assets: [] } as never);
+    renderAssetsPage();
+    openQueueBatchPreflight(original as never);
+    const dialog = await screen.findByRole('dialog', { name: 'Batch Preflight · Akira' });
+    await user.click(within(dialog).getByRole('button', { name: 'Discard candidate' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Discard pending assets' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    openQueueBatchPreflight(original as never);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(window.localStorage.getItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY)).toBeNull();
   });
 });

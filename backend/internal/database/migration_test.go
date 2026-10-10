@@ -460,11 +460,25 @@ func TestMigrateAddsBatchPreflightAndDestinationSnapshotWithoutRewritingQueueSna
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
+	legacyPreflightSchema := `CREATE TABLE queue_batch_preflights (id text primary key, revision integer not null default 1, resolved numeric not null default false, state json, created_at datetime, updated_at datetime)`
+	if err := db.Exec(legacyPreflightSchema).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO queue_batch_preflights (id, revision, resolved, state) VALUES (?, ?, ?, ?)", "legacy-candidate", 4, true, `{}`).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := Migrate(db); err != nil {
 		t.Fatal(err)
 	}
-	if !db.Migrator().HasTable(&models.QueueBatchPreflight{}) || !db.Migrator().HasColumn(&models.QueueJob{}, "resolved_destination_snapshot") {
+	if !db.Migrator().HasTable(&models.QueueBatchPreflight{}) || !db.Migrator().HasColumn(&models.QueueBatchPreflight{}, "status") || !db.Migrator().HasColumn(&models.QueueJob{}, "resolved_destination_snapshot") {
 		t.Fatal("Batch Preflight persistence or destination snapshot schema was not migrated")
+	}
+	var migratedCandidate models.QueueBatchPreflight
+	if err := db.First(&migratedCandidate, "id = ?", "legacy-candidate").Error; err != nil {
+		t.Fatal(err)
+	}
+	if migratedCandidate.Revision != 4 || migratedCandidate.Status != models.QueueBatchPreflightStatusActive {
+		t.Fatalf("legacy candidate did not retain its revision or receive the active default: %#v", migratedCandidate)
 	}
 	var persisted models.QueueJob
 	if err := db.First(&persisted, job.ID).Error; err != nil {
