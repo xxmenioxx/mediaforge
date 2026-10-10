@@ -130,6 +130,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/assets/metadata", assets.UpdateMetadata)
 		api.POST("/assets/rename", assets.Rename)
 		api.POST("/assets/conversion", assets.UpdateConversion)
+		api.PATCH("/assets/tracks", assets.UpdateTracks)
 		api.GET("/assets/track-maintenance/inventory", assets.TrackMaintenanceInventory)
 		api.POST("/assets/track-maintenance/remove", assets.StartTrackRemoval)
 		api.POST("/assets/track-maintenance/edit", assets.StartTrackEdit)

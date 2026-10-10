@@ -1,4 +1,9 @@
-import type { AssetConversionOverrideState, AssetEditResponse, AssetMetadataState } from '../api/types';
+import type {
+  AssetConversionOverrideState,
+  AssetEditResponse,
+  AssetMetadataState,
+  AssetTracksOverrideState,
+} from '../api/types';
 
 export type AssetInfoEditDocument = {
   metadata: {
@@ -68,6 +73,57 @@ export function assetInfoDiscardDraft(baseline: AssetInfoEditDocument): AssetInf
   return assetInfoEditDocument(baseline.metadata, baseline.conversion);
 }
 
+export function assetTracksPatch(
+  persisted: AssetConversionOverrideState,
+  draft: AssetConversionOverrideState,
+): Partial<AssetTracksOverrideState> {
+  const before = normalizeAssetTracks(persisted);
+  const after = normalizeAssetTracks(draft);
+  const patch: Partial<AssetTracksOverrideState> = {};
+  const selections = ['keepVideoStreams', 'keepAudioStreams', 'keepSubtitleStreams'] as const;
+  const metadata = ['videoMetadata', 'audioMetadata', 'subtitleMetadata', 'subtitleRoleOverrides', 'subtitleSidecarFormatsByStream'] as const;
+
+  selections.forEach((key) => {
+    if (stableStringify(before[key]) === stableStringify(after[key])) return;
+    patch[key] = after[key] ?? null;
+  });
+  metadata.forEach((key) => {
+    if (stableStringify(before[key]) === stableStringify(after[key])) return;
+    patch[key] = after[key] ?? {};
+  });
+  return patch;
+}
+
+export function mergeAssetTracks(
+  conversion: AssetConversionOverrideState,
+  tracks: AssetTracksOverrideState,
+): AssetConversionOverrideState {
+  const next = { ...conversion };
+  const keys: Array<keyof AssetTracksOverrideState> = [
+    'keepVideoStreams', 'keepAudioStreams', 'keepSubtitleStreams',
+    'videoMetadata', 'audioMetadata', 'subtitleMetadata',
+    'subtitleRoleOverrides', 'subtitleSidecarFormatsByStream',
+  ];
+  keys.forEach((key) => { delete next[key]; });
+  Object.assign(next, normalizeAssetTracks(tracks));
+  return next;
+}
+
+export function assetInfoTracksSaveReconciliation(
+  baseline: AssetInfoEditDocument,
+  draft: AssetInfoEditDocument,
+  responseConversion: AssetConversionOverrideState,
+): { baseline: AssetInfoEditDocument; draft: AssetInfoEditDocument; dirty: boolean } {
+  const tracks = normalizeAssetTracks(responseConversion);
+  const nextBaseline = assetInfoEditDocument(baseline.metadata, mergeAssetTracks(baseline.conversion, tracks));
+  const nextDraft = assetInfoEditDocument(draft.metadata, mergeAssetTracks(draft.conversion, tracks));
+  return {
+    baseline: nextBaseline,
+    draft: nextDraft,
+    dirty: !assetInfoDocumentsEqual(nextBaseline, nextDraft),
+  };
+}
+
 function normalizeStringList(values: string[] | undefined): string[] {
   const seen = new Set<string>();
   return (values ?? []).reduce<string[]>((result, value) => {
@@ -89,7 +145,7 @@ function normalizeConversion(conversion: AssetConversionOverrideState): AssetCon
   (['keepVideoStreams', 'keepAudioStreams', 'keepSubtitleStreams'] as const).forEach((key) => {
     const values = normalized[key];
     const unique = Array.from(new Set((values ?? []).filter((value) => Number.isInteger(value) && value >= 0))).sort((left, right) => left - right);
-    if (unique.length) normalized[key] = unique;
+    if (Array.isArray(values)) normalized[key] = unique;
     else delete normalized[key];
   });
   if (!normalized.subtitleRoleOverrides || !Object.keys(normalized.subtitleRoleOverrides).length) delete normalized.subtitleRoleOverrides;
@@ -105,6 +161,29 @@ function normalizeConversion(conversion: AssetConversionOverrideState): AssetCon
     else delete normalized.subtitleSidecarFormatsByStream;
   }
   if (!normalized.subtitleTransforms?.length) delete normalized.subtitleTransforms;
+  return normalized;
+}
+
+function normalizeAssetTracks(tracks: AssetTracksOverrideState): AssetTracksOverrideState {
+  const normalized: AssetTracksOverrideState = {};
+  (['keepVideoStreams', 'keepAudioStreams', 'keepSubtitleStreams'] as const).forEach((key) => {
+    const values = tracks[key];
+    if (Array.isArray(values)) {
+      normalized[key] = Array.from(new Set(values.filter((value) => Number.isInteger(value) && value >= 0)))
+        .sort((left, right) => left - right);
+    }
+  });
+  (['videoMetadata', 'audioMetadata', 'subtitleMetadata', 'subtitleRoleOverrides'] as const).forEach((key) => {
+    const values = tracks[key];
+    if (values && Object.keys(values).length) normalized[key] = values;
+  });
+  if (tracks.subtitleSidecarFormatsByStream) {
+    const sidecars = Object.fromEntries(Object.entries(tracks.subtitleSidecarFormatsByStream).flatMap(([index, formats]) => {
+      const values = Array.from(new Set(formats)).sort();
+      return values.length ? [[index, values]] : [];
+    }));
+    if (Object.keys(sidecars).length) normalized.subtitleSidecarFormatsByStream = sidecars;
+  }
   return normalized;
 }
 

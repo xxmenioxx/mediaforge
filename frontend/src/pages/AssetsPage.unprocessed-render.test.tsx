@@ -17,7 +17,7 @@ vi.mock('../api/client', async (importOriginal) => {
     suggestProfile: vi.fn(), runtimeState: vi.fn(), workerNodes: vi.fn(), recommendEncoderQuality: vi.fn(),
     profileAssignments: vi.fn(), updateProfileAssignment: vi.fn(), assetScopeConfigurations: vi.fn(), updateAssetScopeConfiguration: vi.fn(), effectiveAssetConfiguration: vi.fn(), effectiveAssetConfigurations: vi.fn(),
     configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), queueRemainingPreview: vi.fn(), queueRemainingCommit: vi.fn(), createQueueBatch: vi.fn(), preflightSelectedAssets: vi.fn(), acceptQueueBatchPreflight: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
-    updateAssetConversion: vi.fn(), updateAssetMetadata: vi.fn(), updateAssetEdit: vi.fn(), testEncodes: vi.fn(),
+    updateAssetConversion: vi.fn(), updateAssetTracks: vi.fn(), updateAssetMetadata: vi.fn(), updateAssetEdit: vi.fn(), testEncodes: vi.fn(),
     jobArtifacts: vi.fn(), executionPlans: vi.fn(),
     },
   };
@@ -37,6 +37,16 @@ function testAsset(id: number, path: string, missing = false): Asset {
 
 function testPath(id: string, path: string, displayPath: string, root: boolean, assets: Asset[]): AssetPath {
   return { id, name: displayPath, path, relativePath: displayPath, displayPath, isLogicalGroupRoot: root, fileCount: assets.length, assetCount: assets.length, sizeBytes: assets.length * 1024, totalSizeBytes: assets.length * 1024, assets };
+}
+
+function assetInventoryWithConversion(conversion: Asset['conversion']): AssetInventory {
+  const asset = testAsset(1, '/media/raw/movies/Akira/Akira.mkv');
+  asset.conversion = conversion;
+  const rootPath = testPath('root', '/media/raw/movies/Akira', 'Root', true, [asset]);
+  return {
+    sourceGroups: [{ id: 1, name: 'Movies', relativePath: 'movies', sourcePath: '/media/raw/movies', fileCount: 1, assetCount: 1, titleCount: 1, pathCount: 1, sizeBytes: 1024, totalSizeBytes: 1024, logicalGroups: [{ id: '/media/raw/movies/Akira', name: 'Akira', path: '/media/raw/movies/Akira', relativePath: 'Akira', fileCount: 1, assetCount: 1, pathCount: 1, sizeBytes: 1024, totalSizeBytes: 1024, assetPaths: [rootPath] }] }],
+    unprocessed: [asset], unprocessedGroups: [], library: [], converted: [], unverified: [], accepted: [], missing: [], libraryGroups: [], convertedGroups: [], unverifiedGroups: [], acceptedGroups: [], reports: {}, sync: { lastSyncedAt: '', totalRecords: 1, missingFiles: 0, missingActionable: 0, missingHistorical: 0 },
+  } as unknown as AssetInventory;
 }
 
 function singleAssetInventory(): AssetInventory {
@@ -206,6 +216,7 @@ describe('Unprocessed Assets hierarchy', () => {
     vi.mocked(api.evaluateAdvisor).mockImplementation(async ({ mediaPath }) => ({ recommendation: 'worth_it', score: 90, summary: `Ready: ${mediaPath}`, reasons: [], warnings: [] } as never));
     vi.mocked(api.publishAssetsAsIs).mockResolvedValue({ message: 'Published as-is', published: 2 } as never);
     vi.mocked(api.updateAssetConversion).mockResolvedValue({} as never);
+    vi.mocked(api.updateAssetTracks).mockResolvedValue({ path: '', conversion: {} } as never);
     vi.mocked(api.updateAssetEdit).mockImplementation(async ({ path, metadata, conversion }) => ({ path, metadata: { ...metadata, updatedAt: '2026-08-28T00:00:00Z' }, conversion }) as never);
     vi.mocked(api.testEncodes).mockResolvedValue([]);
     vi.mocked(api.jobArtifacts).mockResolvedValue({ resultPath: '/reports/job-101.json', asIsPath: '' } as never);
@@ -495,6 +506,131 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(confirm).toHaveBeenCalledWith('Discard unsaved Asset Info changes?');
     expect(screen.getByRole('dialog')).toBeTruthy();
   }, 15000);
+
+  it('saves only changed Tracks fields while retaining an unsaved Asset Override draft', async () => {
+    const path = '/media/raw/movies/Akira/Akira.mkv';
+    const inventory = assetInventoryWithConversion({ keepAudioStreams: [1, 2], videoCodec: 'x265', qualityValue: 18 });
+    let persistedConversion = { ...inventory.unprocessed[0].conversion };
+    vi.mocked(api.assets).mockResolvedValue(inventory);
+    vi.mocked(api.latestSnapshot).mockResolvedValue({
+      found: true,
+      snapshot: { ...testSnapshot(path), audioTracks: 2, audioStreams: [
+        { index: 1, type: 'audio', codec: 'aac', language: 'eng' },
+        { index: 2, type: 'audio', codec: 'ac3', language: 'jpn' },
+      ] } as unknown as ScanResult,
+      status: 'current', requiresAnalysis: false, staleComponents: [],
+    });
+    vi.mocked(api.updateAssetTracks).mockImplementation(async ({ path: savedPath, ...patch }) => {
+      persistedConversion = { ...persistedConversion, ...patch };
+      inventory.unprocessed[0].conversion = persistedConversion;
+      return { path: savedPath, conversion: persistedConversion } as never;
+    });
+
+    renderAssetsPage();
+    const user = userEvent.setup();
+    const dialog = await openAssetInfo(user);
+    await user.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'Keep audio track 2' }));
+    await user.click(within(dialog).getByRole('tab', { name: 'Overview' }));
+    await user.click(within(dialog).getByRole('tab', { name: 'Quick Asset Overrides' }));
+    const quality = await within(dialog).findByRole('combobox', { name: 'Quality / storage intent' });
+    await chooseSelectOption(quality, 'Maximum space saving', user);
+    await user.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Save Tracks' }));
+
+    await waitFor(() => expect(api.updateAssetTracks).toHaveBeenCalledTimes(1));
+    expect(api.updateAssetTracks).toHaveBeenCalledWith({ path, keepAudioStreams: [1] });
+    expect(api.updateAssetEdit).not.toHaveBeenCalled();
+    expect(persistedConversion).toMatchObject({ keepAudioStreams: [1], videoCodec: 'x265', qualityValue: 18 });
+    expect(await within(dialog).findByText('Tracks saved.')).toBeTruthy();
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const reopened = await openAssetInfo(user);
+    await user.click(within(reopened).getByRole('tab', { name: 'Tracks' }));
+    expect(await within(reopened).findByRole('checkbox', { name: 'Keep audio track 1' })).toHaveProperty('checked', true);
+    expect(within(reopened).getByRole('checkbox', { name: 'Keep audio track 2' })).toHaveProperty('checked', false);
+  }, 20000);
+
+  it('persists an explicit empty audio selection through Save Tracks', async () => {
+    const path = '/media/raw/movies/Akira/Akira.mkv';
+    const inventory = assetInventoryWithConversion({ keepAudioStreams: [1], videoCodec: 'x265', qualityValue: 18 });
+    let persistedConversion = { ...inventory.unprocessed[0].conversion };
+    vi.mocked(api.assets).mockResolvedValue(inventory);
+    vi.mocked(api.latestSnapshot).mockResolvedValue({
+      found: true,
+      snapshot: { ...testSnapshot(path), audioTracks: 1, audioStreams: [{ index: 1, type: 'audio', codec: 'aac', language: 'eng' }] } as unknown as ScanResult,
+      status: 'current', requiresAnalysis: false, staleComponents: [],
+    });
+    vi.mocked(api.updateAssetTracks).mockImplementation(async ({ path: savedPath, ...patch }) => {
+      persistedConversion = { ...persistedConversion, ...patch };
+      inventory.unprocessed[0].conversion = persistedConversion;
+      return { path: savedPath, conversion: persistedConversion } as never;
+    });
+
+    renderAssetsPage();
+    const user = userEvent.setup();
+    const dialog = await openAssetInfo(user);
+    await user.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'Keep audio track 1' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Save Tracks' }));
+
+    await waitFor(() => expect(api.updateAssetTracks).toHaveBeenCalledWith({ path, keepAudioStreams: [] }));
+    expect(persistedConversion.keepAudioStreams).toEqual([]);
+    expect(within(dialog).getByRole('checkbox', { name: 'Keep audio track 1' })).toHaveProperty('checked', false);
+  }, 20000);
+
+  it('keeps a failed Tracks draft and Reset restores persisted Tracks without changing conversion drafts', async () => {
+    const path = '/media/raw/movies/Akira/Akira.mkv';
+    const inventory = assetInventoryWithConversion({ keepAudioStreams: [1, 2], videoCodec: 'x265', qualityValue: 18 });
+    vi.mocked(api.assets).mockResolvedValue(inventory);
+    vi.mocked(api.latestSnapshot).mockResolvedValue({
+      found: true,
+      snapshot: { ...testSnapshot(path), audioTracks: 2, audioStreams: [
+        { index: 1, type: 'audio', codec: 'aac', language: 'eng' },
+        { index: 2, type: 'audio', codec: 'ac3', language: 'jpn' },
+      ] } as unknown as ScanResult,
+      status: 'current', requiresAnalysis: false, staleComponents: [],
+    });
+    vi.mocked(api.updateAssetTracks).mockRejectedValueOnce(new Error('offline'));
+
+    renderAssetsPage();
+    const user = userEvent.setup();
+    const dialog = await openAssetInfo(user);
+    await user.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'Keep audio track 2' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Save Tracks' }));
+
+    expect(await within(dialog).findByText(/Could not save Tracks: offline/)).toBeTruthy();
+    expect(within(dialog).getByRole('checkbox', { name: 'Keep audio track 2' })).toHaveProperty('checked', false);
+    expect(within(dialog).getByRole('button', { name: 'Save Tracks' })).toHaveProperty('disabled', false);
+    await user.click(within(dialog).getByRole('button', { name: 'Reset' }));
+    expect(within(dialog).getByRole('checkbox', { name: 'Keep audio track 2' })).toHaveProperty('checked', true);
+    expect(within(dialog).getByRole('button', { name: 'Save Tracks' })).toHaveProperty('disabled', true);
+    expect(inventory.unprocessed[0].conversion).toMatchObject({ keepAudioStreams: [1, 2], videoCodec: 'x265', qualityValue: 18 });
+  }, 20000);
+
+  it('keeps Save Tracks disabled and shows the manageTracks denial reason', async () => {
+    const inventory = assetInventoryWithConversion({ keepAudioStreams: [1] });
+    inventory.unprocessed[0].lifecycle = { actions: { manageTracks: { allowed: false, reason: 'active_work' } } } as never;
+    vi.mocked(api.assets).mockResolvedValue(inventory);
+    vi.mocked(api.latestSnapshot).mockResolvedValue({
+      found: true,
+      snapshot: { ...testSnapshot(), audioTracks: 1, audioStreams: [{ index: 1, type: 'audio', codec: 'aac', language: 'eng' }] } as unknown as ScanResult,
+      status: 'current', requiresAnalysis: false, staleComponents: [],
+    });
+
+    renderAssetsPage();
+    const user = userEvent.setup();
+    const dialog = await openAssetInfo(user);
+    await user.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
+
+    expect(await within(dialog).findByText('An active operation must finish before this action is available.')).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Save Tracks' })).toHaveProperty('disabled', true);
+    expect(within(dialog).getByRole('checkbox', { name: 'Keep audio track 1' })).toHaveProperty('disabled', true);
+    expect(api.updateAssetTracks).not.toHaveBeenCalled();
+  }, 20000);
 
   it('does not show backend action-capability diagnostics in Asset Info', async () => {
     const inventory = singleAssetInventory();
