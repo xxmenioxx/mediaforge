@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -331,19 +332,24 @@ output=""
 for argument do case "$argument" in --output-filename:*) output="${argument#--output-filename:}" ;; esac; done
 touch "$MVFORGE_OCR_LIFECYCLE_MARKER"
 printf 'ocr\n' >> "$MVFORGE_OCR_LIFECYCLE_LOG"
-sleep 0.4
+read -r _ < "$MVFORGE_OCR_LIFECYCLE_GATE"
 printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Remaining subscriber' > "$output"
 `)
 	marker := filepath.Join(root, "started")
+	gate := makeCanonicalOCRTestGate(t)
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_MARKER", marker)
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_LOG", filepath.Join(root, "ocr.log"))
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_GATE", gate)
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "internal-cache"))
 	mediaPath := filepath.Join(root, "movie.mkv")
 	if err := os.WriteFile(mediaPath, []byte("shared cancel media"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stream := FFProbeStream{Index: 4, CodecName: "dvd_subtitle", Tags: map[string]string{"language": "spa"}}
-	request := canonicalOCRRequestFor(mediaPath, stream, "spa", "raw", 0, 0)
+	request, err := canonicalOCRRequestWithRuntime(context.Background(), canonicalOCRRequestFor(mediaPath, stream, "spa", "raw", 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctxA, cancelA := context.WithCancel(context.Background())
 	resultA := make(chan error, 1)
 	go func() {
@@ -351,18 +357,25 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Remaining subscriber' > "$out
 		resultA <- err
 	}()
 	waitForFile(t, marker)
+	flight := waitForCanonicalOCRSubscriberCount(t, request.Identity.key(), 1)
 	resultB := make(chan error, 1)
 	go func() {
 		_, err := canonicalOCREvidenceForRequest(context.Background(), request, nil)
 		resultB <- err
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitForCanonicalOCRSubscriberCount(t, request.Identity.key(), 2)
 	cancelA()
-	if err := <-resultA; err == nil || !strings.Contains(err.Error(), "context canceled") {
+	if err := <-resultA; err != context.Canceled {
 		t.Fatalf("cancelled subscriber error=%v", err)
 	}
+	releaseCanonicalOCRTestGate(t, gate)
 	if err := <-resultB; err != nil {
 		t.Fatalf("remaining subscriber lost shared flight: %v", err)
+	}
+	select {
+	case <-flight.done:
+	default:
+		t.Fatal("shared flight did not finish after remaining subscriber received evidence")
 	}
 	log, err := os.ReadFile(filepath.Join(root, "ocr.log"))
 	if err != nil {
@@ -391,22 +404,31 @@ func TestCanonicalOCRLastSubscriberCancellationCommitsNoEvidenceAndRetriesFresh(
 	installCanonicalOCRTestTools(t, `#!/bin/sh
 output=""
 for argument do case "$argument" in --output-filename:*) output="${argument#--output-filename:}" ;; esac; done
-touch "$MVFORGE_OCR_LIFECYCLE_MARKER"
 printf 'ocr\n' >> "$MVFORGE_OCR_LIFECYCLE_LOG"
-sleep 0.4
+if [ ! -e "$MVFORGE_OCR_LIFECYCLE_RETRY_ALLOWED" ]; then
+  touch "$MVFORGE_OCR_LIFECYCLE_MARKER"
+  read -r _ < "$MVFORGE_OCR_LIFECYCLE_GATE"
+fi
 printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Retry after cancellation' > "$output"
 `)
 	marker := filepath.Join(root, "started")
+	gate := makeCanonicalOCRTestGate(t)
+	retryAllowed := filepath.Join(root, "retry-allowed")
 	logPath := filepath.Join(root, "ocr.log")
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_MARKER", marker)
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_LOG", logPath)
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_GATE", gate)
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_RETRY_ALLOWED", retryAllowed)
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "internal-cache"))
 	mediaPath := filepath.Join(root, "movie.mkv")
 	if err := os.WriteFile(mediaPath, []byte("cancel media"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stream := FFProbeStream{Index: 4, CodecName: "dvd_subtitle", Tags: map[string]string{"language": "spa"}}
-	request := canonicalOCRRequestFor(mediaPath, stream, "spa", "raw", 0, 0)
+	request, err := canonicalOCRRequestWithRuntime(context.Background(), canonicalOCRRequestFor(mediaPath, stream, "spa", "raw", 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	first := make(chan error, 1)
 	go func() {
@@ -414,9 +436,21 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Retry after cancellation' > "
 		first <- err
 	}()
 	waitForFile(t, marker)
+	flight := waitForCanonicalOCRSubscriberCount(t, request.Identity.key(), 1)
 	cancel()
-	if err := <-first; err == nil || !strings.Contains(err.Error(), "context canceled") {
+	if err := <-first; err != context.Canceled {
 		t.Fatalf("last subscriber cancellation error=%v", err)
+	}
+	select {
+	case <-flight.done:
+	default:
+		t.Fatal("cancelled caller returned before the abandoned flight settled")
+	}
+	flight.mu.Lock()
+	state, retainedResult := flight.state, flight.result
+	flight.mu.Unlock()
+	if state != canonicalOCRFlightFinished || retainedResult != nil {
+		t.Fatalf("abandoned flight retained reusable state: state=%d result=%#v", state, retainedResult)
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "internal-cache"))
 	if err != nil {
@@ -426,6 +460,9 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Retry after cancellation' > "
 		if strings.HasPrefix(entry.Name(), "evidence-") {
 			t.Fatalf("cancelled flight committed evidence: %s", entry.Name())
 		}
+	}
+	if err := os.WriteFile(retryAllowed, []byte("retry"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := canonicalOCREvidenceForRequest(context.Background(), request, nil); err != nil {
 		t.Fatalf("fresh retry failed after cancelled flight: %v", err)
@@ -437,6 +474,179 @@ printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'Retry after cancellation' > "
 	if got := strings.Count(string(log), "ocr\n"); got != 2 {
 		t.Fatalf("retry reused cancelled OCR flight or evidence: %q", log)
 	}
+}
+
+func TestCanonicalOCRCancellationCommitBoundaryRaceHasConsistentResultAndCache(t *testing.T) {
+	cacheRoot := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", cacheRoot)
+	for iteration := 0; iteration < 8; iteration++ {
+		mediaPath := filepath.Join(t.TempDir(), "movie.mkv")
+		if err := os.WriteFile(mediaPath, []byte("boundary media"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		request := canonicalOCRRequestFor(mediaPath, FFProbeStream{Index: 4, CodecName: "dvd_subtitle"}, "spa", "raw", 0, 0)
+		flight, subscription := newCanonicalOCRTestFlight(request)
+		evidence := &canonicalOCREvidence{
+			Identity:  request.Identity,
+			Message:   "boundary result",
+			Complete:  true,
+			Integrity: "canonical-cues-validated-v1",
+			OCRMode:   request.Mode,
+			Cues:      []canonicalBitmapSubtitleCue{{Text: "boundary result"}},
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		start := make(chan struct{})
+		publishedResult := make(chan bool, 1)
+		waitResult := make(chan struct {
+			evidence *canonicalOCREvidence
+			err      error
+		}, 1)
+		go func() {
+			<-start
+			cancel()
+			result, err := subscription.wait(ctx)
+			waitResult <- struct {
+				evidence *canonicalOCREvidence
+				err      error
+			}{evidence: result, err: err}
+		}()
+		go func() {
+			<-start
+			publishedResult <- flight.commitEvidence(evidence)
+		}()
+		close(start)
+
+		published := <-publishedResult
+		if published {
+			flight.finish(evidence, nil)
+		} else {
+			flight.finish(nil, context.Canceled)
+		}
+		observed := <-waitResult
+		_, cacheErr := os.Stat(canonicalOCRCachePath(cacheRoot, flight.key))
+		cacheExists := cacheErr == nil
+		if published {
+			if observed.err != nil || observed.evidence == nil || !cacheExists {
+				t.Fatalf("commit won but caller/cache disagreed: err=%v evidence=%#v cacheExists=%t", observed.err, observed.evidence, cacheExists)
+			}
+		} else if observed.err != context.Canceled || observed.evidence != nil || cacheExists {
+			t.Fatalf("cancellation won but caller/cache disagreed: err=%v evidence=%#v cacheExists=%t", observed.err, observed.evidence, cacheExists)
+		}
+		flight.cancel()
+	}
+}
+
+func TestCanonicalOCRAbandonedCancellationFlightCannotPublishAfterSameKeyRetryStarts(t *testing.T) {
+	cacheRoot := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", cacheRoot)
+	mediaPath := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(mediaPath, []byte("retry isolation media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := canonicalOCRRequestFor(mediaPath, FFProbeStream{Index: 4, CodecName: "dvd_subtitle"}, "spa", "raw", 0, 0)
+	key := request.Identity.key()
+	oldFlight, oldSubscription := newCanonicalOCRTestFlight(request)
+	canonicalOCRFlights.Lock()
+	canonicalOCRFlights.items[key] = oldFlight
+	canonicalOCRFlights.Unlock()
+	oldEvidence := &canonicalOCREvidence{Identity: request.Identity, Message: "abandoned predecessor", Complete: true, Integrity: "canonical-cues-validated-v1"}
+	if abandoned, publicationStarted := oldSubscription.detach(); !abandoned || publicationStarted {
+		t.Fatalf("last subscriber did not abandon predecessor: abandoned=%t publicationStarted=%t", abandoned, publicationStarted)
+	}
+
+	newFlight, _ := newCanonicalOCRTestFlight(request)
+	canonicalOCRFlights.Lock()
+	if canonicalOCRFlights.items[key] != nil {
+		canonicalOCRFlights.Unlock()
+		t.Fatal("abandoned predecessor remained in the registry")
+	}
+	canonicalOCRFlights.items[key] = newFlight
+	canonicalOCRFlights.Unlock()
+	if oldFlight.commitEvidence(oldEvidence) {
+		t.Fatal("abandoned predecessor regained authority to commit evidence")
+	}
+	newEvidence := &canonicalOCREvidence{Identity: request.Identity, Message: "fresh successor", Complete: true, Integrity: "canonical-cues-validated-v1"}
+	if !newFlight.commitEvidence(newEvidence) {
+		t.Fatal("fresh same-key flight could not commit evidence")
+	}
+	oldFlight.finish(oldEvidence, nil)
+	canonicalOCRFlights.Lock()
+	registered := canonicalOCRFlights.items[key]
+	canonicalOCRFlights.Unlock()
+	if registered != newFlight {
+		t.Fatal("old-flight cleanup removed the newer same-key flight")
+	}
+	cacheBytes, err := os.ReadFile(canonicalOCRCachePath(cacheRoot, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cacheBytes), `"message":"fresh successor"`) || strings.Contains(string(cacheBytes), "abandoned predecessor") {
+		t.Fatalf("cache contains stale predecessor evidence: %s", cacheBytes)
+	}
+	newFlight.finish(newEvidence, nil)
+	oldFlight.cancel()
+	newFlight.cancel()
+}
+
+func newCanonicalOCRTestFlight(request canonicalOCRRequest) (*canonicalOCRFlight, *canonicalOCRSubscription) {
+	flightCtx, cancel := context.WithCancel(context.Background())
+	flight := &canonicalOCRFlight{
+		key:         request.Identity.key(),
+		request:     request,
+		ctx:         flightCtx,
+		cancel:      cancel,
+		done:        make(chan struct{}),
+		subscribers: map[*canonicalOCRSubscription]OCRProgressFunc{},
+	}
+	subscription := &canonicalOCRSubscription{flight: flight}
+	flight.subscribers[subscription] = nil
+	return flight, subscription
+}
+
+func makeCanonicalOCRTestGate(t *testing.T) string {
+	t.Helper()
+	gate := filepath.Join(t.TempDir(), "ocr.gate")
+	if err := syscall.Mkfifo(gate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return gate
+}
+
+func releaseCanonicalOCRTestGate(t *testing.T, gate string) {
+	t.Helper()
+	writer, err := os.OpenFile(gate, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("continue\n")); err != nil {
+		writer.Close()
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForCanonicalOCRSubscriberCount(t *testing.T, key string, count int) *canonicalOCRFlight {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		canonicalOCRFlights.Lock()
+		flight := canonicalOCRFlights.items[key]
+		subscriberCount := -1
+		if flight != nil {
+			flight.mu.Lock()
+			subscriberCount = len(flight.subscribers)
+			flight.mu.Unlock()
+		}
+		canonicalOCRFlights.Unlock()
+		if subscriberCount == count {
+			return flight
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d subscribers on canonical OCR flight %q", count, key)
+	return nil
 }
 
 func TestCanonicalOCRFailedFlightDoesNotCommitAndRetriesFresh(t *testing.T) {
