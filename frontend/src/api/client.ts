@@ -12,6 +12,8 @@ import type {
   AssetReviewUpdateInput,
   AssetMetadataUpdateInput,
   AssetConversionUpdateInput,
+  AssetTracksUpdateInput,
+  AssetTracksUpdateResponse,
   AssetInventory,
   ArchivedOriginalMutationInput,
   AssetEditInput,
@@ -585,6 +587,11 @@ export const api = {
     request<{ path: string; conversion: unknown }>(`/api/assets/conversion?path=${encodeURIComponent(path)}`, {
       method: 'POST',
       body: JSON.stringify(conversion),
+    }),
+  updateAssetTracks: ({ path, ...tracks }: AssetTracksUpdateInput) =>
+    request<AssetTracksUpdateResponse>(`/api/assets/tracks?path=${encodeURIComponent(path)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(tracks),
     }),
   testEncodes: (sourcePath?: string) => request<TestEncode[]>(`/api/test-encodes${sourcePath ? `?sourcePath=${encodeURIComponent(sourcePath)}` : ''}`),
   testEncodeInventory: (filters: Record<string, string | number | undefined> = {}) => {

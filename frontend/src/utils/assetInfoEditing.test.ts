@@ -6,8 +6,11 @@ import {
   assetInfoEditDocument,
   assetInfoHydrationReconciliation,
   assetInfoRefreshReconciliation,
+  assetInfoTracksSaveReconciliation,
   assetInfoSaveFailureReconciliation,
   assetInfoSaveReconciliation,
+  assetTracksPatch,
+  mergeAssetTracks,
 } from './assetInfoEditing';
 
 const conversion = (patch: Partial<AssetConversionOverrideState> = {}): AssetConversionOverrideState => ({
@@ -25,17 +28,21 @@ const metadata = (patch: Partial<AssetMetadataState> = {}): AssetMetadataState =
 });
 
 describe('asset info editing state', () => {
-  it('compares only normalized editable values across null, empty, and duplicate defaults', () => {
+  it('keeps explicit empty track selections distinct from inherited selections', () => {
     const baseline = assetInfoEditDocument(
       metadata({ categories: [' Drama ', 'Drama'], tags: [' action ', 'action'] }),
-      conversion({ keepAudioStreams: null, keepSubtitleStreams: [], subtitleRoleOverrides: {}, videoMetadata: {} }),
+      conversion({ keepAudioStreams: null, keepSubtitleStreams: [], keepVideoStreams: [2, 1, 2], subtitleRoleOverrides: {}, videoMetadata: {} }),
     );
     const hydrated = assetInfoEditDocument(
       metadata({ categories: ['Drama'], tags: ['action'], updatedAt: '2026-09-23T00:00:00Z' }),
-      conversion(),
+      conversion({ keepAudioStreams: undefined, keepSubtitleStreams: [], keepVideoStreams: [1, 2] }),
     );
 
     expect(assetInfoDocumentsEqual(baseline, hydrated)).toBe(true);
+    expect(assetInfoDocumentsEqual(
+      assetInfoEditDocument(metadata(), { keepAudioStreams: null }),
+      assetInfoEditDocument(metadata(), { keepAudioStreams: [] }),
+    )).toBe(false);
   });
 
   it('marks persisted edits dirty and returns to clean when the user reverts them', () => {
@@ -127,5 +134,62 @@ describe('asset info editing state', () => {
     expect(failed.draft).toEqual(draft);
     expect(failed.dirty).toBe(true);
     expect(assetInfoDiscardDraft(draft)).toEqual(draft);
+  });
+
+  it('builds a scoped Tracks patch with only changed fields', () => {
+    const persisted = conversion({
+      keepAudioStreams: [1, 2],
+      keepSubtitleStreams: [3],
+      videoCodec: 'x265',
+      qualityValue: 18,
+      subtitleRoleOverrides: { '3': { role: 'forced' } },
+      subtitleSidecarFormatsByStream: { '3': ['srt'] },
+    });
+    const draft = {
+      ...persisted,
+      keepAudioStreams: [1],
+      videoMetadata: { '0': { title: 'Main' } },
+    };
+
+    expect(assetTracksPatch(persisted, draft)).toEqual({
+      keepAudioStreams: [1],
+      videoMetadata: { '0': { title: 'Main' } },
+    });
+  });
+
+  it('preserves an explicit empty selection in the Tracks patch', () => {
+    expect(assetTracksPatch(conversion({ keepAudioStreams: [1] }), conversion({ keepAudioStreams: [] })))
+      .toEqual({ keepAudioStreams: [] });
+  });
+
+  it('uses explicit empty maps to clear only changed role and sidecar overrides', () => {
+    const persisted = conversion({
+      subtitleRoleOverrides: { '3': { role: 'forced' } },
+      subtitleSidecarFormatsByStream: { '3': ['srt'] },
+    });
+    const draft = conversion({ subtitleRoleOverrides: {}, subtitleSidecarFormatsByStream: {} });
+
+    expect(assetTracksPatch(persisted, draft)).toEqual({
+      subtitleRoleOverrides: {},
+      subtitleSidecarFormatsByStream: {},
+    });
+  });
+
+  it('reconciles saved Tracks values while retaining an unrelated conversion draft', () => {
+    const baseline = assetInfoEditDocument(metadata(), conversion({ keepAudioStreams: [1, 2], videoCodec: 'x265', qualityValue: 18 }));
+    const draft = assetInfoEditDocument(metadata(), conversion({ keepAudioStreams: [1], videoCodec: 'x264', qualityValue: 22 }));
+    const reconciled = assetInfoTracksSaveReconciliation(baseline, draft, conversion({ keepAudioStreams: [1], videoCodec: 'x265', qualityValue: 18 }));
+
+    expect(reconciled.baseline.conversion).toMatchObject({ keepAudioStreams: [1], videoCodec: 'x265', qualityValue: 18 });
+    expect(reconciled.draft.conversion).toMatchObject({ keepAudioStreams: [1], videoCodec: 'x264', qualityValue: 22 });
+    expect(reconciled.dirty).toBe(true);
+  });
+
+  it('merges a Tracks reset without changing unrelated Asset Override values', () => {
+    const conversionDraft = conversion({ keepAudioStreams: [1], videoCodec: 'x264', qualityValue: 22 });
+    const persisted = conversion({ keepAudioStreams: [1, 2], videoCodec: 'x265', qualityValue: 18 });
+    const reset = mergeAssetTracks(conversionDraft, persisted);
+
+    expect(reset).toMatchObject({ keepAudioStreams: [1, 2], videoCodec: 'x264', qualityValue: 22 });
   });
 });

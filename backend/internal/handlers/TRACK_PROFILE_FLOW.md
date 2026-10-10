@@ -23,6 +23,10 @@ empty selection.
 
 - Track Profile and Asset overrides select embedded video/audio/subtitle indexes
   and describe subtitle sidecar transforms.
+- Asset Info's Tracks tab writes its stream selections, stream metadata, subtitle
+  roles, and sidecar formats through `PATCH /api/assets/tracks`. Omitted fields
+  remain unchanged; an explicit empty selection remains an empty selection.
+  Other conversion values continue to use the Asset Override save boundary.
 - Video `Profile.PreserveSubtitles` and `externalSubtitleFormat` still influence
   embedded subtitle mapping and conversion when no Track Profile is selected.
 - Video `Profile.PreserveChapters` and the matching Asset override still decide

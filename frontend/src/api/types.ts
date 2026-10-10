@@ -751,6 +751,26 @@ export type AssetConversionUpdateInput = AssetConversionOverrideState & {
   path: string;
 };
 
+export type AssetTracksOverrideState = Pick<AssetConversionOverrideState,
+  | 'keepVideoStreams'
+  | 'keepAudioStreams'
+  | 'keepSubtitleStreams'
+  | 'videoMetadata'
+  | 'audioMetadata'
+  | 'subtitleMetadata'
+  | 'subtitleRoleOverrides'
+  | 'subtitleSidecarFormatsByStream'
+>;
+
+export type AssetTracksUpdateInput = Partial<AssetTracksOverrideState> & {
+  path: string;
+};
+
+export type AssetTracksUpdateResponse = {
+  path: string;
+  conversion: AssetConversionOverrideState;
+};
+
 export type AssetInventory = {
 	sourceGroups: AssetSourceGroup[];
   raw?: Asset[];

@@ -37,6 +37,7 @@ func newAssetEditTestServer(t *testing.T) (*gorm.DB, *gin.Engine, string) {
 	router.POST("/api/assets/edit", handler.Edit)
 	router.POST("/api/assets/metadata", handler.UpdateMetadata)
 	router.POST("/api/assets/conversion", handler.UpdateConversion)
+	router.PATCH("/api/assets/tracks", handler.UpdateTracks)
 	router.POST("/api/assets/rename", handler.Rename)
 	return db, router, root
 }

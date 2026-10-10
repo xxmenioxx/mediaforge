@@ -80,7 +80,7 @@ import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDial
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
 import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
 import { openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_OPEN_EVENT, QUEUE_BATCH_PREFLIGHT_STORAGE_KEY } from '../utils/queueBatchPreflightEvents';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AudioEnhancementProfile, EffectiveAssetConfiguration, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AssetTracksUpdateInput, AudioEnhancementProfile, EffectiveAssetConfiguration, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -91,7 +91,7 @@ import { assetOverridePreferenceDraft, getMVForgePreferences } from '../mvforgeP
 import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
-import { assetInfoDiscardDraft, assetInfoDocumentsEqual, assetInfoEditDocument, assetInfoHydrationReconciliation, assetInfoRefreshReconciliation, assetInfoSaveFailureReconciliation, assetInfoSaveReconciliation, type AssetInfoEditDocument } from '../utils/assetInfoEditing';
+import { assetInfoDiscardDraft, assetInfoDocumentsEqual, assetInfoEditDocument, assetInfoHydrationReconciliation, assetInfoRefreshReconciliation, assetInfoSaveFailureReconciliation, assetInfoSaveReconciliation, assetInfoTracksSaveReconciliation, assetTracksPatch, mergeAssetTracks, type AssetInfoEditDocument } from '../utils/assetInfoEditing';
 import { patchAssetInventoryAsset } from '../utils/assetInventoryPatch';
 import { effectiveVideoProfileLabel, hidePreConversionActionsForAsset, testEncodeConfigurationReason, testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
 import { customUpscaleHeightError, smartUpscaleControlsDisabled } from '../upscale';
@@ -3775,6 +3775,8 @@ function AssetRow({
     }
   }, [autoOpenAssetInfo]);
   const conversionDraft = assetEditDraft.conversion;
+  const pendingTracksPatch = assetTracksPatch(persistedAssetEdit.conversion, conversionDraft);
+  const tracksDirty = Object.keys(pendingTracksPatch).length > 0;
   // Asset Info edits persisted metadata. Effective scope configuration is
   // projected separately for the read-only Selected Asset category label.
   const metadataCategory = firstCategory(assetEditDraft.metadata.categories) || groupCategory;
@@ -3944,6 +3946,20 @@ function AssetRow({
       const retained = assetInfoSaveFailureReconciliation(persistedAssetEdit, assetEditDraftRef.current);
       setPersistedAssetEdit(retained.baseline);
       setAssetEditDraft(retained.draft);
+    },
+  });
+  const saveAssetTracks = useMutation({
+    mutationFn: (patch: AssetTracksUpdateInput) => api.updateAssetTracks(patch),
+    onSuccess: async (response) => {
+      const savedConversion = normalizeAssetConversionOverride(response.conversion);
+      const reconciled = assetInfoTracksSaveReconciliation(persistedAssetEdit, assetEditDraftRef.current, savedConversion);
+      setPersistedAssetEdit(reconciled.baseline);
+      setAssetEditDraft(reconciled.draft);
+      assetEditDraftRef.current = reconciled.draft;
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        queryClient.invalidateQueries({ queryKey: ['effectiveAssetConfiguration'] }),
+      ]);
     },
   });
   const resetAssetEdit = saveAssetEdit.reset;
@@ -4381,11 +4397,11 @@ function AssetRow({
     if (!scan) {
       return;
     }
-    const allIndexes = streamIndexesForType(scan, type);
     const current = conversionStreamIndexes(conversionDraft, scan, type);
     const next = keep ? normalizeNumberList([...current, index]) : safeArray(current).filter((candidate) => candidate !== index);
-    const indexes = selectedOrUndefined(next, allIndexes);
+    const indexes = normalizeNumberList(next);
     const nextDraft = withStreamSelection(conversionDraft, type, indexes);
+    saveAssetTracks.reset();
     setConversionDraft(nextDraft);
   }
 
@@ -4395,6 +4411,7 @@ function AssetRow({
     if (formats?.length) current[String(index)] = formats;
     else delete current[String(index)];
     const nextDraft = { ...conversionDraft, subtitleSidecarFormatsByStream: Object.keys(current).length ? current : undefined };
+    saveAssetTracks.reset();
     setConversionDraft(nextDraft);
   }
 
@@ -4403,6 +4420,7 @@ function AssetRow({
     if (value === 'auto') delete current[String(index)];
     else current[String(index)] = { role: value };
     const nextDraft = { ...conversionDraft, subtitleRoleOverrides: current };
+    saveAssetTracks.reset();
     setConversionDraft(nextDraft);
   }
 
@@ -4421,6 +4439,7 @@ function AssetRow({
   }
 
   function updateStreamMetadata(type: 'video' | 'audio' | 'subtitle', index: number, patch: StreamMetadataOverride) {
+    saveAssetTracks.reset();
     setConversionDraft((current) => {
       const key = type === 'video' ? 'videoMetadata' : type === 'audio' ? 'audioMetadata' : 'subtitleMetadata';
       const currentMap = current[key] ?? {};
@@ -4435,8 +4454,25 @@ function AssetRow({
     });
   }
 
+  function resetTrackChanges() {
+    if (saveAssetTracks.isPending || saveAssetEdit.isPending || renameAsset.isPending) return;
+    const current = assetEditDraftRef.current;
+    const reset = assetInfoEditDocument(
+      current.metadata,
+      mergeAssetTracks(current.conversion, persistedAssetEdit.conversion),
+    );
+    setAssetEditDraft(reset);
+    assetEditDraftRef.current = reset;
+    saveAssetTracks.reset();
+  }
+
+  function saveTrackChanges() {
+    if (!tracksDirty || rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending || saveAssetEdit.isPending || renameAsset.isPending || asset.missing) return;
+    saveAssetTracks.mutate({ path: asset.path, ...pendingTracksPatch });
+  }
+
   function saveConversionOverrides() {
-    if (!assetEditDirty || saveAssetEdit.isPending || renameAsset.isPending) return;
+    if (!assetEditDirty || saveAssetEdit.isPending || saveAssetTracks.isPending || renameAsset.isPending) return;
     saveAssetEdit.mutate(assetEditDraft);
   }
 
@@ -5935,7 +5971,7 @@ async function generateExternalSubtitle(
                   <Stack spacing={2} sx={{ pt: 1.5 }}>
                     {snapshotTab === 'tracks' ? <Box>
                     {snapshotData ? <><TrackMaintenancePanel path={asset.path} active={showSnapshotDialog && snapshotTab === 'tracks'} hasOpenJob={hasOpenJob} canManageTracks={assetInfoCapability(asset, 'manageTracks').allowed} canManageAttachments={assetInfoCapability(asset, 'manageAttachments').allowed} />
-                    {!isConverted ? <><Typography variant="h3">Conversion track selection</Typography><MediaSnapshotDetails
+                    {!isConverted ? <><Typography variant="h3">Conversion track selection</Typography><Alert severity="info">Saving a manual selection creates an asset-level Tracks override. It does not modify the Track Profile, and Queue continues to use the backend-resolved Track Plan.</Alert><MediaSnapshotDetails
                       scan={snapshotData}
                       section="tracks"
                       streamControls={
@@ -5944,17 +5980,17 @@ async function generateExternalSubtitle(
                           : {
                               video: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'video'),
-                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending,
                                 onToggle: (index, keep) => toggleSnapshotStream('video', index, keep),
                               },
                               audio: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'audio'),
-                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending,
                                 onToggle: (index, keep) => toggleSnapshotStream('audio', index, keep),
                               },
                               subtitle: {
                                 selected: conversionStreamIndexes(conversionDraft, snapshotData, 'subtitle'),
-                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending,
                                 onToggle: (index, keep) => toggleSnapshotStream('subtitle', index, keep),
                               },
                             }
@@ -5965,17 +6001,17 @@ async function generateExternalSubtitle(
                           : {
                               video: {
                                 values: conversionDraft.videoMetadata ?? {},
-                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending,
                                 onChange: (index, patch) => updateStreamMetadata('video', index, patch),
                               },
                               audio: {
                                 values: conversionDraft.audioMetadata ?? {},
-                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending,
                                 onChange: (index, patch) => updateStreamMetadata('audio', index, patch),
                               },
                               subtitle: {
                                 values: conversionDraft.subtitleMetadata ?? {},
-                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed,
+                                disabled: rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending,
                                 onChange: (index, patch) => updateStreamMetadata('subtitle', index, patch),
                               },
                             }
@@ -5988,7 +6024,7 @@ async function generateExternalSubtitle(
                         const formats = conversionDraft.subtitleSidecarFormatsByStream?.[String(stream.index)];
                         const value = formats?.length ? formats.join('+') : 'inherit';
                         const textCompatible = ['ass', 'ssa'].includes(stream.codec.toLowerCase());
-                        return <TextField key={stream.index} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={value} disabled={rowLocked} onChange={(event) => updateSubtitleSidecarFormats(stream.index, event.target.value)}>
+                        return <TextField key={stream.index} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={value} disabled={rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending} onChange={(event) => updateSubtitleSidecarFormats(stream.index, event.target.value)}>
                           <MenuItem value="inherit">Inherit Track Profile</MenuItem>
                           <MenuItem value="original">Original format only</MenuItem>
                           {textCompatible ? <MenuItem value="srt">SRT compatibility only</MenuItem> : null}
@@ -6003,12 +6039,20 @@ async function generateExternalSubtitle(
                         const override = conversionDraft.subtitleRoleOverrides?.[String(stream.index)];
                         const roleValue = override?.role ?? 'auto';
                         const automatic = stream.role ?? 'unknown';
-                        return <TextField key={`role-${stream.index}`} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={roleValue} disabled={rowLocked} onChange={(event) => updateSubtitleRole(stream.index, event.target.value as SubtitleSemanticRole | 'auto')} helperText={`Automatic: ${automatic} · ${stream.roleProvenance ?? 'snapshot'}${stream.roleConfidence ? ` · ${stream.roleConfidence} confidence` : ''}`}>
+                        return <TextField key={`role-${stream.index}`} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={roleValue} disabled={rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending} onChange={(event) => updateSubtitleRole(stream.index, event.target.value as SubtitleSemanticRole | 'auto')} helperText={`Automatic: ${automatic} · ${stream.roleProvenance ?? 'snapshot'}${stream.roleConfidence ? ` · ${stream.roleConfidence} confidence` : ''}`}>
                           <MenuItem value="auto">Automatic ({automatic})</MenuItem>
                           {(['full', 'forced', 'signs', 'commentary', 'sdh', 'unknown'] as SubtitleSemanticRole[]).map((role) => <MenuItem key={role} value={role}>{role}</MenuItem>)}
                         </TextField>;
                       })}
-                    </Stack> : null}</> : null}
+                    </Stack> : null}
+                    {!assetInfoCapability(asset, 'manageTracks').allowed ? <Alert severity="warning">{assetActionReasonMessage(assetInfoCapability(asset, 'manageTracks'), 'Track changes are unavailable.')}</Alert> : null}
+                    <Stack direction="row" spacing={1} justifyContent="flex-end">
+                      <Button onClick={resetTrackChanges} disabled={!tracksDirty || saveAssetTracks.isPending || saveAssetEdit.isPending || renameAsset.isPending}>Reset</Button>
+                      <Button variant="contained" onClick={saveTrackChanges} disabled={!tracksDirty || rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending || saveAssetEdit.isPending || renameAsset.isPending || asset.missing}>Save Tracks</Button>
+                    </Stack>
+                    {saveAssetTracks.isError ? <Alert severity="warning">Could not save Tracks: {saveAssetTracks.error instanceof Error ? saveAssetTracks.error.message : 'unknown backend error'}</Alert> : null}
+                    {saveAssetTracks.isSuccess ? <Alert severity="success">Tracks saved.</Alert> : null}
+                    </> : null}
                     </> : <Alert severity="info">Track evidence is unavailable until a persisted Analysis snapshot exists.</Alert>}
                     </Box> : null}
                     {snapshotTab === 'tracks' ? <Box>
@@ -6343,7 +6387,7 @@ async function generateExternalSubtitle(
                         onHydrateMany={hydrateAssetEditDefaults}
                         onSave={saveConversionOverrides}
                         onReset={resetConversionOverrides}
-                        saving={saveAssetEdit.isPending || renameAsset.isPending}
+                        saving={saveAssetEdit.isPending || saveAssetTracks.isPending || renameAsset.isPending}
                         readOnly={isConverted || hasOpenJob}
                       />
                     }
