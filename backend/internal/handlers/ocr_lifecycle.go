@@ -159,8 +159,18 @@ type canonicalOCRFlightProgress struct {
 	total     int
 }
 
+type canonicalOCRFlightState uint8
+
+const (
+	canonicalOCRFlightRunning canonicalOCRFlightState = iota
+	canonicalOCRFlightAbandoned
+	canonicalOCRFlightCommitting
+	canonicalOCRFlightFinished
+)
+
 type canonicalOCRFlight struct {
 	mu          sync.Mutex
+	state       canonicalOCRFlightState
 	key         string
 	request     canonicalOCRRequest
 	ctx         context.Context
@@ -171,7 +181,6 @@ type canonicalOCRFlight struct {
 	progress    canonicalOCRFlightProgress
 	result      *canonicalOCREvidence
 	err         error
-	finished    bool
 }
 
 type canonicalOCRSubscription struct {
@@ -184,6 +193,9 @@ var canonicalOCRFlights = struct {
 	sync.Mutex
 	items map[string]*canonicalOCRFlight
 }{items: map[string]*canonicalOCRFlight{}}
+
+// Registry lookups acquire canonicalOCRFlights before flight.mu. Other flight
+// lifecycle paths release flight.mu before removing a registry entry.
 
 func canonicalOCRRequestFor(
 	mediaPath string,
@@ -385,12 +397,11 @@ func canonicalOCREvidenceForRequest(
 	flight := canonicalOCRFlights.items[key]
 	if flight != nil {
 		flight.mu.Lock()
-		reusable := !flight.finished && flight.ctx.Err() == nil
+		reusable := (flight.state == canonicalOCRFlightRunning || flight.state == canonicalOCRFlightCommitting) && flight.ctx.Err() == nil
 		if !reusable {
 			flight.mu.Unlock()
-			// Terminal or cancelled flights are never reusable. A fresh request
-			// must rerun OCR after cache invalidation instead of receiving stale
-			// in-memory evidence while registry cleanup is still completing.
+			// Abandoned and terminal flights are never reusable. A fresh request
+			// must rerun OCR instead of observing predecessor state.
 			delete(canonicalOCRFlights.items, key)
 			flight = nil
 		} else {
@@ -461,22 +472,43 @@ func (subscription *canonicalOCRSubscription) wait(ctx context.Context) (*canoni
 		subscription.detach()
 		return flight.snapshotResult()
 	case <-ctx.Done():
-		subscription.detach()
+		abandoned, publicationStarted := subscription.detach()
+		if publicationStarted {
+			<-flight.done
+			return flight.snapshotResult()
+		}
+		if abandoned {
+			// Cancellation is not settled until the shared command has stopped,
+			// its private workspace is removed, and finish has fenced the result.
+			<-flight.done
+		}
 		return nil, ctx.Err()
 	}
 }
 
-func (subscription *canonicalOCRSubscription) detach() {
+func (subscription *canonicalOCRSubscription) detach() (abandoned, publicationStarted bool) {
 	subscription.once.Do(func() {
 		flight := subscription.flight
 		flight.mu.Lock()
 		delete(flight.subscribers, subscription)
-		last := len(flight.subscribers) == 0 && !flight.finished
+		switch flight.state {
+		case canonicalOCRFlightRunning:
+			if len(flight.subscribers) == 0 {
+				flight.state = canonicalOCRFlightAbandoned
+				abandoned = true
+			}
+		case canonicalOCRFlightAbandoned:
+			abandoned = true
+		case canonicalOCRFlightCommitting, canonicalOCRFlightFinished:
+			publicationStarted = true
+		}
 		flight.mu.Unlock()
-		if last {
+		if abandoned {
 			flight.cancel()
+			flight.removeFromRegistry()
 		}
 	})
+	return abandoned, publicationStarted
 }
 
 func (flight *canonicalOCRFlight) snapshotResult() (*canonicalOCREvidence, error) {
@@ -501,12 +533,6 @@ func (flight *canonicalOCRFlight) broadcastProgress(processed, total int) {
 	for _, callback := range callbacks {
 		callback(processed, total)
 	}
-}
-
-func (flight *canonicalOCRFlight) hasSubscribers() bool {
-	flight.mu.Lock()
-	defer flight.mu.Unlock()
-	return len(flight.subscribers) > 0
 }
 
 func (flight *canonicalOCRFlight) execute() {
@@ -536,7 +562,7 @@ func (flight *canonicalOCRFlight) execute() {
 	}
 
 	var evidence *canonicalOCREvidence
-	if err == nil && flight.ctx.Err() == nil && flight.hasSubscribers() {
+	if err == nil {
 		identity := flight.request.Identity
 		preparedRequest := flight.request
 		preparedRequest.Stream = ocrStream
@@ -556,9 +582,10 @@ func (flight *canonicalOCRFlight) execute() {
 			Cues:                     cloneCanonicalCues(result.Cues),
 			Geometry:                 append([]bitmapCueGeometry(nil), result.Geometry...),
 		}
-		commitCanonicalOCREvidence(flight.request, flight.key, evidence)
-	} else if err == nil && flight.ctx.Err() != nil {
-		err = flight.ctx.Err()
+		if !flight.commitEvidence(evidence) {
+			evidence = nil
+			err = context.Canceled
+		}
 	}
 
 	// The flight workspace is not owned by any subscriber. It is removed only
@@ -570,11 +597,45 @@ func (flight *canonicalOCRFlight) execute() {
 
 func (flight *canonicalOCRFlight) finish(result *canonicalOCREvidence, err error) {
 	flight.mu.Lock()
+	if flight.state == canonicalOCRFlightAbandoned {
+		result = nil
+		err = context.Canceled
+	}
 	flight.result = result
 	flight.err = err
-	flight.finished = true
+	flight.state = canonicalOCRFlightFinished
 	close(flight.done)
 	flight.mu.Unlock()
+	flight.removeFromRegistry()
+}
+
+func (flight *canonicalOCRFlight) commitEvidence(evidence *canonicalOCREvidence) bool {
+	if evidence == nil {
+		return false
+	}
+	flight.mu.Lock()
+	if flight.state != canonicalOCRFlightRunning || len(flight.subscribers) == 0 || flight.ctx.Err() != nil {
+		abandoned := flight.state == canonicalOCRFlightRunning
+		if abandoned {
+			flight.state = canonicalOCRFlightAbandoned
+		}
+		flight.mu.Unlock()
+		if abandoned {
+			flight.cancel()
+			flight.removeFromRegistry()
+		}
+		return false
+	}
+	// This transition and final-subscriber abandonment use the same lock. Once
+	// committing wins, cancellation waits for the published result to finish.
+	flight.state = canonicalOCRFlightCommitting
+	flight.mu.Unlock()
+
+	commitCanonicalOCREvidence(flight.request, flight.key, evidence)
+	return true
+}
+
+func (flight *canonicalOCRFlight) removeFromRegistry() {
 	canonicalOCRFlights.Lock()
 	if canonicalOCRFlights.items[flight.key] == flight {
 		delete(canonicalOCRFlights.items, flight.key)
