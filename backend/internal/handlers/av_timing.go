@@ -14,6 +14,7 @@ import (
 
 type avStreamTiming struct {
 	Index                 int      `json:"index"`
+	TimeBase              string   `json:"timeBase,omitempty"`
 	StartSeconds          *float64 `json:"startSeconds,omitempty"`
 	FirstPacketPTSSeconds *float64 `json:"firstPacketPtsSeconds,omitempty"`
 	FirstPacketDTSSeconds *float64 `json:"firstPacketDtsSeconds,omitempty"`
@@ -29,7 +30,7 @@ func probeAVTiming(path string, intervalStart float64) (avTimingEvidence, error)
 	}
 	args := []string{
 		"-v", "error", "-read_intervals", interval,
-		"-show_entries", "stream=index,codec_type,start_time,avg_frame_rate:stream_tags=language,title:packet=stream_index,pts_time,dts_time:frame=media_type,stream_index,best_effort_timestamp_time",
+		"-show_entries", "stream=index,codec_type,start_time,time_base,avg_frame_rate:stream_tags=language,title:packet=stream_index,pts_time,dts_time:frame=media_type,stream_index,best_effort_timestamp_time",
 		"-show_streams", "-show_packets", "-show_frames", "-of", "json", path,
 	}
 	cmd := exec.Command("ffprobe", args...)
@@ -43,6 +44,7 @@ func probeAVTiming(path string, intervalStart float64) (avTimingEvidence, error)
 			Index     int               `json:"index"`
 			CodecType string            `json:"codec_type"`
 			StartTime string            `json:"start_time"`
+			TimeBase  string            `json:"time_base"`
 			FrameRate string            `json:"avg_frame_rate"`
 			Tags      map[string]string `json:"tags"`
 		} `json:"streams"`
@@ -63,7 +65,7 @@ func probeAVTiming(path string, intervalStart float64) (avTimingEvidence, error)
 	evidence := avTimingEvidence{Audio: []avStreamTiming{}}
 	byIndex := map[int]*avStreamTiming{}
 	for _, stream := range response.Streams {
-		timing := avStreamTiming{Index: stream.Index, StartSeconds: optionalSeconds(stream.StartTime), Language: stream.Tags["language"], Title: stream.Tags["title"]}
+		timing := avStreamTiming{Index: stream.Index, TimeBase: stream.TimeBase, StartSeconds: optionalSeconds(stream.StartTime), Language: stream.Tags["language"], Title: stream.Tags["title"]}
 		switch stream.CodecType {
 		case "video":
 			if evidence.Video == nil {
@@ -130,7 +132,12 @@ var initialAVTimingTolerance = avTimingTolerancePolicy{
 	MismatchFrames:  2,
 }
 
-const avTimingFrameComparisonEpsilon = 1e-6
+// A/V timestamps are quantized to each stream's time_base. The four timestamps
+// in an introduced-offset comparison can therefore contribute half a tick of
+// uncertainty each. Cap that allowance at 1/16 frame so coarse or malformed
+// time bases can never move the policy boundary by a meaningful fraction of a
+// frame. Floating point comparison itself is handled with one ULP below.
+const avTimingMaximumQuantizationFrameFraction = 1.0 / 16.0
 
 func avTimingFromInventory(streams MediaStreamInventory) avTimingEvidence {
 	evidence := avTimingEvidence{Audio: []avStreamTiming{}}
@@ -160,7 +167,10 @@ func avTimingFromProbe(probe map[string]any) avTimingEvidence {
 		if !ok {
 			continue
 		}
-		timing := avStreamTiming{Index: workerIntValue(stream["index"], -1), StartSeconds: optionalSeconds(stringFromUnknown(stream["start_time"]))}
+		timing := avStreamTiming{
+			Index: workerIntValue(stream["index"], -1), TimeBase: stringFromUnknown(stream["time_base"]),
+			StartSeconds: optionalSeconds(stringFromUnknown(stream["start_time"])),
+		}
 		if tags := unknownRecord(stream["tags"]); tags != nil {
 			timing.Language = stringFromUnknown(tags["language"])
 			timing.Title = stringFromUnknown(tags["title"])
@@ -287,13 +297,19 @@ func validateAVTiming(source, output avTimingEvidence) models.JSONMap {
 		outputOffset := (outputAudioStart - outputVideoStart) * 1000
 		introduced := outputOffset - sourceOffset
 		equivalentFrames := introduced / frameDurationMs
-		absoluteFrames := math.Abs(equivalentFrames)
 		status := "validated"
-		withinTolerance := absoluteFrames <= initialAVTimingTolerance.ValidatedFrames+avTimingFrameComparisonEpsilon
+		validatedBoundaryMs := frameDurationMs * initialAVTimingTolerance.ValidatedFrames
+		mismatchBoundaryMs := frameDurationMs * initialAVTimingTolerance.MismatchFrames
+		quantizationToleranceMs := avTimingQuantizationToleranceMs(
+			frameDurationMs,
+			*source.Video, source.Audio[index], *output.Video, output.Audio[index],
+		)
+		absoluteOffsetMs := math.Abs(introduced)
+		withinTolerance := atOrBelowAVTimingBoundary(absoluteOffsetMs, validatedBoundaryMs)
 		if !withinTolerance {
 			status = "warning"
 		}
-		if absoluteFrames > initialAVTimingTolerance.MismatchFrames+avTimingFrameComparisonEpsilon {
+		if exceedsAVTimingBoundary(absoluteOffsetMs, mismatchBoundaryMs+quantizationToleranceMs) {
 			status = "mismatch"
 		}
 		overall = higherAVTimingSeverity(overall, status)
@@ -301,7 +317,8 @@ func validateAVTiming(source, output avTimingEvidence) models.JSONMap {
 			"sourceAudioIndex": source.Audio[index].Index, "outputAudioIndex": output.Audio[index].Index,
 			"language": source.Audio[index].Language, "title": source.Audio[index].Title,
 			"sourceOffsetMs": sourceOffset, "outputOffsetMs": outputOffset, "introducedOffsetMs": introduced,
-			"introducedOffsetFrames": equivalentFrames, "withinTolerance": withinTolerance, "status": status,
+			"introducedOffsetFrames": equivalentFrames, "timestampQuantizationToleranceMs": quantizationToleranceMs,
+			"withinTolerance": withinTolerance, "status": status,
 		})
 	}
 	report["status"] = overall
@@ -314,6 +331,45 @@ func validateAVTiming(source, output avTimingEvidence) models.JSONMap {
 	report["tracks"] = tracks
 	report["driftStatus"] = "not_measured"
 	return report
+}
+
+func avTimingQuantizationToleranceMs(frameDurationMs float64, timings ...avStreamTiming) float64 {
+	if frameDurationMs <= 0 || math.IsNaN(frameDurationMs) || math.IsInf(frameDurationMs, 0) {
+		return 0
+	}
+	uncertaintySeconds := 0.0
+	for _, timing := range timings {
+		if quantum := avTimingTimeBaseSeconds(timing.TimeBase); quantum > 0 {
+			uncertaintySeconds += quantum / 2
+		}
+	}
+	maximumSeconds := frameDurationMs / 1000 * avTimingMaximumQuantizationFrameFraction
+	return math.Min(uncertaintySeconds, maximumSeconds) * 1000
+}
+
+func avTimingTimeBaseSeconds(value string) float64 {
+	numeratorText, denominatorText, ok := strings.Cut(strings.TrimSpace(value), "/")
+	if !ok {
+		return 0
+	}
+	numerator, numeratorErr := strconv.ParseFloat(strings.TrimSpace(numeratorText), 64)
+	denominator, denominatorErr := strconv.ParseFloat(strings.TrimSpace(denominatorText), 64)
+	if numeratorErr != nil || denominatorErr != nil || numerator <= 0 || denominator <= 0 {
+		return 0
+	}
+	seconds := numerator / denominator
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		return 0
+	}
+	return seconds
+}
+
+func atOrBelowAVTimingBoundary(value, boundary float64) bool {
+	return value <= math.Nextafter(boundary, math.Inf(1))
+}
+
+func exceedsAVTimingBoundary(value, boundary float64) bool {
+	return value > math.Nextafter(boundary, math.Inf(1))
 }
 
 func videoPresentationStart(timing avStreamTiming) (float64, bool) {

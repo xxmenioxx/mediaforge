@@ -734,9 +734,14 @@ func canonicalFidelityValuesEqual(name string, expected, actual any) bool {
 
 func canonicalColorPolicyField(report models.JSONMap) models.JSONMap {
 	status := strings.ToLower(strings.TrimSpace(stringFromUnknown(report["status"])))
-	if status != "passed" && status != "mismatch" && status != "unverified" {
+	if status != "passed" && status != "mismatch" && status != "unverified" && status != "not_applicable" {
 		return nil
 	}
+	reason := strings.TrimSpace(stringFromUnknown(report["reason"]))
+	if reason == "" {
+		reason = "existing color-policy validator result"
+	}
+	required := status != "not_applicable" && boolSetting(report["required"], true)
 	return models.JSONMap{
 		"source":    report["source"],
 		"expected":  report["expected"],
@@ -744,8 +749,8 @@ func canonicalColorPolicyField(report models.JSONMap) models.JSONMap {
 		"output":    report["output"],
 		"status":    status,
 		"authority": "color_policy",
-		"reason":    "existing color-policy validator result",
-		"required":  true,
+		"reason":    reason,
+		"required":  required,
 	}
 }
 

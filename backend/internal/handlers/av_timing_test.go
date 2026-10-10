@@ -77,6 +77,47 @@ func TestValidateAVTimingFramePolicyBoundaries(t *testing.T) {
 	}
 }
 
+func TestValidateAVTimingQuantizedTwoFrameBoundaryWarns(t *testing.T) {
+	source := avTimingEvidence{
+		Video:     &avStreamTiming{Index: 0, StartSeconds: secondsPointer(.067), TimeBase: "1/1000"},
+		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), TimeBase: "1/1000"}},
+		FrameRate: "30000/1001",
+	}
+	output := avTimingEvidence{
+		Video:     &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), TimeBase: "1/1000"},
+		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), TimeBase: "1/1000"}},
+		FrameRate: "30000/1001",
+	}
+	report := validateAVTiming(source, output)
+	track := report["tracks"].([]models.JSONMap)[0]
+	if report["status"] != "warning" || track["status"] != "warning" {
+		t.Fatalf("quantized 67 ms production boundary must remain advisory: %#v", report)
+	}
+	if got := track["introducedOffsetFrames"].(float64); got <= 2 || got >= 2.02 {
+		t.Fatalf("fixture should represent the slightly-over-two-frame boundary, got %.6f frames", got)
+	}
+	if got := track["timestampQuantizationToleranceMs"].(float64); got < .267 || got > 33.366/16 {
+		t.Fatalf("time-base allowance=%f ms is not bounded to the observed quantization: %#v", got, track)
+	}
+}
+
+func TestValidateAVTimingRejectsQuantizedRegressionBeyondAllowance(t *testing.T) {
+	frameSeconds := 1001.0 / 30000.0
+	source := avTimingEvidence{
+		Video:     &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), TimeBase: "1/1000"},
+		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), TimeBase: "1/1000"}},
+		FrameRate: "30000/1001",
+	}
+	output := avTimingEvidence{
+		Video:     &avStreamTiming{Index: 0, StartSeconds: secondsPointer(2.25 * frameSeconds), TimeBase: "1/1000"},
+		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), TimeBase: "1/1000"}},
+		FrameRate: "30000/1001",
+	}
+	if report := validateAVTiming(source, output); report["status"] != "mismatch" {
+		t.Fatalf("a clear regression beyond two frames must still mismatch: %#v", report)
+	}
+}
+
 func TestValidateAVTimingUsesEffectiveOutputFPSForFrameEquivalence(t *testing.T) {
 	source := timingEvidence(0, 0)
 	source.FrameRate = "30000/1001"
@@ -217,11 +258,27 @@ func TestFirstPacketPTSandDTSAreCapturedIndependently(t *testing.T) {
 
 func TestAVTimingFromProbeParsesFFprobeStringTimestamps(t *testing.T) {
 	evidence := avTimingFromProbe(map[string]any{"streams": []interface{}{
-		map[string]interface{}{"index": float64(0), "codec_type": "video", "start_time": "0.042000", "avg_frame_rate": "24000/1001"},
-		map[string]interface{}{"index": float64(1), "codec_type": "audio", "start_time": "0.000000"},
+		map[string]interface{}{"index": float64(0), "codec_type": "video", "start_time": "0.042000", "time_base": "1/24000", "avg_frame_rate": "24000/1001"},
+		map[string]interface{}{"index": float64(1), "codec_type": "audio", "start_time": "0.000000", "time_base": "1/48000"},
 	}})
-	if evidence.Video == nil || evidence.Video.StartSeconds == nil || math.Abs(*evidence.Video.StartSeconds-.042) > .0001 || len(evidence.Audio) != 1 {
+	if evidence.Video == nil || evidence.Video.StartSeconds == nil || math.Abs(*evidence.Video.StartSeconds-.042) > .0001 || evidence.Video.TimeBase != "1/24000" || len(evidence.Audio) != 1 || evidence.Audio[0].TimeBase != "1/48000" {
 		t.Fatalf("FFprobe timing strings were not parsed: %#v", evidence)
+	}
+}
+
+func TestValidateAVTimingFFprobeDecimalStringsKeepProductionBoundaryAdvisory(t *testing.T) {
+	probe := func(videoStart, audioStart string) map[string]any {
+		return map[string]any{"streams": []interface{}{
+			map[string]interface{}{"index": float64(0), "codec_type": "video", "start_time": videoStart, "time_base": "1/1000", "avg_frame_rate": "30000/1001"},
+			map[string]interface{}{"index": float64(1), "codec_type": "audio", "start_time": audioStart, "time_base": "1/1000"},
+		}}
+	}
+	source := avTimingFromProbe(probe("0.067000", "0.000000"))
+	output := avTimingFromProbe(probe("0.000000", "0.000000"))
+	report := validateAVTiming(source, output)
+	track := report["tracks"].([]models.JSONMap)[0]
+	if report["status"] != "warning" || track["status"] != "warning" {
+		t.Fatalf("ffprobe decimal timestamp boundary must remain warning: %#v", report)
 	}
 }
 

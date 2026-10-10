@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -95,5 +96,54 @@ func TestValidateJobColorPolicyMissingRangeDoesNotExpectNormalization(t *testing
 	}
 	if got := workerStringValue(report["status"]); got != "passed" {
 		t.Fatalf("preserved metadata with missing range did not validate: %#v", report)
+	}
+}
+
+func TestValidateJobColorPolicyAllowsAbsentOptionalMetadata(t *testing.T) {
+	probe := map[string]any{"streams": []any{map[string]any{"codec_type": "video", "codec_name": "hevc"}}}
+	job := models.QueueJob{ProfileSnapshot: models.JSONMap{"workerConfig": models.JSONMap{
+		"finalColorPolicy": "preserve", "effectiveFinalColorPolicy": "preserve",
+	}}}
+	report, warning := validateJobColorPolicyFrozen(job, probe, probe)
+	if warning != "" || report["status"] != "not_applicable" || report["required"] != false {
+		t.Fatalf("absent optional source color metadata should be not applicable: report=%#v warning=%q", report, warning)
+	}
+	if !strings.Contains(stringFromUnknown(report["reason"]), "No reliable source color metadata") {
+		t.Fatalf("not-applicable reason was not persisted: %#v", report)
+	}
+}
+
+func TestValidateJobColorPolicyFailsClosedForFrozenColorContract(t *testing.T) {
+	missingProbe := map[string]any{"streams": []any{map[string]any{"codec_type": "video", "codec_name": "hevc"}}}
+	job := models.QueueJob{ProfileSnapshot: models.JSONMap{"workerConfig": models.JSONMap{
+		"finalColorPolicy": "normalize_bt709", "effectiveFinalColorPolicy": "normalize_bt709",
+	}}}
+	report, _ := validateJobColorPolicyFrozen(job, missingProbe, missingProbe)
+	if report["status"] != "unverified" || report["required"] != true {
+		t.Fatalf("missing evidence for a frozen BT.709 contract must remain unverified: %#v", report)
+	}
+	if !strings.Contains(stringFromUnknown(report["reason"]), "Required frozen color evidence") {
+		t.Fatalf("missing-contract reason was not persisted: %#v", report)
+	}
+
+	output := map[string]any{"streams": []any{map[string]any{
+		"codec_type": "video", "codec_name": "hevc", "color_space": "bt2020nc",
+		"color_transfer": "smpte2084", "color_primaries": "bt2020", "color_range": "tv",
+	}}}
+	report, _ = validateJobColorPolicyFrozen(job, missingProbe, output)
+	if report["status"] != "mismatch" || report["required"] != true {
+		t.Fatalf("explicit BT.709 mismatch must remain blocking: %#v", report)
+	}
+}
+
+func TestValidateJobColorPolicyUsesExplicitFrozenOutputMetadata(t *testing.T) {
+	missingProbe := map[string]any{"streams": []any{map[string]any{"codec_type": "video", "codec_name": "hevc"}}}
+	job := models.QueueJob{ProfileSnapshot: models.JSONMap{"workerConfig": models.JSONMap{
+		"finalColorPolicy": "preserve", "effectiveFinalColorPolicy": "preserve",
+		"outputColorSpace": "bt2020nc", "outputColorTransfer": "smpte2084", "outputColorPrimaries": "bt2020",
+	}}}
+	report, _ := validateJobColorPolicyFrozen(job, missingProbe, missingProbe)
+	if report["status"] != "unverified" || report["required"] != true {
+		t.Fatalf("missing output metadata for explicit frozen values must remain unverified: %#v", report)
 	}
 }
