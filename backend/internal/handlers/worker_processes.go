@@ -314,15 +314,6 @@ func pipelineAutomationSettings(db *gorm.DB) pipelineAutomation {
 	}
 }
 
-func validationMinimumScore(db *gorm.DB) int {
-	setting := models.AppSetting{}
-	values := models.JSONMap{}
-	if err := db.First(&setting, "key = ?", "validation").Error; err == nil && setting.Value != nil {
-		values = setting.Value
-	}
-	return intSetting(values, "minimumScore", 90)
-}
-
 func jobExecutionTiming(job models.QueueJob, mediaDurationSeconds float64) map[string]any {
 	result := map[string]any{
 		"mediaDurationSeconds": mediaDurationSeconds,

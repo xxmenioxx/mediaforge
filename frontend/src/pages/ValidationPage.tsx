@@ -4,13 +4,11 @@ import {
   Button,
   Card,
   CardContent,
-  Checkbox,
   Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControlLabel,
   Stack,
   Tab,
   Table,
@@ -27,9 +25,10 @@ import FactCheckIcon from '@mui/icons-material/FactCheck';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { Link as RouterLink } from 'react-router-dom';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
-import type { ValidationFinding, ValidationSummary } from '../api/types';
+import type { ValidationFinding, ValidationOverride, ValidationSummary, ValidationRun } from '../api/types';
 
 type ValidationView = 'exceptions' | 'pending' | 'all';
 
@@ -39,6 +38,7 @@ export function ValidationPage() {
   const [validationView, setValidationView] = useState<ValidationView>('exceptions');
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
+  const validationSettings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const jobs = useQuery({
     queryKey: ['validationReview', validationView, page, rowsPerPage],
     queryFn: () => api.validationReview({ view: validationView, limit: rowsPerPage, offset: page * rowsPerPage }),
@@ -52,9 +52,15 @@ export function ValidationPage() {
   return (
     <>
       <PageHeader title="Validation" eyebrow="Post conversion quality gate">
-        <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 820 }}>
-          Review exceptions from immutable Validation runs. Clean passes advance by policy and remain available in History.
-        </Typography>
+        <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'flex-start', sm: 'center' }} spacing={1.5} sx={{ mt: 1 }}>
+          <Typography color="text.secondary" sx={{ maxWidth: 820 }}>
+            Review exceptions from immutable Validation runs. Clean passes advance by policy and remain available in History.
+          </Typography>
+          <Typography variant="body2" fontWeight={700}>
+            Validation Policy: {policySummary(validationSettings.data?.find((setting) => setting.key === 'validation')?.value)}
+          </Typography>
+          <Button component={RouterLink} to="/settings?section=pipeline#validation" variant="outlined">Validation Settings</Button>
+        </Stack>
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         {jobs.isError ? <Alert severity="warning">Unable to load completed jobs.</Alert> : null}
@@ -115,10 +121,11 @@ function ValidationRunDetails({ job }: { job: Pick<ValidationSummary, 'id' | 'va
     enabled: Boolean(job.validationRunId),
   });
   const [overrideOpen, setOverrideOpen] = useState(false);
+  const [overrideScope, setOverrideScope] = useState<'rule' | 'all_overrideable'>('rule');
   const [reason, setReason] = useState('');
   const [selectedRules, setSelectedRules] = useState<string[]>([]);
   const override = useMutation({
-    mutationFn: () => api.createValidationOverride({ jobId: job.id, reason, ruleKeys: selectedRules, requestedHandoff: 'publisher' }),
+    mutationFn: () => api.createValidationOverride({ jobId: job.id, scope: overrideScope, reason, ruleKeys: selectedRules, requestedHandoff: 'publisher' }),
     onSuccess: async () => {
       setOverrideOpen(false);
       setReason('');
@@ -129,9 +136,25 @@ function ValidationRunDetails({ job }: { job: Pick<ValidationSummary, 'id' | 'va
     },
   });
   const run = detail.data?.run;
-  const overrideable = (run?.findings ?? []).filter((finding) => finding.overrideable && finding.state !== 'PASS' && finding.state !== 'NOT_APPLICABLE');
-  const openOverride = () => {
-    setSelectedRules(overrideable.map((finding) => finding.key));
+  const skippedByKey = new Map<string, ValidationOverride>();
+  if (run) {
+    for (const event of detail.data?.overrides ?? []) {
+      if (!overrideEventMatchesRun(event, run)) continue;
+      for (const key of event.ruleKeys) skippedByKey.set(key, event);
+    }
+  }
+  const unresolved = (finding: ValidationFinding) => finding.state !== 'PASS' && finding.state !== 'NOT_APPLICABLE';
+  const remainingOverrideable = (run?.findings ?? []).filter((finding) => finding.overrideable && unresolved(finding) && !skippedByKey.has(finding.key));
+  const openRuleSkip = (finding: ValidationFinding) => {
+    setOverrideScope('rule');
+    setSelectedRules([finding.key]);
+    setReason('');
+    setOverrideOpen(true);
+  };
+  const openSkipAll = () => {
+    setOverrideScope('all_overrideable');
+    setSelectedRules(remainingOverrideable.map((finding) => finding.key).sort());
+    setReason('');
     setOverrideOpen(true);
   };
   return (
@@ -144,22 +167,37 @@ function ValidationRunDetails({ job }: { job: Pick<ValidationSummary, 'id' | 'va
           <Chip label={`Display score ${run.score}/100`} variant="outlined" />
           <Chip label={`Run ${run.runId}`} variant="outlined" />
           <Chip label={`${run.actorId} · ${new Date(run.createdAt).toLocaleString()}`} variant="outlined" />
+          <Chip label={`Effective handoff: ${detail.data?.effectiveHandoff ?? 'Loading'}`} color={detail.data?.effectiveHandoff === 'ALLOWED_BY_OVERRIDE' ? 'success' : detail.data?.effectiveHandoff === 'BLOCKED' ? 'error' : 'default'} />
         </Stack>
-        {detail.data?.overrides.map((event) => <Alert key={event.eventId} severity="warning">Override by {event.actorId}: {event.reason} · {event.ruleKeys.join(', ')}</Alert>)}
-        <Table size="small"><TableHead><TableRow><TableCell>Rule</TableCell><TableCell>Outcome</TableCell><TableCell>Field evidence</TableCell><TableCell>Expected</TableCell><TableCell>Actual</TableCell><TableCell>Finding</TableCell></TableRow></TableHead>
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+          <Alert severity="info" sx={{ flex: 1 }}><b>Policy used by this run:</b> {run.policySnapshot ? `${presetName(run.policyPreset)} · ${run.policyFingerprint}` : 'No frozen policy snapshot is available for this historical run.'}</Alert>
+          <Alert severity={detail.data?.policyCurrent ? 'success' : 'warning'} sx={{ flex: 1 }}><b>Current Validation Settings:</b> {policySummary(detail.data?.currentPolicy as unknown as Record<string, unknown>)}{!detail.data?.policyCurrent ? ' · different from this run' : ''}</Alert>
+        </Stack>
+        {(detail.data?.overrides ?? []).filter((event) => overrideEventMatchesRun(event, run)).map((event) => <Alert key={event.eventId} severity="warning">
+          Skipped by {event.actorId} · {new Date(event.createdAt).toLocaleString()} · {event.reason ? `Reason: ${event.reason}` : 'No reason provided'} · {event.ruleKeys.join(', ')}
+        </Alert>)}
+        <Table size="small"><TableHead><TableRow><TableCell>Rule</TableCell><TableCell>Canonical result</TableCell><TableCell>Field evidence</TableCell><TableCell>Expected</TableCell><TableCell>Actual</TableCell><TableCell>Finding</TableCell><TableCell>Action</TableCell></TableRow></TableHead>
           <TableBody>{run.findings.map((finding) => <TableRow key={finding.key}>
-            <TableCell>{finding.key}</TableCell><TableCell><Chip size="small" label={finding.state} color={finding.state === 'FAIL' ? 'error' : finding.state === 'PASS' ? 'success' : 'warning'} /></TableCell>
+            <TableCell>{finding.key}</TableCell><TableCell><Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap><Chip size="small" label={finding.state} color={finding.state === 'FAIL' ? 'error' : finding.state === 'PASS' ? 'success' : 'warning'} />{skippedByKey.has(finding.key) ? <Chip size="small" label="SKIPPED" color="info" /> : null}</Stack></TableCell>
             <TableCell sx={{ minWidth: 210, verticalAlign: 'top' }}><ValidationFieldEvidence finding={finding} /></TableCell>
             <TableCell sx={{ maxWidth: 210, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{displayValue(finding.expected)}</TableCell>
             <TableCell sx={{ maxWidth: 210, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{displayValue(finding.actual)}</TableCell>
             <TableCell>{finding.explanation}<Typography variant="caption" display="block" color="text.secondary">{finding.evidenceReferences.join(' · ')}</Typography></TableCell>
+            <TableCell>{finding.overrideable && unresolved(finding) && !skippedByKey.has(finding.key) ? <Button size="small" variant="outlined" onClick={() => openRuleSkip(finding)}>Skip</Button> : '—'}</TableCell>
           </TableRow>)}</TableBody>
         </Table>
-        <Stack direction="row" justifyContent="flex-end"><Button variant="outlined" disabled={overrideable.length === 0} onClick={openOverride}>Record override</Button></Stack>
-        <OverrideDialog open={overrideOpen} onClose={() => setOverrideOpen(false)} findings={overrideable} selected={selectedRules} setSelected={setSelectedRules} reason={reason} setReason={setReason} pending={override.isPending} error={override.isError ? errorMessage(override.error) : ''} onSave={() => override.mutate()} />
+        {remainingOverrideable.length > 0 ? <Stack direction="row" justifyContent="flex-end"><Button variant="outlined" onClick={openSkipAll}>Skip all overrideable findings</Button></Stack> : null}
+        <OverrideDialog scope={overrideScope} open={overrideOpen} onClose={() => setOverrideOpen(false)} findings={run.findings.filter((finding) => selectedRules.includes(finding.key))} reason={reason} setReason={setReason} pending={override.isPending} error={override.isError ? errorMessage(override.error) : ''} onSave={() => override.mutate()} />
       </> : null}
     </Stack>
   );
+}
+
+function overrideEventMatchesRun(event: ValidationOverride, run: ValidationRun): boolean {
+  return event.validationRunId === run.runId && event.resultArtifactId === run.resultArtifactId &&
+    event.resultGenerationToken === run.resultGenerationToken && event.resultGenerationVersion === run.resultGenerationVersion &&
+    event.resultOutputRevision === run.resultOutputRevision && event.policySchemaVersion === run.policySchemaVersion && event.policyVersion === run.policyVersion &&
+    event.policyFingerprint === run.policyFingerprint && Boolean(event.actorSource && event.actorId && event.createdAt && event.ruleKeys.length > 0);
 }
 
 function ValidationFieldEvidence({ finding }: { finding: ValidationFinding }) {
@@ -198,19 +236,19 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function OverrideDialog({ open, onClose, findings, selected, setSelected, reason, setReason, pending, error, onSave }: {
-  open: boolean; onClose: () => void; findings: ValidationFinding[]; selected: string[]; setSelected: (value: string[]) => void;
+function OverrideDialog({ scope, open, onClose, findings, reason, setReason, pending, error, onSave }: {
+  scope: 'rule' | 'all_overrideable'; open: boolean; onClose: () => void; findings: ValidationFinding[];
   reason: string; setReason: (value: string) => void; pending: boolean; error: string; onSave: () => void;
 }) {
   return <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-    <DialogTitle>Record operator override</DialogTitle>
+    <DialogTitle>{scope === 'rule' ? 'Skip validation rule' : 'Skip all validation findings'}</DialogTitle>
     <DialogContent><Stack spacing={1} sx={{ pt: 1 }}>
-      <Alert severity="info">The run outcome remains unchanged. The server records the interactive actor as local_operator.</Alert>
-      {findings.map((finding) => <FormControlLabel key={finding.key} control={<Checkbox checked={selected.includes(finding.key)} onChange={(event) => setSelected(event.target.checked ? [...selected, finding.key] : selected.filter((key) => key !== finding.key))} />} label={`${finding.key}: ${finding.explanation}`} />)}
-      <TextField label="Reason" value={reason} onChange={(event) => setReason(event.target.value)} multiline minRows={3} inputProps={{ maxLength: 2000 }} required />
+      <Alert severity="info">The canonical Validation result remains unchanged. Publisher handoff is evaluated separately from the skipped finding.</Alert>
+      {findings.map((finding) => <Box key={finding.key} sx={{ py: 0.5 }}><Typography fontWeight={700}>{finding.key}</Typography><Typography variant="body2">Canonical result: {finding.state}</Typography><Typography variant="body2" color="text.secondary">{finding.explanation}</Typography></Box>)}
+      <TextField label="Reason (optional)" value={reason} onChange={(event) => setReason(event.target.value)} multiline minRows={2} inputProps={{ maxLength: 2000 }} />
       {error ? <Alert severity="warning">{error}</Alert> : null}
     </Stack></DialogContent>
-    <DialogActions><Button onClick={onClose}>Cancel</Button><Button onClick={onSave} disabled={pending || !reason.trim() || selected.length === 0}>Record override</Button></DialogActions>
+    <DialogActions><Button onClick={onClose}>Cancel</Button><Button onClick={onSave} disabled={pending || findings.length === 0}>{scope === 'rule' ? 'Skip rule' : 'Skip all'}</Button></DialogActions>
   </Dialog>;
 }
 
@@ -235,3 +273,17 @@ function emptyMessage(view: ValidationView) {
 function fileNameFromPath(path: string) { return path.split('/').filter(Boolean).pop() ?? path; }
 function displayValue(value: unknown) { return value === undefined ? '—' : typeof value === 'string' ? value : JSON.stringify(value, null, 2); }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : 'The request could not be completed.'; }
+
+function presetName(value: string): string {
+  return value ? value[0].toUpperCase() + value.slice(1) : 'Unknown';
+}
+
+function policySummary(value: Record<string, unknown> | undefined): string {
+  if (!value || typeof value.preset !== 'string') return 'Loading';
+  if (value.preset === 'custom') {
+    const basedOn = typeof value.basedOn === 'string' ? value.basedOn : 'Default';
+    const count = typeof value.differenceCount === 'number' ? value.differenceCount : 0;
+    return `Custom · Based on: ${basedOn} · ${count} ${count === 1 ? 'change' : 'changes'}`;
+  }
+  return value.preset === 'default' ? 'Default (Recommended)' : String(value.preset).replace(/^./, (letter) => letter.toUpperCase());
+}

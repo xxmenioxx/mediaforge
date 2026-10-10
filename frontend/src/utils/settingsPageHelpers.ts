@@ -29,7 +29,6 @@ export function buildSettingsForm(base: Omit<SettingsForm, 'advancedJson'>): Set
       workers: JSON.stringify(base.workers, null, 2),
       pipelineAutomation: JSON.stringify(base.pipelineAutomation, null, 2),
       assetInventory: JSON.stringify(base.assetInventory, null, 2),
-      validation: JSON.stringify(base.validation, null, 2),
       cancellationPolicy: JSON.stringify(base.cancellationPolicy, null, 2),
       originalRetentionPolicy: JSON.stringify(base.originalRetentionPolicy, null, 2),
       assetTypes: JSON.stringify({ types: base.assetTypes }, null, 2),
@@ -158,7 +157,6 @@ export function settingsToForm(settings: Array<{ key: string; value: Record<stri
   const workers = byKey.workers ?? {};
   const pipelineAutomation = byKey.pipelineAutomation ?? {};
   const assetInventory = byKey.assetInventory ?? {};
-  const validation = byKey.validation ?? {};
   const cancellationPolicy = byKey.cancellationPolicy ?? {};
   const originalRetentionPolicy = byKey.originalRetentionPolicy ?? {};
   const storageRoles = storageRolesValue(byKey.storageRoles);
@@ -202,10 +200,6 @@ export function settingsToForm(settings: Array<{ key: string; value: Record<stri
       syncIntervalMinutes: numberValue(assetInventory.syncIntervalMinutes, initialSettings.assetInventory.syncIntervalMinutes),
       reconciliationMode: reconciliationModeValue(assetInventory.reconciliationMode),
     },
-    validation: {
-      minimumScore: numberValue(validation.minimumScore, initialSettings.validation.minimumScore),
-      requireDurationMatch: booleanValue(validation.requireDurationMatch, initialSettings.validation.requireDurationMatch),
-    },
     cancellationPolicy: {
       keepLogsAndDiagnostics: booleanValue(cancellationPolicy.keepLogsAndDiagnostics, initialSettings.cancellationPolicy.keepLogsAndDiagnostics),
       deleteGeneratedFiles: booleanValue(cancellationPolicy.deleteGeneratedFiles, initialSettings.cancellationPolicy.deleteGeneratedFiles),
@@ -239,7 +233,6 @@ export const initialSettings: SettingsForm = buildSettingsForm({
     forceFreshSnapshotBeforeExecution: false,
   },
   assetInventory: { autoSyncEnabled: true, syncIntervalMinutes: 60, reconciliationMode: 'exact' },
-  validation: { minimumScore: 90, requireDurationMatch: true },
   cancellationPolicy: {
     keepLogsAndDiagnostics: true, deleteGeneratedFiles: false, deletePartialOutputFromStaging: false,
     controlledRoots: ['/media/staging', '/mwp/work', '/mwp/work/temp', '/tmp/mvforge'],

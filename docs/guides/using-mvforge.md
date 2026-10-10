@@ -225,6 +225,10 @@ En **Validation** inspecciona:
 - Warnings y score.
 - Reproducción de una muestra cuando corresponda.
 
+La política inicial recomendada es **Default**. En **Settings → Pipeline → Validation** puedes elegir Disabled, Basic, Default, Strict o ajustar una política Custom; Disabled apaga las comprobaciones de calidad, pero conserva identidad del Result, integridad, binding de ejecución y seguridad del paquete. Cada ValidationRun congela la política efectiva que produjo sus hallazgos; cambiar Settings solo afecta revalidaciones futuras. El score es informativo y nunca autoriza la publicación.
+
+Los hallazgos overrideable ofrecen **Skip** con una razón opcional. La acción conserva el resultado canónico y registra el actor, hora, Result, run y política exactos. Publisher solo permite el handoff cuando cada bloqueo restante está cubierto por un skip válido y las comprobaciones propias de destino y filesystem pasan.
+
 Si pasa, utiliza **Publisher** manualmente. Confirma:
 
 - El archivo aparece bajo `/media/library`.

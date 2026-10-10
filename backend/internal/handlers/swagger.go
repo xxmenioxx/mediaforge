@@ -542,7 +542,7 @@ func openAPIPaths() gin.H {
 				"summary":     "Load immutable Validation run details and override events",
 				"operationId": "getValidationRun",
 				"parameters":  []gin.H{pathIDParameter(), {"name": "runId", "in": "path", "required": true, "schema": gin.H{"type": "string"}}},
-				"responses":   gin.H{"200": jsonResponse("Validation run detail", gin.H{"type": "object", "properties": gin.H{"run": ref("ValidationRun"), "overrides": gin.H{"type": "array", "items": ref("ValidationOverrideEvent")}}}), "404": jsonResponse("Validation run not found", ref("Error"))},
+				"responses":   gin.H{"200": jsonResponse("Validation run detail", ref("ValidationRunDetail")), "404": jsonResponse("Validation run not found", ref("Error"))},
 			},
 		},
 		"/api/validation/jobs/{id}/overrides": gin.H{
@@ -1359,19 +1359,45 @@ func openAPIComponents() gin.H {
 			},
 			"ValidationRun": gin.H{
 				"type": "object", "additionalProperties": true,
-				"required": []string{"runId", "jobId", "resultArtifactId", "resultGenerationToken", "resultOutputRevision", "rulesetId", "rulesetVersion", "outcome", "findings", "createdAt"},
+				"required": []string{"runId", "jobId", "resultArtifactId", "resultGenerationToken", "resultOutputRevision", "rulesetId", "rulesetVersion", "policySchemaVersion", "policyVersion", "policyPreset", "policyFingerprint", "policySnapshot", "outcome", "findings", "createdAt"},
+			},
+			"ValidationRunDetail": gin.H{
+				"type": "object", "required": []string{"run", "overrides", "effectiveHandoff", "currentPolicy", "policyCurrent"},
+				"properties": gin.H{
+					"run": ref("ValidationRun"), "overrides": gin.H{"type": "array", "items": ref("ValidationOverrideEvent")},
+					"effectiveHandoff": gin.H{"type": "string", "enum": []string{"ALLOWED", "ALLOWED_BY_OVERRIDE", "BLOCKED", "HISTORICAL_ONLY"}},
+					"currentPolicy":    ref("ValidationPolicy"), "policyCurrent": gin.H{"type": "boolean"},
+				},
+			},
+			"ValidationPolicy": gin.H{
+				"type": "object", "required": []string{"schemaVersion", "policyVersion", "preset", "rules"},
+				"properties": gin.H{
+					"schemaVersion": gin.H{"type": "integer", "example": 1}, "policyVersion": gin.H{"type": "string", "example": "validation-policy-v1"},
+					"preset": gin.H{"type": "string", "enum": []string{"disabled", "basic", "default", "strict", "custom"}}, "basedOn": gin.H{"type": "string"},
+					"rules": gin.H{"type": "object", "additionalProperties": ref("ValidationPolicyRule")},
+				},
+			},
+			"ValidationPolicyRule": gin.H{
+				"type": "object", "required": []string{"enabled", "disposition", "overrideable", "warningPenalty", "failurePenalty"},
+				"properties": gin.H{
+					"enabled": gin.H{"type": "boolean"}, "disposition": gin.H{"type": "string", "enum": []string{"blocking", "advisory"}},
+					"overrideable": gin.H{"type": "boolean"}, "thresholds": gin.H{"type": "object", "additionalProperties": gin.H{"type": "number"}},
+					"fields":         gin.H{"type": "object", "additionalProperties": gin.H{"type": "boolean"}},
+					"warningPenalty": gin.H{"type": "integer", "minimum": 0, "maximum": 100}, "failurePenalty": gin.H{"type": "integer", "minimum": 0, "maximum": 100},
+				},
 			},
 			"ValidationOverrideInput": gin.H{
-				"type": "object", "additionalProperties": false, "required": []string{"reason", "ruleKeys", "requestedHandoff"},
+				"type": "object", "additionalProperties": false, "required": []string{"ruleKeys", "requestedHandoff"},
 				"properties": gin.H{
-					"reason":           gin.H{"type": "string", "minLength": 1, "maxLength": 2000},
+					"scope":            gin.H{"type": "string", "enum": []string{"rule", "all_overrideable"}, "description": "all_overrideable must include the exact currently unresolved overrideable rule keys."},
+					"reason":           gin.H{"type": "string", "maxLength": 2000, "description": "Optional audit note."},
 					"ruleKeys":         gin.H{"type": "array", "minItems": 1, "items": gin.H{"type": "string"}},
 					"requestedHandoff": gin.H{"type": "string", "enum": []string{"publisher", "automatic"}},
 				},
 			},
 			"ValidationOverrideEvent": gin.H{
 				"type": "object", "additionalProperties": true,
-				"required": []string{"eventId", "validationRunId", "actorSource", "actorId", "reason", "ruleKeys", "requestedHandoff", "overrideVersion", "createdAt"},
+				"required": []string{"eventId", "validationRunId", "scope", "resultArtifactId", "resultGenerationToken", "resultGenerationVersion", "resultOutputRevision", "policySchemaVersion", "policyVersion", "policyFingerprint", "actorSource", "actorId", "reason", "ruleKeys", "requestedHandoff", "overrideVersion", "createdAt"},
 			},
 			"ValidationCheck": gin.H{
 				"type": "object",

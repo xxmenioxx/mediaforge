@@ -113,6 +113,8 @@ func buildSettingDefinitions() map[string]settingDefinition {
 	definitions["subtitleSettings"] = withNormalizer(definitions["subtitleSettings"], func(_ settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
 		return normalizeSubtitleSettingsForUpdate(value)
 	})
+	definitions["validation"] = withNormalizer(definitions["validation"], normalizeValidationPolicySetting)
+	definitions["validation"] = withProjector(definitions["validation"], projectValidationPolicySetting)
 	definitions["originalRetentionPolicy"] = withValidation(definitions["originalRetentionPolicy"], func(_ settingsMutationContext, value models.JSONMap) error {
 		return validateOriginalRetentionPolicy(value)
 	})

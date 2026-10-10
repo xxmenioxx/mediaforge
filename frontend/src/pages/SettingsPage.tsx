@@ -49,6 +49,7 @@ import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import { AssetDefaultsCard } from '../components/AssetDefaultsCard';
 import { JellyfinSettingsCard } from '../components/JellyfinSettingsCard';
+import { ValidationPolicySettingsCard } from '../components/ValidationPolicySettingsCard';
 import { TestEncodeSettingsDomain } from './TestEncodeSettingsDomain';
 import { LegacyAnalysisRecords } from '../components/LegacyAnalysisRecords';
 import type { AppSetting, HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
@@ -162,10 +163,6 @@ export type SettingsForm = {
     syncIntervalMinutes: number;
     reconciliationMode: 'off' | 'review' | 'exact';
   };
-  validation: {
-    minimumScore: number;
-    requireDurationMatch: boolean;
-  };
   cancellationPolicy: {
     keepLogsAndDiagnostics: boolean;
     deleteGeneratedFiles: boolean;
@@ -184,7 +181,6 @@ export type SettingsForm = {
     workers: string;
     pipelineAutomation: string;
     assetInventory: string;
-    validation: string;
     cancellationPolicy: string;
     originalRetentionPolicy: string;
     assetTypes: string;
@@ -366,7 +362,6 @@ export function SettingsPage() {
         { key: 'workers', value: workerSettingsPayload(nextForm.workers) },
         { key: 'pipelineAutomation', value: nextForm.pipelineAutomation },
         { key: 'assetInventory', value: nextForm.assetInventory },
-        { key: 'validation', value: nextForm.validation },
         { key: 'cancellationPolicy', value: nextForm.cancellationPolicy },
         { key: 'originalRetentionPolicy', value: nextForm.originalRetentionPolicy },
         { key: 'assetTypes', value: { types: nextForm.assetTypes } },
@@ -418,6 +413,20 @@ export function SettingsPage() {
     return () => window.clearTimeout(timer);
   }, [settings.data]);
 
+  useEffect(() => {
+    if (isSettingsSection(requestedSection) && section !== requestedSection) {
+      setSection(requestedSection);
+    }
+    if (requestedSection !== 'pipeline' || window.location.hash !== '#validation') {
+      return;
+    }
+    setTab('general');
+    const timer = window.setTimeout(() => {
+      document.getElementById('validation-settings')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }, 50);
+    return () => window.clearTimeout(timer);
+  }, [requestedSection, searchParams, section, settings.data]);
+
   function saveSettings(nextForm = form) {
     if (workerProgressPercentError(nextForm.workers.startNextJobAtProgressPercent)) {
       return;
@@ -430,7 +439,6 @@ export function SettingsPage() {
     const workers = parseJsonObject(form.advancedJson.workers, form.workers);
     const pipelineAutomation = parseJsonObject(form.advancedJson.pipelineAutomation, form.pipelineAutomation);
     const assetInventory = parseJsonObject(form.advancedJson.assetInventory, form.assetInventory);
-    const validation = parseJsonObject(form.advancedJson.validation, form.validation);
     const cancellationPolicy = parseJsonObject(form.advancedJson.cancellationPolicy, form.cancellationPolicy);
     const originalRetentionPolicy = parseJsonObject(
       form.advancedJson.originalRetentionPolicy,
@@ -500,13 +508,6 @@ export function SettingsPage() {
         autoSyncEnabled: booleanValue(assetInventory.autoSyncEnabled, initialSettings.assetInventory.autoSyncEnabled),
         syncIntervalMinutes: numberValue(assetInventory.syncIntervalMinutes, initialSettings.assetInventory.syncIntervalMinutes),
         reconciliationMode: reconciliationModeValue(assetInventory.reconciliationMode),
-      },
-      validation: {
-        minimumScore: numberValue(validation.minimumScore, initialSettings.validation.minimumScore),
-        requireDurationMatch: booleanValue(
-          validation.requireDurationMatch,
-          initialSettings.validation.requireDurationMatch,
-        ),
       },
       cancellationPolicy: {
         keepLogsAndDiagnostics: booleanValue(
@@ -909,11 +910,11 @@ export function SettingsPage() {
             ) : null}
 
             {section === 'pipeline' ? (
-              <Grid container spacing={2}>
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <ValidationCard form={form} setForm={setForm} />
-                </Grid>
-              </Grid>
+              <ValidationPolicySettingsCard
+                value={settings.data?.find((item) => item.key === 'validation')?.value}
+                saving={updateSetting.isPending}
+                onSave={(value) => updateSetting.mutate({ key: 'validation', value })}
+              />
             ) : null}
 
             {section === 'runtime' ? (
@@ -2485,50 +2486,6 @@ export function SubtitleTranslationSettingsCard({
   );
 }
 
-function ValidationCard({ form, setForm }: SettingsCardProps) {
-  return (
-    <Card sx={{ height: '100%' }}>
-      <CardContent>
-        <Stack spacing={2}>
-          <Stack>
-            <Typography variant="h3">Validation</Typography>
-            <Typography color="text.secondary" variant="body2">
-              Global defaults for post-conversion acceptance.
-            </Typography>
-          </Stack>
-          <TextField
-            label="Minimum score"
-            type="number"
-            value={form.validation.minimumScore}
-            onChange={(event) =>
-              setForm((current) => ({
-                ...current,
-                validation: { ...current.validation, minimumScore: Number(event.target.value) },
-              }))
-            }
-            inputProps={{ min: 0, max: 100 }}
-            fullWidth
-          />
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={form.validation.requireDurationMatch}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    validation: { ...current.validation, requireDurationMatch: event.target.checked },
-                  }))
-                }
-              />
-            }
-            label="Require duration match"
-          />
-        </Stack>
-      </CardContent>
-    </Card>
-  );
-}
-
 function CancellationPolicyCard({ form, setForm }: SettingsCardProps) {
   return (
     <Card sx={{ height: '100%' }}>
@@ -3092,7 +3049,7 @@ function AdvancedSettings({
             </Typography>
           </Stack>
           <Divider />
-          {(['paths', 'workers', 'pipelineAutomation', 'assetInventory', 'validation', 'cancellationPolicy', 'originalRetentionPolicy', 'assetTypes', 'assetCategories'] as const).map((key) => (
+          {(['paths', 'workers', 'pipelineAutomation', 'assetInventory', 'cancellationPolicy', 'originalRetentionPolicy', 'assetTypes', 'assetCategories'] as const).map((key) => (
             <TextField
               key={key}
               label={key}

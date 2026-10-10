@@ -797,10 +797,10 @@ export const api = {
     }),
   validationRun: ({ jobId, runId }: { jobId: number; runId: string }) =>
     request<ValidationRunDetail>(`/api/validation/jobs/${jobId}/runs/${encodeURIComponent(runId)}`),
-  createValidationOverride: ({ jobId, reason, ruleKeys, requestedHandoff }: { jobId: number; reason: string; ruleKeys: string[]; requestedHandoff: 'publisher' | 'automatic' }) =>
+  createValidationOverride: ({ jobId, scope, reason, ruleKeys, requestedHandoff }: { jobId: number; scope: 'rule' | 'all_overrideable'; reason?: string; ruleKeys: string[]; requestedHandoff: 'publisher' | 'automatic' }) =>
     request<ValidationOverride>(`/api/validation/jobs/${jobId}/overrides`, {
       method: 'POST',
-      body: JSON.stringify({ reason, ruleKeys, requestedHandoff }),
+      body: JSON.stringify({ scope, reason: reason ?? '', ruleKeys, requestedHandoff }),
     }),
   validationReview: ({ view, limit, offset }: { view: 'exceptions' | 'pending' | 'all'; limit: number; offset: number }) =>
     request<ValidationSummaryPage>(`/api/validation/review?view=${view}&limit=${limit}&offset=${offset}`),
