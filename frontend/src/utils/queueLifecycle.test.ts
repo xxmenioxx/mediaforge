@@ -28,6 +28,20 @@ describe('Queue lifecycle refresh predicate', () => {
     expect(hasNonTerminalQueueLifecycle([job()])).toBe(false);
     expect(hasNonTerminalQueueLifecycle(undefined)).toBe(false);
   });
+
+  it('polls READY publications only when automatic publishing is explicitly enabled', () => {
+    const ready = [job({ publicationState: 'READY' })];
+    expect(hasNonTerminalQueueLifecycle(ready, true)).toBe(true);
+    expect(hasNonTerminalQueueLifecycle(ready, false)).toBe(false);
+    expect(hasNonTerminalQueueLifecycle(ready)).toBe(false);
+  });
+
+  it.each(['PUBLISHED', 'FAILED', 'BLOCKED', 'HELD'] as const)(
+    'does not poll terminal or non-actionable publication state %s',
+    (publicationState) => {
+      expect(hasNonTerminalQueueLifecycle([job({ publicationState })], true)).toBe(false);
+    },
+  );
 });
 
 describe('original archive status labels', () => {

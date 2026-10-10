@@ -62,18 +62,19 @@ const (
 	assetCorrelationResolved   = "resolved"
 	assetCorrelationUnresolved = "unresolved"
 
-	assetActionReasonUnsupported         = "unsupported"
-	assetActionReasonIdentityUnresolved  = "identity_unresolved"
-	assetActionReasonActiveWork          = "active_work"
-	assetActionReasonMissing             = "missing"
-	assetActionReasonUnsafeRoot          = "unsafe_root"
-	assetActionReasonUnknownProvenance   = "unknown_provenance"
-	assetActionReasonPublicationConflict = "publication_conflict"
-	assetActionReasonRequiresReview      = "needs_review"
-	assetActionReasonNotRaw              = "not_raw"
-	assetActionReasonNotLibrary          = "not_library"
-	assetActionReasonNoOriginal          = "original_unavailable"
-	assetActionReasonAlreadyArchived     = "already_archived"
+	assetActionReasonUnsupported           = "unsupported"
+	assetActionReasonIdentityUnresolved    = "identity_unresolved"
+	assetActionReasonActiveWork            = "active_work"
+	assetActionReasonOriginalArchiveActive = "original_archive_in_progress"
+	assetActionReasonMissing               = "missing"
+	assetActionReasonUnsafeRoot            = "unsafe_root"
+	assetActionReasonUnknownProvenance     = "unknown_provenance"
+	assetActionReasonPublicationConflict   = "publication_conflict"
+	assetActionReasonRequiresReview        = "needs_review"
+	assetActionReasonNotRaw                = "not_raw"
+	assetActionReasonNotLibrary            = "not_library"
+	assetActionReasonNoOriginal            = "original_unavailable"
+	assetActionReasonAlreadyArchived       = "already_archived"
 )
 
 // AssetLifecycleProjection is a read model over existing AssetRecord,
@@ -213,6 +214,7 @@ type AssetActionGuardContext struct {
 	Missing                      bool
 	HasActiveQueue               bool
 	HasActiveMaintenance         bool
+	OriginalArchiveActive        bool
 	RootSafe                     bool
 	ProvenanceKnown              bool
 	PublicationConflict          bool
@@ -383,6 +385,9 @@ func ResolveAssetLifecycleProjection(input AssetLifecycleProjectionInput) AssetL
 	}
 
 	rootSafe := assetLifecycleRootSafe(record, location, libraries, input.ArchiveRoot)
+	originalArchiveActive := currentQueue != nil && currentQueue.job != nil &&
+		currentQueue.job.Status == JobStatusCompleted && currentQueue.job.PublicationState == PublicationPublished &&
+		(currentQueue.job.OriginalArchiveStatus == "pending" || currentQueue.job.OriginalArchiveStatus == "archiving")
 	originalIdentityKnown, originalAvailable, originalRootSafe := false, false, false
 	for _, archived := range projection.ArchivedOriginals {
 		if archived.Relationship == "current" {
@@ -400,6 +405,7 @@ func ResolveAssetLifecycleProjection(input AssetLifecycleProjectionInput) AssetL
 		Missing:                      record.Missing,
 		HasActiveQueue:               activeQueue,
 		HasActiveMaintenance:         activeMaintenance,
+		OriginalArchiveActive:        originalArchiveActive,
 		RootSafe:                     rootSafe,
 		ProvenanceKnown:              projection.Provenance != AssetProvenanceLegacyOrUnknown,
 		PublicationConflict:          projection.CurrentPublication.State == assetCurrentPublicationConflict,
@@ -520,8 +526,13 @@ func ResolveAssetActionCapabilities(state AssetActionGuardContext) AssetActionCa
 	}
 	if state.HasActiveQueue || state.HasActiveMaintenance {
 		setAssetActionCapabilityReasons(&capabilities, assetActionReasonActiveWork,
-			&capabilities.Rename, &capabilities.Move, &capabilities.Reconvert,
+			&capabilities.Move, &capabilities.Reconvert,
 			&capabilities.Archive, &capabilities.Restore, &capabilities.DeleteOriginal)
+		reason := assetActionReasonActiveWork
+		if state.OriginalArchiveActive && !state.PublicationConflict {
+			reason = assetActionReasonOriginalArchiveActive
+		}
+		capabilities.Rename = AssetActionCapability{Reason: reason}
 	}
 
 	if state.Location == AssetLocationRaw && state.QueueEligible {

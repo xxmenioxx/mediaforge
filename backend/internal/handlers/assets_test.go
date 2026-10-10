@@ -397,6 +397,67 @@ func TestRenameAssetRejectsActiveWorkForThatAsset(t *testing.T) {
 	}
 }
 
+func TestRenameAssetBlocksActiveArchiveByPublishedPathNotRawMediaPath(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:rename-published-path-archive?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+
+	libraryRoot := t.TempDir()
+	rawRoot := t.TempDir()
+	rawPath := filepath.Join(rawRoot, "Concierto.mkv")
+	publishedPath := filepath.Join(libraryRoot, "The Concert (2009).mkv")
+	publishedSidecar := filepath.Join(libraryRoot, "The Concert (2009).eng.srt")
+	targetPath := filepath.Join(libraryRoot, "Concierto.mkv")
+	writeTestFile(t, rawPath, "raw source")
+	writeTestFile(t, publishedPath, "published video")
+	writeTestFile(t, publishedSidecar, "published subtitle")
+	library := models.Library{Name: "Movies", DestinationPath: libraryRoot}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{
+		Path: publishedPath, RootPath: libraryRoot, RelativePath: filepath.Base(publishedPath),
+		FileName: filepath.Base(publishedPath), SourcePath: rawPath, LibraryID: library.ID, Status: "converted",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	publishedAt := time.Now().UTC()
+	job := models.QueueJob{
+		MediaPath: rawPath, PublishedPath: publishedPath, Status: JobStatusCompleted,
+		PublishedAt: &publishedAt, PublicationState: PublicationPublished, OriginalArchiveStatus: "archiving",
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := postAssetRename(t, db, publishedPath, filepath.Base(targetPath))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, path := range []string{rawPath, publishedPath, publishedSidecar} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("blocked rename changed %q: %v", path, err)
+		}
+	}
+	for _, path := range []string{targetPath, filepath.Join(libraryRoot, "Concierto.eng.srt")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("blocked rename created %q: %v", path, err)
+		}
+	}
+	var afterAsset models.AssetRecord
+	if err := db.Where("path = ?", publishedPath).First(&afterAsset).Error; err != nil || afterAsset.SourcePath != rawPath {
+		t.Fatalf("blocked rename changed AssetRecord: %#v err=%v", afterAsset, err)
+	}
+	var afterJob models.QueueJob
+	if err := db.First(&afterJob, job.ID).Error; err != nil || afterJob.MediaPath != rawPath || afterJob.PublishedPath != publishedPath || afterJob.OriginalArchivedPath != "" || afterJob.OriginalArchiveStatus != "archiving" {
+		t.Fatalf("blocked rename changed Publisher/Queue state: %#v err=%v", afterJob, err)
+	}
+}
+
 func TestRenameAssetRenamesOwnedSubtitleSidecars(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:rename-owned-subtitles?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -411,6 +472,7 @@ func TestRenameAssetRenamesOwnedSubtitleSidecars(t *testing.T) {
 	owned := map[string]string{
 		"Movie.eng.srt":          "english srt",
 		"Movie.spa.ass":          "spanish ass",
+		"Movie.fra.ssa":          "french ssa",
 		"Movie.eng.6.forced.srt": "track suffix",
 	}
 	writeTestFile(t, oldPath, "media")
@@ -419,11 +481,28 @@ func TestRenameAssetRenamesOwnedSubtitleSidecars(t *testing.T) {
 	}
 	unrelated := filepath.Join(root, "notes.srt")
 	writeTestFile(t, unrelated, "unrelated")
+	partialName := filepath.Join(root, "MovieExtra.eng.srt")
+	nfo := filepath.Join(root, "Movie.nfo")
+	artwork := filepath.Join(root, "Movie-poster.jpg")
+	for path, content := range map[string]string{partialName: "partial name", nfo: "unassociated nfo", artwork: "unassociated artwork"} {
+		writeTestFile(t, path, content)
+	}
 	library := models.Library{Name: "Movies", DestinationPath: root}
 	if err := db.Create(&library).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.AssetRecord{Path: oldPath, RootPath: root, RelativePath: filepath.Base(oldPath), FileName: filepath.Base(oldPath), LibraryID: library.ID}).Error; err != nil {
+	rawPath := filepath.Join(t.TempDir(), "Movie.mkv")
+	archivedPath := filepath.Join(t.TempDir(), "Movie.mkv")
+	if err := db.Create(&models.AssetRecord{Path: oldPath, RootPath: root, RelativePath: filepath.Base(oldPath), FileName: filepath.Base(oldPath), SourcePath: rawPath, LibraryID: library.ID, Status: "converted"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	publishedAt := time.Now().UTC()
+	job := models.QueueJob{
+		MediaPath: rawPath, PublishedPath: oldPath, ReplacementTargetPath: oldPath,
+		Status: JobStatusCompleted, PublishedAt: &publishedAt, PublicationState: PublicationPublished,
+		OriginalArchiveStatus: "complete", OriginalArchivedPath: archivedPath,
+	}
+	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -443,6 +522,56 @@ func TestRenameAssetRenamesOwnedSubtitleSidecars(t *testing.T) {
 	}
 	if got, err := os.ReadFile(unrelated); err != nil || string(got) != "unrelated" {
 		t.Fatalf("unrelated sidecar changed: %q err=%v", got, err)
+	}
+	for path, want := range map[string]string{partialName: "partial name", nfo: "unassociated nfo", artwork: "unassociated artwork"} {
+		if got, err := os.ReadFile(path); err != nil || string(got) != want {
+			t.Fatalf("unowned file changed %q: got=%q want=%q err=%v", path, got, want, err)
+		}
+	}
+	var renamedJob models.QueueJob
+	if err := db.First(&renamedJob, job.ID).Error; err != nil || renamedJob.MediaPath != rawPath || renamedJob.PublishedPath != newPath || renamedJob.OriginalArchivedPath != archivedPath {
+		t.Fatalf("terminal archive references were not preserved: %#v err=%v", renamedJob, err)
+	}
+}
+
+func TestRenameAssetAllowsNotApplicableArchive(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:rename-not-applicable-archive?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.QueueJob{}, &models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	oldPath := filepath.Join(root, "Imported.mkv")
+	newPath := filepath.Join(root, "Imported Renamed.mkv")
+	writeTestFile(t, oldPath, "converted media")
+	library := models.Library{Name: "Movies", DestinationPath: root}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{Path: oldPath, FileName: filepath.Base(oldPath), LibraryID: library.ID, Status: "converted"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	publishedAt := time.Now().UTC()
+	job := models.QueueJob{
+		MediaPath: "/source/Imported.mkv", PublishedPath: oldPath, Status: JobStatusCompleted,
+		PublishedAt: &publishedAt, PublicationState: PublicationPublished, OriginalArchiveStatus: "not_applicable",
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := postAssetRename(t, db, oldPath, filepath.Base(newPath))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("not-applicable publication was not renamed: %v", err)
+	}
+	var renamedJob models.QueueJob
+	if err := db.First(&renamedJob, job.ID).Error; err != nil || renamedJob.PublishedPath != newPath || renamedJob.OriginalArchiveStatus != "not_applicable" {
+		t.Fatalf("not-applicable publication state changed unexpectedly: %#v err=%v", renamedJob, err)
 	}
 }
 
@@ -1432,6 +1561,41 @@ func TestApplyLibraryRenamePlanRollsBackCompletedMoves(t *testing.T) {
 	for _, asset := range plan.Assets {
 		if _, err := os.Stat(asset.TargetPath); !os.IsNotExist(err) {
 			t.Fatalf("rollback left target %q: %v", asset.TargetPath, err)
+		}
+	}
+}
+
+func TestApplyManualAssetRenameRollsBackWhenSidecarMoveFails(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "Movie.mkv")
+	target := filepath.Join(root, "Movie Renamed.mkv")
+	srt := filepath.Join(root, "Movie.eng.srt")
+	ssa := filepath.Join(root, "Movie.spa.ssa")
+	for _, path := range []string{source, srt, ssa} {
+		writeTestFile(t, path, filepath.Base(path))
+	}
+	plan, err := buildManualAssetRenamePlan(source, target, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	library := models.Library{DestinationPath: root}
+	renameFile := func(from, to string) error {
+		if filepath.Ext(from) == ".ssa" {
+			return fmt.Errorf("injected sidecar rename failure")
+		}
+		return os.Rename(from, to)
+	}
+	if _, err := applyLibraryRenamePlan(plan, library, renameFile); err == nil || !strings.Contains(err.Error(), "sidecar rename failure") {
+		t.Fatalf("unexpected apply error: %v", err)
+	}
+	for _, path := range []string{source, srt, ssa} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("rollback did not restore %q: %v", path, err)
+		}
+	}
+	for _, path := range []string{target, filepath.Join(root, "Movie Renamed.eng.srt"), filepath.Join(root, "Movie Renamed.spa.ssa")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("rollback left renamed file %q: %v", path, err)
 		}
 	}
 }

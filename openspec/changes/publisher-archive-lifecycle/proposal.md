@@ -6,9 +6,9 @@ Publisher can commit publication and complete the Queue job while original archi
 
 - Persist real `publishing`, `archiving_original`, and `completed` Queue stage transitions at their fenced lifecycle boundaries.
 - Keep archive status separate from `QueueJob.status`, and display pending, archiving, complete, failed, and not-applicable states with the available failure summary.
-- Refresh Queue jobs and Assets only while Queue, Publisher, or original archival work is nonterminal, then stop polling.
+- Refresh Queue jobs and Assets only while Queue, Publisher, or original archival work is nonterminal, then stop polling. A `READY` publication is polled only when `pipelineAutomation.autoPublisherEnabled` is true, because AutoPublisher claims it automatically only in that mode.
 - Keep Asset Info bound to the existing canonical archived-original projection and refresh it after the archive record commits.
-- Block file rename while the corresponding published Queue job has a pending or active original archive, using existing backend active-work guards.
+- Temporarily block Rename only while the exact canonical published Queue job has a pending or active original archive; allow converted Library assets to be renamed again after `complete`, `not_applicable`, or another existing terminal-state policy. Preserve owned subtitle sidecars and rollback behavior.
 - Keep historical stage history evidence-only; do not backfill events or associate files by name.
 
 ## Capabilities
@@ -23,7 +23,7 @@ None. This change adds the missing archive operation lifecycle behavior around e
 
 ## Impact
 
-- Backend: Publisher claim/commit/outcome transitions, Queue active-work checks, asset lifecycle projection, and focused lifecycle/recovery/Rename tests.
+- Backend: Publisher claim/commit/outcome transitions, Queue active-work checks for both source and published paths, asset lifecycle projection, manual Rename state reconciliation, owned subtitle sidecars, and focused lifecycle/recovery/Rename tests.
 - Frontend: Queue and Assets query refresh, Queue/Asset Info archive status, and Job Details stage history rendering.
 - Persistence: no new model or migration. Existing QueueJob, PublisherPublication, and AssetRecord fields remain authoritative.
-- Out of scope: issue #312, changing the meaning of `QueueJob.status=completed`, publication policy, archive retention, historical backfills, name-based association, and any media or production data changes.
+- Out of scope: issue #312, changing the meaning of `QueueJob.status=completed`, publication policy, archive retention, historical backfills, name-based association, and any media or production data changes. NFO and artwork rename ownership remains unsupported because the current asset model has no canonical association for those files; track that as a separate follow-up rather than inferring ownership from adjacent names.

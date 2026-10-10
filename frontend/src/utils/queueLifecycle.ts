@@ -2,11 +2,12 @@ import type { QueueJob } from '../api/types';
 
 const activeArchiveStatuses = new Set(['pending', 'archiving']);
 
-export function hasNonTerminalQueueLifecycle(jobs: QueueJob[] | undefined): boolean {
+export function hasNonTerminalQueueLifecycle(jobs: QueueJob[] | undefined, autoPublisherEnabled = false): boolean {
   return Boolean(jobs?.some((job) =>
     job.status === 'queued' ||
     job.status === 'running' ||
     job.publicationState === 'PUBLISHING' ||
+    (autoPublisherEnabled && job.publicationState === 'READY') ||
     activeArchiveStatuses.has(job.originalArchiveStatus ?? ''),
   ));
 }

@@ -64,14 +64,16 @@ function queueJob(archiveStatus: 'pending' | 'archiving' | 'complete', archivedP
     processingMode: 'full_encode', priority: 5, queuePosition: 1, status: 'completed', stage: 'completed',
     stageHistory: [], progress: 100, workerName: '', outputPath: '', plannedPublishedPath: '', errorMessage: '', notes: '',
     validationStatus: 'passed', validationScore: 100, validationReport: {}, publicationState: 'PUBLISHED',
-    publishedPath: '/media/library/Akira.mkv', originalArchiveStatus: archiveStatus,
+    publishedPath: '/media/library/Akira.mkv', publishedAt: '2026-08-28T00:01:00Z', originalArchiveStatus: archiveStatus,
     originalArchivedPath: archivedPath, replacementTargetPath: '', createdAt: '2026-08-28T00:00:00Z',
     updatedAt: '2026-08-28T00:00:00Z',
   } as QueueJob;
 }
 
 function renderAssetsPage() {
-  return render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+  return queryClient;
 }
 
 describe('Assets page original archive lifecycle', () => {
@@ -146,5 +148,37 @@ describe('Assets page original archive lifecycle', () => {
     await waitFor(() => expect(vi.mocked(api.assets).mock.calls.length).toBeGreaterThan(assetCallsBeforeInterval));
     expect(await within(dialog).findByText(archivedPath)).toBeTruthy();
     expect(within(dialog).getByText('Original archive · Complete')).toBeTruthy();
+  }, 10000);
+
+  it('shows a temporary Rename explanation during canonical archival and unlocks after the lifecycle refresh', async () => {
+    const pendingInventory = inventory();
+    pendingInventory.unprocessed[0].lifecycle = {
+      location: 'raw', lifecycle: 'available', provenance: 'converted', validation: 'passed', publication: 'published', original: 'available',
+      currentPublication: { authority: 'queue_job', id: 401, state: 'PUBLISHED', publishedPath: '/media/library/Akira.mkv' },
+      actions: { rename: { allowed: false, reason: 'original_archive_in_progress' } },
+    } as never;
+    const completeInventory = inventory();
+    completeInventory.unprocessed[0].lifecycle = {
+      location: 'raw', lifecycle: 'available', provenance: 'converted', validation: 'passed', publication: 'published', original: 'archived',
+      currentPublication: { authority: 'queue_job', id: 401, state: 'PUBLISHED', publishedPath: '/media/library/Akira.mkv' },
+      actions: { rename: { allowed: true } },
+    } as never;
+    vi.mocked(api.assets).mockResolvedValueOnce(pendingInventory).mockResolvedValue(completeInventory);
+    vi.mocked(api.queueJobs).mockResolvedValueOnce([queueJob('pending')]).mockResolvedValue([queueJob('complete', '/media/archive/Akira.mkv')]);
+
+    const user = userEvent.setup();
+    const queryClient = renderAssetsPage();
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    const details = await screen.findByTestId('selected-asset-detail');
+    await user.click(within(details).getByRole('button', { name: 'More actions for Akira.mkv' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Asset Info' }));
+    const dialog = await screen.findByRole('dialog');
+    const renameField = await within(dialog).findByRole('textbox', { name: 'Rename file' });
+    expect(renameField).toHaveProperty('disabled', true);
+    expect(within(dialog).getByText('Original archival is still in progress. Try Rename again once it finishes.')).toBeTruthy();
+
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['assets'] }); });
+    await waitFor(() => expect(within(dialog).getByRole('textbox', { name: 'Rename file' })).toHaveProperty('disabled', false));
+    expect(within(dialog).queryByText('Original archival is still in progress. Try Rename again once it finishes.')).toBeNull();
   }, 10000);
 });

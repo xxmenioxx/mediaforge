@@ -34,11 +34,19 @@ See `proposal.md` and `specs/publisher-archive-lifecycle/spec.md`. Publisher, Qu
 
 ### Active-work checks cover post-publication archival
 
-The reported Rename risk is demonstrated by the current path: manual Rename checks open Queue work, while that check excludes jobs with `published_at` set; Publisher still archives the frozen original path during this interval. Extend the shared active-work predicate to include exact, non-dismissed, published Queue jobs with archive state `pending` or `archiving`. Reuse it in Queue admission, lifecycle action capabilities, and existing file-mutation guards so backend and projected permissions agree. The predicate uses persisted Queue/source identity and paths already used by those guards; it does not compare names.
+The updated issue confirms the race on the converted Library path: manual Rename checked `QueueJob.MediaPath` (the RAW source), while Publisher continued archiving that frozen source after publication. Resolve the current `AssetRecord` before manual Rename and use the canonical active-work predicate so the exact `MediaPath` and `PublishedPath` identities are both considered, along with `SourceAssetRecordID` when available. Keep existing guards for queued/running work and maintenance. For a published Queue job, only archive `pending` or `archiving` temporarily blocks Rename; `complete`, `not_applicable`, and `failed` return to the existing terminal-state policy. Do not make converted provenance or Queue `completed` a permanent rename prohibition. Never match names.
+
+The lifecycle projection SHALL return a specific temporary Rename capability reason for a canonically related active original archive. Asset Info shows that archival is in progress and becomes available again when its refreshed canonical projection observes a terminal state. The HTTP endpoint also rejects an active archive with `409` before moving the media or sidecars.
+
+### Manual Rename preserves owned subtitle sidecars and current references
+
+Continue using `buildManualAssetRenamePlan()`, `ownedSubtitleRenamePlans()`, and `applyLibraryRenamePlan()`. The existing subtitle discovery rule recognizes adjacent SRT, ASS, and SSA files with the exact media stem or a dot-delimited suffix; target names replace only the media stem and preserve language, role, track, and format suffixes. Preflight all media and subtitle destinations before moving anything, and reverse completed moves if a later move or database reconciliation fails. Reconcile the current `AssetRecord`, `ScanResult`, path-keyed overrides, profile assignments, and current Queue/DirectPublication paths. Leave immutable Publisher history and receipts, raw `MediaPath`, and `OriginalArchivedPath` unchanged.
+
+NFO and artwork files are not included in this rename plan: the current code has no canonical sidecar ownership record for them. Do not infer ownership from a neighboring basename. A separate follow-up should define persisted or otherwise authoritative NFO/artwork association and add rollback-safe rename support.
 
 ### UI refresh is state-driven and targeted
 
-Use one frontend predicate for existing queued/running work plus `publicationState=PUBLISHING` and archive `pending`/`archiving`. Queue jobs refresh at the existing Queue cadence; Assets and its lifecycle projection refresh while the same predicate is true. Terminal archive states stop both intervals. Keep archive state and failure summary visible in Job Details, Queue rows, and Asset Info's original-retention section. Existing `archivedOriginals` continues to render only canonical projection results.
+Use one frontend predicate for existing queued/running work plus `publicationState=PUBLISHING` and archive `pending`/`archiving`. `AutoPublisher.tick()` selects `READY` publications for automatic work only when `pipelineAutomation.autoPublisherEnabled` is true; include `READY` in polling only when that setting is loaded and enabled. Queue jobs refresh at the existing Queue cadence; Assets and its lifecycle projection refresh while the same predicate is true. Terminal archive states stop both intervals. Keep archive state and failure summary visible in Job Details, Queue rows, and Asset Info's original-retention section. Existing `archivedOriginals` continues to render only canonical projection results.
 
 ### Stage timeline does not synthesize skipped history
 
@@ -48,6 +56,8 @@ Terminal Queue status alone does not prove that every unvisited stage was skippe
 
 - [Risk] A transaction can fail after the filesystem move but before Queue/archive provenance commits → retain the existing Publisher locator, lease/fencing checks, and recovery path; keep QueueJob `OriginalArchivedPath` blank until recovery commits canonical outcome.
 - [Risk] Expanding active-work detection could leave a rename unavailable if persisted archive state is stale → only `pending` and `archiving` for an exact published Queue job count; terminal outcomes release the guard.
+- [Risk] Auto-publisher-ready jobs could appear stale if UI polling ignores the setting, while unconditional `READY` polling could run forever when AutoPublisher is off → consult the existing `pipelineAutomation` setting and poll `READY` only when enabled.
+- [Risk] Loose NFO/artwork basename matching could rename another file → keep those files out of scope until canonical ownership is modeled; propose a separate follow-up.
 - [Risk] Historical stage lists will show more `not recorded` states → this preserves evidence and avoids inventing prior events.
 - [Risk] Polling adds bounded database/API requests on active long-running archives → poll only Queue and Assets lifecycle queries at their existing intervals and stop on terminal status.
 

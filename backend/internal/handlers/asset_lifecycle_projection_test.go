@@ -316,6 +316,14 @@ func TestResolveAssetLifecycleProjectionActionCapabilitiesAreAdvisory(t *testing
 	if active.Rename.Allowed || active.Archive.Allowed || !active.Cancel.Allowed || active.Rename.Reason != assetActionReasonActiveWork {
 		t.Fatalf("active-work capability guard=%#v", active)
 	}
+	archiveActive := ResolveAssetActionCapabilities(AssetActionGuardContext{
+		IdentityKnown: true, Location: AssetLocationLibrary, RootSafe: true,
+		ProvenanceKnown: true, HasCurrentPublication: true, HasActiveQueue: true,
+		OriginalArchiveActive: true,
+	})
+	if archiveActive.Rename.Allowed || archiveActive.Rename.Reason != assetActionReasonOriginalArchiveActive {
+		t.Fatalf("active original archive did not expose the temporary Rename reason: %#v", archiveActive.Rename)
+	}
 
 	unknown := ResolveAssetActionCapabilities(AssetActionGuardContext{
 		IdentityKnown: true, Location: AssetLocationLibrary, RootSafe: true,
@@ -431,6 +439,41 @@ func TestArchivedOriginalProjectionUsesCanonicalCreatedAtAndExistingRetention(t 
 	updated := project(job, archive).ArchivedOriginals[0]
 	if updated.ArchivedAt == nil || !updated.ArchivedAt.Equal(archiveTime) {
 		t.Fatalf("sync/file/publication timestamps changed archivedAt: %#v", updated.ArchivedAt)
+	}
+}
+
+func TestArchivedOriginalRemainsCanonicalAfterConvertedAssetRename(t *testing.T) {
+	raw := lifecycleTestRawRecord(60, "/media/raw/anime/Show/S01/E01.mkv")
+	library := lifecycleTestLibraryRecord(61, "/media/library/anime/Show/S01/E01 renamed.mkv")
+	library.FileName = "E01 renamed.mkv"
+	library.RelativePath = "Show/S01/E01 renamed.mkv"
+	archive := models.AssetRecord{
+		ID: 62, Path: "/media/originals_archive/anime/Show/S01/E01.mkv",
+		RootPath: "/media/originals_archive", RelativePath: "anime/Show/S01/E01.mkv",
+		FileName: "E01.mkv", Status: "archive",
+	}
+	publishedAt := lifecycleTestTime(48 * time.Hour)
+	job := lifecycleQueueJob(63, library.Path, library.LibraryID, publishedAt)
+	job.SourceAssetRecordID = &raw.ID
+	job.OriginalArchivedPath = archive.Path
+	job.PublicationState = PublicationPublished
+	job.OriginalArchiveStatus = "complete"
+	projection := resolveLifecycleTestProjection(library, []models.AssetRecord{raw, library, archive}, []models.QueueJob{job}, nil)
+	if !projection.Actions.Rename.Allowed {
+		t.Fatalf("completed archive kept Rename blocked: %#v", projection.Actions.Rename)
+	}
+	if len(projection.ArchivedOriginals) != 1 {
+		t.Fatalf("archived original association was lost after rename: %#v", projection.ArchivedOriginals)
+	}
+	original := projection.ArchivedOriginals[0]
+	if original.Relationship != "current" || original.Path != archive.Path || original.AssetRecordID != archive.ID || original.QueueJobID != job.ID {
+		t.Fatalf("renamed publication no longer resolves its canonical archived original: %#v", original)
+	}
+
+	job.OriginalArchiveStatus = "archiving"
+	active := resolveLifecycleTestProjection(library, []models.AssetRecord{raw, library, archive}, []models.QueueJob{job}, nil)
+	if active.Actions.Rename.Allowed || active.Actions.Rename.Reason != assetActionReasonOriginalArchiveActive {
+		t.Fatalf("active archival did not temporarily block Rename: %#v", active.Actions.Rename)
 	}
 }
 

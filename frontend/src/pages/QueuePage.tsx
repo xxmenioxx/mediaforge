@@ -57,19 +57,20 @@ const initialJob: QueueJobInput = {
 export function QueuePage() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
+  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const autoPublisherEnabled = settings.data?.find((setting) => setting.key === 'pipelineAutomation')?.value.autoPublisherEnabled === true;
   const jobs = useQuery({
     queryKey: ['queueJobs'],
     queryFn: api.queueJobs,
-    refetchInterval: (query) => hasNonTerminalQueueLifecycle(query.state.data) ? 2000 : false,
+    refetchInterval: (query) => hasNonTerminalQueueLifecycle(query.state.data, autoPublisherEnabled) ? 2000 : false,
   });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const assets = useQuery({
     queryKey: ['assets'],
     queryFn: api.assets,
-    refetchInterval: () => hasNonTerminalQueueLifecycle(jobs.data) ? 2000 : false,
+    refetchInterval: () => hasNonTerminalQueueLifecycle(jobs.data, autoPublisherEnabled) ? 2000 : false,
   });
-  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const audioProfiles = getAudioProfiles(settings.data);
   const trackProfiles = getTrackProfiles(settings.data);
   const workerSettings = getWorkerSettings(settings.data);

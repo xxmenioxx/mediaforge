@@ -44,7 +44,7 @@ Queue and Asset Info SHALL present the archive state separately from the Queue j
 
 ### Requirement: Active Publisher and archive work refreshes relevant views
 
-Queue-job and Asset Info data SHALL refresh at a bounded interval while Queue, Publisher, or original archive work is nonterminal. Assets data SHALL refresh alongside the Queue-job projection so selected Asset Info can update from the canonical lifecycle response. Polling SHALL stop after the archive is `complete`, `failed`, or `not_applicable` and SHALL NOT continue for unrelated completed jobs.
+Queue-job and Asset Info data SHALL refresh at a bounded interval while Queue, Publisher, or original archive work is nonterminal. Assets data SHALL refresh alongside the Queue-job projection so selected Asset Info can update from the canonical lifecycle response. Polling SHALL stop after the archive is `complete`, `failed`, or `not_applicable` and SHALL NOT continue for unrelated completed jobs. A publication in state `READY` SHALL be included as refresh work only when the loaded `pipelineAutomation.autoPublisherEnabled` setting is `true`, matching AutoPublisher's automatic claim behavior.
 
 #### Scenario: Slow original archival refreshes Assets and Queue
 
@@ -55,6 +55,11 @@ Queue-job and Asset Info data SHALL refresh at a bounded interval while Queue, P
 
 - **WHEN** the archive state changes to `complete`, `failed`, or `not_applicable`
 - **THEN** targeted polling stops after the terminal state is observed
+
+#### Scenario: READY publication refresh follows AutoPublisher setting
+
+- **WHEN** a publication is `READY` and the `pipelineAutomation.autoPublisherEnabled` setting is loaded
+- **THEN** Queue and Assets poll while the setting is `true` and stop polling that READY-only state when it is `false`; an unknown setting does not cause indefinite READY polling
 
 ### Requirement: Archived originals appear only after canonical persistence
 
@@ -75,16 +80,32 @@ Asset Info SHALL show an archived original only when the existing lifecycle proj
 - **WHEN** archive and Library paths resemble one another but canonical source or publication identity does not resolve
 - **THEN** the archive remains unresolved and is not associated by name or path resemblance
 
-### Requirement: Rename is blocked while the matching archive is active
+### Requirement: Rename is blocked only while the matching archive is active
 
-Rename of an asset whose exact Queue/source/publication identity is undergoing original archival SHALL fail before filesystem or provenance mutation while archive status is `pending` or `archiving`. Existing identity checks and mutation guards SHALL be reused. Rename SHALL return to its existing policy after the archive reaches a terminal state.
+Rename of an asset whose exact Queue/source/publication identity is undergoing original archival SHALL return HTTP `409` before filesystem or provenance mutation while archive status is `pending` or `archiving`. Matching SHALL consider the asset's current path against both Queue `MediaPath` and `PublishedPath`, as well as canonical `SourceAssetRecordID`; it SHALL NOT use names. Converted status or publication provenance alone SHALL NOT permanently block Rename. Rename SHALL return to its existing policy after archive status becomes `complete`, `failed`, or `not_applicable`.
 
-#### Scenario: Rename targets a source during pending or active archival
+#### Scenario: Rename targets the published path while RAW archival is active
 
-- **WHEN** Rename targets the exact source or replacement asset reserved by a published Queue job with archive state `pending` or `archiving`
-- **THEN** the backend rejects Rename without moving the file or changing Queue, publication, or AssetRecord identity
+- **WHEN** Rename targets a converted Library asset whose matching completed Queue job has a different RAW `MediaPath`, the asset's exact `PublishedPath`, and archive state `pending` or `archiving`
+- **THEN** the backend returns `409` without moving the converted file or sidecars or changing AssetRecord, Queue, Publisher, or archive provenance
 
 #### Scenario: Rename follows a terminal archive outcome
 
-- **WHEN** the matching archive is terminal
-- **THEN** Rename is evaluated by the existing location, identity, and active-work rules
+- **WHEN** the matching archive is `complete`, `failed`, or `not_applicable`
+- **THEN** Rename is evaluated by the existing location, identity, and active-work rules, without a permanent converted-asset restriction
+
+### Requirement: Manual Rename preserves owned sidecars and current publication references
+
+Manual Rename SHALL preserve `buildManualAssetRenamePlan()`, `ownedSubtitleRenamePlans()`, and `applyLibraryRenamePlan()` behavior. It SHALL rename the primary converted media and recognized owned external SRT, ASS, and SSA subtitle files, preserving suffixes for language, role, track, and format. Recognition SHALL require an exact media stem or a dot-delimited suffix and SHALL NOT capture neighboring files by partial name. All target collisions SHALL be checked before movement; a media or sidecar move or database reconciliation failure SHALL roll back all completed moves.
+
+Rename SHALL update the current `AssetRecord`, `ScanResult`, path-keyed profiles and overrides, and current Queue/DirectPublication published-path references. It SHALL preserve immutable Publisher history and evidence, Queue `MediaPath`, and `OriginalArchivedPath`; it SHALL NOT rename or modify the archived original. Asset Info SHALL continue resolving the archived original through the same canonical Queue/source/publication identity after Rename. NFO and artwork are excluded until a canonical ownership association exists; basename resemblance SHALL NOT grant ownership.
+
+#### Scenario: Completed publication renames video and owned subtitles
+
+- **WHEN** a converted asset has a current Queue publication with archive state `complete` and associated SRT, ASS, or SSA subtitles
+- **THEN** Rename moves the video and owned subtitles, updates current publication references, and leaves the RAW source, archived original, immutable history, subtitle suffixes, and unowned neighboring files unchanged
+
+#### Scenario: Sidecar collision or move failure causes no partial rename
+
+- **WHEN** an owned subtitle target already exists or a subtitle move fails after an earlier move
+- **THEN** collision is rejected before movement or all completed media/sidecar moves are rolled back, with persisted asset and publication references unchanged

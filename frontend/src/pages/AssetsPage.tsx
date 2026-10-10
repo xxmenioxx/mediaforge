@@ -241,19 +241,20 @@ export function AssetsPage() {
     }
     setSearchParams(next);
   };
+  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const autoPublisherEnabled = settings.data?.find((setting) => setting.key === 'pipelineAutomation')?.value.autoPublisherEnabled === true;
   const jobs = useQuery({
     queryKey: ['queueJobs'],
     queryFn: api.queueJobs,
-    refetchInterval: (query) => hasNonTerminalQueueLifecycle(query.state.data) ? 3000 : false,
+    refetchInterval: (query) => hasNonTerminalQueueLifecycle(query.state.data, autoPublisherEnabled) ? 3000 : false,
   });
   const assets = useQuery({
     queryKey: ['assets'],
     queryFn: api.assets,
-    refetchInterval: () => hasNonTerminalQueueLifecycle(jobs.data) ? 3000 : false,
+    refetchInterval: () => hasNonTerminalQueueLifecycle(jobs.data, autoPublisherEnabled) ? 3000 : false,
   });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
-  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const runtimeState = useQuery({ queryKey: ['runtime-state'], queryFn: api.runtimeState });
   const snapshotOperations = useQuery({
     queryKey: ['snapshotOperations'],
@@ -3499,6 +3500,7 @@ function assetActionReasonMessage(capability: { reason?: string }, fallback = ''
     not_library: 'This action is available for Library assets.',
     original_unavailable: 'No retained original is available.',
     already_archived: 'The original is already archived.',
+    original_archive_in_progress: 'Original archival is still in progress. Try Rename again once it finishes.',
   };
   return capability.reason ? messages[capability.reason] ?? fallback : fallback;
 }
