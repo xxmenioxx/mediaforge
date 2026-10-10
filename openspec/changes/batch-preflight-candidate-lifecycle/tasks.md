@@ -14,4 +14,5 @@
 ## 3. Architecture and validation
 
 - [x] 3.1 Update the Queue Batch Preflight architecture guide to document persisted lifecycle states, explicit recovery, and accepted-work preservation.
-- [ ] 3.2 Run `openspec validate batch-preflight-candidate-lifecycle --strict` and `./scripts/verify.sh --auto`; resolve reported failures and confirm `ALL CHECKS PASSED`.
+- [x] 3.2 Run `openspec validate batch-preflight-candidate-lifecycle --strict` and `./scripts/verify.sh --auto`; resolve reported failures and confirm `ALL CHECKS PASSED`.
+  - Validation (2026-10-10): OpenSpec strict reports `Change 'batch-preflight-candidate-lifecycle' is valid`; `./scripts/verify.sh --auto` reports `Mode: auto -> full`, `Checks: 6/6`, `Duration: 179s`, `ALL CHECKS PASSED`.
