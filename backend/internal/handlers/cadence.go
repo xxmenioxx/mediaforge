@@ -108,7 +108,8 @@ func analyzeCadence(codec, declared string, interlace InterlaceAnalysis, frameSt
 	allProgressive := result.SampleCount >= 2 && progressiveSamples == result.SampleCount && interlace.Status == "progressive"
 	allRepeated := result.SampleCount >= 2 && repeatedSamples == result.SampleCount
 	softCandidate := strings.EqualFold(codec, "mpeg2video") && nearFPS(result.DeclaredFPS, 30000.0/1001.0, 0.05)
-	if softCandidate {
+	softTelecineEvidencePresent := result.ConsistentSampleCount > 0 || repeatedSamples > 0
+	if softCandidate && interlace.Status == "progressive" && softTelecineEvidencePresent {
 		result.SoftTelecineSamples = min(result.ConsistentSampleCount, min(progressiveSamples, repeatedSamples))
 		result.ContradictorySamples = result.SampleCount - result.SoftTelecineSamples
 	}
@@ -422,9 +423,47 @@ func hasCadenceTransformFilter(filters string) bool {
 		switch name {
 		case "fps", "framerate", "fieldmatch", "decimate", "mpdecimate", "framestep", "select", "setpts", "minterpolate", "pullup":
 			return true
+		case "bwdif", "yadif":
+			if len(parts) > 1 && deinterlaceFilterChangesFrameRate(parts[1]) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func deinterlaceFilterChangesFrameRate(options string) bool {
+	// bwdif and yadif default to send_frame, which emits one output frame for
+	// each input frame. send_field doubles the output rate; unsupported or
+	// ambiguous mode values must not inherit the source FPS.
+	mode := "send_frame"
+	modeSpecified := false
+	for index, rawOption := range strings.Split(options, ":") {
+		option := strings.TrimSpace(rawOption)
+		if option == "" {
+			continue
+		}
+		name, value, hasValue := strings.Cut(option, "=")
+		if hasValue {
+			if strings.TrimSpace(name) != "mode" {
+				continue
+			}
+			if modeSpecified {
+				return true
+			}
+			mode = strings.ToLower(strings.TrimSpace(value))
+			modeSpecified = true
+			continue
+		}
+		if index == 0 {
+			if modeSpecified {
+				return true
+			}
+			mode = strings.ToLower(option)
+			modeSpecified = true
+		}
+	}
+	return mode != "send_frame"
 }
 
 func normalizedCadenceMode(value string) string {

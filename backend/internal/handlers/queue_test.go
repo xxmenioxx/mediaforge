@@ -936,6 +936,103 @@ func TestQueueProfileSnapshotFreezesAutomaticCadencePreserveForFrameFidelity(t *
 	}
 }
 
+func TestQueueProfileSnapshotFreezesInterlacedMPEG2FPSForHEVCAutoLevel(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-interlaced-mpeg2-hevc-auto-level?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	interlace := InterlaceAnalysis{Status: "interlaced", FieldOrder: "tff", Confidence: .99, Windows: []InterlaceWindow{
+		interlacedCadenceWindow(30000.0 / 1001.0), interlacedCadenceWindow(29.97),
+	}}
+	analysis := analyzeCadence("mpeg2video", "30000/1001", interlace)
+	recommendation := recommendCadence(analysis)
+	profile := models.Profile{
+		Name: "Interlaced MPEG-2 HEVC Auto Level", Container: "mkv", VideoCodec: "hevc", CodecFamily: "hevc",
+		EncoderPolicy: "locked", PreferredEncoder: "libx265", AllowedEncoders: models.StringList{"libx265"},
+		FallbackPolicy: "wait", BitDepth: 8, PixelFormat: "yuv420p", QualityStrategy: "high",
+		ProfileVersion: 1, AudioCodec: "copy", QualityMode: "crf", QualityValue: 20,
+		WorkerConfig: models.JSONMap{
+			"videoEncoder": "libx265", "cadenceMode": "auto", "fieldStructureMode": "auto", "hevcLevelMode": "auto",
+		},
+	}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/interlaced-mpeg2-auto-level.mkv"
+	if err := db.Create(&models.ScanResult{
+		Path: path, VideoCodec: "mpeg2video", Width: 1920, Height: 1080,
+		VideoStreams: models.JSONList{map[string]any{
+			"codec": "mpeg2video", "width": 1920, "height": 1080,
+			"avgFrameRate": "30000/1001", "fieldOrder": "tt",
+		}},
+		InterlaceAnalysis: models.JSONMap{
+			"version": float64(interlaceAnalysisVersion), "status": "interlaced", "fieldOrder": "tff", "confidence": .99,
+		},
+		CadenceAnalysis: cadenceAnalysisMap(analysis), CadenceRecommendation: cadenceRecommendationMap(recommendation),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{MediaPath: path, Status: JobStatusQueued}
+	if err := NewQueueHandler(db).captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	requested, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queuedInterlace, ok := decodeInterlaceAnalysis(job.ProfileSnapshot[interlaceAnalysisSnapshotKey])
+	if !ok {
+		t.Fatal("Queue snapshot did not retain interlace analysis")
+	}
+	queuedCadence, ok := decodeCadenceAnalysis(job.ProfileSnapshot[cadenceAnalysisSnapshotKey])
+	if !ok {
+		t.Fatal("Queue snapshot did not retain cadence analysis")
+	}
+	queuedRecommendation, ok := decodeCadenceRecommendation(job.ProfileSnapshot[cadenceRecommendationSnapshotKey])
+	if !ok {
+		t.Fatal("Queue snapshot did not retain cadence recommendation")
+	}
+	streams := MediaStreamInventory{Video: []MediaStream{{
+		Index: 0, Width: 1920, Height: 1080, FrameRate: "30000/1001", PixelFormat: "yuv420p",
+	}}}
+	prepared := resolveMediaJobVideoProfile(requested, streams, path, queuedInterlace, queuedCadence, queuedRecommendation)
+	if got := workerStringValue(prepared.WorkerConfig["effectiveOutputFrameRate"]); got != "30000/1001" || profileWorkerBool(prepared, "effectiveOutputFrameRateUnknown", true) {
+		t.Fatalf("Queue PREPARING did not resolve the interlaced source FPS: %#v", prepared.WorkerConfig)
+	}
+	if filters := workerStringValue(prepared.WorkerConfig["videoFilters"]); !strings.Contains(filters, "bwdif=mode=send_frame") {
+		t.Fatalf("automatic interlace repair lost send_frame semantics: %q", filters)
+	}
+	recommendationValue, ok := prepared.WorkerConfig["hevcLevelRecommendation"].(HEVCLevelRecommendation)
+	if !ok || !nearFPS(recommendationValue.FPS, 30000.0/1001.0, .01) {
+		t.Fatalf("HEVC Auto Level did not use the preserved output FPS: %#v", prepared.WorkerConfig)
+	}
+	if workerStringValue(prepared.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionResolved || workerStringValue(prepared.WorkerConfig["hevcLevelEffective"]) == "" {
+		t.Fatalf("HEVC Auto Level remained unresolved after Queue cadence resolution: %#v", prepared.WorkerConfig)
+	}
+	if err := freezeQueuePreparedProfileSnapshot(db, &job, prepared); err != nil {
+		t.Fatal(err)
+	}
+	frozen := unknownRecord(job.ProfileSnapshot["workerConfig"])
+	if got := stringFromUnknown(frozen["effectiveOutputFrameRate"]); got != "30000/1001" {
+		t.Fatalf("prepared Queue snapshot FPS=%q want 30000/1001: %#v", got, frozen)
+	}
+	if unknown, ok := frozen["effectiveOutputFrameRateUnknown"].(bool); !ok || unknown {
+		t.Fatalf("prepared Queue snapshot did not freeze known FPS state: %#v", frozen["effectiveOutputFrameRateUnknown"])
+	}
+	restored, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := effectiveVideoDecision(restored)
+	if workerStringValue(decision["effectiveFrameRate"]) != "30000/1001" || workerStringValue(restored.WorkerConfig["hevcLevelEffective"]) != workerStringValue(prepared.WorkerConfig["hevcLevelEffective"]) {
+		t.Fatalf("frozen Queue profile lost cadence or HEVC Auto Level decisions: %#v", restored.WorkerConfig)
+	}
+}
+
 func TestQueueProfileSnapshotFreezesResolvedUpscaleDecision(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-upscale-snapshot?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
