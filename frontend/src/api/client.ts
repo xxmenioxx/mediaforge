@@ -719,6 +719,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ revision, assetIds }),
     }),
+  removeQueueBatchPreflightAsset: (id: string, revision: number, assetId: string) =>
+    request<QueueBatchPreflightResponse>(`/api/queue/preflights/${encodeURIComponent(id)}/remove`, {
+      method: 'POST',
+      body: JSON.stringify({ revision, assetId }),
+    }),
+  discardQueueBatchPreflight: (id: string, revision: number) =>
+    request<QueueBatchPreflightResponse>(`/api/queue/preflights/${encodeURIComponent(id)}/discard`, {
+      method: 'POST',
+      body: JSON.stringify({ revision }),
+    }),
   queueSelectedAssets: (input: QueueSelectedAssetsInput) =>
     request<QueueSelectedAssetsResponse>('/api/queue/selected-assets', {
       method: 'POST',

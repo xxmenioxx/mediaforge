@@ -80,7 +80,7 @@ import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDial
 import { SubtitleOCRReviewDialog } from '../components/SubtitleOCRReviewDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
 import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
-import { openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_OPEN_EVENT, QUEUE_BATCH_PREFLIGHT_STORAGE_KEY } from '../utils/queueBatchPreflightEvents';
+import { invalidateQueueBatchPreflightReference, getSavedQueueBatchPreflightCandidateID, openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_OPEN_EVENT } from '../utils/queueBatchPreflightEvents';
 import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AssetTracksUpdateInput, AudioEnhancementProfile, CanonicalOCRReviewTarget, EffectiveAssetConfiguration, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
@@ -154,19 +154,75 @@ function librarySelectionFromContext(libraries: Library[], groups: AssetGroup[],
 
 export function AssetsPage() {
   const [queuePreflightCandidate, setQueuePreflightCandidate] = useState<QueueBatchPreflightResponse | null>(null);
+  const [savedQueuePreflightID, setSavedQueuePreflightID] = useState(() => getSavedQueueBatchPreflightCandidateID());
+  const [queuePreflightResumeMessage, setQueuePreflightResumeMessage] = useState('');
+  const [queuePreflightResumePending, setQueuePreflightResumePending] = useState(false);
+  const queuePreflightRequestGeneration = useRef(0);
   const [searchParams, setSearchParams] = useSearchParams();
   const legacyTabValue = searchParams.get('tab') ?? '';
   const tab: 'raw' | 'library' = searchParams.get('location') === 'library' || ['library', 'converted', 'archive'].includes(legacyTabValue) ? 'library' : 'raw';
   const initialProvenance = searchParams.get('provenance') ?? (searchParams.get('tab') === 'converted' ? 'converted' : '');
   useEffect(() => {
-    const handleCandidate = (event: Event) => setQueuePreflightCandidate((event as CustomEvent<QueueBatchPreflightResponse>).detail);
+    const handleCandidate = (event: Event) => {
+      const candidate = (event as CustomEvent<QueueBatchPreflightResponse>).detail;
+      if (candidate.status && candidate.status !== 'active') {
+        invalidateQueueBatchPreflightReference(candidate.id);
+        setSavedQueuePreflightID(getSavedQueueBatchPreflightCandidateID());
+        return;
+      }
+      const savedID = getSavedQueueBatchPreflightCandidateID();
+      if (savedID && savedID !== candidate.id) return;
+      queuePreflightRequestGeneration.current += 1;
+      setQueuePreflightResumePending(false);
+      setQueuePreflightResumeMessage('');
+      setSavedQueuePreflightID(savedID ?? candidate.id);
+      setQueuePreflightCandidate(candidate);
+    };
     window.addEventListener(QUEUE_BATCH_PREFLIGHT_OPEN_EVENT, handleCandidate);
-    try {
-      const candidateId = window.localStorage.getItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY);
-      if (candidateId) void api.getQueueBatchPreflight(candidateId).then(setQueuePreflightCandidate).catch(() => undefined);
-    } catch { /* The current page remains usable when browser storage is unavailable. */ }
-    return () => window.removeEventListener(QUEUE_BATCH_PREFLIGHT_OPEN_EVENT, handleCandidate);
+    return () => {
+      queuePreflightRequestGeneration.current += 1;
+      window.removeEventListener(QUEUE_BATCH_PREFLIGHT_OPEN_EVENT, handleCandidate);
+    };
   }, []);
+  const resumeQueueBatchPreflight = async () => {
+    const candidateID = getSavedQueueBatchPreflightCandidateID() ?? savedQueuePreflightID;
+    if (!candidateID) {
+      setSavedQueuePreflightID(null);
+      setQueuePreflightResumeMessage('No saved Batch Preflight candidate is available. Start a new Preflight from Queue actions.');
+      return;
+    }
+    const generation = ++queuePreflightRequestGeneration.current;
+    setQueuePreflightResumePending(true);
+    setQueuePreflightResumeMessage('');
+    try {
+      const candidate = await api.getQueueBatchPreflight(candidateID);
+      const currentSavedID = getSavedQueueBatchPreflightCandidateID();
+      if (generation !== queuePreflightRequestGeneration.current || (currentSavedID !== null ? currentSavedID !== candidateID : savedQueuePreflightID !== candidateID)) return;
+      if (candidate.status !== 'active') {
+        invalidateQueueBatchPreflightReference(candidateID);
+        setSavedQueuePreflightID(getSavedQueueBatchPreflightCandidateID());
+        setQueuePreflightResumeMessage(candidate.status === 'discarded'
+          ? 'This candidate was discarded and cannot be resumed. Start a new Preflight when ready.'
+          : 'This candidate is complete and has no pending assets.');
+        return;
+      }
+      setSavedQueuePreflightID(candidateID);
+      setQueuePreflightCandidate(candidate);
+    } catch (caught) {
+      const currentSavedID = getSavedQueueBatchPreflightCandidateID();
+      if (generation !== queuePreflightRequestGeneration.current || (currentSavedID !== null ? currentSavedID !== candidateID : savedQueuePreflightID !== candidateID)) return;
+      const status = caught instanceof Error ? (caught as Error & { status?: number }).status : undefined;
+      if (status === 404 || status === 410) {
+        invalidateQueueBatchPreflightReference(candidateID);
+        setSavedQueuePreflightID(getSavedQueueBatchPreflightCandidateID());
+        setQueuePreflightResumeMessage('The saved candidate no longer exists. Start a new Preflight from Queue actions.');
+      } else {
+        setQueuePreflightResumeMessage(`Could not resume Batch Preflight: ${caught instanceof Error ? caught.message : String(caught)}`);
+      }
+    } finally {
+      if (generation === queuePreflightRequestGeneration.current) setQueuePreflightResumePending(false);
+    }
+  };
   const originalFilterValue = searchParams.get('original') ?? '';
   const originalFilter = originalFilterValue === 'archived' ? '' : originalFilterValue;
   const [libraryDecision, setLibraryDecision] = useState<string>(initialProvenance);
@@ -458,6 +514,12 @@ export function AssetsPage() {
       </Box>
       <Box data-testid="assets-page-body" sx={{ px: { xs: 0.75, md: 1.5 }, pt: { xs: 0.75, md: 1.5 }, pb: { xs: 0.75, md: 1.25 }, minWidth: 0, minHeight: 0, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <Stack spacing={0.5} sx={{ flexShrink: 0, mb: 0.5 }}>
+          {savedQueuePreflightID && !queuePreflightCandidate ? <Button size="small" variant="outlined" disabled={queuePreflightResumePending} onClick={() => void resumeQueueBatchPreflight()} sx={{ alignSelf: 'flex-start' }}>
+            {queuePreflightResumePending ? 'Loading Preflight…' : 'Resume Preflight'}
+          </Button> : null}
+          {queuePreflightResumeMessage ? <Alert severity={queuePreflightResumeMessage.startsWith('Could not') ? 'error' : 'info'} action={savedQueuePreflightID && !queuePreflightCandidate ? <Button color="inherit" size="small" disabled={queuePreflightResumePending} onClick={() => void resumeQueueBatchPreflight()}>Retry</Button> : undefined} sx={{ py: 0 }}>
+            {queuePreflightResumeMessage}
+          </Alert> : null}
           {assets.isError ? <Alert severity="warning" sx={{ py: 0 }}>Unable to read library paths from the backend container.</Alert> : null}
           {unsupportedLegacyTab ? <Alert severity="info" sx={{ py: 0 }}>This Assets link is no longer a supported inventory context. Open RAW or Library and use the persisted lifecycle filters.</Alert> : null}
           {tab === 'library' && libraryDecision === 'converted' ? <Alert severity="info" sx={{ py: 0 }}>Converted is a Library provenance projection. Re-processing and original retention remain independent lifecycle evidence.</Alert> : null}
@@ -523,14 +585,27 @@ export function AssetsPage() {
       </Box>
       <BatchPreflightDialog
         candidate={queuePreflightCandidate}
-        onClose={() => setQueuePreflightCandidate(null)}
+        onClose={() => {
+          queuePreflightRequestGeneration.current += 1;
+          setQueuePreflightResumePending(false);
+          setQueuePreflightCandidate(null);
+        }}
         onAccepted={(accepted) => {
           setQueuePreflightCandidate(accepted);
-          if (accepted.assets.every((asset) => asset.status === 'queued')) {
-            try { window.localStorage.removeItem(QUEUE_BATCH_PREFLIGHT_STORAGE_KEY); } catch { /* Ignore unavailable browser storage. */ }
+          if (accepted.status === 'completed' || accepted.assets.every((asset) => asset.status === 'queued')) {
+            invalidateQueueBatchPreflightReference(accepted.id);
+            setSavedQueuePreflightID(getSavedQueueBatchPreflightCandidateID());
           }
           void queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
           void queryClient.invalidateQueries({ queryKey: ['assets'] });
+        }}
+        onDiscarded={(terminal) => {
+          queuePreflightRequestGeneration.current += 1;
+          setQueuePreflightResumePending(false);
+          invalidateQueueBatchPreflightReference(terminal.id);
+          setSavedQueuePreflightID(getSavedQueueBatchPreflightCandidateID());
+          setQueuePreflightCandidate(null);
+          setQueuePreflightResumeMessage(terminal.status === 'discarded' ? 'Candidate discarded. Previously accepted Queue work is unchanged.' : 'Candidate completed.');
         }}
       />
     </Box>

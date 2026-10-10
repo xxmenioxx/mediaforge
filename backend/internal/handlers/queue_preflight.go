@@ -27,6 +27,19 @@ const (
 	queuePreflightQueued         = "queued"
 )
 
+var errQueueBatchPreflightConflict = errors.New("Queue Preflight candidate revision changed or candidate is terminal")
+
+func writeQueueBatchPreflightMutationError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "Queue Preflight candidate was not found"})
+	case errors.Is(err, errQueueBatchPreflightConflict):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	}
+}
+
 func queuePreflightFirstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -46,6 +59,15 @@ type QueueBatchPreflightInput struct {
 type QueueBatchPreflightAcceptInput struct {
 	Revision uint     `json:"revision" binding:"required"`
 	AssetIDs []string `json:"assetIds" binding:"required,min=1,max=1000"`
+}
+
+type QueueBatchPreflightRemoveInput struct {
+	Revision uint   `json:"revision" binding:"required"`
+	AssetID  string `json:"assetId" binding:"required"`
+}
+
+type QueueBatchPreflightDiscardInput struct {
+	Revision uint `json:"revision" binding:"required"`
 }
 
 type queueBatchPreflightState struct {
@@ -115,6 +137,7 @@ type QueueBatchPreflightResponse struct {
 	ID        string                             `json:"id"`
 	Revision  uint                               `json:"revision"`
 	Resolved  bool                               `json:"resolved"`
+	Status    string                             `json:"status"`
 	BatchID   string                             `json:"batchId"`
 	BatchName string                             `json:"batchName"`
 	Assets    []QueueBatchPreflightAssetResponse `json:"assets"`
@@ -167,7 +190,7 @@ func queuePreflightSourceRevision(path string) (string, error) {
 
 func queuePreflightResponse(record models.QueueBatchPreflight, state queueBatchPreflightState) QueueBatchPreflightResponse {
 	response := QueueBatchPreflightResponse{
-		ID: record.ID, Revision: record.Revision, Resolved: record.Resolved,
+		ID: record.ID, Revision: record.Revision, Resolved: record.Resolved, Status: record.Status,
 		BatchID: state.BatchID, BatchName: state.BatchName,
 		Assets: make([]QueueBatchPreflightAssetResponse, 0, len(state.Assets)), Jobs: state.QueuedJobs,
 	}
@@ -198,6 +221,15 @@ func queuePreflightResponse(record models.QueueBatchPreflight, state queueBatchP
 	return response
 }
 
+func queuePreflightHasPendingAssets(state queueBatchPreflightState) bool {
+	for _, asset := range state.Assets {
+		if asset.Status != queuePreflightQueued {
+			return true
+		}
+	}
+	return false
+}
+
 func (h QueueHandler) CreateBatchPreflight(c *gin.Context) {
 	var input QueueBatchPreflightInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -226,7 +258,7 @@ func (h QueueHandler) CreateBatchPreflight(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode Queue Preflight candidate: " + err.Error()})
 		return
 	}
-	record := models.QueueBatchPreflight{ID: id, Revision: 1, Resolved: true, State: stateMap}
+	record := models.QueueBatchPreflight{ID: id, Revision: 1, Resolved: true, Status: models.QueueBatchPreflightStatusActive, State: stateMap}
 	if err := h.db.Create(&record).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "persist Queue Preflight candidate: " + err.Error()})
 		return
@@ -349,7 +381,7 @@ func (h QueueHandler) PreflightSelectedAssets(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode Queue Preflight candidate: " + err.Error()})
 		return
 	}
-	record := models.QueueBatchPreflight{ID: candidateID, Revision: 1, Resolved: true, State: stateMap}
+	record := models.QueueBatchPreflight{ID: candidateID, Revision: 1, Resolved: true, Status: models.QueueBatchPreflightStatusActive, State: stateMap}
 	if err := h.db.Create(&record).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "persist Queue Preflight candidate: " + err.Error()})
 		return
@@ -384,12 +416,16 @@ func (h QueueHandler) EditBatchPreflight(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "Queue Preflight revision is stale"})
 		return
 	}
+	if record.Status != models.QueueBatchPreflightStatusActive {
+		c.JSON(http.StatusConflict, gin.H{"error": "Queue Preflight candidate is terminal"})
+		return
+	}
 	state, err := queuePreflightStateFromRecord(record)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "decode Queue Preflight candidate: " + err.Error()})
 		return
 	}
-	result := h.db.Model(&record).Where("id = ? AND revision = ?", record.ID, record.Revision).Updates(map[string]any{
+	result := h.db.Model(&record).Where("id = ? AND revision = ? AND status = ?", record.ID, record.Revision, models.QueueBatchPreflightStatusActive).Updates(map[string]any{
 		"revision": record.Revision + 1, "resolved": false,
 	})
 	if result.Error != nil {
@@ -420,6 +456,10 @@ func (h QueueHandler) UpdateBatchPreflight(c *gin.Context) {
 	}
 	if record.Revision != input.Revision {
 		c.JSON(http.StatusConflict, gin.H{"error": "Queue Preflight revision is stale"})
+		return
+	}
+	if record.Status != models.QueueBatchPreflightStatusActive {
+		c.JSON(http.StatusConflict, gin.H{"error": "Queue Preflight candidate is terminal"})
 		return
 	}
 	previous, err := queuePreflightStateFromRecord(record)
@@ -498,7 +538,7 @@ func (h QueueHandler) UpdateBatchPreflight(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode Queue Preflight candidate: " + err.Error()})
 		return
 	}
-	result := h.db.Model(&record).Where("id = ? AND revision = ?", record.ID, input.Revision).Updates(map[string]any{
+	result := h.db.Model(&record).Where("id = ? AND revision = ? AND status = ?", record.ID, input.Revision, models.QueueBatchPreflightStatusActive).Updates(map[string]any{
 		"revision": record.Revision + 1, "resolved": true, "state": stateMap,
 	})
 	if result.Error != nil {
@@ -511,6 +551,133 @@ func (h QueueHandler) UpdateBatchPreflight(c *gin.Context) {
 	}
 	record.Revision = input.Revision + 1
 	record.Resolved, record.State = true, stateMap
+	c.JSON(http.StatusOK, queuePreflightResponse(record, state))
+}
+
+func (h QueueHandler) RemoveBatchPreflightAsset(c *gin.Context) {
+	var input QueueBatchPreflightRemoveInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	assetID := strings.TrimSpace(input.AssetID)
+	if assetID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "assetId is required"})
+		return
+	}
+	assetMutationMu.Lock()
+	defer assetMutationMu.Unlock()
+	var record models.QueueBatchPreflight
+	var state queueBatchPreflightState
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&record, "id = ?", strings.TrimSpace(c.Param("id"))).Error; err != nil {
+			return err
+		}
+		if record.Revision != input.Revision || record.Status != models.QueueBatchPreflightStatusActive {
+			return errQueueBatchPreflightConflict
+		}
+		var err error
+		state, err = queuePreflightStateFromRecord(record)
+		if err != nil {
+			return fmt.Errorf("decode Queue Preflight candidate: %w", err)
+		}
+		assetIndex := -1
+		for index := range state.Assets {
+			if state.Assets[index].ID == assetID {
+				assetIndex = index
+				break
+			}
+		}
+		if assetIndex < 0 {
+			return fmt.Errorf("%w: candidate asset is no longer present", errQueueBatchPreflightConflict)
+		}
+		if state.Assets[assetIndex].Status == queuePreflightQueued {
+			return fmt.Errorf("%w: accepted assets cannot be removed", errQueueBatchPreflightConflict)
+		}
+		state.Assets = append(state.Assets[:assetIndex], state.Assets[assetIndex+1:]...)
+		status := record.Status
+		if !queuePreflightHasPendingAssets(state) {
+			status = models.QueueBatchPreflightStatusDiscarded
+		}
+		stateMap, err := queuePreflightStateMap(state)
+		if err != nil {
+			return fmt.Errorf("encode Queue Preflight candidate: %w", err)
+		}
+		revision := record.Revision + 1
+		result := tx.Model(&record).Where("id = ? AND revision = ? AND status = ?", record.ID, record.Revision, models.QueueBatchPreflightStatusActive).Updates(map[string]any{
+			"revision": revision, "status": status, "state": stateMap,
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errQueueBatchPreflightConflict
+		}
+		record.Revision, record.Status, record.State = revision, status, stateMap
+		return nil
+	})
+	if err != nil {
+		writeQueueBatchPreflightMutationError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, queuePreflightResponse(record, state))
+}
+
+func (h QueueHandler) DiscardBatchPreflight(c *gin.Context) {
+	var input QueueBatchPreflightDiscardInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	assetMutationMu.Lock()
+	defer assetMutationMu.Unlock()
+	var record models.QueueBatchPreflight
+	var state queueBatchPreflightState
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&record, "id = ?", strings.TrimSpace(c.Param("id"))).Error; err != nil {
+			return err
+		}
+		if record.Revision != input.Revision || record.Status != models.QueueBatchPreflightStatusActive {
+			return errQueueBatchPreflightConflict
+		}
+		var err error
+		state, err = queuePreflightStateFromRecord(record)
+		if err != nil {
+			return fmt.Errorf("decode Queue Preflight candidate: %w", err)
+		}
+		hadPending := queuePreflightHasPendingAssets(state)
+		queued := make([]queueBatchPreflightAsset, 0, len(state.Assets))
+		for _, asset := range state.Assets {
+			if asset.Status == queuePreflightQueued {
+				queued = append(queued, asset)
+			}
+		}
+		state.Assets = queued
+		status := models.QueueBatchPreflightStatusDiscarded
+		if !hadPending && len(queued) > 0 {
+			status = models.QueueBatchPreflightStatusCompleted
+		}
+		stateMap, err := queuePreflightStateMap(state)
+		if err != nil {
+			return fmt.Errorf("encode Queue Preflight candidate: %w", err)
+		}
+		revision := record.Revision + 1
+		result := tx.Model(&record).Where("id = ? AND revision = ? AND status = ?", record.ID, record.Revision, models.QueueBatchPreflightStatusActive).Updates(map[string]any{
+			"revision": revision, "status": status, "state": stateMap,
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errQueueBatchPreflightConflict
+		}
+		record.Revision, record.Status, record.State = revision, status, stateMap
+		return nil
+	})
+	if err != nil {
+		writeQueueBatchPreflightMutationError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, queuePreflightResponse(record, state))
 }
 
@@ -872,7 +1039,7 @@ func (h QueueHandler) AcceptBatchPreflight(c *gin.Context) {
 		if err := tx.First(&record, "id = ?", strings.TrimSpace(c.Param("id"))).Error; err != nil {
 			return gorm.ErrRecordNotFound
 		}
-		if record.Revision != input.Revision || !record.Resolved {
+		if record.Revision != input.Revision || !record.Resolved || record.Status != models.QueueBatchPreflightStatusActive {
 			return fmt.Errorf("Queue Preflight revision is stale or unresolved")
 		}
 		state, err := queuePreflightStateFromRecord(record)
@@ -958,8 +1125,12 @@ func (h QueueHandler) AcceptBatchPreflight(c *gin.Context) {
 			return fmt.Errorf("encode accepted Queue Preflight state: %w", err)
 		}
 		revision := record.Revision + 1
-		result := tx.Model(&record).Where("id = ? AND revision = ?", record.ID, record.Revision).Updates(map[string]any{
-			"revision": revision, "resolved": true, "state": stateMap,
+		status := models.QueueBatchPreflightStatusActive
+		if !queuePreflightHasPendingAssets(state) {
+			status = models.QueueBatchPreflightStatusCompleted
+		}
+		result := tx.Model(&record).Where("id = ? AND revision = ? AND status = ?", record.ID, record.Revision, models.QueueBatchPreflightStatusActive).Updates(map[string]any{
+			"revision": revision, "resolved": true, "status": status, "state": stateMap,
 		})
 		if result.Error != nil {
 			return result.Error
@@ -967,7 +1138,7 @@ func (h QueueHandler) AcceptBatchPreflight(c *gin.Context) {
 		if result.RowsAffected != 1 {
 			return fmt.Errorf("Queue Preflight revision changed during acceptance")
 		}
-		record.Revision, record.State = revision, stateMap
+		record.Revision, record.Status, record.State = revision, status, stateMap
 		response = queuePreflightResponse(record, state)
 		return nil
 	})

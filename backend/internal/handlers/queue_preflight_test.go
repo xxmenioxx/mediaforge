@@ -17,6 +17,7 @@ import (
 	"github.com/anuelvs/mvforge/backend/internal/quality"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
 	"github.com/gin-gonic/gin"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -29,7 +30,11 @@ type queuePreflightFixture struct {
 
 func newQueuePreflightFixture(t *testing.T, sourceCount int) queuePreflightFixture {
 	t.Helper()
-	db := queueSelectedAssetsTestDB(t)
+	return newQueuePreflightFixtureWithDB(t, sourceCount, queueSelectedAssetsTestDB(t))
+}
+
+func newQueuePreflightFixtureWithDB(t *testing.T, sourceCount int, db *gorm.DB) queuePreflightFixture {
+	t.Helper()
 	sourceRoot, destinationRoot := t.TempDir(), t.TempDir()
 	profile := authoritativeTestProfile()
 	if err := db.Create(&profile).Error; err != nil {
@@ -68,9 +73,12 @@ func queuePreflightRouter(db *gorm.DB) *gin.Engine {
 	handler := NewQueueHandler(db)
 	router.POST("/preflights", handler.CreateBatchPreflight)
 	router.POST("/preflights/selected-assets", handler.PreflightSelectedAssets)
+	router.GET("/preflights/:id", handler.GetBatchPreflight)
 	router.PUT("/preflights/:id", handler.UpdateBatchPreflight)
 	router.POST("/preflights/:id/edit", handler.EditBatchPreflight)
 	router.POST("/preflights/:id/accept", handler.AcceptBatchPreflight)
+	router.POST("/preflights/:id/remove", handler.RemoveBatchPreflightAsset)
+	router.POST("/preflights/:id/discard", handler.DiscardBatchPreflight)
 	router.POST("/batches", handler.CreateBatch)
 	router.POST("/selected-assets", handler.QueueSelectedAssets)
 	return router
@@ -234,7 +242,7 @@ func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	if err := json.Unmarshal(accepted.Body.Bytes(), &acceptedCandidate); err != nil {
 		t.Fatal(err)
 	}
-	if len(acceptedCandidate.Jobs) != 1 {
+	if acceptedCandidate.Status != models.QueueBatchPreflightStatusCompleted || len(acceptedCandidate.Jobs) != 1 {
 		t.Fatalf("accepted jobs=%d want=1", len(acceptedCandidate.Jobs))
 	}
 	job := acceptedCandidate.Jobs[0]
@@ -297,6 +305,28 @@ func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	reviewedEvidenceJSON, reviewedEvidenceErr := json.Marshal(candidate.Assets[0].Plan.QualityEvidence)
 	if acceptedEvidenceErr != nil || reviewedEvidenceErr != nil || !bytes.Equal(acceptedEvidenceJSON, reviewedEvidenceJSON) {
 		t.Fatalf("accepted ExecutionPlan evidence differs from reviewed evidence: %#v", acceptedPlan.Evaluation["qualityEvidence"])
+	}
+	terminalEdit := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/edit", map[string]any{"revision": acceptedCandidate.Revision})
+	terminalUpdate := queuePreflightRequest(t, router, http.MethodPut, "/preflights/"+candidate.ID, QueueBatchPreflightInput{
+		Revision: acceptedCandidate.Revision, BatchID: candidate.BatchID, Jobs: []QueueJobInput{candidate.Assets[0].Input},
+	})
+	terminalAccept := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{
+		"revision": acceptedCandidate.Revision, "assetIds": []string{candidate.Assets[0].ID},
+	})
+	terminalRemove := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/remove", map[string]any{
+		"revision": acceptedCandidate.Revision, "assetId": candidate.Assets[0].ID,
+	})
+	terminalDiscard := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/discard", map[string]any{"revision": acceptedCandidate.Revision})
+	for operation, response := range map[string]*httptest.ResponseRecorder{
+		"edit": terminalEdit, "resolve": terminalUpdate, "accept": terminalAccept, "remove": terminalRemove, "discard": terminalDiscard,
+	} {
+		if response.Code != http.StatusConflict {
+			t.Fatalf("terminal candidate %s returned status=%d body=%s", operation, response.Code, response.Body.String())
+		}
+	}
+	var unchangedJobs int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&unchangedJobs).Error; err != nil || unchangedJobs != 1 {
+		t.Fatalf("terminal mutations changed accepted QueueJobs: count=%d err=%v", unchangedJobs, err)
 	}
 }
 
@@ -469,7 +499,7 @@ func TestBatchPreflightAllowsReadyOnlyAndRetainsBlockedAssets(t *testing.T) {
 			blocked++
 		}
 	}
-	if queued != 1 || blocked != 1 {
+	if partial.Status != models.QueueBatchPreflightStatusActive || queued != 1 || blocked != 1 {
 		t.Fatalf("partial acceptance did not retain unresolved batch context: %#v", partial.Assets)
 	}
 }
@@ -577,5 +607,263 @@ func TestCompatiblePreviewUsesExactBatchPreflightContext(t *testing.T) {
 	preview.PreflightRevision++
 	if err := resolveCompatiblePreviewPreflight(fixture.db, &preview); err == nil {
 		t.Fatal("Preview accepted a stale Batch Preflight revision")
+	}
+}
+
+func createQueuePreflightCandidate(t *testing.T, router *gin.Engine, input QueueBatchPreflightInput) QueueBatchPreflightResponse {
+	t.Helper()
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", input)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	return candidate
+}
+
+func TestBatchPreflightRemovesBlockedAndFinalAssetsWithoutQueueing(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 2)
+	input := queuePreflightInput(fixture, "Remove blocked candidate item")
+	input.Jobs[1].LibraryID = 99999
+	router := queuePreflightRouter(fixture.db)
+	candidate := createQueuePreflightCandidate(t, router, input)
+	var blocked QueueBatchPreflightAssetResponse
+	var ready QueueBatchPreflightAssetResponse
+	for _, asset := range candidate.Assets {
+		if asset.Status == queuePreflightBlocked {
+			blocked = asset
+		} else if asset.Status == queuePreflightReady {
+			ready = asset
+		}
+	}
+	if blocked.ID == "" || ready.ID == "" || ready.Plan == nil {
+		t.Fatalf("expected one blocked and one ready asset with a plan: %#v", candidate.Assets)
+	}
+	readyPlan := ready.Plan
+	blockedBytes, err := os.ReadFile(blocked.MediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/remove", map[string]any{"revision": candidate.Revision, "assetId": blocked.ID})
+	if removed.Code != http.StatusOK {
+		t.Fatalf("remove blocked status=%d body=%s", removed.Code, removed.Body.String())
+	}
+	var remaining QueueBatchPreflightResponse
+	if err := json.Unmarshal(removed.Body.Bytes(), &remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining.Status != models.QueueBatchPreflightStatusActive || remaining.Revision != candidate.Revision+1 || len(remaining.Assets) != 1 || remaining.Assets[0].ID != ready.ID || !reflect.DeepEqual(remaining.Assets[0].Plan, readyPlan) {
+		t.Fatalf("removing blocked item changed the remaining reviewed plan: %#v", remaining)
+	}
+	duplicate := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/remove", map[string]any{"revision": candidate.Revision, "assetId": blocked.ID})
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate stale removal status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+	last := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/remove", map[string]any{"revision": remaining.Revision, "assetId": ready.ID})
+	if last.Code != http.StatusOK {
+		t.Fatalf("remove final candidate item status=%d body=%s", last.Code, last.Body.String())
+	}
+	var terminal QueueBatchPreflightResponse
+	if err := json.Unmarshal(last.Body.Bytes(), &terminal); err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Status != models.QueueBatchPreflightStatusDiscarded || terminal.Revision != remaining.Revision+1 || len(terminal.Assets) != 0 {
+		t.Fatalf("removing final item did not safely terminalize the candidate: %#v", terminal)
+	}
+	var jobs int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 {
+		t.Fatalf("removal created %d QueueJobs", jobs)
+	}
+	if got, err := os.ReadFile(blocked.MediaPath); err != nil || !reflect.DeepEqual(got, blockedBytes) {
+		t.Fatalf("removal changed or removed source media: bytes=%q err=%v", got, err)
+	}
+	loaded := queuePreflightRequest(t, router, http.MethodGet, "/preflights/"+candidate.ID, nil)
+	if loaded.Code != http.StatusOK || !strings.Contains(loaded.Body.String(), `"status":"discarded"`) {
+		t.Fatalf("terminal candidate was not persisted: status=%d body=%s", loaded.Code, loaded.Body.String())
+	}
+	fresh := createQueuePreflightCandidate(t, router, queuePreflightInput(fixture, "Fresh after discard"))
+	if fresh.ID == candidate.ID || fresh.Status != models.QueueBatchPreflightStatusActive {
+		t.Fatalf("new Preflight reused a discarded candidate: %#v", fresh)
+	}
+}
+
+func TestBatchPreflightDiscardsPartialRemainderWithoutChangingAcceptedWork(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 2)
+	input := queuePreflightInput(fixture, "Partial accept then discard")
+	input.Jobs[1].LibraryID = 99999
+	router := queuePreflightRouter(fixture.db)
+	candidate := createQueuePreflightCandidate(t, router, input)
+	var readyID, blockedID string
+	for _, asset := range candidate.Assets {
+		if asset.Status == queuePreflightReady {
+			readyID = asset.ID
+		} else if asset.Status == queuePreflightBlocked {
+			blockedID = asset.ID
+		}
+	}
+	if readyID == "" || blockedID == "" {
+		t.Fatalf("expected ready and blocked assets: %#v", candidate.Assets)
+	}
+	acceptedRecorder := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{"revision": candidate.Revision, "assetIds": []string{readyID}})
+	if acceptedRecorder.Code != http.StatusCreated {
+		t.Fatalf("partial acceptance status=%d body=%s", acceptedRecorder.Code, acceptedRecorder.Body.String())
+	}
+	var accepted QueueBatchPreflightResponse
+	if err := json.Unmarshal(acceptedRecorder.Body.Bytes(), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	var jobsBefore []models.QueueJob
+	var plansBefore []models.ExecutionPlan
+	var reservationsBefore []models.SchedulerReservation
+	if err := fixture.db.Order("id ASC").Find(&jobsBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Order("id ASC").Find(&plansBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Order("id ASC").Find(&reservationsBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(jobsBefore) != 1 || len(plansBefore) == 0 || len(reservationsBefore) == 0 {
+		t.Fatalf("partial acceptance did not create expected existing work: jobs=%d plans=%d reservations=%d", len(jobsBefore), len(plansBefore), len(reservationsBefore))
+	}
+	queuedSource, err := os.ReadFile(fixture.paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	discardedRecorder := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/discard", map[string]any{"revision": accepted.Revision})
+	if discardedRecorder.Code != http.StatusOK {
+		t.Fatalf("discard partial candidate status=%d body=%s", discardedRecorder.Code, discardedRecorder.Body.String())
+	}
+	var discarded QueueBatchPreflightResponse
+	if err := json.Unmarshal(discardedRecorder.Body.Bytes(), &discarded); err != nil {
+		t.Fatal(err)
+	}
+	if discarded.Status != models.QueueBatchPreflightStatusDiscarded || discarded.Revision != accepted.Revision+1 || len(discarded.Assets) != 1 || discarded.Assets[0].Status != queuePreflightQueued || discarded.Assets[0].ID != readyID {
+		t.Fatalf("discard did not preserve accepted candidate history: %#v", discarded)
+	}
+	var jobsAfter []models.QueueJob
+	var plansAfter []models.ExecutionPlan
+	var reservationsAfter []models.SchedulerReservation
+	if err := fixture.db.Order("id ASC").Find(&jobsAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Order("id ASC").Find(&plansAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Order("id ASC").Find(&reservationsAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(jobsAfter, jobsBefore) || !reflect.DeepEqual(plansAfter, plansBefore) || !reflect.DeepEqual(reservationsAfter, reservationsBefore) {
+		t.Fatal("discard changed accepted QueueJobs, ExecutionPlans, or SchedulerReservations")
+	}
+	if got, err := os.ReadFile(fixture.paths[0]); err != nil || !reflect.DeepEqual(got, queuedSource) {
+		t.Fatalf("discard changed accepted source media: bytes=%q err=%v", got, err)
+	}
+	stale := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/discard", map[string]any{"revision": accepted.Revision})
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("duplicate discard status=%d body=%s", stale.Code, stale.Body.String())
+	}
+}
+
+func TestBatchPreflightRemoveAndDiscardPersistAcrossDatabaseRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "preflight-restart.db")
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&models.AssetRecord{}, &models.Profile{}, &models.ProfileAssignment{}, &models.AssetScopeConfiguration{},
+		&models.TestEncode{}, &models.ProfileQualification{}, &models.QueueJob{}, &models.ExecutionPlan{},
+		&models.SchedulerReservation{}, &models.AppSetting{}, &models.ScanResult{}, &models.AssetMaintenanceOperation{},
+		&models.Library{}, &models.RuntimeSnapshot{}, &models.RuntimeState{}, &models.QueueBatchPreflight{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newQueuePreflightFixtureWithDB(t, 1, db)
+	input := queuePreflightInput(fixture, "Persisted discarded candidate")
+	input.Jobs[0].LibraryID = 99999
+	router := queuePreflightRouter(db)
+	removedCandidate := createQueuePreflightCandidate(t, router, input)
+	removed := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+removedCandidate.ID+"/remove", map[string]any{"revision": removedCandidate.Revision, "assetId": removedCandidate.Assets[0].ID})
+	if removed.Code != http.StatusOK {
+		t.Fatalf("remove status=%d body=%s", removed.Code, removed.Body.String())
+	}
+	discardedCandidate := createQueuePreflightCandidate(t, router, input)
+	discarded := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+discardedCandidate.ID+"/discard", map[string]any{"revision": discardedCandidate.Revision})
+	if discarded.Code != http.StatusOK {
+		t.Fatalf("discard status=%d body=%s", discarded.Code, discarded.Body.String())
+	}
+	connection, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restartedDB, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restartedDB.AutoMigrate(&models.QueueBatchPreflight{}); err != nil {
+		t.Fatal(err)
+	}
+	restartedRouter := queuePreflightRouter(restartedDB)
+	for _, candidateID := range []string{removedCandidate.ID, discardedCandidate.ID} {
+		restarted := queuePreflightRequest(t, restartedRouter, http.MethodGet, "/preflights/"+candidateID, nil)
+		if restarted.Code != http.StatusOK || !strings.Contains(restarted.Body.String(), `"status":"discarded"`) || !strings.Contains(restarted.Body.String(), `"revision":2`) {
+			t.Fatalf("candidate lifecycle did not survive restart: status=%d body=%s", restarted.Code, restarted.Body.String())
+		}
+	}
+	var jobs int64
+	if err := restartedDB.Model(&models.QueueJob{}).Count(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 {
+		t.Fatalf("discard created %d QueueJobs", jobs)
+	}
+}
+
+func TestBatchPreflightConcurrentRemoveRequestsUseRevisionFence(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 2)
+	input := queuePreflightInput(fixture, "Concurrent removal")
+	input.Jobs[0].LibraryID = 99999
+	input.Jobs[1].LibraryID = 99999
+	router := queuePreflightRouter(fixture.db)
+	candidate := createQueuePreflightCandidate(t, router, input)
+	if len(candidate.Assets) != 2 {
+		t.Fatalf("candidate assets=%d want=2", len(candidate.Assets))
+	}
+	statuses := make(chan int, 2)
+	for _, asset := range candidate.Assets {
+		asset := asset
+		go func() {
+			body, _ := json.Marshal(map[string]any{"revision": candidate.Revision, "assetId": asset.ID})
+			request := httptest.NewRequest(http.MethodPost, "/preflights/"+candidate.ID+"/remove", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			statuses <- response.Code
+		}()
+	}
+	first, second := <-statuses, <-statuses
+	if !((first == http.StatusOK && second == http.StatusConflict) || (first == http.StatusConflict && second == http.StatusOK)) {
+		t.Fatalf("concurrent remove status codes were %d and %d", first, second)
+	}
+	var persisted models.QueueBatchPreflight
+	if err := fixture.db.First(&persisted, "id = ?", candidate.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	state, err := queuePreflightStateFromRecord(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Revision != candidate.Revision+1 || persisted.Status != models.QueueBatchPreflightStatusActive || len(state.Assets) != 1 {
+		t.Fatalf("concurrent stale request lost a revision or asset: revision=%d status=%s assets=%d", persisted.Revision, persisted.Status, len(state.Assets))
 	}
 }

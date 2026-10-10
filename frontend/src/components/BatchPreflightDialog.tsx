@@ -118,10 +118,12 @@ export function BatchPreflightDialog({
   candidate: initialCandidate,
   onClose,
   onAccepted,
+  onDiscarded,
 }: {
   candidate: QueueBatchPreflightResponse | null;
   onClose: () => void;
   onAccepted: (candidate: QueueBatchPreflightResponse) => void;
+  onDiscarded: (candidate: QueueBatchPreflightResponse) => void;
 }) {
   const [candidate, setCandidate] = useState(initialCandidate);
   const [selected, setSelected] = useState<string[]>(() => initialCandidate?.assets.filter((asset) => asset.status === 'ready').map((asset) => asset.id) ?? []);
@@ -130,6 +132,7 @@ export function BatchPreflightDialog({
   const [jobs, setJobs] = useState<QueueJobInput[]>(() => initialCandidate?.assets.filter((asset) => asset.status !== 'queued').map((asset) => ({ ...asset.input })) ?? []);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const [editBaseline, setEditBaseline] = useState<{ batchName: string; jobs: QueueJobInput[] } | null>(null);
 
   useEffect(() => {
@@ -142,6 +145,7 @@ export function BatchPreflightDialog({
     setBatchName(initialCandidate.batchName);
     setJobs(initialCandidate.assets.filter((asset) => asset.status !== 'queued').map((asset) => ({ ...asset.input })));
     setEditing(!initialCandidate.resolved);
+    setConfirmingDiscard(false);
     setEditBaseline(initialCandidate.resolved ? null : {
       batchName: initialCandidate.batchName,
       jobs: initialCandidate.assets.filter((asset) => asset.status !== 'queued').map((asset) => ({ ...asset.input })),
@@ -189,6 +193,59 @@ export function BatchPreflightDialog({
       const accepted = await api.acceptQueueBatchPreflight(candidate.id, candidate.revision, selected);
       setCandidate(accepted);
       onAccepted(accepted);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally { setBusy(false); }
+  };
+
+  const removeAsset = async (asset: QueueBatchPreflightAsset) => {
+    setBusy(true); setError('');
+    try {
+      const updated = await api.removeQueueBatchPreflightAsset(candidate.id, candidate.revision, asset.id);
+      if (updated.status !== 'active') {
+        onDiscarded(updated);
+        return;
+      }
+      setCandidate(updated);
+      setSelected((current) => current.filter((id) => id !== asset.id));
+      setJobs((current) => current.filter((job) => job.mediaPath !== asset.mediaPath));
+      setEditBaseline((current) => current ? {
+        ...current,
+        jobs: current.jobs.filter((job) => job.mediaPath !== asset.mediaPath),
+      } : null);
+      setConfirmingDiscard(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally { setBusy(false); }
+  };
+
+  const discardCandidate = async () => {
+    setBusy(true); setError('');
+    try {
+      const discarded = await api.discardQueueBatchPreflight(candidate.id, candidate.revision);
+      onDiscarded(discarded);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally { setBusy(false); }
+  };
+
+  const reloadLatestCandidate = async () => {
+    setBusy(true); setError('');
+    try {
+      const latest = await api.getQueueBatchPreflight(candidate.id);
+      if (latest.status !== 'active') {
+        onDiscarded(latest);
+        return;
+      }
+      const unresolved = latest.assets.filter((asset) => asset.status !== 'queued');
+      const latestJobs = unresolved.map((asset) => ({ ...asset.input }));
+      setCandidate(latest);
+      setSelected(latest.assets.filter((asset) => asset.status === 'ready').map((asset) => asset.id));
+      setBatchName(latest.batchName);
+      setJobs(latestJobs);
+      setEditing(!latest.resolved);
+      setEditBaseline(latest.resolved ? null : { batchName: latest.batchName, jobs: latestJobs });
+      setConfirmingDiscard(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally { setBusy(false); }
@@ -270,10 +327,23 @@ export function BatchPreflightDialog({
           Reviewed plan is the plan frozen into Queue. {candidate.assets.filter((asset) => asset.status === 'queued').length} queued; {unresolvedCount} remain in this candidate.
         </Alert>
         {error ? <Alert severity="error">{error}</Alert> : null}
+        {error ? <Button size="small" disabled={busy} onClick={() => void reloadLatestCandidate()}>Reload latest candidate</Button> : null}
+        {confirmingDiscard ? <Alert severity="warning" action={<Stack direction="row" spacing={1}>
+          <Button color="inherit" size="small" disabled={busy} onClick={() => setConfirmingDiscard(false)}>Keep candidate</Button>
+          <Button color="error" size="small" disabled={busy} onClick={() => void discardCandidate()}>Discard pending assets</Button>
+        </Stack>}>
+          Discard {unresolvedCount} unqueued asset(s) from this candidate? Previously accepted Queue jobs remain unchanged.
+        </Alert> : null}
         {editing ? <>
           <TextField label="Batch name" value={batchName} onChange={(event) => setBatchName(event.target.value)} fullWidth size="small" />
           {jobs.map((job, index) => <Box key={`${job.mediaPath}-${index}`} sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
-            <Typography variant="subtitle2" sx={{ mb: 1, overflowWrap: 'anywhere' }}>{job.mediaPath}</Typography>
+            <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'center' }} gap={1} sx={{ mb: 1 }}>
+              <Typography variant="subtitle2" sx={{ overflowWrap: 'anywhere' }}>{job.mediaPath}</Typography>
+              <Button size="small" color="error" disabled={busy || !candidate.assets.some((asset) => asset.mediaPath === job.mediaPath && asset.status !== 'queued')} onClick={() => {
+                const asset = candidate.assets.find((item) => item.mediaPath === job.mediaPath && item.status !== 'queued');
+                if (asset) void removeAsset(asset);
+              }}>Remove from candidate</Button>
+            </Stack>
             <Grid container spacing={1}>
               <Grid size={{ xs: 6, md: 2 }}><TextField label="Profile ID" type="number" size="small" value={job.profileId} onChange={(event) => updateJob(index, { profileId: Number(event.target.value) })} fullWidth /></Grid>
               <Grid size={{ xs: 6, md: 2 }}><TextField label="Library ID" type="number" size="small" value={job.libraryId} onChange={(event) => updateJob(index, { libraryId: Number(event.target.value) })} fullWidth /></Grid>
@@ -289,7 +359,7 @@ export function BatchPreflightDialog({
                 {asset.status === 'ready' ? <FormControlLabel control={<Checkbox checked={selected.includes(asset.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, asset.id] : current.filter((id) => id !== asset.id))} />} label="Queue this asset" /> : null}
                 <Typography variant="subtitle2" sx={{ overflowWrap: 'anywhere' }}>{asset.mediaPath}</Typography>
               </Stack>
-              <Chip size="small" label={asset.status} color={asset.status === 'ready' || asset.status === 'queued' ? 'success' : asset.status === 'review' ? 'warning' : 'error'} />
+                <Chip size="small" label={asset.status} color={asset.status === 'ready' || asset.status === 'queued' ? 'success' : asset.status === 'review' || asset.status === 'requires_review' ? 'warning' : 'error'} />
             </Stack>
             {asset.blockers.map((blocker) => <Alert key={blocker} severity="error" variant="outlined">{blocker}</Alert>)}
             {asset.warnings.map((warning) => <Alert key={warning} severity="warning" variant="outlined">{warning}</Alert>)}
@@ -299,6 +369,7 @@ export function BatchPreflightDialog({
               <Button size="small" disabled={busy || !asset.plan} onClick={() => void runPreview(asset)}>Preview exact plan</Button>
               <Button size="small" disabled={busy || !asset.plan} onClick={() => void runTestEncode(asset)}>Test Encode exact plan</Button>
               <Button size="small" disabled={!asset.plan} onClick={() => openLab(asset)}>Open LAB with candidate context</Button>
+              {asset.status !== 'queued' ? <Button size="small" color="error" disabled={busy} onClick={() => void removeAsset(asset)}>Remove from candidate</Button> : null}
             </Stack>
           </Stack>
         </Box>)}
@@ -306,8 +377,10 @@ export function BatchPreflightDialog({
       </Stack>
     </DialogContent>
     <DialogActions>
+      <Button color="error" disabled={busy || candidate.status !== 'active'} onClick={() => setConfirmingDiscard(true)}>Discard candidate</Button>
       {editing ? <>
-        <Button disabled={busy} onClick={() => void discardEdits()}>Discard edits and re-resolve</Button>
+        <Button disabled={busy} onClick={() => void discardEdits()}>Discard edits &amp; re-resolve</Button>
+        <Button disabled={busy} onClick={onClose}>Close</Button>
         <Button variant="contained" disabled={busy || jobs.length === 0} onClick={() => void resolveEdits()}>Resolve Preflight again</Button>
       </> : <>
         <Button disabled={busy || !candidate.resolved || unresolvedCount === 0} onClick={() => void beginEdit()}>Edit</Button>
