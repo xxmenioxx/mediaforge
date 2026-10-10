@@ -19,7 +19,7 @@ vi.mock('../api/client', async (importOriginal) => {
       configureLogicalGroupsBatch: vi.fn(), queueSelectedAssets: vi.fn(), queueRemainingPreview: vi.fn(), queueRemainingCommit: vi.fn(), createQueueBatch: vi.fn(), preflightSelectedAssets: vi.fn(), acceptQueueBatchPreflight: vi.fn(), renameAsset: vi.fn(), evaluateAdvisor: vi.fn(), publishAssetsAsIs: vi.fn(),
       updateAssetConversion: vi.fn(), updateAssetMetadata: vi.fn(), updateAssetEdit: vi.fn(), testEncodes: vi.fn(),
       jobArtifacts: vi.fn(), executionPlans: vi.fn(),
-      subtitleTranslationCapability: vi.fn(), startSubtitleTranslation: vi.fn(), subtitleOperation: vi.fn(), analyzeSubtitleOCR: vi.fn(),
+      subtitleTranslationCapability: vi.fn(), startSubtitleTranslation: vi.fn(), retrySubtitleTranslation: vi.fn(), subtitleOperation: vi.fn(), analyzeSubtitleOCR: vi.fn(), correctSubtitleOCR: vi.fn(), cancelSubtitleOperation: vi.fn(),
     },
   };
 });
@@ -143,7 +143,18 @@ function setupPageData(reviewSidecar: Record<string, unknown>, unrelatedSidecar:
 }
 
 describe('Asset Info OCR review routing', () => {
-  it('opens the canonical sidecar when translation requires OCR review', async () => {
+  it.each([
+    {
+      decision: 'Accept as correct',
+      buttonName: 'Accept cue 12 as correct (unchanged)',
+      correction: { cueId: 12, action: 'approve' as const },
+    },
+    {
+      decision: 'Correct',
+      buttonName: 'Correct cue 12',
+      correction: { cueId: 12, action: 'edit' as const, text: 'The house' },
+    },
+  ])('saves $decision, returns to the same Translation context, and retries', async ({ buttonName, correction }) => {
     const user = userEvent.setup();
     const reviewSidecar = {
       path: reviewPath, fileName: 'Akira.eng.forced.srt', format: 'srt', language: 'eng', default: false, forced: true,
@@ -160,22 +171,48 @@ describe('Asset Info OCR review routing', () => {
       sourceLanguages: ['eng'], targetLocales: ['es-419'], provider: { name: 'ollama', model: 'translate-test', modelSelectable: false },
       outputRepresentations: ['srt'], context: { status: 'healthy' },
     } as never);
+    const revision = {
+      artifactPath: reviewPath, artifactIdentity: 'review-artifact', sizeBytes: 100,
+      modifiedAtUnixNano: '1787875200000000000', contentHash: 'review-content-hash', logicalTransform: 'canonical-ocr-stream-4',
+    };
+    const reviewTarget = {
+      state: 'exact',
+      identity: {
+        version: 1, sourcePath: assetPath, sourceSize: 1024, sourceModTimeUnixNano: '1787875200000000000',
+        sourceSnapshotVersion: 'stat-v1', streamIndex: 4, streamId: 'pgs-4', streamCodec: 'hdmv_pgs_subtitle',
+        requestedLanguage: 'eng', ocrMode: 'accurate', preparationScope: 'full-asset', segmentStart: '0.000000',
+        segmentDuration: 0, preparedStreamMapping: '', preparedRepresentation: '', pipelineProvenance: 'canonical-pipeline', runtimeProvenance: 'test-runtime',
+      },
+      logicalTransformKey: 'canonical-ocr-stream-4', format: 'srt',
+      artifacts: [{ ownerIdentity: 'canonical-owner', path: reviewPath, format: 'srt', logicalTransformKey: 'canonical-ocr-stream-4', revision }],
+      sidecarPaths: [reviewPath], revisions: [revision], baselineRevision: 'review-sidecar-baseline',
+    };
     const failedTranslation = {
       id: 'translation-review-required', assetPath, status: 'error', phase: 'ocr_review', progress: 40,
       processed: 0, total: 0, streamIndex: 4, format: 'srt', kind: 'translation',
       message: 'OCR review is required before translation.',
-      translation: { failureClass: 'ocr_review_required', diagnostic: 'OCR review is required before translation.', retryable: true, cancellable: false },
+      translation: { failureClass: 'ocr_review_required', diagnostic: 'OCR review is required before translation.', retryable: true, cancellable: false, ocrReviewTarget: reviewTarget },
       createdAt: '2026-08-28T00:00:00Z', updatedAt: '2026-08-28T00:00:01Z',
     };
     vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: failedTranslation } as never);
     vi.mocked(api.subtitleOperation).mockResolvedValue(failedTranslation as never);
     vi.mocked(api.analyzeSubtitleOCR).mockResolvedValue({ operationId: 'ocr-review-operation', status: 'running', phase: 'analyzing', progress: 0 } as never);
-    vi.mocked(api.subtitleExtractionOperation).mockResolvedValue({
+    vi.mocked(api.subtitleExtractionOperation).mockImplementation(async (id) => id === 'ocr-review-operation' ? ({
       id: 'ocr-review-operation', assetPath, status: 'completed', phase: 'completed', progress: 100,
       processed: 1, total: 1, streamIndex: 4, format: 'srt', kind: 'ocr_analysis',
-      qualityReport: { cleanCount: 1, suspiciousCount: 0, reviewCount: 0, canCorrect: true, baselineRevision: 'review-sidecar', findings: [] },
+      qualityReport: {
+        artifactPath: reviewPath, format: 'srt', logicalTransformKey: 'canonical-ocr-stream-4', revision, revisionSet: [revision],
+        baselineRevision: 'review-sidecar-baseline', analyzerVersion: 'quality-v1', repairVersion: 'repair-v1',
+        cleanCount: 0, suspiciousCount: 1, reviewCount: 0, canCorrect: true, reviewTarget,
+        findings: [{ cueId: 12, originalText: 'The h0use', suggestion: 'The house', status: 'suspicious', reasons: ['known OCR confusion pattern'], startSeconds: 1, endSeconds: 2, timingProvenance: 'original-source-absolute', baselineRevision: 'review-sidecar-baseline' }],
+      },
       createdAt: '2026-08-28T00:00:00Z', updatedAt: '2026-08-28T00:00:01Z',
-    } as never);
+    } as never) : ({
+      id, assetPath, status: 'completed', phase: 'completed', progress: 100, processed: 1, total: 1,
+      streamIndex: 4, format: 'srt', kind: 'ocr_correction', createdAt: '2026-08-28T00:00:02Z', updatedAt: '2026-08-28T00:00:03Z',
+    } as never));
+    vi.mocked(api.correctSubtitleOCR).mockResolvedValue({ operationId: 'ocr-save-operation', status: 'running', phase: 'preparing', progress: 1 } as never);
+    vi.mocked(api.retrySubtitleTranslation).mockResolvedValue({ operation: { ...failedTranslation, id: 'translation-retry' } as never });
 
     renderAssetsPage();
     await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
@@ -184,8 +221,22 @@ describe('Asset Info OCR review routing', () => {
     await user.click(await screen.findByRole('button', { name: 'Translate subtitle stream 4' }));
     const translationDialog = await screen.findByRole('dialog', { name: 'Translate subtitle' });
     await user.click(within(translationDialog).getByRole('button', { name: 'Start translation' }));
+    await waitFor(() => expect(api.startSubtitleTranslation).toHaveBeenCalled());
+    expect(vi.mocked(api.startSubtitleTranslation).mock.calls[0]?.[0]).toEqual({
+      path: assetPath,
+      source: { type: 'embedded', embedded: { streamIndex: 4 } },
+      sourceLanguage: 'eng',
+      targetLocale: 'es-419',
+      outputRepresentation: 'srt',
+    });
     expect(await within(translationDialog).findByText('Translation paused')).toBeTruthy();
     await user.click(within(translationDialog).getByRole('button', { name: 'Review OCR' }));
+
+    const reviewDialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
+    expect(await within(reviewDialog).findByLabelText('Corrected text for cue 12')).toHaveProperty('value', 'The house');
+    await user.click(within(reviewDialog).getByRole('button', { name: buttonName }));
+    await user.click(within(reviewDialog).getByRole('button', { name: 'Preview selected decisions (1)' }));
+    await user.click(within(reviewDialog).getByRole('button', { name: 'Confirm and save' }));
 
     await waitFor(() => expect(api.analyzeSubtitleOCR).toHaveBeenCalledWith(expect.objectContaining({
       mediaPath: assetPath,
@@ -193,7 +244,99 @@ describe('Asset Info OCR review routing', () => {
       sidecarPaths: [reviewPath],
       format: 'srt',
       logicalTransformKey: 'canonical-ocr-stream-4',
+      reviewTarget,
+    })));
+    await waitFor(() => expect(api.correctSubtitleOCR).toHaveBeenCalledWith(expect.objectContaining({
+      mediaPath: assetPath,
+      sidecarPath: reviewPath,
+      reviewTarget,
+      baselineRevision: 'review-sidecar-baseline',
+      corrections: [correction],
     })));
     expect(api.analyzeSubtitleOCR).not.toHaveBeenCalledWith(expect.objectContaining({ sidecarPath: unrelatedPath }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'OCR review for Translation' })).toBeNull());
+    const returnedTranslation = await screen.findByRole('dialog', { name: 'Translate subtitle' });
+    await user.click(within(returnedTranslation).getByRole('button', { name: 'Retry translation' }));
+    await waitFor(() => expect(api.retrySubtitleTranslation).toHaveBeenCalledWith('translation-review-required'));
+  }, 15000);
+
+  it.each([
+    { discovery: 'missing a matching sidecar', mode: 'unmatched' as const },
+    { discovery: 'returning stale sidecar data', mode: 'stale' as const },
+    { discovery: 'unavailable', mode: 'unavailable' as const },
+  ])('exposes Review OCR from the Translation operation when discovery is $discovery', async ({ mode }) => {
+    const user = userEvent.setup();
+    setupPageData({}, {});
+
+    const discoveredSidecar = {
+      path: mode === 'stale' ? reviewPath : unrelatedPath,
+      fileName: mode === 'stale' ? 'Akira.eng.forced.srt' : 'Akira.eng.srt',
+      format: 'srt', language: 'eng', default: false, forced: mode === 'stale',
+      sizeBytes: 100, modifiedAt: '2026-08-28T00:00:00Z', ocrManaged: true,
+      ocrAnalysisAvailable: mode !== 'stale',
+      logicalTransformKey: mode === 'stale' ? 'stale-transform' : 'other-transform',
+    };
+    if (mode === 'unavailable') {
+      vi.mocked(api.externalAssetSubtitles).mockRejectedValue(new Error('external subtitle inventory unavailable'));
+    } else {
+      vi.mocked(api.externalAssetSubtitles).mockResolvedValue([discoveredSidecar] as never);
+    }
+    vi.mocked(api.subtitleEligibility).mockResolvedValue({
+      embedded: [{
+        streamIndex: 4, sourceIdentity: 'embedded:4', sourceRevision: 'source-revision', representation: 'bitmap',
+        role: 'full', roleProvenance: 'snapshot', policyVersion: 'test', regenerate: { eligible: true },
+      }],
+      external: [],
+      composition: { policyVersion: 'test', primaryCandidates: [], supplementalCandidates: [], eligible: false, maxSupplementals: 0, reason: 'test' },
+    } as never);
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue({
+      source: { type: 'embedded', embedded: { streamIndex: 4 } }, eligible: true, available: true,
+      sourceLanguages: ['eng'], targetLocales: ['es-419'], provider: { name: 'ollama', model: 'translate-test', modelSelectable: false },
+      outputRepresentations: ['srt'], context: { status: 'healthy' },
+    } as never);
+
+    const reviewTarget = {
+      state: 'exact',
+      identity: { streamIndex: 4, requestedLanguage: 'eng' },
+      logicalTransformKey: 'canonical-ocr-stream-4',
+      format: 'srt',
+      sidecarPaths: [reviewPath],
+      baselineRevision: 'operation-review-baseline',
+    };
+    const failedTranslation = {
+      id: 'translation-review-required', assetPath, status: 'error', phase: 'ocr_review', progress: 40,
+      processed: 0, total: 0, streamIndex: 4, format: 'srt', kind: 'translation',
+      message: 'OCR review is required before translation.',
+      translation: {
+        failureClass: 'ocr_review_required', diagnostic: 'OCR review is required before translation.', retryable: true,
+        cancellable: false, targetLocale: 'es-419', outputRepresentation: 'srt', ocrReviewTarget: reviewTarget,
+      },
+      createdAt: '2026-08-28T00:00:00Z', updatedAt: '2026-08-28T00:00:01Z',
+    };
+    vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: failedTranslation } as never);
+    vi.mocked(api.subtitleOperation).mockResolvedValue(failedTranslation as never);
+    vi.mocked(api.analyzeSubtitleOCR).mockRejectedValue(new Error('OCR analysis service unavailable'));
+
+    renderAssetsPage();
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    const assetInfo = await openAssetInfo(user);
+    await user.click(within(assetInfo).getByRole('tab', { name: 'Tracks' }));
+    await user.click(await screen.findByRole('button', { name: 'Translate subtitle stream 4' }));
+    const translationDialog = await screen.findByRole('dialog', { name: 'Translate subtitle' });
+    await user.click(within(translationDialog).getByRole('button', { name: 'Start translation' }));
+    await waitFor(() => expect(api.startSubtitleTranslation).toHaveBeenCalled());
+    await user.click(await within(translationDialog).findByRole('button', { name: 'Review OCR' }));
+
+    const reviewDialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
+    expect(await within(reviewDialog).findByText('OCR analysis service unavailable')).toBeTruthy();
+    expect(api.externalAssetSubtitles).toHaveBeenCalled();
+    expect(api.subtitleEligibility).toHaveBeenCalled();
+    expect(api.analyzeSubtitleOCR).toHaveBeenCalledWith(expect.objectContaining({
+      mediaPath: assetPath,
+      sidecarPath: reviewPath,
+      sidecarPaths: [reviewPath],
+      reviewTarget,
+    }));
+    expect(screen.getByRole('dialog', { name: 'OCR review for Translation' })).toBeTruthy();
   }, 15000);
 });

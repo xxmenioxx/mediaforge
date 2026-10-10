@@ -3100,6 +3100,7 @@ export type SubtitleExtractionOperation = {
     diagnostic?: string;
     retryable: boolean;
     cancellable: boolean;
+    ocrReviewTarget?: CanonicalOCRReviewTarget;
   };
   qualityReport?: SubtitleOCRQualityReport;
   createdAt: string;
@@ -3117,28 +3118,74 @@ export type SubtitleOCRQualityFinding = {
   dictionaryRuleIds?: string[];
   dictionaryRuleVersions?: number[];
   baselineRevision: string;
+  startSeconds: number;
+  endSeconds: number;
+  timingProvenance?: string;
+  role?: string;
+  geometry?: {
+    canvasWidth: number;
+    canvasHeight: number;
+    bitmapX: number;
+    bitmapY: number;
+    bitmapWidth: number;
+    bitmapHeight: number;
+  };
+};
+
+export type PublishedSubtitleRevision = {
+  artifactPath: string;
+  artifactIdentity: string;
+  sizeBytes: number;
+  modifiedAtUnixNano: string;
+  contentHash: string;
+  logicalTransform?: string;
+};
+
+export type CanonicalOCRIdentity = {
+  version: number;
+  sourcePath: string;
+  sourceSize: number;
+  sourceModTimeUnixNano: string;
+  sourceSnapshotVersion: string;
+  streamIndex: number;
+  streamId: string;
+  streamCodec: string;
+  requestedLanguage: string;
+  ocrMode: string;
+  preparationScope: string;
+  segmentStart: string;
+  segmentDuration: number;
+  preparedStreamMapping: string;
+  preparedRepresentation: string;
+  preparedRepresentationHash?: string;
+  pipelineProvenance: string;
+  runtimeProvenance: string;
+};
+
+export type CanonicalOCRReviewTarget = {
+  state: 'exact' | 'missing' | 'stale' | 'conflict' | string;
+  message?: string;
+  identity?: CanonicalOCRIdentity;
+  logicalTransformKey?: string;
+  format?: 'srt' | 'ass' | 'both' | string;
+  artifacts?: Array<{
+    ownerIdentity: string;
+    path: string;
+    format: 'srt' | 'ass' | string;
+    logicalTransformKey?: string;
+    revision: PublishedSubtitleRevision;
+  }>;
+  sidecarPaths?: string[];
+  revisions?: PublishedSubtitleRevision[];
+  baselineRevision?: string;
 };
 
 export type SubtitleOCRQualityReport = {
   artifactPath: string;
   format: 'srt' | 'ass' | string;
   logicalTransformKey?: string;
-  revision: {
-    artifactPath: string;
-    artifactIdentity: string;
-    sizeBytes: number;
-    modifiedAtUnixNano: number;
-    contentHash: string;
-    logicalTransform?: string;
-  };
-  revisionSet?: Array<{
-    artifactPath: string;
-    artifactIdentity: string;
-    sizeBytes: number;
-    modifiedAtUnixNano: number;
-    contentHash: string;
-    logicalTransform?: string;
-  }>;
+  revision: PublishedSubtitleRevision;
+  revisionSet?: PublishedSubtitleRevision[];
   baselineRevision: string;
   analyzerVersion: string;
   repairVersion: string;
@@ -3150,6 +3197,7 @@ export type SubtitleOCRQualityReport = {
   legacyTextOnly?: boolean;
   canCorrect: boolean;
   findings: SubtitleOCRQualityFinding[];
+  reviewTarget?: CanonicalOCRReviewTarget;
 };
 
 export type OCRDictionaryLanguage = 'eng' | 'spa' | 'jpn' | 'jpn_vert';

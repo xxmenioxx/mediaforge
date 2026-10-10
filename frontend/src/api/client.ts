@@ -90,6 +90,7 @@ import type {
   OCRDictionarySearchResponse,
   OCRDictionaryTestMatchResponse,
   OCRDictionaryTestMatchInput,
+  CanonicalOCRReviewTarget,
   SubtitleTranslationCapability,
   SubtitleTranslationCapabilityInput,
   SubtitleTranslationReadiness,
@@ -413,6 +414,7 @@ export const api = {
     sidecarPaths?: string[];
     format: 'srt' | 'ass' | 'both';
     logicalTransformKey?: string;
+    reviewTarget?: CanonicalOCRReviewTarget;
   }) =>
     request<{ operationId: string; status: string; phase: string; progress: number }>(
       '/api/assets/subtitle-ocr/analyze',
@@ -491,13 +493,14 @@ export const api = {
       artifactPath: string;
       artifactIdentity: string;
       sizeBytes: number;
-      modifiedAtUnixNano: number;
+      modifiedAtUnixNano: string;
       contentHash: string;
       logicalTransform?: string;
     }>;
+    reviewTarget?: CanonicalOCRReviewTarget;
     corrections: Array<{
       cueId: number;
-      action: 'keep' | 'apply' | 'edit' | 'reject';
+      action: 'keep' | 'pending' | 'approve' | 'apply' | 'edit' | 'reject';
       text?: string;
       suggestion?: string;
     }>;

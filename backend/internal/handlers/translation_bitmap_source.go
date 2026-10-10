@@ -15,6 +15,9 @@ type bitmapTranslationSource struct {
 	EffectiveLanguage string
 	Evidence          *canonicalOCREvidence
 	Envelopes         []translationCueEnvelope
+	ReviewTarget      *canonicalOCRReviewTarget
+	ArtifactRevision  string
+	LogicalTransform  string
 }
 
 func bitmapTranslationSourceFor(
@@ -43,9 +46,21 @@ func bitmapTranslationSourceFor(
 		return nil, fmt.Errorf("bitmap translation does not support subtitle codec %q", stream.CodecName)
 	}
 	request := canonicalOCRRequestFor(mediaPath, stream, requestedLanguage, ocrMode, segmentStart, segmentDuration)
-	evidence, foundPublished, selectionErr := publishedCanonicalOCREvidenceForTranslation(request)
+	selection, foundPublished, selectionErr := canonicalOCRTranslationSelectionForRequest(request)
 	if selectionErr != nil {
-		return nil, subtitleOCRReviewRequiredError(fmt.Errorf("published canonical OCR evidence is ambiguous"))
+		target := &canonicalOCRReviewTarget{State: "conflict", Message: "Published canonical OCR evidence is ambiguous for this request.", Identity: request.Identity}
+		return nil, subtitleOCRReviewRequiredErrorWithTarget(fmt.Errorf("published canonical OCR evidence is ambiguous"), target)
+	}
+	var evidence *canonicalOCREvidence
+	var reviewTarget *canonicalOCRReviewTarget
+	artifactRevision, logicalTransform := "", ""
+	if selection != nil {
+		reviewTarget = selection.ReviewTarget
+	}
+	if foundPublished {
+		evidence = selection.Evidence
+		artifactRevision = selection.ArtifactRevision
+		logicalTransform = selection.LogicalTransform
 	}
 	if foundPublished {
 		if onProgress != nil {
@@ -85,10 +100,29 @@ func bitmapTranslationSourceFor(
 		EffectiveLanguage: finalEvidence.EffectiveLanguage,
 		Evidence:          finalEvidence,
 		Envelopes:         envelopes,
+		ReviewTarget:      reviewTarget,
+		ArtifactRevision:  artifactRevision,
+		LogicalTransform:  logicalTransform,
 	}, nil
 }
 
 func publishedCanonicalOCREvidenceForTranslation(request canonicalOCRRequest) (*canonicalOCREvidence, bool, error) {
+	selection, found, err := canonicalOCRTranslationSelectionForRequest(request)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	return cloneCanonicalOCREvidence(selection.Evidence), true, nil
+}
+
+type canonicalOCRTranslationSelection struct {
+	Evidence         *canonicalOCREvidence
+	ReviewTarget     *canonicalOCRReviewTarget
+	ArtifactRevision string
+	LogicalTransform string
+	Artifacts        []canonicalOCRArtifactDescriptor
+}
+
+func canonicalOCRTranslationSelectionForRequest(request canonicalOCRRequest) (*canonicalOCRTranslationSelection, bool, error) {
 	artifacts := findPublishedCanonicalOCRArtifactsForEmbeddedSource(request.MediaPath, request.Stream)
 	compatible := make([]canonicalOCRArtifactDescriptor, 0, len(artifacts))
 	for _, artifact := range artifacts {
@@ -104,44 +138,58 @@ func publishedCanonicalOCREvidenceForTranslation(request canonicalOCRRequest) (*
 		compatible = append(compatible, artifact)
 	}
 	if len(compatible) == 0 {
+		if staleTarget := canonicalOCRReviewTargetForStaleRequest(request); staleTarget != nil {
+			return &canonicalOCRTranslationSelection{ReviewTarget: staleTarget}, false, nil
+		}
 		return nil, false, nil
 	}
-
-	// A published manual or deterministic correction is the most recent
-	// canonical decision for translation. Older uncorrected SRT/ASS snapshots
-	// must not win merely because their format sorts first.
-	corrected := make([]canonicalOCRArtifactDescriptor, 0, len(compatible))
-	for _, artifact := range compatible {
-		if len(artifact.Snapshot.Evidence.CorrectionProvenance) > 0 {
-			corrected = append(corrected, artifact)
-		}
-	}
-	if len(corrected) > 0 {
-		compatible = corrected
-	}
+	logicalTransform := strings.TrimSpace(compatible[0].LogicalTransform)
 	for i := 1; i < len(compatible); i++ {
-		if !canonicalOCRTranslationEvidenceEquivalent(&compatible[0].Snapshot.Evidence, &compatible[i].Snapshot.Evidence) {
-			return nil, false, fmt.Errorf("multiple compatible canonical OCR corrections disagree")
+		if strings.TrimSpace(compatible[i].LogicalTransform) != logicalTransform ||
+			!canonicalOCRTranslationEvidenceEquivalent(&compatible[0].Snapshot.Evidence, &compatible[i].Snapshot.Evidence) {
+			return nil, false, fmt.Errorf("multiple compatible canonical OCR artifacts have conflicting transforms or evidence")
 		}
 	}
 	sort.SliceStable(compatible, func(i, j int) bool {
 		left, right := compatible[i], compatible[j]
-		leftRank, rightRank := 1, 1
-		if left.Format == "srt" {
-			leftRank = 0
+		if left.Format != right.Format {
+			return left.Format == "srt"
 		}
-		if right.Format == "srt" {
-			rightRank = 0
-		}
-		if leftRank != rightRank {
-			return leftRank < rightRank
-		}
-		if left.Path != right.Path {
-			return left.Path < right.Path
-		}
-		return left.LogicalTransform < right.LogicalTransform
+		return left.Path < right.Path
 	})
-	return cloneCanonicalOCREvidence(&compatible[0].Snapshot.Evidence), true, nil
+	formats := make(map[string]bool, len(compatible))
+	for _, artifact := range compatible {
+		if formats[artifact.Format] {
+			return nil, false, fmt.Errorf("multiple canonical OCR artifacts claim the same logical transform and format")
+		}
+		formats[artifact.Format] = true
+	}
+	revisions := make([]publishedSubtitleRevision, 0, len(compatible))
+	for _, artifact := range compatible {
+		revisions = append(revisions, artifact.Snapshot.Revision)
+	}
+	format := compatible[0].Format
+	if len(compatible) > 1 {
+		format = "both"
+	}
+	target := &canonicalOCRReviewTarget{
+		State: "exact", Identity: compatible[0].Snapshot.Evidence.Identity, LogicalTransformKey: logicalTransform,
+		Format: format, Artifacts: make([]canonicalOCRReviewArtifact, 0, len(compatible)),
+		SidecarPaths: make([]string, 0, len(compatible)), Revisions: revisions,
+		BaselineRevision: subtitleRevisionSetKey(revisions),
+	}
+	for _, artifact := range compatible {
+		target.Artifacts = append(target.Artifacts, canonicalOCRReviewArtifact{
+			OwnerIdentity: artifact.Identity, Path: artifact.Path, Format: artifact.Format,
+			LogicalTransform: artifact.LogicalTransform, Revision: artifact.Snapshot.Revision,
+		})
+		target.SidecarPaths = append(target.SidecarPaths, artifact.Path)
+	}
+	return &canonicalOCRTranslationSelection{
+		Evidence:     cloneCanonicalOCREvidence(&compatible[0].Snapshot.Evidence),
+		ReviewTarget: target, ArtifactRevision: target.BaselineRevision,
+		LogicalTransform: logicalTransform, Artifacts: compatible,
+	}, true, nil
 }
 
 func canonicalOCREvidenceMatchesTranslationRequest(evidence *canonicalOCREvidence, request canonicalOCRRequest) bool {
@@ -173,7 +221,8 @@ func canonicalOCRTranslationEvidenceEquivalent(left, right *canonicalOCREvidence
 	if left == nil || right == nil {
 		return left == right
 	}
-	return left.EffectiveLanguage == right.EffectiveLanguage &&
+	return left.Identity.key() == right.Identity.key() &&
+		left.EffectiveLanguage == right.EffectiveLanguage &&
 		left.RequestedLanguage == right.RequestedLanguage &&
 		left.OCRMode == right.OCRMode &&
 		reflect.DeepEqual(left.Cues, right.Cues) &&

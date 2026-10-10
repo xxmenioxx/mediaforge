@@ -70,7 +70,7 @@ function TranslationOperationStatus({
   retryError?: unknown;
   onCancel: () => void;
   onRetry: () => void;
-  onReviewOCR?: () => void;
+  onReviewOCR?: (operation: SubtitleExtractionOperation) => void;
 }) {
   const running = operation.status === 'running';
   const cancelled = operation.status === 'cancelled';
@@ -143,7 +143,7 @@ function TranslationOperationStatus({
         </Button>
       ) : null}
       {ocrReviewRequired && onReviewOCR ? (
-        <Button variant="outlined" onClick={onReviewOCR}>Review OCR</Button>
+        <Button variant="outlined" onClick={() => onReviewOCR(operation)}>Review OCR</Button>
       ) : null}
       {running && operation.translation?.cancellable ? (
         <Button color="warning" variant="outlined" onClick={onCancel} disabled={cancelPending}>
@@ -166,7 +166,7 @@ export function SubtitleTranslationDialog({
   path: string;
   source: SubtitleTranslationSourceSelector;
   onClose: () => void;
-  onReviewOCR?: () => void;
+  onReviewOCR?: (operation: SubtitleExtractionOperation) => void;
 }) {
   const queryClient = useQueryClient();
   const [sourceLanguage, setSourceLanguage] = useState('');

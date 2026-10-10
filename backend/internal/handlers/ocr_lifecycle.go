@@ -124,19 +124,26 @@ type canonicalOCREvidence struct {
 }
 
 type canonicalOCRCorrectionProvenance struct {
-	CueID                  int      `json:"cueId"`
-	Action                 string   `json:"action"`
-	CandidateSource        string   `json:"candidateSource,omitempty"`
-	TextHash               string   `json:"textHash,omitempty"`
-	BeforeTextHash         string   `json:"beforeTextHash,omitempty"`
-	AfterTextHash          string   `json:"afterTextHash,omitempty"`
-	DictionaryLanguage     string   `json:"dictionaryLanguage,omitempty"`
-	DictionaryRevision     string   `json:"dictionaryRevision,omitempty"`
-	DictionaryRuleIDs      []string `json:"dictionaryRuleIds,omitempty"`
-	DictionaryRuleVersions []int    `json:"dictionaryRuleVersions,omitempty"`
-	OperationID            string   `json:"operationId,omitempty"`
-	Validation             string   `json:"validation"`
-	SelectedBy             string   `json:"selectedBy"`
+	CueID                    int      `json:"cueId"`
+	Action                   string   `json:"action"`
+	CandidateSource          string   `json:"candidateSource,omitempty"`
+	TextHash                 string   `json:"textHash,omitempty"`
+	BeforeTextHash           string   `json:"beforeTextHash,omitempty"`
+	AfterTextHash            string   `json:"afterTextHash,omitempty"`
+	DictionaryLanguage       string   `json:"dictionaryLanguage,omitempty"`
+	DictionaryRevision       string   `json:"dictionaryRevision,omitempty"`
+	DictionaryRuleIDs        []string `json:"dictionaryRuleIds,omitempty"`
+	DictionaryRuleVersions   []int    `json:"dictionaryRuleVersions,omitempty"`
+	OperationID              string   `json:"operationId,omitempty"`
+	HumanApproval            bool     `json:"humanApproval,omitempty"`
+	ApprovalSourceRevision   string   `json:"approvalSourceRevision,omitempty"`
+	ApprovalArtifactRevision string   `json:"approvalArtifactRevision,omitempty"`
+	ApprovalLogicalTransform string   `json:"approvalLogicalTransform,omitempty"`
+	ApprovalAnalyzerVersion  string   `json:"approvalAnalyzerVersion,omitempty"`
+	ApprovalRepairVersion    string   `json:"approvalRepairVersion,omitempty"`
+	ApprovalScoringVersion   string   `json:"approvalScoringVersion,omitempty"`
+	Validation               string   `json:"validation"`
+	SelectedBy               string   `json:"selectedBy"`
 }
 
 type canonicalOCREvidenceCacheRecord struct {
