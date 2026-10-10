@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -27,6 +28,15 @@ type AssetTracksUpdateInput struct {
 	SubtitleMetadata               json.RawMessage `json:"subtitleMetadata"`
 	SubtitleRoleOverrides          json.RawMessage `json:"subtitleRoleOverrides"`
 	SubtitleSidecarFormatsByStream json.RawMessage `json:"subtitleSidecarFormatsByStream"`
+}
+
+type assetTracksUpdateError struct {
+	status  int
+	message string
+}
+
+func (err *assetTracksUpdateError) Error() string {
+	return err.message
 }
 
 func (input AssetTracksUpdateInput) empty() bool {
@@ -55,6 +65,10 @@ func (h AssetHandler) UpdateTracks(c *gin.Context) {
 		return
 	}
 	cleanPath := filepath.Clean(resolvedPath)
+	// Queue creation and maintenance use assetMutationMu. Keep both guards and
+	// the override read-modify-write in the same serialized boundary.
+	assetMutationMu.Lock()
+	defer assetMutationMu.Unlock()
 	assetOverrideMutationMu.Lock()
 	defer assetOverrideMutationMu.Unlock()
 	allowed, err := h.pathBelongsToLibrary(cleanPath)
@@ -77,11 +91,22 @@ func (h AssetHandler) UpdateTracks(c *gin.Context) {
 
 	var persisted AssetConversionOverrideState
 	err = h.db.Transaction(func(tx *gorm.DB) error {
+		if active, err := (QueueHandler{db: tx}).assetHasOpenJob(cleanPath, 0); err != nil {
+			return &assetTracksUpdateError{status: http.StatusInternalServerError, message: "check active Queue work: " + err.Error()}
+		} else if active {
+			return &assetTracksUpdateError{status: http.StatusConflict, message: "asset has an active Queue job and Tracks cannot be modified"}
+		}
+		if active, err := activeAssetMaintenance(tx, cleanPath); err != nil {
+			return &assetTracksUpdateError{status: http.StatusInternalServerError, message: "check active asset maintenance: " + err.Error()}
+		} else if active {
+			return &assetTracksUpdateError{status: http.StatusConflict, message: "asset has an active maintenance operation and Tracks cannot be modified"}
+		}
+
 		entries := assetConversionOverrides(tx)
 		existing := entries[cleanPath]
 		updated, err := applyAssetTracksPatch(tx, cleanPath, existing, input)
 		if err != nil {
-			return err
+			return &assetTracksUpdateError{status: http.StatusBadRequest, message: err.Error()}
 		}
 		if !input.empty() {
 			if assetConversionOverrideEmpty(updated) {
@@ -99,6 +124,14 @@ func (h AssetHandler) UpdateTracks(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		var updateErr *assetTracksUpdateError
+		if errors.As(err, &updateErr) {
+			if updateErr.status >= http.StatusInternalServerError {
+				appendSystemLog(h.db, "asset_tracks_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath}, err)
+			}
+			c.JSON(updateErr.status, gin.H{"error": updateErr.Error()})
+			return
+		}
 		appendSystemLog(h.db, "asset_tracks_override_save_failed", map[string]string{"path": path, "resolvedPath": resolvedPath}, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

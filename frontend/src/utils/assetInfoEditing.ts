@@ -81,7 +81,7 @@ export function assetTracksPatch(
   const after = normalizeAssetTracks(draft);
   const patch: Partial<AssetTracksOverrideState> = {};
   const selections = ['keepVideoStreams', 'keepAudioStreams', 'keepSubtitleStreams'] as const;
-  const metadata = ['videoMetadata', 'audioMetadata', 'subtitleMetadata', 'subtitleRoleOverrides', 'subtitleSidecarFormatsByStream'] as const;
+  const metadata = ['videoMetadata', 'audioMetadata', 'subtitleMetadata'] as const;
 
   selections.forEach((key) => {
     if (stableStringify(before[key]) === stableStringify(after[key])) return;
@@ -91,6 +91,12 @@ export function assetTracksPatch(
     if (stableStringify(before[key]) === stableStringify(after[key])) return;
     patch[key] = after[key] ?? {};
   });
+  if (stableStringify(before.subtitleRoleOverrides) !== stableStringify(after.subtitleRoleOverrides)) {
+    patch.subtitleRoleOverrides = after.subtitleRoleOverrides ?? {};
+  }
+  if (stableStringify(before.subtitleSidecarFormatsByStream) !== stableStringify(after.subtitleSidecarFormatsByStream)) {
+    patch.subtitleSidecarFormatsByStream = after.subtitleSidecarFormatsByStream ?? {};
+  }
   return patch;
 }
 
@@ -173,10 +179,13 @@ function normalizeAssetTracks(tracks: AssetTracksOverrideState): AssetTracksOver
         .sort((left, right) => left - right);
     }
   });
-  (['videoMetadata', 'audioMetadata', 'subtitleMetadata', 'subtitleRoleOverrides'] as const).forEach((key) => {
+  (['videoMetadata', 'audioMetadata', 'subtitleMetadata'] as const).forEach((key) => {
     const values = tracks[key];
     if (values && Object.keys(values).length) normalized[key] = values;
   });
+  if (tracks.subtitleRoleOverrides && Object.keys(tracks.subtitleRoleOverrides).length) {
+    normalized.subtitleRoleOverrides = tracks.subtitleRoleOverrides;
+  }
   if (tracks.subtitleSidecarFormatsByStream) {
     const sidecars = Object.fromEntries(Object.entries(tracks.subtitleSidecarFormatsByStream).flatMap(([index, formats]) => {
       const values = Array.from(new Set(formats)).sort();

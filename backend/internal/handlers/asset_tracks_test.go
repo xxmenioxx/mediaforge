@@ -8,9 +8,13 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func assetTracksPatchRequest(t *testing.T, router http.Handler, path, body string) *httptest.ResponseRecorder {
@@ -22,8 +26,17 @@ func assetTracksPatchRequest(t *testing.T, router http.Handler, path, body strin
 	return response
 }
 
-func TestAssetTracksPatchChangesOnlySuppliedTracksFields(t *testing.T) {
+func newAssetTracksTestServer(t *testing.T) (*gorm.DB, *gin.Engine, string) {
+	t.Helper()
 	db, router, root := newAssetEditTestServer(t)
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.AssetMaintenanceOperation{}); err != nil {
+		t.Fatal(err)
+	}
+	return db, router, root
+}
+
+func TestAssetTracksPatchChangesOnlySuppliedTracksFields(t *testing.T) {
+	db, router, root := newAssetTracksTestServer(t)
 	path := filepath.Join(root, "movie.mkv")
 	writeTestFile(t, path, "media")
 	cleanPath := filepath.Clean(path)
@@ -58,7 +71,7 @@ func TestAssetTracksPatchChangesOnlySuppliedTracksFields(t *testing.T) {
 }
 
 func TestAssetTracksPatchPersistsExplicitEmptySelection(t *testing.T) {
-	db, router, root := newAssetEditTestServer(t)
+	db, router, root := newAssetTracksTestServer(t)
 	path := filepath.Join(root, "movie.mkv")
 	writeTestFile(t, path, "media")
 	cleanPath := filepath.Clean(path)
@@ -91,7 +104,7 @@ func TestAssetTracksPatchPersistsExplicitEmptySelection(t *testing.T) {
 }
 
 func TestAssetTracksPatchPersistsVideoAndSubtitleSelectionsWithoutConversionChanges(t *testing.T) {
-	db, router, root := newAssetEditTestServer(t)
+	db, router, root := newAssetTracksTestServer(t)
 	path := filepath.Join(root, "movie.mkv")
 	writeTestFile(t, path, "media")
 	cleanPath := filepath.Clean(path)
@@ -117,7 +130,7 @@ func TestAssetTracksPatchPersistsVideoAndSubtitleSelectionsWithoutConversionChan
 }
 
 func TestAssetTracksPatchCanClearOnlyChangedRoleAndSidecarFields(t *testing.T) {
-	db, router, root := newAssetEditTestServer(t)
+	db, router, root := newAssetTracksTestServer(t)
 	path := filepath.Join(root, "movie.mkv")
 	writeTestFile(t, path, "media")
 	cleanPath := filepath.Clean(path)
@@ -147,7 +160,7 @@ func TestAssetTracksPatchCanClearOnlyChangedRoleAndSidecarFields(t *testing.T) {
 }
 
 func TestAssetTracksPatchRejectsUnrelatedConversionFieldsWithoutMutation(t *testing.T) {
-	db, router, root := newAssetEditTestServer(t)
+	db, router, root := newAssetTracksTestServer(t)
 	path := filepath.Join(root, "movie.mkv")
 	writeTestFile(t, path, "media")
 	cleanPath := filepath.Clean(path)
@@ -165,15 +178,128 @@ func TestAssetTracksPatchRejectsUnrelatedConversionFieldsWithoutMutation(t *test
 	}
 }
 
-func TestAssetTracksPatchLeavesQueuedSnapshotsUnchanged(t *testing.T) {
-	db, router, root := newAssetEditTestServer(t)
-	if err := db.AutoMigrate(&models.QueueJob{}); err != nil {
+func TestAssetTracksPatchRejectsActiveQueueFromDirectRequestDespiteStaleFrontendCapability(t *testing.T) {
+	db, router, root := newAssetTracksTestServer(t)
+	path := filepath.Join(root, "movie.mkv")
+	writeTestFile(t, path, "media")
+	cleanPath := filepath.Clean(path)
+	original := AssetConversionOverrideState{KeepAudioStreams: []int{2}, VideoCodec: "x265", QualityValue: 18}
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{cleanPath: original}); err != nil {
 		t.Fatal(err)
 	}
+	job := models.QueueJob{
+		MediaPath: path, Status: JobStatusQueued, Stage: JobStageQueued, TrackProfileKey: "spanish",
+		ProfileSnapshot:      models.JSONMap{"videoCodec": "x265"},
+		TrackProfileSnapshot: models.JSONMap{"resolvedTrackPlan": models.JSONMap{"keepAudioStreams": models.JSONList{1, 2}}},
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	var before models.QueueJob
+	if err := db.First(&before, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// This calls the API directly, without consulting the cached manageTracks
+	// capability that may have been allowed when the user opened Asset Info.
+	response := assetTracksPatchRequest(t, router, path, `{"keepAudioStreams":[1]}`)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "asset has an active Queue job and Tracks cannot be modified") {
+		t.Fatalf("tracks patch status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := assetConversionOverrides(db)[cleanPath]; !reflect.DeepEqual(got, original) {
+		t.Fatalf("active Queue job mutated conversion overrides: before=%#v after=%#v", original, got)
+	}
+	var after models.QueueJob
+	if err := db.First(&after, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after.ProfileSnapshot, before.ProfileSnapshot) || !reflect.DeepEqual(after.TrackProfileSnapshot, before.TrackProfileSnapshot) || after.TrackProfileKey != before.TrackProfileKey {
+		t.Fatalf("Queue snapshot changed after Tracks patch: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestAssetTracksPatchRejectsActiveMaintenanceWithoutMutation(t *testing.T) {
+	db, router, root := newAssetTracksTestServer(t)
+	path := filepath.Join(root, "movie.mkv")
+	writeTestFile(t, path, "media")
+	cleanPath := filepath.Clean(path)
+	original := AssetConversionOverrideState{
+		KeepAudioStreams: []int{2}, SubtitleMetadata: map[int]StreamMetadataOverride{3: {Title: "Commentary"}},
+		VideoCodec: "x265", QualityValue: 18,
+	}
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{cleanPath: original}); err != nil {
+		t.Fatal(err)
+	}
+	operation := models.AssetMaintenanceOperation{
+		ID: "active-tracks-patch-maintenance", OperationType: "remove_tracks", AssetPath: path,
+		Status: maintenanceStatusRunning, Phase: "rewriting",
+	}
+	if err := db.Create(&operation).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := assetTracksPatchRequest(t, router, path, `{"subtitleMetadata":{"3":{"title":"New title"}}}`)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "asset has an active maintenance operation and Tracks cannot be modified") {
+		t.Fatalf("tracks patch status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := assetConversionOverrides(db)[cleanPath]; !reflect.DeepEqual(got, original) {
+		t.Fatalf("active maintenance mutated conversion overrides: before=%#v after=%#v", original, got)
+	}
+}
+
+func TestAssetTracksPatchAllowsHistoricalQueueJob(t *testing.T) {
+	db, router, root := newAssetTracksTestServer(t)
+	path := filepath.Join(root, "movie.mkv")
+	writeTestFile(t, path, "media")
+	cleanPath := filepath.Clean(path)
+	original := AssetConversionOverrideState{KeepAudioStreams: []int{2}, VideoCodec: "x265", QualityValue: 18}
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{cleanPath: original}); err != nil {
+		t.Fatal(err)
+	}
+	publishedAt := time.Now()
+	job := models.QueueJob{
+		MediaPath: path, Status: JobStatusCompleted, Stage: JobStageReadyToPublish, PublishedAt: &publishedAt,
+		TrackProfileSnapshot: models.JSONMap{"keepAudioStreams": models.JSONList{2}},
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := assetTracksPatchRequest(t, router, path, `{"keepAudioStreams":[1]}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("historical Queue job blocked Tracks patch: status=%d body=%s", response.Code, response.Body.String())
+	}
+	got := assetConversionOverrides(db)[cleanPath]
+	if !reflect.DeepEqual(got.KeepAudioStreams, []int{1}) || got.VideoCodec != original.VideoCodec || got.QualityValue != original.QualityValue {
+		t.Fatalf("historical Queue save produced unexpected conversion state: %#v", got)
+	}
+}
+
+func TestAssetTracksPatchMalformedValuesReturnBadRequest(t *testing.T) {
+	db, router, root := newAssetTracksTestServer(t)
+	path := filepath.Join(root, "movie.mkv")
+	writeTestFile(t, path, "media")
+	cleanPath := filepath.Clean(path)
+	original := AssetConversionOverrideState{KeepAudioStreams: []int{2}, VideoCodec: "x265", QualityValue: 18}
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{cleanPath: original}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := assetTracksPatchRequest(t, router, path, `{"keepAudioStreams":"invalid"}`)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("malformed Tracks patch status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := assetConversionOverrides(db)[cleanPath]; !reflect.DeepEqual(got, original) {
+		t.Fatalf("malformed Tracks patch mutated conversion overrides: before=%#v after=%#v", original, got)
+	}
+}
+
+func TestAssetTracksPatchLeavesHistoricalQueueSnapshotsUnchanged(t *testing.T) {
+	db, router, root := newAssetTracksTestServer(t)
 	path := filepath.Join(root, "movie.mkv")
 	writeTestFile(t, path, "media")
 	job := models.QueueJob{
-		MediaPath: path, Status: "queued", Stage: "queued", TrackProfileKey: "spanish",
+		MediaPath: path, Status: JobStatusFailed, Stage: JobStageFailed, TrackProfileKey: "spanish",
 		ProfileSnapshot:      models.JSONMap{"videoCodec": "x265"},
 		TrackProfileSnapshot: models.JSONMap{"resolvedTrackPlan": models.JSONMap{"keepAudioStreams": models.JSONList{1, 2}}},
 	}
