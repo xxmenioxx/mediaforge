@@ -143,7 +143,18 @@ function setupPageData(reviewSidecar: Record<string, unknown>, unrelatedSidecar:
 }
 
 describe('Asset Info OCR review routing', () => {
-  it('shows editable exact-target review, saves an unchanged approval, returns, and retries Translation', async () => {
+  it.each([
+    {
+      decision: 'Accept as correct',
+      buttonName: 'Accept cue 12 as correct (unchanged)',
+      correction: { cueId: 12, action: 'approve' as const },
+    },
+    {
+      decision: 'Correct',
+      buttonName: 'Correct cue 12',
+      correction: { cueId: 12, action: 'edit' as const, text: 'The house' },
+    },
+  ])('saves $decision, returns to the same Translation context, and retries', async ({ buttonName, correction }) => {
     const user = userEvent.setup();
     const reviewSidecar = {
       path: reviewPath, fileName: 'Akira.eng.forced.srt', format: 'srt', language: 'eng', default: false, forced: true,
@@ -223,7 +234,7 @@ describe('Asset Info OCR review routing', () => {
 
     const reviewDialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
     expect(await within(reviewDialog).findByLabelText('Corrected text for cue 12')).toHaveProperty('value', 'The house');
-    await user.click(within(reviewDialog).getByRole('button', { name: 'Accept cue 12 as correct (unchanged)' }));
+    await user.click(within(reviewDialog).getByRole('button', { name: buttonName }));
     await user.click(within(reviewDialog).getByRole('button', { name: 'Preview selected decisions (1)' }));
     await user.click(within(reviewDialog).getByRole('button', { name: 'Confirm and save' }));
 
@@ -240,12 +251,92 @@ describe('Asset Info OCR review routing', () => {
       sidecarPath: reviewPath,
       reviewTarget,
       baselineRevision: 'review-sidecar-baseline',
-      corrections: [{ cueId: 12, action: 'approve' }],
+      corrections: [correction],
     })));
     expect(api.analyzeSubtitleOCR).not.toHaveBeenCalledWith(expect.objectContaining({ sidecarPath: unrelatedPath }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'OCR review for Translation' })).toBeNull());
     const returnedTranslation = await screen.findByRole('dialog', { name: 'Translate subtitle' });
     await user.click(within(returnedTranslation).getByRole('button', { name: 'Retry translation' }));
     await waitFor(() => expect(api.retrySubtitleTranslation).toHaveBeenCalledWith('translation-review-required'));
+  }, 15000);
+
+  it.each([
+    { discovery: 'missing a matching sidecar', mode: 'unmatched' as const },
+    { discovery: 'returning stale sidecar data', mode: 'stale' as const },
+    { discovery: 'unavailable', mode: 'unavailable' as const },
+  ])('exposes Review OCR from the Translation operation when discovery is $discovery', async ({ mode }) => {
+    const user = userEvent.setup();
+    setupPageData({}, {});
+
+    const discoveredSidecar = {
+      path: mode === 'stale' ? reviewPath : unrelatedPath,
+      fileName: mode === 'stale' ? 'Akira.eng.forced.srt' : 'Akira.eng.srt',
+      format: 'srt', language: 'eng', default: false, forced: mode === 'stale',
+      sizeBytes: 100, modifiedAt: '2026-08-28T00:00:00Z', ocrManaged: true,
+      ocrAnalysisAvailable: mode !== 'stale',
+      logicalTransformKey: mode === 'stale' ? 'stale-transform' : 'other-transform',
+    };
+    if (mode === 'unavailable') {
+      vi.mocked(api.externalAssetSubtitles).mockRejectedValue(new Error('external subtitle inventory unavailable'));
+    } else {
+      vi.mocked(api.externalAssetSubtitles).mockResolvedValue([discoveredSidecar] as never);
+    }
+    vi.mocked(api.subtitleEligibility).mockResolvedValue({
+      embedded: [{
+        streamIndex: 4, sourceIdentity: 'embedded:4', sourceRevision: 'source-revision', representation: 'bitmap',
+        role: 'full', roleProvenance: 'snapshot', policyVersion: 'test', regenerate: { eligible: true },
+      }],
+      external: [],
+      composition: { policyVersion: 'test', primaryCandidates: [], supplementalCandidates: [], eligible: false, maxSupplementals: 0, reason: 'test' },
+    } as never);
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue({
+      source: { type: 'embedded', embedded: { streamIndex: 4 } }, eligible: true, available: true,
+      sourceLanguages: ['eng'], targetLocales: ['es-419'], provider: { name: 'ollama', model: 'translate-test', modelSelectable: false },
+      outputRepresentations: ['srt'], context: { status: 'healthy' },
+    } as never);
+
+    const reviewTarget = {
+      state: 'exact',
+      identity: { streamIndex: 4, requestedLanguage: 'eng' },
+      logicalTransformKey: 'canonical-ocr-stream-4',
+      format: 'srt',
+      sidecarPaths: [reviewPath],
+      baselineRevision: 'operation-review-baseline',
+    };
+    const failedTranslation = {
+      id: 'translation-review-required', assetPath, status: 'error', phase: 'ocr_review', progress: 40,
+      processed: 0, total: 0, streamIndex: 4, format: 'srt', kind: 'translation',
+      message: 'OCR review is required before translation.',
+      translation: {
+        failureClass: 'ocr_review_required', diagnostic: 'OCR review is required before translation.', retryable: true,
+        cancellable: false, targetLocale: 'es-419', outputRepresentation: 'srt', ocrReviewTarget: reviewTarget,
+      },
+      createdAt: '2026-08-28T00:00:00Z', updatedAt: '2026-08-28T00:00:01Z',
+    };
+    vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: failedTranslation } as never);
+    vi.mocked(api.subtitleOperation).mockResolvedValue(failedTranslation as never);
+    vi.mocked(api.analyzeSubtitleOCR).mockRejectedValue(new Error('OCR analysis service unavailable'));
+
+    renderAssetsPage();
+    await user.click(await screen.findByRole('button', { name: 'Expand Akira' }));
+    const assetInfo = await openAssetInfo(user);
+    await user.click(within(assetInfo).getByRole('tab', { name: 'Tracks' }));
+    await user.click(await screen.findByRole('button', { name: 'Translate subtitle stream 4' }));
+    const translationDialog = await screen.findByRole('dialog', { name: 'Translate subtitle' });
+    await user.click(within(translationDialog).getByRole('button', { name: 'Start translation' }));
+    await waitFor(() => expect(api.startSubtitleTranslation).toHaveBeenCalled());
+    await user.click(await within(translationDialog).findByRole('button', { name: 'Review OCR' }));
+
+    const reviewDialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
+    expect(await within(reviewDialog).findByText('OCR analysis service unavailable')).toBeTruthy();
+    expect(api.externalAssetSubtitles).toHaveBeenCalled();
+    expect(api.subtitleEligibility).toHaveBeenCalled();
+    expect(api.analyzeSubtitleOCR).toHaveBeenCalledWith(expect.objectContaining({
+      mediaPath: assetPath,
+      sidecarPath: reviewPath,
+      sidecarPaths: [reviewPath],
+      reviewTarget,
+    }));
+    expect(screen.getByRole('dialog', { name: 'OCR review for Translation' })).toBeTruthy();
   }, 15000);
 });

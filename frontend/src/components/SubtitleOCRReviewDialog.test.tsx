@@ -67,6 +67,19 @@ describe('SubtitleOCRReviewDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { state: 'stale', target: { state: 'stale', message: 'The OCR review source revision is stale.' } },
+    { state: 'conflict', target: { state: 'conflict', message: 'Canonical OCR siblings conflict; review cannot choose one.' } },
+  ])('keeps a $state operation target visible without selecting another sidecar', async ({ target }) => {
+    const onClose = renderReview(target);
+    const dialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
+
+    expect(within(dialog).getByText(target.message!)).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Return to Translation' })).toBeTruthy();
+    expect(api.analyzeSubtitleOCR).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('shows a stale analysis error and keeps a return action available', async () => {
     const user = userEvent.setup();
     vi.mocked(api.analyzeSubtitleOCR).mockRejectedValue(new Error('stale OCR review target; refresh the source revision'));
@@ -77,6 +90,18 @@ describe('SubtitleOCRReviewDialog', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Return to Translation' }));
   });
 
+  it('keeps the exact review visible when the OCR analysis API fails', async () => {
+    const onClose = vi.fn();
+    vi.mocked(api.analyzeSubtitleOCR).mockRejectedValue(new Error('OCR analysis service unavailable'));
+    renderReview(exactTarget, onClose);
+    const dialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
+
+    expect(await within(dialog).findByText('OCR analysis service unavailable')).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Retry analysis' })).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Return to Translation' })).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('shows the no-findings state after exact analysis completes', async () => {
     vi.mocked(api.analyzeSubtitleOCR).mockResolvedValue({ operationId: 'ocr-review-operation', status: 'running', phase: 'analyzing', progress: 20 });
     vi.mocked(api.subtitleExtractionOperation).mockResolvedValue({
@@ -85,13 +110,56 @@ describe('SubtitleOCRReviewDialog', () => {
         artifactPath: '/media/movie.eng.srt', format: 'srt', logicalTransformKey: 'logical-review',
         revision: { artifactPath: '/media/movie.eng.srt', artifactIdentity: 'srt', sizeBytes: 10, modifiedAtUnixNano: '10', contentHash: 'hash', logicalTransform: 'logical-review' },
         revisionSet: [], baselineRevision: 'baseline-review', analyzerVersion: 'quality-v1', repairVersion: 'repair-v1',
-        cleanCount: 1, suspiciousCount: 0, reviewCount: 0, canCorrect: true,
-        findings: [{ cueId: 1, originalText: 'Hello', status: 'clean', baselineRevision: 'baseline-review', startSeconds: 1, endSeconds: 2 }],
+        cleanCount: 0, suspiciousCount: 0, reviewCount: 0, canCorrect: true,
+        findings: [],
       },
     });
     renderReview(exactTarget);
     const dialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
     expect(await within(dialog).findByText('No OCR findings require a decision for this revision.')).toBeTruthy();
+  });
+
+  it('saves a Correct decision and returns control to the Translation owner', async () => {
+    const user = userEvent.setup();
+    const onSaved = vi.fn();
+    vi.mocked(api.analyzeSubtitleOCR).mockResolvedValue({ operationId: 'ocr-review-operation', status: 'running', phase: 'analyzing', progress: 20 });
+    vi.mocked(api.subtitleExtractionOperation).mockImplementation(async (id) => id === 'ocr-review-operation' ? ({
+      ...operation('completed', 'completed'),
+      qualityReport: {
+        artifactPath: '/media/movie.eng.srt', format: 'srt', logicalTransformKey: 'logical-review',
+        revision: { artifactPath: '/media/movie.eng.srt', artifactIdentity: 'srt', sizeBytes: 10, modifiedAtUnixNano: '10', contentHash: 'hash', logicalTransform: 'logical-review' },
+        revisionSet: [], baselineRevision: 'baseline-review', analyzerVersion: 'quality-v1', repairVersion: 'repair-v1',
+        cleanCount: 0, suspiciousCount: 1, reviewCount: 0, canCorrect: true,
+        findings: [{ cueId: 1, originalText: 'The h0use', suggestion: 'The house', status: 'suspicious', baselineRevision: 'baseline-review', startSeconds: 1, endSeconds: 2 }],
+      },
+    } as never) : ({ ...operation('completed', 'completed'), kind: 'ocr_correction' } as never));
+    vi.mocked(api.correctSubtitleOCR).mockResolvedValue({ operationId: 'ocr-correction-operation', status: 'running', phase: 'preparing', progress: 1 } as never);
+
+    render(
+      <SubtitleOCRReviewDialog
+        open
+        mediaPath="/media/movie.mkv"
+        target={exactTarget}
+        onClose={() => undefined}
+        onSaved={onSaved}
+      />,
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
+    const correctedText = await within(dialog).findByLabelText('Corrected text for cue 1');
+    await user.clear(correctedText);
+    await user.type(correctedText, 'The corrected house');
+    await user.click(within(dialog).getByRole('button', { name: 'Correct cue 1' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Preview selected decisions (1)' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm and save' }));
+
+    await waitFor(() => expect(api.correctSubtitleOCR).toHaveBeenCalledWith(expect.objectContaining({
+      mediaPath: '/media/movie.mkv',
+      sidecarPath: '/media/movie.eng.srt',
+      reviewTarget: exactTarget,
+      corrections: [{ cueId: 1, action: 'edit', text: 'The corrected house' }],
+    })));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('dialog', { name: 'OCR review for Translation' })).toBeTruthy();
   });
 
   it('keeps cancellation visible and offers retry and return actions', async () => {
