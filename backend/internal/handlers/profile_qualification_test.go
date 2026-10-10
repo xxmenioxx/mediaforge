@@ -10,7 +10,6 @@ import (
 )
 
 func profileQualificationFixture(t *testing.T, includeHardScenes bool, vmaf float64) (ProfileQualificationCandidate, PerceptualEvidenceSet) {
-	t.Helper()
 	profile := models.Profile{
 		ID: 8, ProfileVersion: 3, TemplateKey: "hevc-balanced", TemplateVersion: 2,
 		VideoCodec: "hevc", CodecFamily: "hevc", EncoderPolicy: "preferred",
@@ -18,9 +17,35 @@ func profileQualificationFixture(t *testing.T, includeHardScenes bool, vmaf floa
 		QualityMode: "crf", QualityValue: 24, OptimizationIntent: "balanced",
 		WorkerConfig: models.JSONMap{"gopSize": 48, "preserveGrain": true},
 	}
-	fingerprint, err := resolvedProfileFingerprint(profile)
+	return profileQualificationFixtureForProfile(t, profile, "", "libx265", includeHardScenes, vmaf)
+}
+
+func profileQualificationFixtureForProfile(t *testing.T, profile models.Profile, definitionFingerprint, effectiveEncoder string, includeHardScenes bool, vmaf float64) (ProfileQualificationCandidate, PerceptualEvidenceSet) {
+	t.Helper()
+	if definitionFingerprint == "" {
+		var err error
+		definitionFingerprint, err = resolvedProfileFingerprint(profile)
+		if err != nil {
+			t.Fatalf("fingerprint profile: %v", err)
+		}
+	}
+	effectiveFingerprint, err := effectiveProfileFingerprint(profile, effectiveEncoder)
 	if err != nil {
-		t.Fatalf("fingerprint profile: %v", err)
+		t.Fatalf("fingerprint effective profile: %v", err)
+	}
+	effectiveConfiguration := models.JSONMap{
+		"profileIdentityContractVersion": profileIdentityContractVersion,
+		"profileDefinitionFingerprint":   definitionFingerprint,
+		"effectiveProfileFingerprint":    effectiveFingerprint,
+		"effectiveEncoder":               effectiveEncoder,
+		"override":                       models.JSONMap{},
+		"streamPlan":                     models.JSONMap{},
+		"subtitleStylePolicyVersion":     "subtitle-style-fixture-v1",
+		"processingMode":                 ProcessingModeFullEncode,
+	}
+	configurationIdentity, err := testEncodeConfigurationFingerprint(effectiveConfiguration)
+	if err != nil {
+		t.Fatalf("fingerprint Test Encode configuration: %v", err)
 	}
 	plan := SamplingPlan{
 		SchemaVersion: samplingPlanSchemaVersion, PolicyVersion: samplingPlanPolicyVersion,
@@ -41,7 +66,7 @@ func profileQualificationFixture(t *testing.T, includeHardScenes bool, vmaf floa
 	const testEncodeID = uint(17)
 	candidateIdentity, err := ComputeCandidateIdentity(CandidateIdentity{
 		Kind: "test_encode", ArtifactID: "test-encode:17", GenerationToken: "test-encode:17", GenerationVersion: 1,
-		OutputRevision: "candidate-output-v1", ConfigurationIdentity: "test-config-v1",
+		OutputRevision: "candidate-output-v1", ConfigurationIdentity: configurationIdentity,
 		SourceRevision: sourceFingerprint, StreamIdentity: "0:v:0", SegmentStartSeconds: 0,
 		SegmentDurationSeconds: 90, TimelineIdentity: "candidate-timeline-v1",
 	})
@@ -111,10 +136,38 @@ func profileQualificationFixture(t *testing.T, includeHardScenes bool, vmaf floa
 		SourceAssetID: 32, SourcePath: "/raw/qualification-fixture.mkv",
 		SourceRevision:    `{"Size":1000,"ModifiedAtNS":123,"Mode":420}`,
 		SourceFingerprint: sourceFingerprint, Profile: profile,
-		ResolvedProfileFingerprint: fingerprint, TestEncodeID: testEncodeID,
-		ConfigurationIdentity: "test-config-v1", Plan: plan,
+		ResolvedProfileFingerprint: definitionFingerprint, EffectiveProfileFingerprint: effectiveFingerprint,
+		EffectiveEncoder: effectiveEncoder, TestEncodeID: testEncodeID,
+		ConfigurationIdentity: configurationIdentity, Plan: plan,
 	}
 	return candidate, evidence
+}
+
+func profileQualificationTestEncode(candidate ProfileQualificationCandidate, evidence PerceptualEvidenceSet) models.TestEncode {
+	effective := models.JSONMap{
+		"profileIdentityContractVersion": profileIdentityContractVersion,
+		"profileDefinitionFingerprint":   candidate.ResolvedProfileFingerprint,
+		"effectiveProfileFingerprint":    candidate.EffectiveProfileFingerprint,
+		"effectiveEncoder":               candidate.EffectiveEncoder,
+		"override":                       models.JSONMap{}, "streamPlan": models.JSONMap{},
+		"subtitleStylePolicyVersion": "subtitle-style-fixture-v1", "processingMode": ProcessingModeFullEncode,
+		"configurationHash": candidate.ConfigurationIdentity, "profile": candidate.Profile,
+	}
+	return models.TestEncode{
+		ID: candidate.TestEncodeID, SourceAssetID: candidate.SourceAssetID, SourcePath: candidate.SourcePath,
+		SourceFingerprint: candidate.SourceFingerprint, SourceRevision: candidate.SourceRevision,
+		ResolvedProfileFingerprint:  candidate.ResolvedProfileFingerprint,
+		EffectiveProfileFingerprint: candidate.EffectiveProfileFingerprint,
+		EffectiveEncoder:            candidate.EffectiveEncoder, ConfigurationHash: candidate.ConfigurationIdentity,
+		ProfileID: candidate.Profile.ID, ProfileVersion: candidate.Profile.ProfileVersion, Status: testEncodeReady,
+		RequestedConfiguration: models.JSONMap{
+			"samplingPlan": candidate.Plan, "samplingPlanIdentity": candidate.Plan.PlanIdentity,
+			"profileIdentityContractVersion": profileIdentityContractVersion,
+			"profileDefinitionFingerprint":   candidate.ResolvedProfileFingerprint,
+		},
+		EffectiveConfiguration: effective,
+		ValidationReport:       models.JSONMap{"perceptualEvidence": evidence},
+	}
 }
 
 func addQualificationArtifact(evidence PerceptualEvidenceSet, kind, referenceSeverity, candidateSeverity, status string) PerceptualEvidenceSet {
@@ -187,6 +240,51 @@ func TestResolvedProfileFingerprintIncludesConfigurationAndVersion(t *testing.T)
 	if baseFingerprint != idFingerprint {
 		t.Fatal("database ID alone changed the content fingerprint")
 	}
+	for index, scope := range []string{"path", "source_group", "logical_group", "asset"} {
+		assigned := base
+		assigned.ID = uint(99 + index)
+		assigned.Name = "Same definition through another assignment"
+		assigned.Scope = scope
+		assigned.WorkerConfig = cloneWorkerConfig(base.WorkerConfig)
+		assigned.WorkerConfig["qsvAssetAnalysisPath"] = "/raw/another-asset.mkv"
+		assignedFingerprint, err := resolvedProfileFingerprint(assigned)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if baseFingerprint != assignedFingerprint {
+			t.Fatalf("assignment scope %q or per-asset analysis path changed the reusable definition identity", scope)
+		}
+	}
+}
+
+func TestProfileDefinitionIdentitySurvivesQueueFreezeWithoutUpgradingLegacy(t *testing.T) {
+	profile := models.Profile{ID: 17, Name: "Reusable", ProfileVersion: 3, VideoCodec: "hevc", QualityValue: 24}
+	definitionFingerprint, err := resolvedProfileFingerprint(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{ProfileSnapshot: models.JSONMap{
+		profileIdentitySnapshotKey: profileIdentityMetadata{
+			ContractVersion: profileIdentityContractVersion, DefinitionFingerprint: definitionFingerprint,
+		},
+	}}
+	resolved := profile
+	resolved.WorkerConfig = models.JSONMap{"qsvAssetAnalysisPath": "/raw/concierto.mkv", "hevcLevelEffective": "5.1"}
+	if err := freezeQueuePreparedProfileSnapshot(nil, &job, resolved); err != nil {
+		t.Fatal(err)
+	}
+	identity, ok := profileIdentityFromSnapshot(job.ProfileSnapshot)
+	if !ok || identity.DefinitionFingerprint != definitionFingerprint {
+		t.Fatalf("queue freeze lost the captured definition identity: %#v", job.ProfileSnapshot[profileIdentitySnapshotKey])
+	}
+
+	legacy := models.QueueJob{ProfileSnapshot: models.JSONMap{}}
+	if err := freezeQueuePreparedProfileSnapshot(nil, &legacy, resolved); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := profileIdentityFromSnapshot(legacy.ProfileSnapshot); ok {
+		t.Fatalf("queue freeze synthesized a reusable identity for a legacy snapshot: %#v", legacy.ProfileSnapshot[profileIdentitySnapshotKey])
+	}
 }
 
 func TestEvaluateProfileQualificationPassAndCurrentIdentity(t *testing.T) {
@@ -199,18 +297,35 @@ func TestEvaluateProfileQualificationPassAndCurrentIdentity(t *testing.T) {
 	if assessment.WorstWindowIdentity != "" {
 		t.Fatalf("passing evidence selected unexpected worst window %q", assessment.WorstWindowIdentity)
 	}
+	missingAsset := candidate
+	missingAsset.SourceAssetID = 0
+	if outcome := EvaluateProfileQualification(missingAsset, evidence).Outcome; outcome != models.QualityOutcomeReviewRequired {
+		t.Fatalf("missing AssetRecord identity produced %s", outcome)
+	}
+	missingTestEncode := candidate
+	missingTestEncode.TestEncodeID = 0
+	if outcome := EvaluateProfileQualification(missingTestEncode, evidence).Outcome; outcome != models.QualityOutcomeReviewRequired {
+		t.Fatalf("missing Test Encode generation identity produced %s", outcome)
+	}
 	record := models.ProfileQualification{
 		ID: assessment.ID, TestEncodeID: candidate.TestEncodeID, SourceAssetID: candidate.SourceAssetID,
 		SourcePath: candidate.SourcePath, SourceRevision: candidate.SourceRevision, SourceFingerprint: candidate.SourceFingerprint,
 		ProfileID: candidate.Profile.ID, ProfileVersion: candidate.Profile.ProfileVersion,
-		ResolvedProfileFingerprint: candidate.ResolvedProfileFingerprint,
-		CandidateIdentity:          assessment.CandidateIdentity, CandidateRevision: assessment.CandidateRevision,
+		ResolvedProfileFingerprint:  candidate.ResolvedProfileFingerprint,
+		EffectiveProfileFingerprint: candidate.EffectiveProfileFingerprint,
+		ConfigurationHash:           candidate.ConfigurationIdentity,
+		CandidateIdentity:           assessment.CandidateIdentity, CandidateRevision: assessment.CandidateRevision,
 		SamplingPlanSchemaVersion: candidate.Plan.SchemaVersion, SamplingPlanPolicyVersion: candidate.Plan.PolicyVersion,
 		SamplingPlanIdentity: candidate.Plan.PlanIdentity, PerceptualEvidenceIdentity: evidence.Identity,
 		ReferenceIdentity: assessment.ReferenceIdentity, QualityPolicyVersion: profileQualificationPolicyVersion,
 	}
 	if current, reason := ProfileQualificationIsCurrent(record, candidate, evidence); !current {
 		t.Fatalf("identical qualification was stale: %s", reason)
+	}
+	changedTestEncode := candidate
+	changedTestEncode.TestEncodeID++
+	if current, _ := ProfileQualificationIsCurrent(record, changedTestEncode, evidence); current {
+		t.Fatal("another Test Encode generation retained qualification")
 	}
 	changedProfile := candidate
 	changedProfile.Profile.QualityValue++
@@ -367,16 +482,7 @@ func TestProfileQualificationPersistenceIsIdempotentAndUsesFrozenEvidence(t *tes
 	candidate, evidence := profileQualificationFixture(t, true, 95)
 	evidence = addQualificationArtifactDefaults(evidence, "medium")
 	db := testEncodeTestDB(t, "profile-qualification-persistence", &models.ProfileQualification{})
-	testEncode := models.TestEncode{
-		ID: candidate.TestEncodeID, SourceAssetID: candidate.SourceAssetID, SourcePath: candidate.SourcePath,
-		SourceFingerprint: candidate.SourceFingerprint, SourceRevision: candidate.SourceRevision,
-		ResolvedProfileFingerprint: candidate.ResolvedProfileFingerprint,
-		ConfigurationHash:          candidate.ConfigurationIdentity, ProfileID: candidate.Profile.ID,
-		ProfileVersion: candidate.Profile.ProfileVersion, Status: testEncodeReady,
-		RequestedConfiguration: models.JSONMap{"samplingPlan": candidate.Plan, "samplingPlanIdentity": candidate.Plan.PlanIdentity},
-		EffectiveConfiguration: models.JSONMap{"profile": candidate.Profile},
-		ValidationReport:       models.JSONMap{"perceptualEvidence": evidence},
-	}
+	testEncode := profileQualificationTestEncode(candidate, evidence)
 	if err := db.Create(&testEncode).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -408,5 +514,17 @@ func TestProfileQualificationPersistenceIsIdempotentAndUsesFrozenEvidence(t *tes
 	}
 	if historical.ProfileQualification != nil {
 		t.Fatalf("historical evidence was synthesized into a qualification: %#v", historical.ProfileQualification)
+	}
+}
+
+func TestLegacyTestEncodeQualificationReportsMissingIdentityStage(t *testing.T) {
+	candidate, evidence := profileQualificationFixture(t, true, 95)
+	test := profileQualificationTestEncode(candidate, evidence)
+	test.ResolvedProfileFingerprint = "legacy-unversioned-fingerprint"
+	test.EffectiveProfileFingerprint = ""
+	test.ConfigurationHash = "legacy-configuration-hash"
+	stale, reason := profileQualificationStaleness(test, models.ProfileQualification{})
+	if !stale || !strings.Contains(reason, "unsupported profile-definition fingerprint version") {
+		t.Fatalf("legacy Test Encode did not report its stale identity stage: stale=%t reason=%q", stale, reason)
 	}
 }

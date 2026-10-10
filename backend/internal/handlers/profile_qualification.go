@@ -13,23 +13,25 @@ import (
 )
 
 const (
-	profileQualificationPolicyVersion      = "profile-qualification-policy-v1"
-	profileQualificationFingerprintVersion = "resolved-profile-v1"
-	profileQualificationDefaultsSource     = "mvforge_policy_defaults"
-	profileQualificationScope              = "asset_profile_candidate_evidence"
-	profileQualificationMaximumWarnings    = 4
+	profileQualificationPolicyVersion   = "profile-qualification-policy-v1"
+	profileQualificationDefaultsSource  = "mvforge_policy_defaults"
+	profileQualificationScope           = "asset_profile_candidate_evidence"
+	profileQualificationMaximumWarnings = 4
 )
 
 type ProfileQualificationCandidate struct {
-	SourceAssetID              uint
-	SourcePath                 string
-	SourceRevision             string
-	SourceFingerprint          string
-	Profile                    models.Profile
-	ResolvedProfileFingerprint string
-	TestEncodeID               uint
-	ConfigurationIdentity      string
-	Plan                       SamplingPlan
+	SourceAssetID               uint
+	SourcePath                  string
+	SourceRevision              string
+	SourceFingerprint           string
+	Profile                     models.Profile
+	ResolvedProfileFingerprint  string
+	EffectiveProfileFingerprint string
+	IdentityError               string
+	TestEncodeID                uint
+	ConfigurationIdentity       string
+	EffectiveEncoder            string
+	Plan                        SamplingPlan
 }
 
 type ProfileQualificationRuleResult struct {
@@ -46,33 +48,35 @@ type ProfileQualificationRuleResult struct {
 }
 
 type ProfileQualificationAssessment struct {
-	ID                         string                           `json:"id"`
-	Outcome                    string                           `json:"outcome"`
-	PolicyVersion              string                           `json:"policyVersion"`
-	PolicySource               string                           `json:"policySource"`
-	OptimizationIntent         string                           `json:"optimizationIntent"`
-	SourceAssetID              uint                             `json:"sourceAssetId"`
-	SourcePath                 string                           `json:"sourcePath"`
-	SourceRevision             string                           `json:"sourceRevision"`
-	SourceFingerprint          string                           `json:"sourceFingerprint"`
-	ProfileID                  uint                             `json:"profileId"`
-	ProfileVersion             int                              `json:"profileVersion"`
-	ResolvedProfileFingerprint string                           `json:"resolvedProfileFingerprint"`
-	TestEncodeID               uint                             `json:"testEncodeId"`
-	CandidateIdentity          string                           `json:"candidateIdentity"`
-	CandidateRevision          string                           `json:"candidateRevision"`
-	SamplingPlanSchemaVersion  string                           `json:"samplingPlanSchemaVersion"`
-	SamplingPlanPolicyVersion  string                           `json:"samplingPlanPolicyVersion"`
-	SamplingPlanIdentity       string                           `json:"samplingPlanIdentity"`
-	PerceptualEvidenceIdentity string                           `json:"perceptualEvidenceIdentity"`
-	ReferenceIdentity          string                           `json:"referenceIdentity"`
-	Rules                      []ProfileQualificationRuleResult `json:"rules"`
-	Warnings                   []string                         `json:"warnings"`
-	QualifiedScope             string                           `json:"qualifiedScope"`
-	EvidenceProvenance         models.JSONMap                   `json:"evidenceProvenance"`
-	WorstWindowIdentity        string                           `json:"worstWindowIdentity,omitempty"`
-	WorstSceneCategory         string                           `json:"worstSceneCategory,omitempty"`
-	WorstRuleKeys              []string                         `json:"worstRuleKeys,omitempty"`
+	ID                          string                           `json:"id"`
+	Outcome                     string                           `json:"outcome"`
+	PolicyVersion               string                           `json:"policyVersion"`
+	PolicySource                string                           `json:"policySource"`
+	OptimizationIntent          string                           `json:"optimizationIntent"`
+	SourceAssetID               uint                             `json:"sourceAssetId"`
+	SourcePath                  string                           `json:"sourcePath"`
+	SourceRevision              string                           `json:"sourceRevision"`
+	SourceFingerprint           string                           `json:"sourceFingerprint"`
+	ProfileID                   uint                             `json:"profileId"`
+	ProfileVersion              int                              `json:"profileVersion"`
+	ResolvedProfileFingerprint  string                           `json:"resolvedProfileFingerprint"`
+	EffectiveProfileFingerprint string                           `json:"effectiveProfileFingerprint"`
+	ConfigurationHash           string                           `json:"configurationHash"`
+	TestEncodeID                uint                             `json:"testEncodeId"`
+	CandidateIdentity           string                           `json:"candidateIdentity"`
+	CandidateRevision           string                           `json:"candidateRevision"`
+	SamplingPlanSchemaVersion   string                           `json:"samplingPlanSchemaVersion"`
+	SamplingPlanPolicyVersion   string                           `json:"samplingPlanPolicyVersion"`
+	SamplingPlanIdentity        string                           `json:"samplingPlanIdentity"`
+	PerceptualEvidenceIdentity  string                           `json:"perceptualEvidenceIdentity"`
+	ReferenceIdentity           string                           `json:"referenceIdentity"`
+	Rules                       []ProfileQualificationRuleResult `json:"rules"`
+	Warnings                    []string                         `json:"warnings"`
+	QualifiedScope              string                           `json:"qualifiedScope"`
+	EvidenceProvenance          models.JSONMap                   `json:"evidenceProvenance"`
+	WorstWindowIdentity         string                           `json:"worstWindowIdentity,omitempty"`
+	WorstSceneCategory          string                           `json:"worstSceneCategory,omitempty"`
+	WorstRuleKeys               []string                         `json:"worstRuleKeys,omitempty"`
 }
 
 type qualificationIntentDefaults struct {
@@ -104,31 +108,6 @@ var profileQualificationArtifactPolicy = []qualificationArtifactPolicy{
 	{kind: "chroma_degradation", maximumIncrease: 0, regressionOutcome: models.QualityOutcomeReviewRequired},
 }
 
-// resolvedProfileFingerprint identifies the complete resolved configuration,
-// including the versioned profile contents. The database ID is deliberately
-// excluded from the digest and stored separately.
-func resolvedProfileFingerprint(profile models.Profile) (string, error) {
-	identity := struct {
-		FingerprintVersion string                   `json:"fingerprintVersion"`
-		ProfileVersion     int                      `json:"profileVersion"`
-		TemplateKey        string                   `json:"templateKey"`
-		TemplateVersion    int                      `json:"templateVersion"`
-		Definition         models.ProfileDefinition `json:"definition"`
-	}{
-		FingerprintVersion: profileQualificationFingerprintVersion,
-		ProfileVersion:     profile.ProfileVersion,
-		TemplateKey:        profile.TemplateKey,
-		TemplateVersion:    profile.TemplateVersion,
-		Definition:         profile.Definition(),
-	}
-	encoded, err := json.Marshal(identity)
-	if err != nil {
-		return "", fmt.Errorf("encode resolved profile identity: %w", err)
-	}
-	digest := sha256.Sum256(encoded)
-	return profileQualificationFingerprintVersion + ":" + hex.EncodeToString(digest[:]), nil
-}
-
 // EvaluateProfileQualification is the pure per-candidate policy boundary.
 // It consumes only a resolved profile, one frozen SamplingPlan, and persisted
 // #69 evidence; it never performs media or database work.
@@ -141,15 +120,17 @@ func EvaluateProfileQualification(candidate ProfileQualificationCandidate, evide
 		SourceAssetID:      candidate.SourceAssetID, SourcePath: candidate.SourcePath,
 		SourceRevision: candidate.SourceRevision, SourceFingerprint: candidate.SourceFingerprint,
 		ProfileID: candidate.Profile.ID, ProfileVersion: candidate.Profile.ProfileVersion,
-		ResolvedProfileFingerprint: candidate.ResolvedProfileFingerprint,
-		TestEncodeID:               candidate.TestEncodeID,
-		SamplingPlanSchemaVersion:  candidate.Plan.SchemaVersion,
-		SamplingPlanPolicyVersion:  candidate.Plan.PolicyVersion,
-		SamplingPlanIdentity:       candidate.Plan.PlanIdentity,
-		PerceptualEvidenceIdentity: evidence.Identity,
-		QualifiedScope:             profileQualificationScope,
-		Rules:                      make([]ProfileQualificationRuleResult, 0, len(candidate.Plan.SelectedWindows)*3+len(profileQualificationArtifactPolicy)+4),
-		Warnings:                   []string{},
+		ResolvedProfileFingerprint:  candidate.ResolvedProfileFingerprint,
+		EffectiveProfileFingerprint: candidate.EffectiveProfileFingerprint,
+		ConfigurationHash:           candidate.ConfigurationIdentity,
+		TestEncodeID:                candidate.TestEncodeID,
+		SamplingPlanSchemaVersion:   candidate.Plan.SchemaVersion,
+		SamplingPlanPolicyVersion:   candidate.Plan.PolicyVersion,
+		SamplingPlanIdentity:        candidate.Plan.PlanIdentity,
+		PerceptualEvidenceIdentity:  evidence.Identity,
+		QualifiedScope:              profileQualificationScope,
+		Rules:                       make([]ProfileQualificationRuleResult, 0, len(candidate.Plan.SelectedWindows)*3+len(profileQualificationArtifactPolicy)+4),
+		Warnings:                    []string{},
 	}
 
 	canonicalEvidence, evidenceErr := ComputePerceptualEvidenceSetIdentity(evidence)
@@ -157,6 +138,7 @@ func EvaluateProfileQualification(candidate ProfileQualificationCandidate, evide
 		assessment.PerceptualEvidenceIdentity = canonicalEvidence.Identity
 	}
 	assessment.EvidenceProvenance = profileQualificationProvenance(candidate, evidence)
+	assessment.CandidateIdentity, assessment.CandidateRevision, assessment.ReferenceIdentity = qualificationEvidenceIdentities(evidence)
 	valid, reason := profileQualificationEvidenceMatches(candidate, evidence, canonicalEvidence, evidenceErr)
 	if !valid {
 		assessment.Rules = append(assessment.Rules, qualificationRule(
@@ -169,10 +151,9 @@ func EvaluateProfileQualification(candidate ProfileQualificationCandidate, evide
 		return assessment
 	}
 
-	assessment.CandidateIdentity, assessment.CandidateRevision, assessment.ReferenceIdentity = qualificationEvidenceIdentities(evidence)
 	assessment.Rules = append(assessment.Rules, qualificationRule(
 		"identity.evidence_current", models.QualityOutcomePass, "blocking", evidence.Identity, nil, nil, "", "",
-		"Source, resolved profile, candidate, frozen SamplingPlan, reference, and #69 evidence identities match.", assessment.EvidenceProvenance,
+		"Source, reusable profile, frozen effective profile, candidate, SamplingPlan, reference, and #69 evidence identities match.", assessment.EvidenceProvenance,
 	))
 
 	defaults, intentOK := profileQualificationIntentDefaults[assessment.OptimizationIntent]
@@ -308,15 +289,39 @@ func EvaluateProfileQualification(candidate ProfileQualificationCandidate, evide
 }
 
 func profileQualificationEvidenceMatches(candidate ProfileQualificationCandidate, evidence, canonical PerceptualEvidenceSet, evidenceErr error) (bool, string) {
+	if candidate.IdentityError != "" {
+		return false, candidate.IdentityError
+	}
 	if evidenceErr != nil || evidence.Identity == "" || canonical.Identity != evidence.Identity {
 		return false, "the perceptual evidence identity is missing or does not match its canonical contents"
+	}
+	if candidate.SourceAssetID == 0 || candidate.TestEncodeID == 0 {
+		return false, "the exact AssetRecord or Test Encode generation identity is missing"
 	}
 	if candidate.SourcePath == "" || candidate.SourceRevision == "" || candidate.SourceFingerprint == "" || evidence.SourceRevision != candidate.SourceFingerprint {
 		return false, "the source path, physical revision, or source fingerprint does not match"
 	}
-	fingerprint, err := resolvedProfileFingerprint(candidate.Profile)
-	if err != nil || candidate.ResolvedProfileFingerprint == "" || fingerprint != candidate.ResolvedProfileFingerprint {
-		return false, "the resolved profile fingerprint is missing or does not match the complete profile snapshot"
+	if candidate.ResolvedProfileFingerprint == "" {
+		return false, "the reusable profile-definition identity is missing from the requested profile snapshot"
+	}
+	if !strings.HasPrefix(candidate.ResolvedProfileFingerprint, profileQualificationFingerprintVersion+":") {
+		return false, "the reusable profile-definition identity uses a legacy or unsupported fingerprint version"
+	}
+	if candidate.EffectiveProfileFingerprint == "" {
+		return false, "the frozen effective-profile identity is missing from the post-plan Test Encode snapshot"
+	}
+	if !strings.HasPrefix(candidate.EffectiveProfileFingerprint, effectiveProfileFingerprintVersion+":") {
+		return false, "the frozen effective-profile identity uses a legacy or unsupported fingerprint version"
+	}
+	effectiveFingerprint, err := effectiveProfileFingerprint(candidate.Profile, candidate.EffectiveEncoder)
+	if err != nil {
+		return false, fmt.Sprintf("the frozen effective-profile identity cannot be recomputed from effectiveConfiguration.profile: %v", err)
+	}
+	if effectiveFingerprint != candidate.EffectiveProfileFingerprint {
+		return false, fmt.Sprintf("the frozen effective-profile identity does not match effectiveConfiguration.profile after planning (persisted %s, recomputed %s)", candidate.EffectiveProfileFingerprint, effectiveFingerprint)
+	}
+	if candidate.ConfigurationIdentity == "" || !strings.HasPrefix(candidate.ConfigurationIdentity, testEncodeConfigurationFingerprintVersion+":") {
+		return false, "the candidate ConfigurationHash lacks the versioned frozen Test Encode configuration identity"
 	}
 	if candidate.Profile.ProfileVersion < 1 || candidate.Plan.PlanIdentity == "" || candidate.Plan.SchemaVersion == "" || candidate.Plan.PolicyVersion == "" || len(candidate.Plan.SelectedWindows) == 0 {
 		return false, "the resolved profile version or frozen SamplingPlan identity/version/windows are incomplete"
@@ -417,12 +422,29 @@ func ProfileQualificationIsCurrent(record models.ProfileQualification, candidate
 	if record.QualityPolicyVersion != profileQualificationPolicyVersion {
 		return false, "qualification policy version changed"
 	}
+	if record.TestEncodeID != candidate.TestEncodeID {
+		return false, "Test Encode candidate identity changed"
+	}
 	if record.SourceAssetID != candidate.SourceAssetID || record.SourcePath != candidate.SourcePath || record.SourceRevision != candidate.SourceRevision || record.SourceFingerprint != candidate.SourceFingerprint {
 		return false, "source identity changed"
 	}
-	fingerprint, err := resolvedProfileFingerprint(candidate.Profile)
-	if err != nil || fingerprint != record.ResolvedProfileFingerprint || candidate.ResolvedProfileFingerprint != record.ResolvedProfileFingerprint {
-		return false, "resolved profile fingerprint changed"
+	if candidate.ResolvedProfileFingerprint != record.ResolvedProfileFingerprint {
+		return false, "reusable profile-definition identity changed"
+	}
+	if candidate.IdentityError != "" {
+		return false, candidate.IdentityError
+	}
+	effectiveFingerprint, err := effectiveProfileFingerprint(candidate.Profile, candidate.EffectiveEncoder)
+	if err != nil || effectiveFingerprint != candidate.EffectiveProfileFingerprint || candidate.EffectiveProfileFingerprint != record.EffectiveProfileFingerprint {
+		return false, "frozen effective-profile identity changed"
+	}
+	if candidate.ConfigurationIdentity != record.ConfigurationHash {
+		return false, "Test Encode ConfigurationHash changed"
+	}
+	canonicalEvidence, evidenceErr := ComputePerceptualEvidenceSetIdentity(evidence)
+	valid, reason := profileQualificationEvidenceMatches(candidate, evidence, canonicalEvidence, evidenceErr)
+	if !valid {
+		return false, reason
 	}
 	if record.ProfileID != candidate.Profile.ID || record.ProfileVersion != candidate.Profile.ProfileVersion {
 		return false, "resolved profile version changed"
@@ -602,19 +624,22 @@ func selectQualificationWorstWindow(assessment *ProfileQualificationAssessment, 
 
 func profileQualificationID(candidate ProfileQualificationCandidate, assessment ProfileQualificationAssessment) string {
 	value := struct {
-		SourceAssetID      uint   `json:"sourceAssetId"`
-		SourcePath         string `json:"sourcePath"`
-		SourceRevision     string `json:"sourceRevision"`
-		SourceFingerprint  string `json:"sourceFingerprint"`
-		ProfileFingerprint string `json:"profileFingerprint"`
-		CandidateIdentity  string `json:"candidateIdentity"`
-		CandidateRevision  string `json:"candidateRevision"`
-		PlanIdentity       string `json:"planIdentity"`
-		EvidenceIdentity   string `json:"evidenceIdentity"`
-		ReferenceIdentity  string `json:"referenceIdentity"`
-		PolicyVersion      string `json:"policyVersion"`
+		SourceAssetID               uint   `json:"sourceAssetId"`
+		SourcePath                  string `json:"sourcePath"`
+		SourceRevision              string `json:"sourceRevision"`
+		SourceFingerprint           string `json:"sourceFingerprint"`
+		ProfileFingerprint          string `json:"profileFingerprint"`
+		EffectiveProfileFingerprint string `json:"effectiveProfileFingerprint"`
+		ConfigurationHash           string `json:"configurationHash"`
+		CandidateIdentity           string `json:"candidateIdentity"`
+		CandidateRevision           string `json:"candidateRevision"`
+		PlanIdentity                string `json:"planIdentity"`
+		EvidenceIdentity            string `json:"evidenceIdentity"`
+		ReferenceIdentity           string `json:"referenceIdentity"`
+		PolicyVersion               string `json:"policyVersion"`
 	}{candidate.SourceAssetID, candidate.SourcePath, candidate.SourceRevision, candidate.SourceFingerprint,
-		candidate.ResolvedProfileFingerprint, assessment.CandidateIdentity, assessment.CandidateRevision,
+		candidate.ResolvedProfileFingerprint, candidate.EffectiveProfileFingerprint, candidate.ConfigurationIdentity,
+		assessment.CandidateIdentity, assessment.CandidateRevision,
 		candidate.Plan.PlanIdentity, assessment.PerceptualEvidenceIdentity, assessment.ReferenceIdentity, profileQualificationPolicyVersion}
 	encoded, _ := json.Marshal(value)
 	digest := sha256.Sum256(encoded)
@@ -623,19 +648,21 @@ func profileQualificationID(candidate ProfileQualificationCandidate, assessment 
 
 func profileQualificationProvenance(candidate ProfileQualificationCandidate, evidence PerceptualEvidenceSet) models.JSONMap {
 	return models.JSONMap{
-		"policySource":               profileQualificationDefaultsSource,
-		"qualityPolicyVersion":       profileQualificationPolicyVersion,
-		"optimizationIntent":         strings.ToLower(strings.TrimSpace(candidate.Profile.OptimizationIntent)),
-		"profileFingerprintVersion":  profileQualificationFingerprintVersion,
-		"sourceRevision":             candidate.SourceRevision,
-		"sourceFingerprint":          candidate.SourceFingerprint,
-		"resolvedProfileFingerprint": candidate.ResolvedProfileFingerprint,
-		"samplingPlanSchemaVersion":  candidate.Plan.SchemaVersion,
-		"samplingPlanPolicyVersion":  candidate.Plan.PolicyVersion,
-		"samplingPlanIdentity":       candidate.Plan.PlanIdentity,
-		"perceptualEvidenceIdentity": evidence.Identity,
-		"referenceIdentities":        qualificationReferenceIDs(evidence),
-		"candidateIdentities":        qualificationCandidateIDs(evidence),
+		"policySource":                profileQualificationDefaultsSource,
+		"qualityPolicyVersion":        profileQualificationPolicyVersion,
+		"optimizationIntent":          strings.ToLower(strings.TrimSpace(candidate.Profile.OptimizationIntent)),
+		"profileFingerprintVersion":   profileQualificationFingerprintVersion,
+		"sourceRevision":              candidate.SourceRevision,
+		"sourceFingerprint":           candidate.SourceFingerprint,
+		"resolvedProfileFingerprint":  candidate.ResolvedProfileFingerprint,
+		"effectiveProfileFingerprint": candidate.EffectiveProfileFingerprint,
+		"configurationHash":           candidate.ConfigurationIdentity,
+		"samplingPlanSchemaVersion":   candidate.Plan.SchemaVersion,
+		"samplingPlanPolicyVersion":   candidate.Plan.PolicyVersion,
+		"samplingPlanIdentity":        candidate.Plan.PlanIdentity,
+		"perceptualEvidenceIdentity":  evidence.Identity,
+		"referenceIdentities":         qualificationReferenceIDs(evidence),
+		"candidateIdentities":         qualificationCandidateIDs(evidence),
 	}
 }
 

@@ -60,13 +60,14 @@ type testEncodeRequest struct {
 }
 
 type resolvedTestEncode struct {
-	job             models.QueueJob
-	profile         models.Profile
-	audio           *audioEnhancementProfile
-	override        AssetConversionOverrideState
-	library         models.Library
-	requested       models.JSONMap
-	subtitleStyling SubtitleStylePolicy
+	job                          models.QueueJob
+	profile                      models.Profile
+	audio                        *audioEnhancementProfile
+	override                     AssetConversionOverrideState
+	library                      models.Library
+	requested                    models.JSONMap
+	subtitleStyling              SubtitleStylePolicy
+	profileDefinitionFingerprint string
 }
 
 var testEncodeProcesses = struct {
@@ -146,11 +147,6 @@ func (h AssetHandler) CreateTestEncode(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "identify source revision: " + err.Error()})
 		return
 	}
-	profileFingerprint, err := resolvedProfileFingerprint(resolved.profile)
-	if err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "fingerprint resolved profile: " + err.Error()})
-		return
-	}
 	start, duration := resolveTestEncodeWindow(h.db, resolved.job.MediaPath, input.StartMode, input.StartSeconds, input.DurationSeconds)
 	sourceDuration := testEncodeCanonicalSourceDuration(h.db, resolved.job.MediaPath, start, duration)
 	plan := h.samplingPlanForFrozenWindow(
@@ -172,7 +168,7 @@ func (h AssetHandler) CreateTestEncode(c *gin.Context) {
 	}
 	test := models.TestEncode{
 		SourcePath: resolved.job.MediaPath, SourceFingerprint: fingerprint, SourceRevision: physicalRevision,
-		ResolvedProfileFingerprint: profileFingerprint, SourceSizeBytes: info.Size(), SourceModifiedAt: &modified,
+		ResolvedProfileFingerprint: resolved.profileDefinitionFingerprint, SourceSizeBytes: info.Size(), SourceModifiedAt: &modified,
 		LibraryID: resolved.library.ID, ConfigurationSource: normalizedTestEncodeConfigurationSource(input.ConfigurationSource),
 		RequestedConfiguration: resolved.requested, ProfileID: resolved.job.ProfileID, ProfileVersion: resolved.job.ProfileVersion,
 		StartSeconds: start, DurationSeconds: duration, Status: testEncodeRunning, Phase: "preparing", Progress: 1,
@@ -356,10 +352,15 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 			profile.ProfileVersion = 1
 		}
 		now := time.Now()
+		definitionFingerprint, err := resolvedProfileFingerprint(profile)
+		if err != nil {
+			return resolvedTestEncode{}, fmt.Errorf("fingerprint LAB profile definition: %w", err)
+		}
 		snapshot, err := scheduler.CaptureProfileSnapshot(profile, now, "test_encode_lab_draft")
 		if err != nil {
 			return resolvedTestEncode{}, err
 		}
+		setProfileDefinitionFingerprint(snapshot, definitionFingerprint)
 		job.ProfileSnapshot, job.ProfileVersion, job.ProfileCapturedAt = snapshot, profile.ProfileVersion, &now
 		job.AudioProfileSnapshot = cloneTestEncodeJSONMap(input.LabAudioProfile)
 		if len(job.AudioProfileSnapshot) > 0 {
@@ -428,6 +429,16 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 	if err != nil {
 		return resolvedTestEncode{}, err
 	}
+	profileDefinitionFingerprint := ""
+	if identity, ok := profileIdentityFromSnapshot(job.ProfileSnapshot); ok {
+		profileDefinitionFingerprint = identity.DefinitionFingerprint
+	}
+	if profileDefinitionFingerprint != "" {
+		requested["profileIdentityContractVersion"] = profileIdentityContractVersion
+		requested["profileDefinitionFingerprint"] = profileDefinitionFingerprint
+	} else {
+		requested["profileIdentityUnavailableReason"] = "profile snapshot predates the versioned reusable definition identity"
+	}
 	audio, err := worker.audioProfileForJob(job)
 	if err != nil {
 		return resolvedTestEncode{}, err
@@ -436,7 +447,11 @@ func (h AssetHandler) resolveTestEncodeRequest(input testEncodeRequest) (resolve
 		"profile": profile, "audio": audio, "override": override, "profileResolution": job.ProfileResolution, "subtitleStylePolicyVersion": subtitleStyling.Version,
 	})
 	requested["subtitleStylePolicyVersion"] = subtitleStyling.Version
-	return resolvedTestEncode{job: job, profile: profile, audio: audio, override: override, library: library, requested: requested, subtitleStyling: subtitleStyling}, nil
+	return resolvedTestEncode{
+		job: job, profile: profile, audio: audio, override: override, library: library,
+		requested: requested, subtitleStyling: subtitleStyling,
+		profileDefinitionFingerprint: profileDefinitionFingerprint,
+	}, nil
 }
 
 func resolveTestEncodeVideoProfile(db *gorm.DB, path string, job models.QueueJob, profile models.Profile, override AssetConversionOverrideState) (models.Profile, error) {
@@ -697,11 +712,30 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 	}
 	executorName := "test-encode-local"
 
-	effective := models.JSONMap{
-		"profile": plan.Profile, "override": plan.Override, "streamPlan": resolveEffectiveStreamPlan(plan),
-		"effectiveEncoder": encoder, "executor": executorName, "runtimeSnapshotId": runtimeSnapshotID,
+	effectiveProfileHash, err := effectiveProfileFingerprint(plan.Profile, encoder)
+	if err != nil {
+		h.failTestEncode(id, err)
+		return
 	}
-	effectiveHash := configurationHash(effective)
+	effective := models.JSONMap{
+		"profileIdentityContractVersion": profileIdentityContractVersion,
+		"profileDefinitionFingerprint":   resolved.profileDefinitionFingerprint,
+		"effectiveProfileFingerprint":    effectiveProfileHash,
+		"profile":                        plan.Profile,
+		"override":                       plan.Override,
+		"streamPlan":                     resolveEffectiveStreamPlan(plan),
+		"effectiveEncoder":               encoder,
+		"processingMode":                 plan.ProcessingMode,
+		"subtitleStylePolicyVersion":     resolved.subtitleStyling.Version,
+		"executor":                       executorName,
+		"runtimeSnapshotId":              runtimeSnapshotID,
+	}
+	effectiveHash, err := testEncodeConfigurationFingerprint(effective)
+	if err != nil {
+		h.failTestEncode(id, err)
+		return
+	}
+	effective["configurationHash"] = effectiveHash
 	plan.OutputMetadata["MVFORGE_CONFIG_HASH"] = effectiveHash
 	args := FFmpegCommandBuilder{}.Build(plan)
 	command := "ffmpeg " + shellJoin(args)
@@ -709,7 +743,8 @@ func (h AssetHandler) executeTestEncode(id uint, resolved resolvedTestEncode) {
 	result := h.db.Model(&models.TestEncode{}).Where("id = ? AND status = ?", id, testEncodeRunning).Updates(map[string]any{
 		"phase": "generating", "progress": 5,
 		"worker_name": executorName, "runtime_snapshot_id": runtimeSnapshotID,
-		"effective_encoder": encoder, "effective_configuration": effective, "configuration_hash": effectiveHash,
+		"effective_encoder": encoder, "effective_profile_fingerprint": effectiveProfileHash,
+		"effective_configuration": effective, "configuration_hash": effectiveHash,
 		// The model pins this column name so partial V1 databases migrate consistently.
 		testEncodeFFmpegCommandColumn: command, "output_path": output, "temporary_path": temporary, "updated_at": now,
 	})

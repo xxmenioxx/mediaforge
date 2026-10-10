@@ -22,6 +22,8 @@ type ProfileQualification struct {
 	ProfileID                  uint       `json:"profileId" gorm:"not null;index"`
 	ProfileVersion             int        `json:"profileVersion" gorm:"not null"`
 	ResolvedProfileFingerprint string     `json:"resolvedProfileFingerprint" gorm:"not null;index:idx_profile_qualification_scope,priority:3"`
+	EffectiveProfileFingerprint string     `json:"effectiveProfileFingerprint" gorm:"not null;default:''"`
+	ConfigurationHash           string     `json:"configurationHash" gorm:"not null;default:'';index"`
 	CandidateIdentity          string     `json:"candidateIdentity" gorm:"not null;index"`
 	CandidateRevision          string     `json:"candidateRevision" gorm:"not null"`
 	SamplingPlanSchemaVersion  string     `json:"samplingPlanSchemaVersion" gorm:"not null"`

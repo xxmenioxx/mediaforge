@@ -142,13 +142,15 @@ func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profileFingerprint, err := resolvedProfileFingerprint(frozenProfile)
-	if err != nil {
-		t.Fatal(err)
+	profileIdentity, ok := profileIdentityFromSnapshot(candidate.Assets[0].Plan.ProfileSnapshot)
+	if !ok || profileIdentity.DefinitionFingerprint == "" || profileIdentity.EffectiveProfileFingerprint == "" {
+		t.Fatalf("prepared Queue snapshot omitted versioned profile identities: %#v", candidate.Assets[0].Plan.ProfileSnapshot[profileIdentitySnapshotKey])
 	}
-	qualCandidate, qualEvidence := profileQualificationFixture(t, true, 95)
+	qualCandidate, qualEvidence := profileQualificationFixtureForProfile(t, frozenProfile, profileIdentity.DefinitionFingerprint, candidate.Assets[0].Plan.SelectedEncoder, true, 95)
 	qualCandidate.SourceAssetID, qualCandidate.SourcePath, qualCandidate.SourceRevision = source.ID, fixture.paths[0], sourceRevision
-	qualCandidate.Profile, qualCandidate.ResolvedProfileFingerprint = frozenProfile, profileFingerprint
+	qualCandidate.Profile = frozenProfile
+	qualCandidate.EffectiveProfileFingerprint = profileIdentity.EffectiveProfileFingerprint
+	qualCandidate.EffectiveEncoder = candidate.Assets[0].Plan.SelectedEncoder
 	qualEvidence = addQualificationArtifactDefaults(qualEvidence, "medium")
 	for index := range qualEvidence.ArtifactEvidence {
 		if qualEvidence.ArtifactEvidence[index].Kind == "temporal_instability" {
@@ -165,14 +167,7 @@ func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	if qualificationAssessment.Outcome != models.QualityOutcomePassWithWarnings {
 		t.Fatalf("qualification fixture outcome=%s rules=%#v", qualificationAssessment.Outcome, qualificationAssessment.Rules)
 	}
-	testEncode := models.TestEncode{
-		ID: qualCandidate.TestEncodeID, SourceAssetID: source.ID, SourcePath: fixture.paths[0], SourceFingerprint: qualCandidate.SourceFingerprint,
-		SourceRevision: sourceRevision, ResolvedProfileFingerprint: profileFingerprint, ConfigurationHash: qualCandidate.ConfigurationIdentity,
-		ProfileID: frozenProfile.ID, ProfileVersion: candidate.Assets[0].Plan.ProfileVersion, Status: testEncodeReady,
-		RequestedConfiguration: models.JSONMap{"samplingPlan": qualCandidate.Plan, "samplingPlanIdentity": qualCandidate.Plan.PlanIdentity},
-		EffectiveConfiguration: models.JSONMap{"profile": frozenProfile},
-		ValidationReport:       models.JSONMap{"perceptualEvidence": qualEvidence},
-	}
+	testEncode := profileQualificationTestEncode(qualCandidate, qualEvidence)
 	if err := fixture.db.Create(&testEncode).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -207,6 +202,49 @@ func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	}
 	if len(candidate.Assets[0].Warnings) == 0 {
 		t.Fatal("Preflight omitted its BPPPF warning")
+	}
+	changedSnapshot := queuePreflightCloneMap(candidate.Assets[0].Plan.ProfileSnapshot)
+	changedWorkerConfig, ok := snapshotCacheMap(changedSnapshot["workerConfig"])
+	if !ok {
+		t.Fatal("frozen Queue snapshot omitted the effective worker configuration")
+	}
+	changedWorkerConfig["hevcLevelEffective"] = "5.2"
+	changedSnapshot["workerConfig"] = changedWorkerConfig
+	changedProfileAsset := []queueBatchPreflightAsset{{
+		ID: "changed-profile", MediaPath: fixture.paths[0], AssetRecordID: &source.ID,
+		SourceRevision: sourceRevision, Constraints: models.JSONMap{"ready": true},
+		SelectedEncoder: candidate.Assets[0].Plan.SelectedEncoder,
+		ResolvedJob:     &models.QueueJob{ProfileSnapshot: changedSnapshot},
+	}}
+	if err := attachPreflightProfileQualifications(fixture.db, changedProfileAsset); err != nil {
+		t.Fatal(err)
+	}
+	changedProfileEvidence, ok := changedProfileAsset[0].QualityEvidence["profileQualification"].(profileQualificationPreflightView)
+	if !ok || changedProfileEvidence.Status != "STALE" || !strings.Contains(changedProfileEvidence.Message, "does not match its frozen profile snapshot") {
+		t.Fatalf("changed effective profile did not fail closed with a cause: %#v", changedProfileEvidence)
+	}
+	otherRecord := models.AssetRecord{
+		Path:     filepath.Join(filepath.Dir(fixture.paths[0]), "OtherAsset.mkv"),
+		FileName: "OtherAsset.mkv", Status: "unprocessed",
+	}
+	if err := fixture.db.Create(&otherRecord).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherAssetID := otherRecord.ID
+	crossAsset := []queueBatchPreflightAsset{{
+		ID: "same-path-different-asset", MediaPath: fixture.paths[0], AssetRecordID: &otherAssetID,
+		SourceRevision: sourceRevision, Constraints: models.JSONMap{"ready": true},
+		ResolvedJob: &models.QueueJob{ProfileSnapshot: candidate.Assets[0].Plan.ProfileSnapshot},
+	}}
+	if err := attachPreflightProfileQualifications(fixture.db, crossAsset); err != nil {
+		t.Fatal(err)
+	}
+	crossAssetEvidence, ok := crossAsset[0].QualityEvidence["profileQualification"].(profileQualificationPreflightView)
+	if !ok || crossAssetEvidence.Status != "STALE" {
+		t.Fatalf("Qualification from another AssetRecord produced %#v", crossAssetEvidence)
+	}
+	if message := crossAssetEvidence.Message; !strings.Contains(message, "AssetRecord path differs from the frozen source path") {
+		t.Fatalf("cross-asset mismatch omitted its cause: %#v", crossAssetEvidence)
 	}
 	var queuedCount, executionPlanCount int64
 	if err := fixture.db.Model(&models.QueueJob{}).Count(&queuedCount).Error; err != nil {
@@ -355,6 +393,9 @@ func TestBatchPreflightUnqualifiedProfileAddsWarningWithoutBlocking(t *testing.T
 	qualification, ok := assets[0].QualityEvidence["profileQualification"].(profileQualificationPreflightView)
 	if !ok || qualification.Status != "NOT_QUALIFIED" {
 		t.Fatalf("missing qualification was not surfaced as unqualified: %#v", assets[0].QualityEvidence)
+	}
+	if !strings.Contains(qualification.Message, "predates the versioned reusable profile identity") {
+		t.Fatalf("legacy Queue snapshot omitted the identity cause: %#v", qualification)
 	}
 	if assets[0].Status != queuePreflightReady || len(assets[0].Blockers) != 0 || len(assets[0].Warnings) == 0 {
 		t.Fatalf("unqualified evidence changed Queue blocking behavior: %#v", assets[0])

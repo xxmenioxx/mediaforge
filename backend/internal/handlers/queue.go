@@ -1956,6 +1956,10 @@ func (h QueueHandler) captureOverrideOnlyProfileWithOverride(
 
 		WorkerConfig: models.JSONMap{},
 	}
+	definitionFingerprint, err := resolvedProfileFingerprint(profile)
+	if err != nil {
+		return err
+	}
 
 	profile = applyAssetConversionOverrideToProfile(profile, override)
 
@@ -1999,6 +2003,7 @@ func (h QueueHandler) captureOverrideOnlyProfileWithOverride(
 	if err != nil {
 		return err
 	}
+	setProfileDefinitionFingerprint(snapshot, definitionFingerprint)
 
 	// Freeze the asset override into the same snapshot mechanism used by
 	// normal profiles. The worker will therefore execute the exact override
@@ -2048,6 +2053,10 @@ func (h QueueHandler) captureProfileWithOverride(job *models.QueueJob, profileID
 	if profile.Disabled {
 		return errQueueProfileDisabled
 	}
+	definitionFingerprint, err := resolvedProfileFingerprint(profile)
+	if err != nil {
+		return fmt.Errorf("fingerprint reusable profile definition: %w", err)
+	}
 	applyAssetDefaultsAudioToVideoProfile(&profile, *job)
 	override := currentConversionOverrideForJob(*job, assetConversionOverrides(h.db))
 	if preservedOverride != nil {
@@ -2080,6 +2089,7 @@ func (h QueueHandler) captureProfileWithOverride(job *models.QueueJob, profileID
 	if err != nil {
 		return err
 	}
+	setProfileDefinitionFingerprint(snapshot, definitionFingerprint)
 	if !assetConversionOverrideEmpty(override) {
 		encoded, encodeErr := json.Marshal(override)
 		if encodeErr != nil {
