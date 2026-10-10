@@ -15,10 +15,31 @@ The candidate retains the original `QueueJobInput`, stable asset/source
 identity, resolved Queue snapshots, execution constraints, selected runtime
 encoder, destination path, warnings, and blockers under a revision number.
 
-`GET /queue/preflights/:id` restores a candidate for review. `POST .../edit`
+`GET /queue/preflights/:id` returns a saved candidate for review. `POST .../edit`
 invalidates the prior resolution and advances the revision. `PUT` resolves the
-retained or edited inputs again. The Assets page remembers the candidate ID so
-an unresolved candidate can be reopened and edited after navigation or reload.
+retained or edited inputs again. Assets keeps a saved candidate ID separately
+from dialog visibility. Closing preserves the candidate but never opens it on
+navigation or reload; an explicit Resume action fetches the latest active
+revision.
+
+## Candidate lifecycle
+
+Each candidate has a persisted `active`, `completed`, or `discarded` status.
+`POST /queue/preflights/:id/remove` removes one unqueued candidate asset by its
+stable candidate asset ID. It preserves the other reviewed plans and advances
+the revision; removing the last pending asset terminalizes the candidate.
+`POST /queue/preflights/:id/discard` abandons every unqueued asset and retains
+accepted entries and job IDs as historical candidate state. Both operations
+use the expected revision transactionally and do not create, change, cancel,
+or release QueueJobs, ExecutionPlans, or SchedulerReservations. Candidate rows
+are retained, and terminal candidates cannot be edited, accepted, removed, or
+discarded again.
+
+The browser's `mvforge.queueBatchPreflightCandidateId` value is only a saved
+reference. It does not trigger a mount-time fetch or modal open. A stale GET or
+event cannot replace a newer candidate; missing and terminal candidates clear
+the matching reference after an explicit recovery attempt. There is no
+background polling.
 
 ## Acceptance and execution
 
@@ -51,7 +72,8 @@ jobs without complete snapshots retain the existing claim-time preparation.
 
 ## Persistence and compatibility
 
-AutoMigrate adds only the `queue_batch_preflights` table and the nullable
+AutoMigrate adds the `queue_batch_preflights` table and lifecycle status with an
+`active` default for existing rows, plus the nullable
 `resolved_destination_snapshot` QueueJob column. Existing Queue snapshots are
 not rewritten. Candidate JSON stores bounded batch state and references the
 existing Queue profile, audio, track, ExecutionPlan, and runtime snapshot

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-10
+goal: Support explicit recovery and safe terminalization of unaccepted Batch
+  Preflight items without mutating accepted Queue work.
