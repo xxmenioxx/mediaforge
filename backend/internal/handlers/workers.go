@@ -1308,6 +1308,17 @@ func freezeQueuePreparedProfileSnapshot(db *gorm.DB, job *models.QueueJob, profi
 	if err != nil {
 		return err
 	}
+	if identity, ok := profileIdentityFromSnapshot(job.ProfileSnapshot); ok {
+		setProfileDefinitionFingerprint(snapshot, identity.DefinitionFingerprint)
+		if identity.EffectiveProfileFingerprint != "" {
+			setEffectiveProfileFingerprint(snapshot, identity.EffectiveProfileFingerprint)
+		}
+	} else {
+		// A definition inferred from this already-resolved profile would
+		// misrepresent historical snapshots as if their pre-override profile
+		// identity had been captured.
+		delete(snapshot, profileIdentitySnapshotKey)
+	}
 	// CaptureProfileSnapshot owns the canonical profile payload, while these
 	// existing Queue snapshot keys carry immutable job intent/evidence outside
 	// the profile schema. Preserve them when replacing the pre-preparation
@@ -1319,6 +1330,7 @@ func freezeQueuePreparedProfileSnapshot(db *gorm.DB, job *models.QueueJob, profi
 		cadenceRecommendationSnapshotKey,
 		"samplingPlan",
 		"samplingPlanIdentity",
+		models.QueuePreflightSelectedEncoderKey,
 		sourceAnalysisEvidenceSnapshotKey,
 	} {
 		if value, ok := job.ProfileSnapshot[key]; ok {

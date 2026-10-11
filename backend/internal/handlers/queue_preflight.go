@@ -49,6 +49,24 @@ func queuePreflightFirstNonEmpty(values ...string) string {
 	return ""
 }
 
+func resolveQueuePreflightEffectiveProfile(profile models.Profile, selectedEncoder string, scan models.ScanResult, path string) models.Profile {
+	profile = applySelectedEncoder(profile, selectedEncoder)
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["qsvAssetAnalysisPath"] = filepath.Clean(path)
+	profile = normalizeHardwareQualityPreset(profile)
+	streams := mediaStreamInventoryFromScan(scan)
+	if mediaProcessingMode(profile) != ProcessingModeFullEncode {
+		return resolveEffectiveVideoEncodingProfile(profile, streams, path)
+	}
+	interlace, _ := decodeInterlaceAnalysis(profile.WorkerConfig[interlaceAnalysisSnapshotKey])
+	cadence, _ := decodeCadenceAnalysis(profile.WorkerConfig[cadenceAnalysisSnapshotKey])
+	recommendation, ok := decodeCadenceRecommendation(profile.WorkerConfig[cadenceRecommendationSnapshotKey])
+	if !ok {
+		recommendation = recommendCadence(cadence)
+	}
+	return resolveMediaJobVideoProfile(profile, streams, path, interlace, cadence, recommendation)
+}
+
 type QueueBatchPreflightInput struct {
 	Revision  uint            `json:"revision,omitempty"`
 	BatchID   string          `json:"batchId" binding:"required"`
@@ -853,6 +871,24 @@ func (h QueueHandler) resolveQueueBatchPreflight(input QueueBatchPreflightInput,
 		}
 		job.ProfileSnapshot[models.QueuePreflightSelectedEncoderKey] = item.SelectedEncoder
 		if scan, ok := sourceScans[filepath.Clean(job.MediaPath)]; ok {
+			effectiveProfile := resolveQueuePreflightEffectiveProfile(profile, item.SelectedEncoder, scan, job.MediaPath)
+			if freezeErr := freezeQueuePreparedProfileSnapshot(h.db, &job, effectiveProfile); freezeErr != nil {
+				item.Blockers = append(item.Blockers, "Freeze effective Queue profile identity: "+freezeErr.Error())
+				state.Assets = append(state.Assets, item)
+				continue
+			}
+			frozenEffectiveProfile, restoreErr := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+			if restoreErr != nil {
+				item.Blockers = append(item.Blockers, "Restore effective Queue profile identity: "+restoreErr.Error())
+				state.Assets = append(state.Assets, item)
+				continue
+			}
+			if fingerprint, fingerprintErr := effectiveProfileFingerprint(frozenEffectiveProfile, item.SelectedEncoder); fingerprintErr == nil {
+				setEffectiveProfileFingerprint(job.ProfileSnapshot, fingerprint)
+			} else {
+				item.Warnings = append(item.Warnings, "Frozen Queue profile identity is unavailable: "+fingerprintErr.Error())
+			}
+			profile = frozenEffectiveProfile
 			if info, statErr := os.Stat(job.MediaPath); statErr == nil {
 				if evidence, evidenceOK := cachedSourceBitrateEvidenceFromScan(job.MediaPath, info, scan); evidenceOK {
 					assessment := bpppfAssessmentForQueueProfile(profile, item.SelectedEncoder, scan, evidence)

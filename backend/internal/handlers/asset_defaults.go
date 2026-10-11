@@ -457,9 +457,14 @@ func applyAssetDefaultsAudioToTrackProfile(job models.QueueJob, profile map[stri
 
 func captureCustomProfileSnapshot(profile models.Profile, source string) (models.JSONMap, *time.Time, error) {
 	now := time.Now()
+	definitionFingerprint, err := resolvedProfileFingerprint(profile)
+	if err != nil {
+		return nil, nil, err
+	}
 	snapshot, err := scheduler.CaptureProfileSnapshot(profile, now, source)
 	if err != nil {
 		return nil, nil, err
 	}
+	setProfileDefinitionFingerprint(snapshot, definitionFingerprint)
 	return snapshot, &now, nil
 }

@@ -98,3 +98,44 @@ rail. Worker execution does not recompute this evidence or apply the warning as
 a bitrate floor. The #42 cache adds a versioned `ScanResult.sourceBitrateEvidence`
 field and refreshes only that analysis component; it does not add a second
 analysis store.
+
+## Profile and Qualification fingerprints
+
+Qualification evidence carries three separate identities:
+
+- `ResolvedProfileFingerprint` uses the `profile-definition-v1` contract. It is
+  captured from the reusable profile before Asset Defaults, Asset Overrides,
+  and per-asset analysis context are applied. Profile/template versions and
+  the profile definition participate; database ID, assignment scope, display
+  metadata, and asset/runtime paths do not. Queue snapshots preserve it in the
+  `profileIdentity` envelope. PATH, Source Group, Logical Group, and ASSET
+  assignments can therefore use the same profile definition.
+- `EffectiveProfileFingerprint` uses `effective-profile-v1`. It hashes the
+  canonical effective video profile after the selected encoder and shared
+  cadence, frame structure, QSV quality, HEVC Level, color, upscale, and
+  restoration resolvers have run. Output-affecting decisions participate;
+  analysis paths and diagnostic provenance do not. Test Encode stores it with
+  `effectiveConfiguration.profile`; Queue Preflight stores it beside its
+  prepared frozen profile snapshot.
+- Test Encode `ConfigurationHash` uses `test-encode-configuration-v2`. It
+  binds both profile identities to the effective encoder, conversion
+  override, stream plan, subtitle-style policy, and processing mode. Run-only
+  executor, runtime snapshot, and output path values remain diagnostic fields
+  and do not change this identity. #69 still binds its candidate evidence to
+  this hash and the exact Test Encode generation.
+
+Profile Qualification persists both profile fingerprints and the candidate
+`ConfigurationHash`. Its currentness check also requires the exact source path,
+AssetRecord ID, physical revision, Test Encode ID/generation, SamplingPlan,
+#69 candidate and reference identities, and policy version. Preflight resolves
+its fingerprint from the prepared snapshot and persisted ScanResult using the
+shared video resolvers. It attaches evidence only when both profile
+fingerprints, the source revision, and the AssetRecord identity match. A
+different asset cannot inherit a passing Qualification through a shared
+profile or path.
+
+Historical snapshots and Qualification rows remain immutable. Missing or
+unsupported identity versions produce a stage-specific stale/review or
+not-qualified message; opening evidence does not create a Test Encode or
+re-evaluate the media. Qualification remains a non-blocking confidence signal,
+and the existing final Validation authority is unchanged.

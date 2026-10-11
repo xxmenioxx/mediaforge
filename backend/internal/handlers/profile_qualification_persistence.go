@@ -27,6 +27,9 @@ func profileQualificationInputs(test models.TestEncode) (ProfileQualificationCan
 	candidate.TestEncodeID = test.ID
 	candidate.ConfigurationIdentity = test.ConfigurationHash
 	candidate.ResolvedProfileFingerprint = test.ResolvedProfileFingerprint
+	candidate.EffectiveProfileFingerprint = test.EffectiveProfileFingerprint
+	candidate.EffectiveEncoder = test.EffectiveEncoder
+	candidate.IdentityError = testEncodeProfileIdentityError(test)
 	if test.RequestedConfiguration != nil {
 		if err := decodeProfileQualificationValue(test.RequestedConfiguration["samplingPlan"], &candidate.Plan); err != nil {
 			return candidate, PerceptualEvidenceSet{}, fmt.Errorf("decode frozen SamplingPlan: %w", err)
@@ -90,8 +93,10 @@ func profileQualificationModel(candidate ProfileQualificationCandidate, evidence
 		SourceAssetID: candidate.SourceAssetID, SourcePath: candidate.SourcePath,
 		SourceRevision: candidate.SourceRevision, SourceFingerprint: candidate.SourceFingerprint,
 		ProfileID: candidate.Profile.ID, ProfileVersion: candidate.Profile.ProfileVersion,
-		ResolvedProfileFingerprint: candidate.ResolvedProfileFingerprint,
-		CandidateIdentity:          assessment.CandidateIdentity, CandidateRevision: assessment.CandidateRevision,
+		ResolvedProfileFingerprint:  candidate.ResolvedProfileFingerprint,
+		EffectiveProfileFingerprint: candidate.EffectiveProfileFingerprint,
+		ConfigurationHash:           candidate.ConfigurationIdentity,
+		CandidateIdentity:           assessment.CandidateIdentity, CandidateRevision: assessment.CandidateRevision,
 		SamplingPlanSchemaVersion:  candidate.Plan.SchemaVersion,
 		SamplingPlanPolicyVersion:  candidate.Plan.PolicyVersion,
 		SamplingPlanIdentity:       candidate.Plan.PlanIdentity,
@@ -191,8 +196,14 @@ func profileQualificationStaleness(test models.TestEncode, record models.Profile
 	if test.Stale {
 		return true, "Test Encode source or resolved configuration is stale"
 	}
+	if reason := testEncodeProfileIdentityError(test); reason != "" {
+		return true, reason
+	}
 	if record.QualityPolicyVersion != profileQualificationPolicyVersion {
 		return true, "Qualification policy version changed"
+	}
+	if record.SourceAssetID == 0 || record.SourceAssetID != test.SourceAssetID || record.SourcePath != test.SourcePath {
+		return true, "AssetRecord or source-path identity changed or was not captured"
 	}
 	if record.SourceRevision == "" || record.SourceRevision != test.SourceRevision || record.SourceFingerprint == "" || record.SourceFingerprint != test.SourceFingerprint {
 		return true, "Source identity changed or was not captured"
@@ -200,8 +211,17 @@ func profileQualificationStaleness(test models.TestEncode, record models.Profile
 	if record.ResolvedProfileFingerprint == "" || record.ResolvedProfileFingerprint != test.ResolvedProfileFingerprint || record.ProfileVersion != test.ProfileVersion {
 		return true, "Resolved profile fingerprint changed or was not captured"
 	}
+	if record.EffectiveProfileFingerprint == "" || record.EffectiveProfileFingerprint != test.EffectiveProfileFingerprint {
+		return true, "Frozen effective-profile fingerprint changed or was not captured"
+	}
+	if record.ConfigurationHash == "" || record.ConfigurationHash != test.ConfigurationHash {
+		return true, "Test Encode ConfigurationHash changed or was not captured"
+	}
 	if record.SamplingPlanIdentity == "" || record.SamplingPlanIdentity != workerStringValue(test.RequestedConfiguration["samplingPlanIdentity"]) {
 		return true, "Frozen SamplingPlan identity changed or was not captured"
+	}
+	if record.PerceptualEvidenceIdentity == "" {
+		return true, "Legacy Qualification record is missing its frozen perceptual evidence identity and requires review"
 	}
 	if record.PerceptualEvidenceIdentity != "" {
 		candidate, evidence, err := profileQualificationInputs(test)
@@ -225,30 +245,38 @@ func profileQualificationStaleness(test models.TestEncode, record models.Profile
 }
 
 type profileQualificationPreflightView struct {
-	Status                     string `json:"status"`
-	Message                    string `json:"message,omitempty"`
-	QualificationID            string `json:"qualificationId,omitempty"`
-	Outcome                    string `json:"outcome,omitempty"`
-	PolicyVersion              string `json:"policyVersion,omitempty"`
-	TestEncodeID               uint   `json:"testEncodeId,omitempty"`
-	SourceAssetID              uint   `json:"sourceAssetId,omitempty"`
-	SourceRevision             string `json:"sourceRevision,omitempty"`
-	SourceFingerprint          string `json:"sourceFingerprint,omitempty"`
-	ResolvedProfileFingerprint string `json:"resolvedProfileFingerprint,omitempty"`
-	PerceptualEvidenceIdentity string `json:"perceptualEvidenceIdentity,omitempty"`
-	ReferenceIdentity          string `json:"referenceIdentity,omitempty"`
-	CandidateIdentity          string `json:"candidateIdentity,omitempty"`
-	WorstWindowIdentity        string `json:"worstWindowIdentity,omitempty"`
-	WorstSceneCategory         string `json:"worstSceneCategory,omitempty"`
-	Rules                      []any  `json:"rules,omitempty"`
-	Warnings                   []any  `json:"warnings,omitempty"`
+	Status                      string `json:"status"`
+	Message                     string `json:"message,omitempty"`
+	QualificationID             string `json:"qualificationId,omitempty"`
+	Outcome                     string `json:"outcome,omitempty"`
+	PolicyVersion               string `json:"policyVersion,omitempty"`
+	TestEncodeID                uint   `json:"testEncodeId,omitempty"`
+	SourceAssetID               uint   `json:"sourceAssetId,omitempty"`
+	SourceRevision              string `json:"sourceRevision,omitempty"`
+	SourceFingerprint           string `json:"sourceFingerprint,omitempty"`
+	ResolvedProfileFingerprint  string `json:"resolvedProfileFingerprint,omitempty"`
+	EffectiveProfileFingerprint string `json:"effectiveProfileFingerprint,omitempty"`
+	ConfigurationHash           string `json:"configurationHash,omitempty"`
+	PerceptualEvidenceIdentity  string `json:"perceptualEvidenceIdentity,omitempty"`
+	ReferenceIdentity           string `json:"referenceIdentity,omitempty"`
+	CandidateIdentity           string `json:"candidateIdentity,omitempty"`
+	WorstWindowIdentity         string `json:"worstWindowIdentity,omitempty"`
+	WorstSceneCategory          string `json:"worstSceneCategory,omitempty"`
+	Rules                       []any  `json:"rules,omitempty"`
+	Warnings                    []any  `json:"warnings,omitempty"`
 }
 
 func attachPreflightProfileQualifications(db *gorm.DB, assets []queueBatchPreflightAsset) error {
 	if db == nil || len(assets) == 0 {
 		return nil
 	}
-	profiles := make(map[string]string, len(assets))
+	type preflightProfileIdentity struct {
+		definitionFingerprint string
+		effectiveFingerprint  string
+		unavailableReason     string
+		stale                 bool
+	}
+	profiles := make(map[string]preflightProfileIdentity, len(assets))
 	paths := make([]string, 0, len(assets))
 	for index := range assets {
 		asset := &assets[index]
@@ -259,11 +287,34 @@ func attachPreflightProfileQualifications(db *gorm.DB, assets []queueBatchPrefli
 		if err != nil {
 			continue
 		}
-		fingerprint, err := resolvedProfileFingerprint(profile)
-		if err != nil {
-			continue
+		identity, ok := profileIdentityFromSnapshot(asset.ResolvedJob.ProfileSnapshot)
+		preflightIdentity := preflightProfileIdentity{}
+		switch {
+		case !ok:
+			preflightIdentity.unavailableReason = "Queue profile snapshot predates the versioned reusable profile identity; Qualification cannot be matched automatically."
+		case identity.DefinitionFingerprint == "" || !strings.HasPrefix(identity.DefinitionFingerprint, profileQualificationFingerprintVersion+":"):
+			preflightIdentity.unavailableReason = "Queue profile snapshot has a missing or unsupported reusable profile-definition fingerprint."
+		case identity.EffectiveProfileFingerprint == "" || !strings.HasPrefix(identity.EffectiveProfileFingerprint, effectiveProfileFingerprintVersion+":"):
+			preflightIdentity.unavailableReason = "Queue profile snapshot has no versioned frozen effective-profile fingerprint."
+		default:
+			selectedEncoder := queuePreflightFirstNonEmpty(
+				asset.SelectedEncoder,
+				workerStringValue(asset.ResolvedJob.ProfileSnapshot[models.QueuePreflightSelectedEncoderKey]),
+			)
+			if selectedEncoder == "" {
+				preflightIdentity.unavailableReason = "Queue profile snapshot is missing its selected encoder identity."
+			} else if computed, fingerprintErr := effectiveProfileFingerprint(profile, selectedEncoder); fingerprintErr != nil {
+				preflightIdentity.stale = true
+				preflightIdentity.unavailableReason = "Queue effective-profile fingerprint could not be verified: " + fingerprintErr.Error()
+			} else if computed != identity.EffectiveProfileFingerprint {
+				preflightIdentity.stale = true
+				preflightIdentity.unavailableReason = "Queue effective-profile fingerprint does not match its frozen profile snapshot."
+			} else {
+				preflightIdentity.definitionFingerprint = identity.DefinitionFingerprint
+				preflightIdentity.effectiveFingerprint = identity.EffectiveProfileFingerprint
+			}
 		}
-		profiles[filepath.Clean(asset.MediaPath)] = fingerprint
+		profiles[filepath.Clean(asset.MediaPath)] = preflightIdentity
 		paths = append(paths, filepath.Clean(asset.MediaPath))
 	}
 	if len(paths) == 0 {
@@ -281,7 +332,7 @@ func attachPreflightProfileQualifications(db *gorm.DB, assets []queueBatchPrefli
 	qualifications := map[uint]models.ProfileQualification{}
 	if len(testIDs) > 0 && db.Migrator().HasTable(&models.ProfileQualification{}) {
 		var records []models.ProfileQualification
-		if err := db.Where("test_encode_id IN ? AND quality_policy_version = ?", testIDs, profileQualificationPolicyVersion).
+		if err := db.Where("test_encode_id IN ?", testIDs).
 			Order("created_at DESC").Order("id DESC").Limit(profileQualificationPreflightMaxCandidates).Find(&records).Error; err != nil {
 			return fmt.Errorf("load Preflight Profile Qualifications: %w", err)
 		}
@@ -299,15 +350,65 @@ func attachPreflightProfileQualifications(db *gorm.DB, assets []queueBatchPrefli
 	for index := range assets {
 		asset := &assets[index]
 		path := filepath.Clean(asset.MediaPath)
-		profileFingerprint, hasProfile := profiles[path]
+		profileIdentity, hasProfile := profiles[path]
 		if !hasProfile {
 			continue
 		}
+		assetRecordID := asset.AssetRecordID
+		assetIdentityError := ""
+		if assetRecordID != nil {
+			var record models.AssetRecord
+			if err := db.Where("id = ?", *assetRecordID).First(&record).Error; err != nil {
+				assetIdentityError = "Queue AssetRecord identity is unavailable; Qualification cannot be matched automatically."
+			} else if filepath.Clean(record.Path) != path {
+				assetIdentityError = "Queue AssetRecord path differs from the frozen source path; Qualification is stale."
+			}
+		} else {
+			var records []models.AssetRecord
+			if err := db.Where("path = ?", path).Limit(2).Find(&records).Error; err != nil {
+				assetIdentityError = "Queue AssetRecord identity could not be resolved; Qualification cannot be matched automatically."
+			} else if len(records) == 1 {
+				assetRecordID = &records[0].ID
+			} else if len(records) == 0 {
+				assetIdentityError = "Queue source has no AssetRecord identity; Qualification cannot be matched automatically."
+			} else {
+				assetIdentityError = "Queue source path has multiple AssetRecords; Qualification cannot be matched automatically."
+			}
+		}
 		view := profileQualificationPreflightView{Status: "NOT_QUALIFIED", Message: "Profile not yet qualified for this asset/profile evidence."}
 		var matchingTest *models.TestEncode
+		if assetIdentityError != "" {
+			view = profileQualificationPreflightView{Status: "STALE", Message: assetIdentityError}
+		} else if profileIdentity.stale {
+			view = profileQualificationPreflightView{Status: "STALE", Message: profileIdentity.unavailableReason}
+		} else if profileIdentity.unavailableReason != "" {
+			view.Message = profileIdentity.unavailableReason
+		}
 		for _, test := range testsByPath[path] {
-			if test.SourceRevision == asset.SourceRevision && test.ResolvedProfileFingerprint == profileFingerprint &&
-				(asset.AssetRecordID == nil || test.SourceAssetID == *asset.AssetRecordID) {
+			if assetIdentityError != "" || profileIdentity.unavailableReason != "" {
+				break
+			}
+			if test.SourceRevision != asset.SourceRevision {
+				view = profileQualificationPreflightView{Status: "STALE", Message: "Test Encode source revision differs from the frozen Queue source revision."}
+				continue
+			}
+			if assetRecordID == nil || test.SourceAssetID != *assetRecordID {
+				view = profileQualificationPreflightView{Status: "STALE", Message: "Test Encode evidence is bound to a different or unavailable AssetRecord identity."}
+				continue
+			}
+			if reason := testEncodeProfileIdentityError(test); reason != "" {
+				view = profileQualificationPreflightView{Status: "STALE", Message: reason}
+				continue
+			}
+			if test.ResolvedProfileFingerprint != profileIdentity.definitionFingerprint {
+				view = profileQualificationPreflightView{Status: "STALE", Message: "Reusable profile-definition fingerprint differs from the frozen Queue profile."}
+				continue
+			}
+			if test.EffectiveProfileFingerprint != profileIdentity.effectiveFingerprint {
+				view = profileQualificationPreflightView{Status: "STALE", Message: "Frozen effective-profile fingerprint differs from the prepared Queue profile."}
+				continue
+			}
+			if test.SourceAssetID == *assetRecordID {
 				matchingTest = &test
 				break
 			}
@@ -321,10 +422,12 @@ func attachPreflightProfileQualifications(db *gorm.DB, assets []queueBatchPrefli
 						Status: record.Outcome, QualificationID: record.ID, Outcome: record.Outcome,
 						PolicyVersion: record.QualityPolicyVersion, TestEncodeID: test.ID,
 						SourceAssetID: record.SourceAssetID, SourceRevision: record.SourceRevision,
-						SourceFingerprint:          record.SourceFingerprint,
-						ResolvedProfileFingerprint: record.ResolvedProfileFingerprint,
-						PerceptualEvidenceIdentity: record.PerceptualEvidenceIdentity,
-						ReferenceIdentity:          record.ReferenceIdentity, CandidateIdentity: record.CandidateIdentity,
+						SourceFingerprint:           record.SourceFingerprint,
+						ResolvedProfileFingerprint:  record.ResolvedProfileFingerprint,
+						EffectiveProfileFingerprint: record.EffectiveProfileFingerprint,
+						ConfigurationHash:           record.ConfigurationHash,
+						PerceptualEvidenceIdentity:  record.PerceptualEvidenceIdentity,
+						ReferenceIdentity:           record.ReferenceIdentity, CandidateIdentity: record.CandidateIdentity,
 						WorstWindowIdentity: record.WorstWindowIdentity, WorstSceneCategory: record.WorstSceneCategory,
 						Rules:    append([]any(nil), record.Rules...),
 						Warnings: append([]any(nil), record.Warnings...),
