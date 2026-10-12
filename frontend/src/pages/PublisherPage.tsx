@@ -23,24 +23,33 @@ import PublishIcon from '@mui/icons-material/Publish';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api/client';
-import type { QueueJob } from '../api/types';
+import type { PublisherEligibilityCandidate, PublisherPublicationSummary } from '../api/types';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 
 import { PageHeader } from '../components/PageHeader';
 
+type ManualPublishTarget = {
+  jobId: number;
+  executionNumber?: number;
+  destinationPath?: string;
+  status?: PublisherEligibilityCandidate['status'];
+};
+
 export function PublisherPage() {
   const queryClient = useQueryClient();
-  const jobs = useQuery({ queryKey: ['queueJobs'], queryFn: api.queueJobs, refetchInterval: 5000 });
+  const eligibility = useQuery({ queryKey: ['publisherEligibility'], queryFn: () => api.publisherEligibility(), refetchInterval: 5000 });
   const publications = useQuery({
     queryKey: ['publisherPublications'],
     queryFn: api.publisherPublications,
     refetchInterval: 5000,
   });
   const [actionReason, setActionReason] = useState('');
-  const [discardTarget, setDiscardTarget] = useState<QueueJob | null>(null);
+  const [publishTarget, setPublishTarget] = useState<ManualPublishTarget | null>(null);
+  const [discardTarget, setDiscardTarget] = useState<PublisherEligibilityCandidate['job'] | null>(null);
   const publishJob = useMutation({
     mutationFn: api.publishJob,
     onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['publisherEligibility'] });
       await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
       await queryClient.invalidateQueries({ queryKey: ['publisherPublications'] });
     },
@@ -59,11 +68,49 @@ export function PublisherPage() {
   const discardJob = useMutation({
     mutationFn: api.discardPublisherJob,
     onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['publisherEligibility'] });
       await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
     },
   });
 
-  const openDiscardDialog = (job: QueueJob) => {
+  const openPublishDialog = (candidate: PublisherEligibilityCandidate) => {
+    publishJob.reset();
+    setPublishTarget({
+      jobId: candidate.job.id,
+      executionNumber: candidate.job.executionNumber,
+      destinationPath: candidate.job.destinationPath,
+      status: candidate.status,
+    });
+  };
+
+  const openExistingPublicationDialog = (publication: PublisherPublicationSummary['publication']) => {
+    publishJob.reset();
+    setPublishTarget({
+      jobId: publication.queueJobId,
+      executionNumber: publication.executionNumber,
+      destinationPath: publication.destinationPath,
+      status: publication.validationOverrideEventIds?.length ? 'ALLOWED_BY_OVERRIDE' : undefined,
+    });
+  };
+
+  const confirmPublish = async () => {
+    if (!publishTarget || !actionReason.trim()) return;
+    try {
+      await publishJob.mutateAsync({ jobId: publishTarget.jobId, reason: actionReason.trim() });
+      setPublishTarget(null);
+      setActionReason('');
+    } catch {
+      // Error state is already handled by the mutation alert.
+    }
+  };
+
+  const closePublishDialog = () => {
+    if (publishJob.isPending) return;
+    setPublishTarget(null);
+    setActionReason('');
+  };
+
+  const openDiscardDialog = (job: PublisherEligibilityCandidate['job']) => {
     discardJob.reset();
     setDiscardTarget(job);
   };
@@ -90,9 +137,7 @@ export function PublisherPage() {
   };
 
 
-  const publishableJobs = (jobs.data ?? []).filter(
-    (job) => !job.publishedAt && job.status === 'completed' && (job.validationStatus === 'passed' || job.validationStatus === 'warning'),
-  );
+  const eligibilityItems = eligibility.data?.items ?? [];
   const publicationRank: Record<string, number> = { BLOCKED: 0, FAILED: 1, HELD: 2, READY: 3, PUBLISHING: 4, PUBLISHED: 5 };
   const publicationItems = [...(publications.data?.items ?? [])].sort(
     (left, right) => (publicationRank[left.publication.state] ?? 6) - (publicationRank[right.publication.state] ?? 6),
@@ -106,7 +151,7 @@ export function PublisherPage() {
         </Typography>
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
-        {jobs.isError || publications.isError ? <Alert severity="warning">Unable to load persisted Publisher summaries.</Alert> : null}
+        {eligibility.isError || publications.isError ? <Alert severity="warning">Unable to load Publisher eligibility or persisted publication summaries.</Alert> : null}
         {publishJob.isError ? <Alert severity="warning" sx={{ mb: 2 }}>Publish failed. The file may already exist or be missing.</Alert> : null}
         {publishJob.isSuccess ? <Alert severity="success" sx={{ mb: 2 }}>Job published.</Alert> : null}
         {publisherAction.isError ? <Alert severity="error" sx={{ mb: 2 }}>{publisherAction.error instanceof Error ? publisherAction.error.message : 'Publisher action failed.'}</Alert> : null}
@@ -153,6 +198,7 @@ export function PublisherPage() {
                     <TableCell>
                       <Stack spacing={0.5}>
                         <Chip label={publication.state} size="small" color={publication.state === 'PUBLISHED' ? 'success' : publication.state === 'BLOCKED' || publication.state === 'FAILED' ? 'error' : publication.state === 'HELD' ? 'warning' : 'default'} />
+                        {publication.validationOverrideEventIds?.length ? <Chip label="ALLOWED_BY_OVERRIDE" color="warning" size="small" /> : null}
                         <Typography variant="caption">Job #{publication.queueJobId} · Run {publication.validationRunId}</Typography>
                         <Typography variant="caption" color="text.secondary">{publication.failureSummary || publication.holdReason || publication.state}</Typography>
                       </Stack>
@@ -168,7 +214,7 @@ export function PublisherPage() {
                     <TableCell align="right">
                       {publication.state === 'READY' ? (
                         <Stack direction="row" justifyContent="flex-end" spacing={1}>
-                          <Button size="small" variant="contained" startIcon={<PublishIcon />} onClick={() => publishJob.mutate({ jobId: publication.queueJobId, reason: actionReason })} disabled={publishJob.isPending || !actionReason.trim()}>Publish</Button>
+                          <Button size="small" variant="contained" startIcon={<PublishIcon />} onClick={() => openExistingPublicationDialog(publication)} disabled={publishJob.isPending}>Publish</Button>
                           <Button size="small" onClick={() => publisherAction.mutate({ publicationId: publication.publicationId, action: 'hold', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Hold</Button>
                         </Stack>
                       ) : publication.state === 'HELD' ? (
@@ -201,44 +247,51 @@ export function PublisherPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {publishableJobs.map((job) => (
-                  <TableRow key={job.id} hover>
+                {eligibilityItems.map((candidate) => (
+                  <TableRow key={candidate.job.id} hover>
                     <TableCell>
                       <Stack spacing={0.5}>
-                        <Typography fontWeight={700}>{fileNameFromPath(job.mediaPath)}</Typography>
+                        <Typography fontWeight={700}>{fileNameFromPath(candidate.job.mediaPath)}</Typography>
                         <Typography color="text.secondary" variant="body2">
-                          Job #{job.executionNumber ?? job.id}
+                          Job #{candidate.job.executionNumber ?? candidate.job.id}
                         </Typography>
                       </Stack>
                     </TableCell>
-                    <TableCell sx={{ wordBreak: 'break-all' }}>{job.outputPath}</TableCell>
-                    <TableCell sx={{ wordBreak: 'break-all' }}>{job.publishedPath || 'Not published yet'}</TableCell>
+                    <TableCell sx={{ wordBreak: 'break-all' }}>{candidate.job.outputPath}</TableCell>
+                    <TableCell sx={{ wordBreak: 'break-all' }}>{candidate.job.destinationPath || 'Frozen destination unavailable'}</TableCell>
                     <TableCell>
-                      <Chip
-                        label={`${job.validationStatus} ${job.validationScore || 0}/100`}
-                        color={job.validationStatus === 'passed' ? 'success' : 'warning'}
-                        size="small"
-                      />
+                      <Stack spacing={0.5}>
+                        <Chip
+                          label={candidate.status}
+                          color={candidate.status === 'ALLOWED' ? 'success' : candidate.status === 'ALLOWED_BY_OVERRIDE' ? 'warning' : 'error'}
+                          size="small"
+                        />
+                        <Typography variant="caption" color="text.secondary">
+                          {candidate.job.validationOutcome || candidate.job.validationStatus || 'Validation unavailable'}
+                          {candidate.job.validationScore ? ` · ${candidate.job.validationScore}/100` : ''}
+                        </Typography>
+                        {candidate.reason ? <Typography variant="caption" color="error.main">{candidate.reason}</Typography> : null}
+                      </Stack>
                     </TableCell>
                     <TableCell align="right">
                       <Button
                         startIcon={<PublishIcon />}
                         variant="contained"
-                        onClick={() => publishJob.mutate({ jobId: job.id, reason: actionReason })}
-                        disabled={publishJob.isPending || Boolean(job.publishedAt) || !actionReason.trim()}
+                        onClick={() => openPublishDialog(candidate)}
+                        disabled={publishJob.isPending || candidate.status === 'BLOCKED'}
                       >
-                        {job.publishedAt ? 'Published' : 'Publish'}
+                        Publish
                       </Button>
-                        <Button
-                          variant="outlined"
-                          color="error"
-                          size="small"
-                          startIcon={<DeleteOutlineIcon />}
-                          disabled={publishJob.isPending || discardJob.isPending}
-                          onClick={() => openDiscardDialog(job)}
-                        >
-                          Discard
-                        </Button>
+                      <Button
+                        variant="outlined"
+                        color="error"
+                        size="small"
+                        startIcon={<DeleteOutlineIcon />}
+                        disabled={publishJob.isPending || discardJob.isPending}
+                        onClick={() => openDiscardDialog(candidate.job)}
+                      >
+                        Discard
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -246,12 +299,51 @@ export function PublisherPage() {
             </Table>
           </CardContent>
         </Card>
-        {!jobs.isLoading && publishableJobs.length === 0 ? (
+        {!eligibility.isLoading && eligibilityItems.length === 0 ? (
           <Alert severity="info" sx={{ mt: 2 }}>
-            Validated jobs will appear here after they pass Validation.
+            No completed unpublished jobs are currently in the bounded Publisher eligibility window.
           </Alert>
         ) : null}
       </Box>
+      <Dialog open={publishTarget !== null} onClose={closePublishDialog} maxWidth="sm" fullWidth>
+        <DialogTitle>Confirm manual publication</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Publisher will recheck the current Validation, Result identity, required artifacts, and frozen delivery destination before delivery.
+          </DialogContentText>
+          {publishTarget?.status === 'ALLOWED_BY_OVERRIDE' ? (
+            <Alert severity="warning" sx={{ mt: 2 }}>
+              This Result is eligible through Publisher-scoped Validation overrides. Confirm that you reviewed the findings; publication will preserve the ValidationRun and override history.
+            </Alert>
+          ) : null}
+          {publishTarget ? (
+            <DialogContentText sx={{ mt: 2 }}>
+              Job #{publishTarget.executionNumber ?? publishTarget.jobId} · {publishTarget.destinationPath || 'Frozen destination unavailable'}
+            </DialogContentText>
+          ) : null}
+          <TextField
+            label="Operator reason"
+            value={actionReason}
+            onChange={(event) => setActionReason(event.target.value)}
+            required
+            fullWidth
+            multiline
+            minRows={2}
+            sx={{ mt: 2 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closePublishDialog} disabled={publishJob.isPending}>Cancel</Button>
+          <Button
+            variant="contained"
+            startIcon={<PublishIcon />}
+            onClick={confirmPublish}
+            disabled={publishJob.isPending || !actionReason.trim()}
+          >
+            {publishJob.isPending ? 'Publishing…' : 'Confirm publish'}
+          </Button>
+        </DialogActions>
+      </Dialog>
       <Dialog
         open={discardTarget !== null}
         onClose={closeDiscardDialog}

@@ -577,6 +577,15 @@ func openAPIPaths() gin.H {
 				},
 			},
 		},
+		"/api/publisher/eligibility": gin.H{
+			"get": gin.H{
+				"tags":        []string{"Publisher"},
+				"summary":     "List bounded manual publication eligibility",
+				"operationId": "listPublisherEligibility",
+				"parameters":  []gin.H{{"name": "limit", "in": "query", "required": false, "schema": gin.H{"type": "integer", "minimum": 1, "maximum": 100, "default": 100}}},
+				"responses":   gin.H{"200": jsonResponse("Manual publication candidates", ref("PublisherEligibilityResponse")), "400": jsonResponse("Invalid candidate limit", ref("Error"))},
+			},
+		},
 		"/api/logs/files": gin.H{
 			"get": gin.H{
 				"tags":        []string{"Logs"},
@@ -1416,6 +1425,32 @@ func openAPIComponents() gin.H {
 					"sourcePath":    gin.H{"type": "string", "example": "/media/staging/movie.mkv"},
 					"publishedPath": gin.H{"type": "string", "example": "/media/library/movies/movie.mkv"},
 					"message":       gin.H{"type": "string"},
+				},
+			},
+			"PublisherEligibilityResponse": gin.H{
+				"type": "object",
+				"properties": gin.H{
+					"items": gin.H{"type": "array", "items": ref("PublisherEligibilityCandidate")},
+					"limit": gin.H{"type": "integer", "maximum": 100},
+				},
+			},
+			"PublisherEligibilityCandidate": gin.H{
+				"type": "object",
+				"properties": gin.H{
+					"job":    ref("PublisherEligibilityJob"),
+					"status": gin.H{"type": "string", "enum": []string{"ALLOWED", "ALLOWED_BY_OVERRIDE", "BLOCKED"}},
+					"reason": gin.H{"type": "string"},
+				},
+			},
+			"PublisherEligibilityJob": gin.H{
+				"type": "object",
+				"properties": gin.H{
+					"id": gin.H{"type": "integer"}, "executionNumber": gin.H{"type": "integer"},
+					"mediaPath": gin.H{"type": "string"}, "outputPath": gin.H{"type": "string"},
+					"destinationPath": gin.H{"type": "string"}, "publishedPath": gin.H{"type": "string"},
+					"publishedAt":      gin.H{"type": "string", "format": "date-time"},
+					"validationStatus": gin.H{"type": "string"}, "validationOutcome": gin.H{"type": "string"},
+					"validationScore": gin.H{"type": "integer"}, "validationRunId": gin.H{"type": "string"},
 				},
 			},
 			"LogFile": gin.H{

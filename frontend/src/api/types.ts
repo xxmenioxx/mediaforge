@@ -1779,6 +1779,7 @@ export type PublisherPublication = {
   publishMode: 'standard' | 'replace_library_asset';
   resultArtifactId: string;
   validationRunId: string;
+  validationOverrideEventIds?: string[];
   state: 'READY' | 'HELD' | 'PUBLISHING' | 'PUBLISHED' | 'BLOCKED' | 'FAILED';
   holdReason?: string;
   failureCode?: string;
@@ -1797,6 +1798,21 @@ export type PublisherPublicationSummary = {
   attempts: Array<{ attemptId: string; actorSource: string; actorId: string; createdAt: string }>;
   evidence: Array<{ attemptId: string; phase: string; outcome: string; code?: string; summary?: string; createdAt: string }>;
   audit: Array<{ action: string; actorSource: string; actorId: string; reason?: string; version: number; createdAt: string }>;
+};
+
+export type PublisherEligibilityStatus = 'ALLOWED' | 'ALLOWED_BY_OVERRIDE' | 'BLOCKED';
+
+export type PublisherEligibilityCandidate = {
+  job: Pick<QueueJob,
+    'id' | 'executionNumber' | 'mediaPath' | 'outputPath' | 'publishedPath' | 'publishedAt' |
+    'validationStatus' | 'validationScore' | 'validationOutcome' | 'validationRunId'> & { destinationPath?: string };
+  status: PublisherEligibilityStatus;
+  reason?: string;
+};
+
+export type PublisherEligibilityResponse = {
+  items: PublisherEligibilityCandidate[];
+  limit: number;
 };
 
 export type LogFile = {

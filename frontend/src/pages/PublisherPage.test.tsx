@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
-import type { PublisherPublicationSummary } from '../api/types';
+import type { PublisherEligibilityResponse, PublisherPublicationSummary } from '../api/types';
 import { PublisherPage } from './PublisherPage';
 
 afterEach(() => {
@@ -47,7 +47,7 @@ describe('PublisherPage persisted delivery controls', () => {
       evidence: [],
       audit: [],
     };
-    vi.spyOn(api, 'queueJobs').mockResolvedValue([]);
+    vi.spyOn(api, 'publisherEligibility').mockResolvedValue({ items: [], limit: 100 });
     const summaries = vi.spyOn(api, 'publisherPublications').mockResolvedValue({ items: [publication], limit: 100 });
     const action = vi.spyOn(api, 'publisherAction').mockResolvedValue({ publicationId: 'publication-54-test', state: 'HELD' });
     const user = userEvent.setup();
@@ -64,5 +64,73 @@ describe('PublisherPage persisted delivery controls', () => {
 		reason: 'Pause for review',
 	}, expect.anything()));
     expect(summaries).toHaveBeenCalled();
+  });
+
+  it('shows override-backed eligibility and requires an operator reason to confirm publication', async () => {
+    const candidate: PublisherEligibilityResponse['items'][number] = {
+      job: {
+        id: 1542,
+        executionNumber: 4,
+        mediaPath: '/raw/episode.mkv',
+        outputPath: '/staging/episode.mkv',
+        destinationPath: '/library/episode.mkv',
+        publishedPath: '',
+        validationStatus: 'failed',
+        validationScore: 82,
+        validationOutcome: 'REVIEW_REQUIRED',
+        validationRunId: 'validation-run:1542:4',
+      },
+      status: 'ALLOWED_BY_OVERRIDE',
+    };
+    const eligibility = vi.spyOn(api, 'publisherEligibility').mockResolvedValue({ items: [candidate], limit: 100 });
+    vi.spyOn(api, 'publisherPublications').mockResolvedValue({ items: [], limit: 100 });
+    const publish = vi.spyOn(api, 'publishJob').mockResolvedValue({
+      jobId: 1542,
+      status: 'published',
+      sourcePath: '/staging/episode.mkv',
+      publishedPath: '/library/episode.mkv',
+      message: 'Published',
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText('ALLOWED_BY_OVERRIDE')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+    expect(await screen.findByText(/Publisher-scoped Validation overrides/i)).toBeTruthy();
+    const confirm = screen.getByRole('button', { name: 'Confirm publish' });
+    expect(confirm).toHaveProperty('disabled', true);
+    await user.type(screen.getByRole('textbox', { name: 'Operator reason' }), 'Reviewed the findings for this Result');
+    await user.click(confirm);
+
+    await waitFor(() => expect(publish).toHaveBeenCalledWith({
+      jobId: 1542,
+      reason: 'Reviewed the findings for this Result',
+    }, expect.anything()));
+    await waitFor(() => expect(eligibility).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Job published.')).toBeTruthy();
+  });
+
+  it('shows backend blocking reasons and disables publication for blocked candidates', async () => {
+    vi.spyOn(api, 'publisherEligibility').mockResolvedValue({
+      items: [{
+        job: {
+          id: 1543,
+          mediaPath: '/raw/blocked.mkv',
+          outputPath: '/staging/blocked.mkv',
+          publishedPath: '',
+          validationStatus: 'passed',
+          validationScore: 99,
+          validationOutcome: 'REVIEW_REQUIRED',
+        },
+        status: 'BLOCKED',
+        reason: 'blocking Validation finding has no eligible override: duration.timeline',
+      }],
+      limit: 100,
+    });
+    vi.spyOn(api, 'publisherPublications').mockResolvedValue({ items: [], limit: 100 });
+    renderPage();
+
+    expect(await screen.findByText(/no eligible override: duration\.timeline/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Publish' })).toHaveProperty('disabled', true);
   });
 });

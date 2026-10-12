@@ -1021,7 +1021,7 @@ func TestPublisherIdentityBindsEligibleValidationOverrideEvent(t *testing.T) {
 	if err := fixture.db.Save(&job).Error; err != nil {
 		t.Fatal(err)
 	}
-	result, err := (PublisherHandler{db: fixture.db}).publishQueueJobWithMode(job, false, false)
+	result, err := (PublisherHandler{db: fixture.db}).handoffAndPublishWithReason(job, false, "Reviewed the eligible Validation overrides")
 	if err != nil || result.Status != "published" {
 		t.Fatalf("eligible #53 override did not authorize Publisher handoff: result=%#v err=%v", result, err)
 	}

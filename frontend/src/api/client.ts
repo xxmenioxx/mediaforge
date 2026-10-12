@@ -37,6 +37,7 @@ import type {
   PathBrowseResponse,
   PublishResult,
   PublisherPublicationSummary,
+  PublisherEligibilityResponse,
   QueueJob,
   QueueJobInput,
   QueueJobUpdateInput,
@@ -677,6 +678,7 @@ export const api = {
     }),
   queueJobs: () => request<QueueJob[]>('/api/queue/jobs'),
   publisherPublications: () => request<{ items: PublisherPublicationSummary[]; limit: number }>('/api/publisher/publications'),
+  publisherEligibility: (limit = 100) => request<PublisherEligibilityResponse>(`/api/publisher/eligibility?limit=${limit}`),
   publisherAction: ({ publicationId, action, reason }: { publicationId: string; action: 'hold' | 'release' | 'retry'; reason: string }) =>
     request<PublishResult | { publicationId: string; state: string }>(`/api/publisher/publications/${encodeURIComponent(publicationId)}/actions`, {
       method: 'POST',
