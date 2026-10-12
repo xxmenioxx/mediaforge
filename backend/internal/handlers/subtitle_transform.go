@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -83,6 +84,75 @@ func fontAttachmentRelativePath(mediaPath, safeFilename string) string {
 	return filepath.Join(base+".fonts", safeFilename)
 }
 
+func subtitleStreamExcludedByResolvedPlan(plan MediaJobPlan, streamIndex int) bool {
+	if plan.ResolvedTracks == nil {
+		return false
+	}
+	for _, stream := range plan.ResolvedTracks.SubtitleStreams {
+		if stream.StreamIndex == streamIndex {
+			return stream.Action == SubtitleDispositionRemove
+		}
+	}
+	return false
+}
+
+func subtitleTransformAllowedByPlan(plan MediaJobPlan, streamIndex int) bool {
+	if plan.ResolvedTracks != nil {
+		return !subtitleStreamExcludedByResolvedPlan(plan, streamIndex)
+	}
+	if plan.Override.KeepSubtitleStreams == nil {
+		return true
+	}
+	for _, selected := range plan.Override.KeepSubtitleStreams {
+		if selected == streamIndex {
+			return true
+		}
+	}
+	return false
+}
+
+func filterSubtitleTransformsForPlan(plan MediaJobPlan, transforms []SubtitleTransform) []SubtitleTransform {
+	filtered := make([]SubtitleTransform, 0, len(transforms))
+	for _, transform := range transforms {
+		if subtitleTransformAllowedByPlan(plan, transform.StreamIndex) {
+			filtered = append(filtered, transform)
+		}
+	}
+	return filtered
+}
+
+func resolvedSubtitleSidecarsForPlan(plan MediaJobPlan) []ResolvedTrackSidecar {
+	if plan.ResolvedTracks == nil || len(plan.ResolvedTracks.SidecarOutputs) == 0 {
+		return nil
+	}
+	filtered := make([]ResolvedTrackSidecar, 0, len(plan.ResolvedTracks.SidecarOutputs))
+	for _, decision := range plan.ResolvedTracks.SidecarOutputs {
+		found := false
+		allowed := true
+		for _, stream := range plan.ResolvedTracks.SubtitleStreams {
+			if stream.StreamIndex != decision.StreamIndex {
+				continue
+			}
+			found = true
+			allowed = stream.Action.ExtractsSidecar()
+			break
+		}
+		// Historical plans may contain sidecars without per-stream decisions.
+		// Keep those readable, but never execute one whose frozen disposition is remove.
+		if !found || allowed {
+			filtered = append(filtered, decision)
+		}
+	}
+	return filtered
+}
+
+func hasSubtitleArtifactWork(plan MediaJobPlan) bool {
+	if plan.ResolvedTracks != nil {
+		return len(resolvedSubtitleSidecarsForPlan(plan)) > 0 || len(plan.ResolvedTracks.FontAttachments) > 0
+	}
+	return len(filterSubtitleTransformsForPlan(plan, plan.Override.SubtitleTransforms)) > 0
+}
+
 func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
 	plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
 	if !ok || len(plan.SidecarOutputs) == 0 {
@@ -91,7 +161,7 @@ func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
 	base := strings.TrimSuffix(filepath.Base(job.MediaPath), filepath.Ext(job.MediaPath))
 	used := map[string]struct{}{}
 	artifacts := make([]SubtitleArtifact, 0, len(plan.SidecarOutputs))
-	for _, decision := range plan.SidecarOutputs {
+	for _, decision := range resolvedSubtitleSidecarsForPlan(MediaJobPlan{ResolvedTracks: plan}) {
 		artifact := SubtitleArtifact{
 			ArtifactID: subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format), Type: "subtitle_sidecar",
 			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, SourceType: decision.SourceType, Format: decision.Format, RequestedFormat: decision.RequestedFormat, Mode: decision.Mode, OCRRequired: decision.OCRRequired,
@@ -102,6 +172,58 @@ func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
 		artifacts = append(artifacts, artifact)
 	}
 	return artifacts
+}
+
+func subtitleArtifactAllowedForQueueJob(job models.QueueJob, artifact SubtitleArtifact) bool {
+	if artifact.Type != "" && artifact.Type != "subtitle_sidecar" {
+		return true
+	}
+	if plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); ok {
+		for _, decision := range resolvedSubtitleSidecarsForPlan(MediaJobPlan{ResolvedTracks: plan}) {
+			if decision.StreamIndex != artifact.StreamIndex {
+				continue
+			}
+			if decision.Format != "" && !strings.EqualFold(decision.Format, artifact.Format) {
+				continue
+			}
+			if decision.Mode != "" && artifact.Mode != "" && !strings.EqualFold(decision.Mode, artifact.Mode) {
+				continue
+			}
+			return true
+		}
+		return false
+	}
+	// Only newly captured snapshots carry this provenance bit. Older snapshots
+	// may contain inherited Track Profile selections in the same override shape;
+	// keep those jobs immutable and retain their historical artifact set.
+	if !boolValue(job.ProfileSnapshot[assetSubtitleSelectionExplicitSnapshotKey], false) {
+		return true
+	}
+	if raw, ok := job.ProfileSnapshot[assetConversionOverrideSnapshotKey]; ok {
+		encoded, err := json.Marshal(raw)
+		if err == nil {
+			var override AssetConversionOverrideState
+			if json.Unmarshal(encoded, &override) == nil && override.KeepSubtitleStreams != nil {
+				for _, selected := range override.KeepSubtitleStreams {
+					if selected == artifact.StreamIndex {
+						return true
+					}
+				}
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func authorizedSubtitleArtifactsForQueueJob(job models.QueueJob, artifacts []SubtitleArtifact) []SubtitleArtifact {
+	filtered := make([]SubtitleArtifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if subtitleArtifactAllowedForQueueJob(job, artifact) {
+			filtered = append(filtered, artifact)
+		}
+	}
+	return filtered
 }
 
 func plannedFontAttachmentArtifacts(job models.QueueJob) []FontAttachmentArtifact {
@@ -137,7 +259,8 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 	if plan.ResolvedTracks != nil {
 		return generateResolvedSubtitleArtifacts(ctx, plan, progress)
 	}
-	if len(plan.Override.SubtitleTransforms) == 0 {
+	transforms := filterSubtitleTransformsForPlan(plan, plan.Override.SubtitleTransforms)
+	if len(transforms) == 0 {
 		return nil, nil
 	}
 	streams := map[int]MediaStream{}
@@ -147,7 +270,7 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 	base := strings.TrimSuffix(plan.OutputPath, filepath.Ext(plan.OutputPath))
 	usedPaths := map[string]struct{}{}
 	usedExistingSidecars := map[string]struct{}{}
-	artifacts := make([]SubtitleArtifact, 0, len(plan.Override.SubtitleTransforms))
+	artifacts := make([]SubtitleArtifact, 0, len(transforms))
 	completed := false
 	defer func() {
 		if completed {
@@ -158,7 +281,7 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 		}
 	}()
 	var bitmapStreams map[int]FFProbeStream
-	for _, transform := range plan.Override.SubtitleTransforms {
+	for _, transform := range transforms {
 		stream, exists := streams[transform.StreamIndex]
 		if !exists {
 			return nil, fmt.Errorf("subtitle stream %d disappeared before extraction", transform.StreamIndex)
@@ -250,7 +373,8 @@ func generateSubtitleArtifactsWithProgress(ctx context.Context, plan MediaJobPla
 }
 
 func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, progress subtitleArtifactProgress) ([]SubtitleArtifact, error) {
-	if plan.ResolvedTracks == nil || len(plan.ResolvedTracks.SidecarOutputs) == 0 {
+	sidecarOutputs := resolvedSubtitleSidecarsForPlan(plan)
+	if len(sidecarOutputs) == 0 {
 		return nil, nil
 	}
 	streams := map[int]MediaStream{}
@@ -259,7 +383,7 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 	}
 	base := strings.TrimSuffix(plan.OutputPath, filepath.Ext(plan.OutputPath))
 	usedPaths := map[string]struct{}{}
-	artifacts := make([]SubtitleArtifact, 0, len(plan.ResolvedTracks.SidecarOutputs))
+	artifacts := make([]SubtitleArtifact, 0, len(sidecarOutputs))
 	var bitmapStreams map[int]FFProbeStream
 	completed := false
 	defer func() {
@@ -277,13 +401,13 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 		}
 	}()
 	sharedTransforms := map[string][]ResolvedTrackSidecar{}
-	for _, decision := range plan.ResolvedTracks.SidecarOutputs {
+	for _, decision := range sidecarOutputs {
 		if strings.EqualFold(strings.TrimSpace(decision.RequestedFormat), "both") && strings.EqualFold(strings.TrimSpace(decision.Mode), "converted") {
 			sharedTransforms[decision.LogicalTransformKey] = append(sharedTransforms[decision.LogicalTransformKey], decision)
 		}
 	}
 	processedShared := map[string]bool{}
-	for _, decision := range plan.ResolvedTracks.SidecarOutputs {
+	for _, decision := range sidecarOutputs {
 		sharedKey := decision.LogicalTransformKey
 		if group := sharedTransforms[sharedKey]; len(group) == 2 && !processedShared[sharedKey] {
 			formats := map[string]bool{}
@@ -1046,7 +1170,8 @@ func publishSubtitleArtifacts(
 	overwrite bool,
 	backups *[]publishBackup,
 ) ([]string, error) {
-	artifacts := subtitleArtifactsFromJSON(job.SubtitleArtifacts)
+	artifacts := authorizedSubtitleArtifactsForQueueJob(*job, subtitleArtifactsFromJSON(job.SubtitleArtifacts))
+	job.SubtitleArtifacts = sidecarArtifactsJSON(artifacts, fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts))
 	if len(artifacts) == 0 {
 		return nil, nil
 	}

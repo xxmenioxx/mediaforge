@@ -1007,6 +1007,7 @@ func queuePreflightOverrideFromSnapshot(snapshot models.JSONMap) *AssetConversio
 	if err := json.Unmarshal(encoded, &override); err != nil {
 		return nil
 	}
+	override.assetKeepSubtitleStreamsExplicit = boolValue(snapshot[assetSubtitleSelectionExplicitSnapshotKey], false)
 	return &override
 }
 

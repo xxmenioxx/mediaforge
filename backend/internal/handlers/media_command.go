@@ -909,6 +909,7 @@ func buildMediaJobPlanWithOverride(inputPath string, outputPath string, profile 
 	plan.ResolvedTracks = plan.Override.ResolvedTrackPlan
 	plan.StreamValidationWarnings = append(plan.StreamValidationWarnings, validateAACStereoSource(&plan)...)
 	applyProfileSubtitleExternalization(&plan)
+	plan.Override.SubtitleTransforms = filterSubtitleTransformsForPlan(plan, plan.Override.SubtitleTransforms)
 	plan.ProcessingMode = mediaProcessingMode(effectiveProfile)
 	// audio_only represents "no video profile selected" while the queue still
 	// carries a technical fallback profile. full_encode is derived from the
@@ -927,10 +928,11 @@ func applyProfileSubtitleExternalization(plan *MediaJobPlan) {
 	if format == "" {
 		return
 	}
-	transforms := make([]SubtitleTransform, 0, len(plan.Streams.Subtitle))
+	selected := selectedSubtitleStreams(*plan)
+	transforms := make([]SubtitleTransform, 0, len(selected))
 	ocrMode := normalizedOCRMode(workerStringValue(plan.Profile.WorkerConfig["subtitleOCRMode"]))
 	forcedOCRLanguage := strings.ToLower(strings.TrimSpace(workerStringValue(plan.Profile.WorkerConfig["subtitleOCRLanguage"])))
-	for _, stream := range plan.Streams.Subtitle {
+	for _, stream := range selected {
 		ocrLanguage := stream.Language
 		if forcedOCRLanguage != "" && forcedOCRLanguage != "auto" {
 			ocrLanguage = forcedOCRLanguage
@@ -948,9 +950,8 @@ func applyProfileSubtitleExternalization(plan *MediaJobPlan) {
 	}
 	plan.Override.SubtitleTransforms = normalizedSubtitleTransforms(transforms)
 	if len(plan.Override.SubtitleTransforms) > 0 {
-		plan.Override.KeepSubtitleStreams = nil
 		plan.StreamValidationWarnings = append(plan.StreamValidationWarnings,
-			fmt.Sprintf("Video profile will externalize all subtitle tracks as %s; embedded subtitle tracks are removed only after every sidecar passes validation.", strings.ToUpper(format)))
+			fmt.Sprintf("Video profile will externalize selected subtitle tracks as %s; embedded subtitle tracks are removed only after every sidecar passes validation.", strings.ToUpper(format)))
 	}
 }
 

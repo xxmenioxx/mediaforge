@@ -1030,3 +1030,250 @@ func TestResolvedTrackPlanTakesPrecedenceOverLegacySubtitleTransforms(t *testing
 		t.Fatalf("legacy-only transform stopped working: %#v", legacyArtifacts)
 	}
 }
+
+func TestExcludedLegacySubtitleStreamsNeverInvokeExtractionOCROrConversion(t *testing.T) {
+	for _, codec := range []string{"ass", "subrip", "hdmv_pgs_subtitle"} {
+		t.Run(codec, func(t *testing.T) {
+			bin := t.TempDir()
+			for _, name := range []string{"ffmpeg", "ffprobe", "seconv", "tesseract"} {
+				path := filepath.Join(bin, name)
+				script := "#!/bin/sh\nprintf '%s' called > \"$0.called\"\nexit 1\n"
+				if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", bin)
+			plan := MediaJobPlan{
+				InputPath: "/raw/Episode.mkv", OutputPath: filepath.Join(t.TempDir(), "Episode.mkv"),
+				Streams: MediaStreamInventory{Subtitle: []MediaStream{
+					{Index: 2, Codec: "subrip", Language: "eng"},
+					{Index: 3, Codec: codec, Language: "eng"},
+					{Index: 4, Codec: "subrip", Language: "eng"},
+				}},
+				Override: AssetConversionOverrideState{
+					KeepSubtitleStreams: []int{2, 4},
+					SubtitleTransforms:  []SubtitleTransform{{StreamIndex: 3, Format: "srt", RemoveEmbedded: true, Language: "eng"}},
+				},
+			}
+			artifacts, err := generateSubtitleArtifactsWithProgress(context.Background(), plan, nil)
+			if err != nil || len(artifacts) != 0 {
+				t.Fatalf("excluded %s transform returned artifacts=%#v err=%v", codec, artifacts, err)
+			}
+			for _, name := range []string{"ffmpeg", "ffprobe", "seconv", "tesseract"} {
+				if _, err := os.Stat(filepath.Join(bin, name+".called")); !os.IsNotExist(err) {
+					t.Fatalf("excluded %s subtitle reached %s: stat err=%v", codec, name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestEmptyAssetSubtitleSelectionNeverInvokesSubtitleOperations(t *testing.T) {
+	bin := t.TempDir()
+	for _, name := range []string{"ffmpeg", "ffprobe", "seconv", "tesseract"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nprintf called > \"$0.called\"\nexit 1\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	plan := MediaJobPlan{
+		InputPath: "/raw/Episode.mkv", OutputPath: filepath.Join(t.TempDir(), "Episode.mkv"),
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{
+			{Index: 2, Codec: "subrip", Language: "eng"},
+			{Index: 3, Codec: "hdmv_pgs_subtitle", Language: "spa"},
+			{Index: 4, Codec: "ass", Language: "jpn"},
+		}},
+		Override: AssetConversionOverrideState{
+			KeepSubtitleStreams: []int{},
+			SubtitleTransforms: []SubtitleTransform{
+				{StreamIndex: 2, Format: "ass", RemoveEmbedded: true, Language: "eng"},
+				{StreamIndex: 3, Format: "srt", RemoveEmbedded: true, Language: "spa"},
+				{StreamIndex: 4, Format: "srt", RemoveEmbedded: true, Language: "jpn"},
+			},
+		},
+	}
+	artifacts, err := generateSubtitleArtifactsWithProgress(context.Background(), plan, nil)
+	if err != nil || len(artifacts) != 0 {
+		t.Fatalf("empty asset selection returned sidecars=%#v err=%v", artifacts, err)
+	}
+	for _, name := range []string{"ffmpeg", "ffprobe", "seconv", "tesseract"} {
+		if _, err := os.Stat(filepath.Join(bin, name+".called")); !os.IsNotExist(err) {
+			t.Fatalf("empty asset selection reached %s: stat err=%v", name, err)
+		}
+	}
+}
+
+func TestExcludedCanonicalSubtitleSidecarNeverInvokesSubtitleTools(t *testing.T) {
+	bin := t.TempDir()
+	for _, name := range []string{"ffmpeg", "ffprobe", "seconv", "tesseract"} {
+		path := filepath.Join(bin, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf called > \"$0.called\"\nexit 1\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	plan := MediaJobPlan{
+		InputPath: "/raw/Episode.mkv", OutputPath: filepath.Join(t.TempDir(), "Episode.mkv"),
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{{Index: 3, Codec: "subrip", Language: "eng"}}},
+		ResolvedTracks: &ResolvedTrackPlan{
+			SubtitleStreams: []ResolvedSubtitleTrack{{StreamIndex: 3, Action: SubtitleDispositionRemove}},
+			SidecarOutputs:  []ResolvedTrackSidecar{{StreamIndex: 3, Codec: "subrip", SourceType: "text", Format: "srt", RequestedFormat: "srt", Mode: "converted"}},
+		},
+		Override: AssetConversionOverrideState{SubtitleTransforms: []SubtitleTransform{{StreamIndex: 3, Format: "ass", RemoveEmbedded: true}}},
+	}
+	artifacts, err := generateSubtitleArtifactsWithProgress(context.Background(), plan, nil)
+	if err != nil || len(artifacts) != 0 {
+		t.Fatalf("excluded canonical sidecar returned artifacts=%#v err=%v", artifacts, err)
+	}
+	for _, name := range []string{"ffmpeg", "ffprobe", "seconv", "tesseract"} {
+		if _, err := os.Stat(filepath.Join(bin, name+".called")); !os.IsNotExist(err) {
+			t.Fatalf("excluded canonical sidecar reached %s: stat err=%v", name, err)
+		}
+	}
+}
+
+func TestExcludedSameLanguageSubtitleNeverReachesFFmpeg(t *testing.T) {
+	bin := t.TempDir()
+	ffmpeg := filepath.Join(bin, "ffmpeg")
+	script := "#!/bin/sh\noutput=\"\"\nfor argument do output=\"$argument\"; done\nprintf '%s\\n' \"$*\" >> \"$0.log\"\nprintf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hola' > \"$output\"\n"
+	if err := os.WriteFile(ffmpeg, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	plan := MediaJobPlan{
+		InputPath: "/raw/Episode.mkv", OutputPath: filepath.Join(t.TempDir(), "Episode.mkv"),
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{
+			{Index: 2, Codec: "subrip", Language: "eng"},
+			{Index: 3, Codec: "subrip", Language: "eng"},
+			{Index: 4, Codec: "subrip", Language: "eng"},
+		}},
+		Override: AssetConversionOverrideState{
+			KeepSubtitleStreams: []int{2, 4},
+			SubtitleTransforms: []SubtitleTransform{
+				{StreamIndex: 2, Format: "srt", RemoveEmbedded: true, Language: "eng"},
+				{StreamIndex: 3, Format: "srt", RemoveEmbedded: true, Language: "eng"},
+				{StreamIndex: 4, Format: "srt", RemoveEmbedded: true, Language: "eng"},
+			},
+		},
+	}
+	var progress []int
+	artifacts, err := generateSubtitleArtifactsWithProgress(context.Background(), plan, func(artifact SubtitleArtifact) {
+		progress = append(progress, artifact.StreamIndex)
+	})
+	if err != nil || len(artifacts) != 2 || artifacts[0].StreamIndex != 2 || artifacts[1].StreamIndex != 4 {
+		t.Fatalf("selected duplicate-language artifact=%#v err=%v", artifacts, err)
+	}
+	for _, index := range progress {
+		if index == 3 {
+			t.Fatalf("excluded stream contributed artifact progress: %#v", progress)
+		}
+	}
+	log, err := os.ReadFile(ffmpeg + ".log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "0:2") || !strings.Contains(string(log), "0:4") || strings.Contains(string(log), "0:3") {
+		t.Fatalf("FFmpeg operations did not use only the selected stream index: %s", log)
+	}
+}
+
+func TestRemovedResolvedStreamHasNoPlannedSubtitleArtifactOrStageWork(t *testing.T) {
+	plan := ResolvedTrackPlan{
+		SubtitleStreams: []ResolvedSubtitleTrack{
+			{StreamIndex: 3, Action: SubtitleDispositionRemove},
+			{StreamIndex: 4, Action: SubtitleDispositionExtract},
+		},
+		SidecarOutputs: []ResolvedTrackSidecar{
+			{StreamIndex: 3, Codec: "subrip", Format: "srt", Mode: "converted"},
+			{StreamIndex: 4, Codec: "ass", Format: "ass", Mode: "original"},
+		},
+	}
+	snapshot, err := resolvedTrackPlanMap(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: "/raw/Episode.mkv", TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: snapshot}}
+	artifacts := plannedSubtitleArtifacts(job)
+	if len(artifacts) != 1 || artifacts[0].StreamIndex != 4 {
+		t.Fatalf("removed stream remained in planned SubtitleArtifacts: %#v", artifacts)
+	}
+	stagePlan := ResolvedTrackPlan{
+		SubtitleStreams: []ResolvedSubtitleTrack{{StreamIndex: 3, Action: SubtitleDispositionRemove}},
+		SidecarOutputs:  []ResolvedTrackSidecar{{StreamIndex: 3, Codec: "subrip", Format: "srt", Mode: "converted"}},
+	}
+	workPlan := MediaJobPlan{ResolvedTracks: &stagePlan}
+	if hasSubtitleArtifactWork(workPlan) {
+		t.Fatalf("removed-only sidecar scheduled subtitle stage work: %#v", stagePlan.SidecarOutputs)
+	}
+	stagePlan.FontAttachments = []ResolvedFontAttachment{{StreamIndex: 7}}
+	workPlan.ResolvedTracks = &stagePlan
+	if !hasSubtitleArtifactWork(workPlan) {
+		t.Fatal("independent font attachment work did not retain subtitle preparation stage")
+	}
+}
+
+func TestValidationAndPublisherIgnoreArtifactsOutsideTheFrozenTrackPlan(t *testing.T) {
+	staged := filepath.Join(t.TempDir(), "excluded.srt")
+	if err := os.WriteFile(staged, []byte("1\n00:00:01,000 --> 00:00:02,000\nexcluded\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolvedTrackPlanMap(ResolvedTrackPlan{
+		SubtitleStreams: []ResolvedSubtitleTrack{{StreamIndex: 3, Codec: "subrip", Action: SubtitleDispositionRemove}},
+		SidecarOutputs:  []ResolvedTrackSidecar{{StreamIndex: 3, Codec: "subrip", Format: "srt", Mode: "converted"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{
+		MediaPath:            "/raw/Episode.mkv",
+		TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: resolved},
+		SubtitleArtifacts: subtitleArtifactsJSON([]SubtitleArtifact{{
+			Type: "subtitle_sidecar", StreamIndex: 3, Format: "srt", Mode: "converted", StagedPath: staged, Status: "ready",
+		}}),
+	}
+	checks, _, report := validateRequiredSubtitleArtifacts(job)
+	if len(checks) != 0 || intValueSetting(report["required"], -1) != 0 {
+		t.Fatalf("Validation treated the removed stream as required: checks=%#v report=%#v", checks, report)
+	}
+	if artifacts, ok := report["artifacts"].([]SubtitleArtifact); !ok || len(artifacts) != 0 {
+		t.Fatalf("Validation retained an artifact for the removed stream: %#v", report["artifacts"])
+	}
+
+	destination := filepath.Join(t.TempDir(), "Episode.mkv")
+	var backups []publishBackup
+	published, err := publishSubtitleArtifacts(&job, destination, false, &backups)
+	if err != nil || len(published) != 0 {
+		t.Fatalf("Publisher used an artifact outside the frozen track plan: published=%#v err=%v", published, err)
+	}
+	if len(subtitleArtifactsFromJSON(job.SubtitleArtifacts)) != 0 {
+		t.Fatalf("Publisher retained the excluded artifact in the job: %#v", job.SubtitleArtifacts)
+	}
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("filtering an excluded artifact unexpectedly removed its staged file: %v", err)
+	}
+}
+
+func TestSubtitleArtifactSelectionPreservesNilEmptyAndLegacySnapshotSemantics(t *testing.T) {
+	artifact := SubtitleArtifact{Type: "subtitle_sidecar", StreamIndex: 3, Format: "srt", Mode: "converted"}
+	for _, test := range []struct {
+		name     string
+		snapshot models.JSONMap
+		allowed  bool
+	}{
+		{name: "nil inherits", snapshot: models.JSONMap{assetSubtitleSelectionExplicitSnapshotKey: true}, allowed: true},
+		{name: "empty excludes all", snapshot: models.JSONMap{
+			assetSubtitleSelectionExplicitSnapshotKey: true,
+			assetConversionOverrideSnapshotKey:        models.JSONMap{"keepSubtitleStreams": models.JSONList{}},
+		}, allowed: false},
+		{name: "legacy snapshot remains immutable", snapshot: models.JSONMap{
+			assetConversionOverrideSnapshotKey: models.JSONMap{"keepSubtitleStreams": models.JSONList{2, 4}},
+		}, allowed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			job := models.QueueJob{ProfileSnapshot: test.snapshot}
+			if got := subtitleArtifactAllowedForQueueJob(job, artifact); got != test.allowed {
+				t.Fatalf("artifact allowed=%v want %v for snapshot %#v", got, test.allowed, test.snapshot)
+			}
+		})
+	}
+}
