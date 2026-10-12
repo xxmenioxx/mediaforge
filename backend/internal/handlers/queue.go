@@ -2019,6 +2019,7 @@ func (h QueueHandler) captureOverrideOnlyProfileWithOverride(
 	}
 
 	snapshot[assetConversionOverrideSnapshotKey] = frozen
+	snapshot[assetSubtitleSelectionExplicitSnapshotKey] = override.assetKeepSubtitleStreamsExplicit
 	snapshot["overrideOnly"] = true
 	if err := h.captureInterlaceSnapshot(job.MediaPath, snapshot); err != nil {
 		return err
@@ -2101,6 +2102,7 @@ func (h QueueHandler) captureProfileWithOverride(job *models.QueueJob, profileID
 		}
 		snapshot[assetConversionOverrideSnapshotKey] = frozen
 	}
+	snapshot[assetSubtitleSelectionExplicitSnapshotKey] = override.assetKeepSubtitleStreamsExplicit
 	if err := h.captureInterlaceSnapshot(job.MediaPath, snapshot); err != nil {
 		return err
 	}
@@ -2125,9 +2127,17 @@ func (h QueueHandler) freezeEffectiveTrackPlan(job *models.QueueJob, override *A
 			profile[key] = value
 		}
 	}
+	delete(profile, assetKeepSubtitleStreamsConstraintKey)
+	if override.assetKeepSubtitleStreamsExplicit && override.KeepSubtitleStreams != nil {
+		profile[assetKeepSubtitleStreamsConstraintKey] = override.KeepSubtitleStreams
+	}
 	profile["keepVideoStreams"] = override.KeepVideoStreams
 	profile["keepAudioStreams"] = override.KeepAudioStreams
-	profile["keepSubtitleStreams"] = override.KeepSubtitleStreams
+	if override.KeepSubtitleStreams == nil {
+		delete(profile, "keepSubtitleStreams")
+	} else {
+		profile["keepSubtitleStreams"] = override.KeepSubtitleStreams
+	}
 	profile["videoMetadata"] = override.VideoMetadata
 	profile["audioMetadata"] = override.AudioMetadata
 	profile["subtitleMetadata"] = override.SubtitleMetadata

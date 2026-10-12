@@ -1128,7 +1128,11 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 	plan.SourceAssetPath = job.MediaPath
 	applyEpisodeVideoTrackTitle(h.db, &plan, job, library)
-	if len(plan.Override.SubtitleTransforms) > 0 || (plan.ResolvedTracks != nil && (len(plan.ResolvedTracks.SidecarOutputs) > 0 || len(plan.ResolvedTracks.FontAttachments) > 0)) {
+	job.SubtitleArtifacts = sidecarArtifactsJSON(
+		authorizedSubtitleArtifactsForQueueJob(job, subtitleArtifactsFromJSON(job.SubtitleArtifacts)),
+		fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts),
+	)
+	if hasSubtitleArtifactWork(plan) {
 		if err := transitionJobStage(h.db, &job, JobStagePreparingSubtitles); err != nil {
 			return job, http.StatusInternalServerError, err
 		}
@@ -1325,6 +1329,7 @@ func freezeQueuePreparedProfileSnapshot(db *gorm.DB, job *models.QueueJob, profi
 	// snapshot with the final resolved profile.
 	for _, key := range []string{
 		assetConversionOverrideSnapshotKey,
+		assetSubtitleSelectionExplicitSnapshotKey,
 		interlaceAnalysisSnapshotKey,
 		cadenceAnalysisSnapshotKey,
 		cadenceRecommendationSnapshotKey,
@@ -1761,16 +1766,19 @@ func (h WorkerHandler) profileForJob(job models.QueueJob) (models.Profile, error
 }
 
 const assetConversionOverrideSnapshotKey = "assetConversionOverride"
+const assetSubtitleSelectionExplicitSnapshotKey = "assetSubtitleSelectionExplicit"
 const queuePreparationFrozenSnapshotKey = "queuePreparationFrozen"
 
 func currentConversionOverrideForJob(job models.QueueJob, entries map[string]AssetConversionOverrideState) AssetConversionOverrideState {
 	override := conversionOverrideForPath(job.MediaPath, entries)
+	assetSubtitleSelectionExplicit := override.KeepSubtitleStreams != nil
 	if len(job.TrackProfileSnapshot) > 0 {
 		var profileOverride AssetConversionOverrideState
 		if encoded, err := json.Marshal(job.TrackProfileSnapshot); err == nil && json.Unmarshal(encoded, &profileOverride) == nil {
 			override = mergeTrackProfileBelowAssetOverride(profileOverride, override)
 		}
 	}
+	override.assetKeepSubtitleStreamsExplicit = assetSubtitleSelectionExplicit
 	return applyJobSelectionsToConversionOverride(job, override)
 }
 
@@ -1810,6 +1818,7 @@ func conversionOverrideForJob(job models.QueueJob, entries map[string]AssetConve
 		if encoded, err := json.Marshal(frozen); err == nil {
 			var override AssetConversionOverrideState
 			if json.Unmarshal(encoded, &override) == nil {
+				override.assetKeepSubtitleStreamsExplicit = boolValue(job.ProfileSnapshot[assetSubtitleSelectionExplicitSnapshotKey], false)
 				return applyJobSelectionsToConversionOverride(job, override)
 			}
 		}

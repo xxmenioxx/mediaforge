@@ -10,6 +10,8 @@ import (
 	"github.com/anuelvs/mvforge/backend/internal/models"
 )
 
+const assetKeepSubtitleStreamsConstraintKey = "_assetKeepSubtitleStreamsConstraint"
+
 // resolveTrackPlan turns a Track Profile plus the stable asset snapshot into
 // concrete decisions. It is intentionally independent from Queue, Lab, Test
 // Encode, and FFmpeg rendering so every caller can share the same decision.
@@ -56,6 +58,7 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 		defaultDisposition = parsed
 	}
 	selectedSubtitles, explicitSubtitleSelection := profileIndexSet(profile, "keepSubtitleStreams")
+	assetSelectedSubtitles, assetSubtitleSelectionExplicit := profileIndexSet(profile, assetKeepSubtitleStreamsConstraintKey)
 	resolvedCanonicalPathSelection :=
 		canonicalDisposition &&
 			storedSettingProfileScope(profile) == "path" &&
@@ -79,12 +82,15 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 		language := normalizedTrackLanguage(workerStringValue(stream["language"]))
 		role := classifySubtitleRole(scan, stream, profile)
 		action := defaultDisposition
-		if explicitSubtitleSelection &&
+		excludedByAssetSelection := assetSubtitleSelectionExplicit && !assetSelectedSubtitles[index]
+		if excludedByAssetSelection {
+			action = SubtitleDispositionRemove
+		} else if explicitSubtitleSelection &&
 			(!canonicalDisposition || resolvedCanonicalPathSelection) &&
 			!selectedSubtitles[index] {
 			action = SubtitleDispositionRemove
 		}
-		if !canonicalDisposition {
+		if !excludedByAssetSelection && !canonicalDisposition {
 			if transform, ok := transforms[index]; ok {
 				if transform.RemoveEmbedded {
 					action = SubtitleDispositionExtract
@@ -93,7 +99,7 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 				}
 			}
 		}
-		if !resolvedCanonicalPathSelection || selectedSubtitles[index] {
+		if !excludedByAssetSelection && (!resolvedCanonicalPathSelection || selectedSubtitles[index]) {
 			var profileRuleMatched bool
 			action, profileRuleMatched = matchingSubtitleRuleActionWithMatch(
 				profile,
@@ -112,7 +118,7 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 				}
 			}
 		}
-		if overrides.Extract {
+		if overrides.Extract && !excludedByAssetSelection {
 			action = SubtitleDispositionKeepAndExtract
 		}
 		sourceForced := boolValue(stream["forced"], false)
@@ -124,7 +130,7 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 			RoleOverrideState:     role.OverrideState, RoleSourceSnapshotFingerprint: role.SourceSnapshotFingerprint,
 			RoleStreamSignature: role.StreamSignature, Forced: sourceForced, EffectiveForced: effectiveForced,
 		}
-		if overrides.Extract {
+		if overrides.Extract && !excludedByAssetSelection {
 			resolved.ActionSource = "operation_override"
 		} else if preferredRuleSource[index] {
 			resolved.ActionSource = "preferred_subtitle_language"

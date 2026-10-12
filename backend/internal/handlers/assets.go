@@ -297,11 +297,12 @@ type AssetMetadataState struct {
 }
 
 type AssetConversionOverrideState struct {
-	TrackProfileKey                  string                         `json:"trackProfileKey,omitempty"`
-	ResolvedTrackPlan                *ResolvedTrackPlan             `json:"resolvedTrackPlan,omitempty"`
-	KeepVideoStreams                 []int                          `json:"keepVideoStreams"`
-	KeepAudioStreams                 []int                          `json:"keepAudioStreams"`
-	KeepSubtitleStreams              []int                          `json:"keepSubtitleStreams"`
+	TrackProfileKey                  string             `json:"trackProfileKey,omitempty"`
+	ResolvedTrackPlan                *ResolvedTrackPlan `json:"resolvedTrackPlan,omitempty"`
+	KeepVideoStreams                 []int              `json:"keepVideoStreams"`
+	KeepAudioStreams                 []int              `json:"keepAudioStreams"`
+	KeepSubtitleStreams              []int              `json:"keepSubtitleStreams"`
+	assetKeepSubtitleStreamsExplicit bool
 	VideoMetadata                    map[int]StreamMetadataOverride `json:"videoMetadata,omitempty"`
 	AudioMetadata                    map[int]StreamMetadataOverride `json:"audioMetadata,omitempty"`
 	SubtitleMetadata                 map[int]StreamMetadataOverride `json:"subtitleMetadata,omitempty"`

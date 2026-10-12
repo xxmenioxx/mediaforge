@@ -1684,6 +1684,86 @@ func TestProfileExternalizesEverySubtitleWhenNoTrackProfileIsSelected(t *testing
 	}
 }
 
+func TestProfileExternalizesOnlySelectedSubtitleStreams(t *testing.T) {
+	for _, format := range []string{"srt", "ass"} {
+		t.Run(format, func(t *testing.T) {
+			plan := MediaJobPlan{
+				InputPath: "/media/raw/episode.mkv", OutputPath: "/media/staging/episode.mkv", Overwrite: true,
+				Profile: models.Profile{VideoCodec: "copy", AudioCodec: "copy", WorkerConfig: models.JSONMap{"externalSubtitleFormat": format}},
+				Streams: MediaStreamInventory{
+					Video: []MediaStream{{Index: 0}},
+					Subtitle: []MediaStream{
+						{Index: 2, Codec: "subrip", Language: "eng"},
+						{Index: 3, Codec: "ass", Language: "eng"},
+						{Index: 4, Codec: "hdmv_pgs_subtitle", Language: "spa"},
+					},
+				},
+				Override: AssetConversionOverrideState{KeepSubtitleStreams: []int{2, 4}},
+			}
+
+			applyProfileSubtitleExternalization(&plan)
+
+			if len(plan.Override.SubtitleTransforms) != 2 || plan.Override.SubtitleTransforms[0].StreamIndex != 2 || plan.Override.SubtitleTransforms[1].StreamIndex != 4 {
+				t.Fatalf("video profile scheduled excluded or omitted selected subtitle streams: %#v", plan.Override.SubtitleTransforms)
+			}
+			if plan.Override.KeepSubtitleStreams == nil || len(plan.Override.KeepSubtitleStreams) != 2 || plan.Override.KeepSubtitleStreams[0] != 2 || plan.Override.KeepSubtitleStreams[1] != 4 {
+				t.Fatalf("externalization changed the saved asset selection: %#v", plan.Override.KeepSubtitleStreams)
+			}
+			for _, transform := range plan.Override.SubtitleTransforms {
+				if transform.Format != format || !transform.RemoveEmbedded {
+					t.Fatalf("unexpected externalization transform: %#v", transform)
+				}
+			}
+			command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+			for _, index := range []int{2, 3, 4} {
+				assertNotContains(t, command, fmt.Sprintf("-map 0:%d", index))
+			}
+			if strings.Contains(command, "-map_chapters -1") {
+				t.Fatal("subtitle filtering unexpectedly changed the chapter map")
+			}
+		})
+	}
+}
+
+func TestEmptyAssetSubtitleSelectionSchedulesNoExternalizationOrMappings(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/episode.mkv", OutputPath: "/media/staging/episode.mkv", Overwrite: true,
+		Profile:  models.Profile{VideoCodec: "copy", AudioCodec: "copy", WorkerConfig: models.JSONMap{"externalSubtitleFormat": "srt"}},
+		Streams:  MediaStreamInventory{Video: []MediaStream{{Index: 0}}, Subtitle: []MediaStream{{Index: 2, Codec: "subrip"}, {Index: 3, Codec: "ass"}}},
+		Override: AssetConversionOverrideState{KeepSubtitleStreams: []int{}},
+	}
+	applyProfileSubtitleExternalization(&plan)
+	if plan.Override.KeepSubtitleStreams == nil || len(plan.Override.SubtitleTransforms) != 0 || hasSubtitleArtifactWork(plan) {
+		t.Fatalf("explicit empty selection scheduled subtitle work: %#v", plan.Override)
+	}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertNotContains(t, command, "-map 0:2")
+	assertNotContains(t, command, "-map 0:3")
+}
+
+func TestFFmpegCommandBuilderMapsOnlySelectedEmbeddedSubtitleIndexes(t *testing.T) {
+	plan := MediaJobPlan{
+		InputPath: "/media/raw/episode.mkv", OutputPath: "/media/staging/episode.mkv", Overwrite: true,
+		Profile: models.Profile{VideoCodec: "copy", AudioCodec: "copy", PreserveSubtitles: true, PreserveChapters: true},
+		Streams: MediaStreamInventory{
+			Video:        []MediaStream{{Index: 0}},
+			Audio:        []MediaAudioStream{{Index: 1}},
+			Subtitle:     []MediaStream{{Index: 2}, {Index: 3}, {Index: 4}},
+			Attachment:   []MediaStream{{Index: 5}},
+			ChapterCount: 2,
+		},
+		Override: AssetConversionOverrideState{KeepSubtitleStreams: []int{2, 4}},
+	}
+	command := shellJoin(FFmpegCommandBuilder{}.Build(plan))
+	assertContains(t, command, "-map 0:0")
+	assertContains(t, command, "-map 0:1")
+	assertContains(t, command, "-map 0:2")
+	assertContains(t, command, "-map 0:4")
+	assertContains(t, command, "-map 0:5")
+	assertContains(t, command, "-map_chapters 0")
+	assertNotContains(t, command, "-map 0:3")
+}
+
 func TestTrackProfileTakesPriorityOverVideoSubtitleExternalization(t *testing.T) {
 	trackTransform := SubtitleTransform{StreamIndex: 4, Format: "ass", RemoveEmbedded: false, Language: "jpn"}
 	plan := MediaJobPlan{

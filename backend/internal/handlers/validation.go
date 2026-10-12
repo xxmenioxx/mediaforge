@@ -547,9 +547,9 @@ func aspectRatioString(width, height int, sar string) string {
 func validateRequiredSubtitleArtifacts(job models.QueueJob) ([]CheckResult, []string, models.JSONMap) {
 	expected := []ResolvedTrackSidecar{}
 	if plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); ok {
-		expected = plan.SidecarOutputs
+		expected = resolvedSubtitleSidecarsForPlan(MediaJobPlan{ResolvedTracks: plan})
 	}
-	artifacts := subtitleArtifactsFromJSON(job.SubtitleArtifacts)
+	artifacts := authorizedSubtitleArtifactsForQueueJob(job, subtitleArtifactsFromJSON(job.SubtitleArtifacts))
 	byStream := map[int][]SubtitleArtifact{}
 	for _, artifact := range artifacts {
 		byStream[artifact.StreamIndex] = append(byStream[artifact.StreamIndex], artifact)

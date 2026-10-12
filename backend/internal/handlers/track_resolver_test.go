@@ -1014,7 +1014,7 @@ func TestFreezeEffectiveTrackPlanPreservesAssetOverridePrecedence(t *testing.T) 
 		t.Fatal(err)
 	}
 	path := filepath.Clean("/media/raw/show/episode-override.mkv")
-	if err := db.Create(&models.ScanResult{Path: path, AudioStreams: models.JSONList{map[string]any{"index": 1}, map[string]any{"index": 2}}, SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "spa"}}}).Error; err != nil {
+	if err := db.Create(&models.ScanResult{Path: path, AudioStreams: models.JSONList{map[string]any{"index": 1}, map[string]any{"index": 2}}, SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "spa"}, map[string]any{"index": 5, "codec": "ass", "language": "spa"}}}).Error; err != nil {
 		t.Fatal(err)
 	}
 	job := models.QueueJob{MediaPath: path, TrackProfileSnapshot: models.JSONMap{
@@ -1024,7 +1024,7 @@ func TestFreezeEffectiveTrackPlanPreservesAssetOverridePrecedence(t *testing.T) 
 			"chapterPolicy": "keep", "chaptersKept": true, "sidecarOutputs": []any{},
 		},
 	}}
-	override := AssetConversionOverrideState{KeepAudioStreams: []int{2}, SubtitleSidecarFormatsByStream: map[int][]string{4: {"original"}}}
+	override := AssetConversionOverrideState{KeepAudioStreams: []int{2}, KeepSubtitleStreams: []int{4}, SubtitleSidecarFormatsByStream: map[int][]string{4: {"original"}}, assetKeepSubtitleStreamsExplicit: true}
 	if err := NewQueueHandler(db).freezeEffectiveTrackPlan(&job, &override); err != nil {
 		t.Fatal(err)
 	}
@@ -1033,6 +1033,52 @@ func TestFreezeEffectiveTrackPlanPreservesAssetOverridePrecedence(t *testing.T) 
 	}
 	if len(override.ResolvedTrackPlan.SidecarOutputs) != 1 || override.ResolvedTrackPlan.SidecarOutputs[0].Format != "ass" {
 		t.Fatalf("asset sidecar override was not frozen: %#v", override.ResolvedTrackPlan.SidecarOutputs)
+	}
+	for _, subtitle := range override.ResolvedTrackPlan.SubtitleStreams {
+		if subtitle.StreamIndex == 5 && subtitle.Action != SubtitleDispositionRemove {
+			t.Fatalf("asset exclusion was not frozen ahead of canonical policy: %#v", override.ResolvedTrackPlan.SubtitleStreams)
+		}
+	}
+}
+
+func TestFreezeEffectiveTrackPlanTreatsOmittedAssetSubtitleSelectionAsInheritance(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:effective-track-plan-subtitle-inherit?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Clean("/media/raw/show/episode-inherit.mkv")
+	if err := db.Create(&models.ScanResult{Path: path, SubtitleStreams: models.JSONList{
+		map[string]any{"index": 2, "codec": "subrip", "language": "eng"},
+		map[string]any{"index": 3, "codec": "ass", "language": "spa"},
+	}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	initialPlan, err := resolvedTrackPlanMap(ResolvedTrackPlan{
+		SubtitleStreams: []ResolvedSubtitleTrack{
+			{StreamIndex: 2, Action: SubtitleDispositionKeep},
+			{StreamIndex: 3, Action: SubtitleDispositionKeep},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{MediaPath: path, TrackProfileSnapshot: models.JSONMap{
+		"scope": "path", "resolvedForAsset": path, "trackDispositionVersion": 1,
+		"subtitleDisposition": "keep", "subtitleRules": []any{map[string]any{"streamIndex": 3, "action": "extract"}},
+		"attachmentPolicy": "auto", "chapterPolicy": "keep", resolvedTrackPlanSnapshotKey: initialPlan,
+	}}
+	var override AssetConversionOverrideState
+	if err := NewQueueHandler(db).freezeEffectiveTrackPlan(&job, &override); err != nil {
+		t.Fatal(err)
+	}
+	if override.assetKeepSubtitleStreamsExplicit || override.KeepSubtitleStreams != nil {
+		t.Fatalf("omitted asset selection became explicit during freeze: %#v", override)
+	}
+	if override.ResolvedTrackPlan == nil || len(override.ResolvedTrackPlan.SubtitleStreams) != 2 || override.ResolvedTrackPlan.SubtitleStreams[1].Action != SubtitleDispositionExtract {
+		t.Fatalf("omitted asset selection stopped inheriting the Track Profile rule: %#v", override.ResolvedTrackPlan)
 	}
 }
 
@@ -1089,6 +1135,96 @@ func TestResolveTrackPlanV1IgnoresLegacySubtitleSelectionAndTransforms(t *testin
 			"V1 profile generated sidecars from legacy subtitleTransforms: %#v",
 			plan.SidecarOutputs,
 		)
+	}
+}
+
+func TestResolveTrackPlanAssetSubtitleSelectionOutranksCanonicalRulesAndOperations(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 2, "codec": "subrip", "language": "spa"},
+		map[string]any{"index": 3, "codec": "ass", "language": "spa"},
+		map[string]any{"index": 4, "codec": "hdmv_pgs_subtitle", "language": "spa"},
+	}}
+	profile := map[string]any{
+		"trackDispositionVersion": 1,
+		"subtitleDisposition":     "keep",
+		"attachmentPolicy":        "auto",
+		"chapterPolicy":           "keep",
+		"subtitleRules": []any{
+			map[string]any{"streamIndex": 2, "action": "keep_and_extract"},
+			map[string]any{"streamIndex": 3, "action": "extract"},
+			map[string]any{"streamIndex": 4, "action": "keep"},
+		},
+		assetKeepSubtitleStreamsConstraintKey: []int{2, 4},
+	}
+	streamIndex := 3
+	plan, err := resolveTrackPlanWithSubtitleOverrides(scan, profile, SubtitleOperationOverrides{Extract: true, StreamIndex: &streamIndex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.SubtitleStreams) != 1 || plan.SubtitleStreams[0].StreamIndex != 3 || plan.SubtitleStreams[0].Action != SubtitleDispositionRemove {
+		t.Fatalf("excluded asset stream was restored by a rule or operation override: %#v", plan.SubtitleStreams)
+	}
+	if len(plan.SidecarOutputs) != 0 {
+		t.Fatalf("excluded asset stream produced sidecar outputs: %#v", plan.SidecarOutputs)
+	}
+
+	// Without the asset constraint, the canonical rule still behaves as before.
+	delete(profile, assetKeepSubtitleStreamsConstraintKey)
+	inherited, err := resolveTrackPlan(scan, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inherited.SubtitleStreams[1].Action != SubtitleDispositionExtract || len(inherited.SidecarOutputs) == 0 {
+		t.Fatalf("omitted asset selection did not inherit existing profile rules: %#v", inherited)
+	}
+	emptySelection := map[string]any{}
+	for key, value := range profile {
+		emptySelection[key] = value
+	}
+	emptySelection[assetKeepSubtitleStreamsConstraintKey] = []int{}
+	empty, err := resolveTrackPlan(scan, emptySelection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty.SidecarOutputs) != 0 {
+		t.Fatalf("explicit empty asset selection scheduled sidecars: %#v", empty.SidecarOutputs)
+	}
+	for _, subtitle := range empty.SubtitleStreams {
+		if subtitle.Action != SubtitleDispositionRemove {
+			t.Fatalf("explicit empty asset selection did not remove stream %d: %#v", subtitle.StreamIndex, empty.SubtitleStreams)
+		}
+	}
+}
+
+func TestFrozenAssetSubtitleSelectionSurvivesSelectionChangesOnRetryAndRestart(t *testing.T) {
+	mediaPath := filepath.Clean("/raw/Episode.mkv")
+	encoded, err := json.Marshal(AssetConversionOverrideState{KeepSubtitleStreams: []int{2, 4}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frozenOverride map[string]any
+	if err := json.Unmarshal(encoded, &frozenOverride); err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{
+		MediaPath: mediaPath,
+		ProfileSnapshot: models.JSONMap{
+			assetConversionOverrideSnapshotKey:        frozenOverride,
+			assetSubtitleSelectionExplicitSnapshotKey: true,
+		},
+	}
+	currentAssetState := map[string]AssetConversionOverrideState{
+		mediaPath: {KeepSubtitleStreams: []int{3}},
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		override := conversionOverrideForJob(job, currentAssetState)
+		if !reflect.DeepEqual(override.KeepSubtitleStreams, []int{2, 4}) || !override.assetKeepSubtitleStreamsExplicit {
+			t.Fatalf("retry/restart %d read the changed asset selection instead of the frozen job: %#v", attempt, override)
+		}
+	}
+	newJobOverride := currentConversionOverrideForJob(models.QueueJob{MediaPath: mediaPath}, currentAssetState)
+	if !reflect.DeepEqual(newJobOverride.KeepSubtitleStreams, []int{3}) || !newJobOverride.assetKeepSubtitleStreamsExplicit {
+		t.Fatalf("newly planned job did not read the updated selection: %#v", newJobOverride)
 	}
 }
 
