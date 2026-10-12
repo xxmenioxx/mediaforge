@@ -77,26 +77,52 @@ type PublisherPublicationSummary struct {
 }
 
 type PublisherPublicationView struct {
-	PublicationID         string     `json:"publicationId"`
-	QueueJobID            uint       `json:"queueJobId"`
-	ExecutionNumber       uint       `json:"executionNumber"`
-	LibraryID             uint       `json:"libraryId"`
-	DestinationRoot       string     `json:"destinationRoot"`
-	DestinationPath       string     `json:"destinationPath"`
-	PublishMode           string     `json:"publishMode"`
-	ResultArtifactID      string     `json:"resultArtifactId"`
-	ValidationRunID       string     `json:"validationRunId"`
-	State                 string     `json:"state"`
-	HoldReason            string     `json:"holdReason,omitempty"`
-	FailureCode           string     `json:"failureCode,omitempty"`
-	FailureSummary        string     `json:"failureSummary,omitempty"`
-	AttemptCount          int        `json:"attemptCount"`
-	FencingGeneration     uint64     `json:"fencingGeneration"`
-	PublishedAt           *time.Time `json:"publishedAt,omitempty"`
-	OriginalArchiveStatus string     `json:"originalArchiveStatus"`
-	OriginalArchivedPath  string     `json:"originalArchivedPath,omitempty"`
-	CreatedAt             time.Time  `json:"createdAt"`
-	UpdatedAt             time.Time  `json:"updatedAt"`
+	PublicationID              string          `json:"publicationId"`
+	QueueJobID                 uint            `json:"queueJobId"`
+	ExecutionNumber            uint            `json:"executionNumber"`
+	LibraryID                  uint            `json:"libraryId"`
+	DestinationRoot            string          `json:"destinationRoot"`
+	DestinationPath            string          `json:"destinationPath"`
+	PublishMode                string          `json:"publishMode"`
+	ResultArtifactID           string          `json:"resultArtifactId"`
+	ValidationRunID            string          `json:"validationRunId"`
+	ValidationOverrideEventIDs models.JSONList `json:"validationOverrideEventIds,omitempty"`
+	State                      string          `json:"state"`
+	HoldReason                 string          `json:"holdReason,omitempty"`
+	FailureCode                string          `json:"failureCode,omitempty"`
+	FailureSummary             string          `json:"failureSummary,omitempty"`
+	AttemptCount               int             `json:"attemptCount"`
+	FencingGeneration          uint64          `json:"fencingGeneration"`
+	PublishedAt                *time.Time      `json:"publishedAt,omitempty"`
+	OriginalArchiveStatus      string          `json:"originalArchiveStatus"`
+	OriginalArchivedPath       string          `json:"originalArchivedPath,omitempty"`
+	CreatedAt                  time.Time       `json:"createdAt"`
+	UpdatedAt                  time.Time       `json:"updatedAt"`
+}
+
+type PublisherEligibilityJob struct {
+	ID                uint       `json:"id"`
+	ExecutionNumber   *uint      `json:"executionNumber,omitempty"`
+	MediaPath         string     `json:"mediaPath"`
+	OutputPath        string     `json:"outputPath"`
+	DestinationPath   string     `json:"destinationPath,omitempty"`
+	PublishedPath     string     `json:"publishedPath"`
+	PublishedAt       *time.Time `json:"publishedAt,omitempty"`
+	ValidationStatus  string     `json:"validationStatus"`
+	ValidationOutcome string     `json:"validationOutcome"`
+	ValidationScore   int        `json:"validationScore"`
+	ValidationRunID   string     `json:"validationRunId,omitempty"`
+}
+
+type PublisherEligibilityCandidate struct {
+	Job    PublisherEligibilityJob `json:"job"`
+	Status string                  `json:"status"`
+	Reason string                  `json:"reason,omitempty"`
+}
+
+type PublisherEligibilityResponse struct {
+	Items []PublisherEligibilityCandidate `json:"items"`
+	Limit int                             `json:"limit"`
 }
 
 type AssetPublishedSubscriber func(context.Context, string, models.JSONMap) error
@@ -191,6 +217,15 @@ func (h PublisherHandler) handoffAndPublishWithReason(job models.QueueJob, autom
 	}
 	if allowed, reason := canonicalRunAllowsPublish(h.db, job, automatic); !allowed {
 		return PublishResult{}, publishError{Status: http.StatusConflict, Message: reason}
+	}
+	if !automatic {
+		overrideEventIDs, err := canonicalEligibleOverrideEventIDs(h.db, job, false)
+		if err != nil {
+			return PublishResult{}, publishError{Status: http.StatusConflict, Message: "canonical Validation override evidence could not be verified", Err: err}
+		}
+		if len(overrideEventIDs) > 0 && strings.TrimSpace(reason) == "" {
+			return PublishResult{}, publishError{Status: http.StatusBadRequest, Message: "an operator reason is required for override-backed manual publication"}
+		}
 	}
 	identity, resultIdentity, err := publisherIdentityForJob(h.db, job, automatic)
 	if err != nil {
@@ -341,6 +376,14 @@ func resultBindingFingerprint(binding resultExecutionBinding) string {
 }
 
 func publicationManifestForJob(job models.QueueJob, destination string) models.JSONList {
+	return buildPublicationManifestForJob(job, destination, true)
+}
+
+func publicationManifestForEligibility(job models.QueueJob, destination string) models.JSONList {
+	return buildPublicationManifestForJob(job, destination, false)
+}
+
+func buildPublicationManifestForJob(job models.QueueJob, destination string, includeExternalSubtitles bool) models.JSONList {
 	entries := []publicationManifestEntry{{Kind: "primary", Source: job.OutputPath, Final: destination, Required: true, Promote: true}}
 	base := strings.TrimSuffix(destination, filepath.Ext(destination))
 	used := map[string]bool{filepath.Clean(destination): true}
@@ -377,7 +420,7 @@ func publicationManifestForJob(job models.QueueJob, destination string) models.J
 			entries = append(entries, publicationManifestEntry{Kind: "font", Source: font.StagedPath, Final: final, Required: true, Promote: true})
 		}
 	}
-	if !hasTrackPlan {
+	if !hasTrackPlan && includeExternalSubtitles {
 		sidecars, err := externalSubtitlesForMedia(job.MediaPath)
 		if err == nil {
 			sourceBase := strings.TrimSuffix(job.MediaPath, filepath.Ext(job.MediaPath))
@@ -859,7 +902,8 @@ func (h PublisherHandler) ListPublications(c *gin.Context) {
 			PublicationID: publication.PublicationID, QueueJobID: publication.QueueJobID, ExecutionNumber: publication.ExecutionNumber,
 			LibraryID: publication.LibraryID, DestinationRoot: publication.DestinationRoot, DestinationPath: publication.DestinationPath,
 			PublishMode: publication.PublishMode, ResultArtifactID: publication.ResultArtifactID, ValidationRunID: publication.ValidationRunID,
-			State: publication.State, HoldReason: publication.HoldReason, FailureCode: publication.FailureCode,
+			ValidationOverrideEventIDs: publication.ValidationOverrideEventIDs,
+			State:                      publication.State, HoldReason: publication.HoldReason, FailureCode: publication.FailureCode,
 			FailureSummary: publication.FailureSummary, AttemptCount: publication.AttemptCount,
 			FencingGeneration: publication.FencingGeneration, PublishedAt: publication.PublishedAt,
 			OriginalArchiveStatus: publication.OriginalArchiveStatus, OriginalArchivedPath: publication.OriginalArchivedPath,
@@ -883,6 +927,121 @@ func (h PublisherHandler) ListPublications(c *gin.Context) {
 		items = append(items, item)
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items, "limit": 100})
+}
+
+const publisherEligibilityLimit = 100
+
+func (h PublisherHandler) ListManualEligibility(c *gin.Context) {
+	limit := publisherEligibilityLimit
+	if rawLimit := strings.TrimSpace(c.Query("limit")); rawLimit != "" {
+		requested, err := strconv.Atoi(rawLimit)
+		if err != nil || requested < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a positive integer"})
+			return
+		}
+		if requested < limit {
+			limit = requested
+		}
+	}
+
+	var jobs []models.QueueJob
+	if err := h.db.Where("status = ? AND published_at IS NULL", JobStatusCompleted).
+		Order("updated_at desc, id desc").Limit(limit).Find(&jobs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	items := make([]PublisherEligibilityCandidate, 0, len(jobs))
+	for _, job := range jobs {
+		items = append(items, h.manualEligibilityForJob(job))
+	}
+	c.JSON(http.StatusOK, PublisherEligibilityResponse{Items: items, Limit: limit})
+}
+
+func (h PublisherHandler) manualEligibilityForJob(job models.QueueJob) PublisherEligibilityCandidate {
+	candidate := PublisherEligibilityCandidate{
+		Job: PublisherEligibilityJob{
+			ID: job.ID, ExecutionNumber: job.ExecutionNumber, MediaPath: job.MediaPath, OutputPath: job.OutputPath,
+			PublishedPath: job.PublishedPath, PublishedAt: job.PublishedAt, ValidationStatus: job.ValidationStatus,
+			ValidationOutcome: job.ValidationOutcome, ValidationScore: job.ValidationScore, ValidationRunID: job.ValidationRunID,
+		},
+		Status: "BLOCKED",
+	}
+	block := func(reason string) PublisherEligibilityCandidate {
+		candidate.Reason = reason
+		return candidate
+	}
+
+	if allowed, reason := canonicalRunAllowsPublish(h.db, job, false); !allowed {
+		return block(reason)
+	}
+	publication, _, err := publisherIdentityForJob(h.db, job, false)
+	if err != nil {
+		return block(err.Error())
+	}
+	candidate.Job.DestinationPath = publication.DestinationPath
+	if err := checkControlledPublisherRootReadOnly(publication.DestinationRoot); err != nil {
+		return block(err.Error())
+	}
+	if checks, _, _ := validateRequiredSubtitleArtifacts(job); len(checks) > 0 {
+		for _, check := range checks {
+			if check.Status == "failed" {
+				return block("required subtitle artifacts are not ready: " + check.Message)
+			}
+		}
+	}
+	if checks, _, _ := validateRequiredFontAttachmentArtifacts(job); len(checks) > 0 {
+		for _, check := range checks {
+			if check.Status == "failed" {
+				return block("required font attachment is not ready: " + check.Message)
+			}
+		}
+	}
+	if job.PublishMode == PublishModeReplaceLibrary {
+		if err := (PublisherHandler{db: h.db}).verifyReplacementAuthority(job, publication); err != nil {
+			return block(err.Error())
+		}
+	}
+
+	manifest := publicationManifestForEligibility(job, publication.DestinationPath)
+	entries, err := manifestEntries(manifest)
+	if err != nil || len(entries) == 0 {
+		return block("frozen delivery manifest is missing or invalid")
+	}
+	previewRoot := filepath.Join(publication.DestinationRoot, ".mvforge-staging", ".eligibility-preview")
+	for index := range entries {
+		entries[index].Temporary = filepath.Join(previewRoot, fmt.Sprintf("artifact-%03d.part", index))
+		if job.PublishMode == PublishModeReplaceLibrary && entries[index].Kind == "primary" && filepath.Clean(entries[index].Final) == filepath.Clean(job.MediaPath) {
+			entries[index].Backup = filepath.Join(previewRoot, "original.backup")
+		}
+	}
+	if err := h.preflightPublicationForEligibility(job, publication, &entries); err != nil {
+		return block(err.Error())
+	}
+	overrideEventIDs, err := canonicalEligibleOverrideEventIDs(h.db, job, false)
+	if err != nil {
+		return block("canonical Validation override evidence could not be read")
+	}
+	candidate.Status = "ALLOWED"
+	if len(overrideEventIDs) > 0 {
+		candidate.Status = "ALLOWED_BY_OVERRIDE"
+	}
+	return candidate
+}
+
+func checkControlledPublisherRootReadOnly(root string) error {
+	root = filepath.Clean(strings.TrimSpace(root))
+	if root == "." || !filepath.IsAbs(root) {
+		return errors.New("frozen Library destination root must be absolute")
+	}
+	info, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("frozen Library destination root is unavailable: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("frozen Library destination root is not a controlled directory")
+	}
+	return nil
 }
 
 func (h PublisherHandler) PublisherAction(c *gin.Context) {
@@ -1271,6 +1430,16 @@ func (h PublisherHandler) persistManifest(owner publisherLeaseOwner, entries []p
 }
 
 func (h PublisherHandler) preflightPublication(job models.QueueJob, publication models.PublisherPublication, owner publisherLeaseOwner, entries *[]publicationManifestEntry) error {
+	return h.preflightPublicationWithLease(job, publication, entries, func() error {
+		return h.assertPublicationLease(owner, false)
+	})
+}
+
+func (h PublisherHandler) preflightPublicationForEligibility(job models.QueueJob, publication models.PublisherPublication, entries *[]publicationManifestEntry) error {
+	return h.preflightPublicationWithLease(job, publication, entries, nil)
+}
+
+func (h PublisherHandler) preflightPublicationWithLease(job models.QueueJob, publication models.PublisherPublication, entries *[]publicationManifestEntry, checkLease func() error) error {
 	for i := range *entries {
 		entry := &(*entries)[i]
 		if !pathIsInside(entry.Final, publication.DestinationRoot) || !pathIsInside(entry.Temporary, publication.DestinationRoot) {
@@ -1282,8 +1451,10 @@ func (h PublisherHandler) preflightPublication(job models.QueueJob, publication 
 		if err := ensureNoSymlinkPath(publication.DestinationRoot, filepath.Dir(entry.Final), false); err != nil {
 			return publicationBlockedError{message: err.Error()}
 		}
-		if err := h.assertPublicationLease(owner, false); err != nil {
-			return err
+		if checkLease != nil {
+			if err := checkLease(); err != nil {
+				return err
+			}
 		}
 		if entry.Backup != "" {
 			if _, backupErr := os.Lstat(entry.Backup); backupErr == nil {
@@ -1325,8 +1496,10 @@ func (h PublisherHandler) preflightPublication(job models.QueueJob, publication 
 		if !entry.Required || !entry.Promote {
 			continue
 		}
-		if err := h.assertPublicationLease(owner, false); err != nil {
-			return err
+		if checkLease != nil {
+			if err := checkLease(); err != nil {
+				return err
+			}
 		}
 		info, err := os.Lstat(entry.Source)
 		if err != nil {

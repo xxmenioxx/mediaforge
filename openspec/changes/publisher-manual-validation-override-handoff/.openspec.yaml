@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-11
+goal: Allow manually confirmed publication of eligible review-required jobs
+  without changing validation history or granting AutoPublisher authorization.
