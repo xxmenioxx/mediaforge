@@ -814,6 +814,86 @@ func TestValidationRuleCategoriesUseStableEvidenceFindings(t *testing.T) {
 	}
 }
 
+func TestQualityGateAVAlignmentPersistsDetailedFindingAdditively(t *testing.T) {
+	db := testEncodeTestDB(t, "quality-gate-av-alignment-details", &models.QueueJob{}, &models.ExecutionPlan{}, &models.ValidationRun{}, &models.ValidationOverride{})
+	root := t.TempDir()
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{
+		"resultsReportsPath": filepath.Join(root, "results"),
+		"asIsReportsPath":    filepath.Join(root, "as-is"),
+	}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	sourcePath, outputPath := filepath.Join(root, "source.mkv"), filepath.Join(root, "output.mkv")
+	for _, path := range []string{sourcePath, outputPath} {
+		if err := os.WriteFile(path, []byte("disposable validation fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executionNumber := uint(12)
+	job := models.QueueJob{
+		MediaPath: sourcePath, OutputPath: outputPath, Status: JobStatusCompleted,
+		ExecutionNumber: &executionNumber, ProfileSnapshot: models.JSONMap{}, TrackProfileSnapshot: models.JSONMap{},
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	streamPlan := ResolvedStreamPlan{Audio: []PlannedStream{{InputIndex: 1, OutputIndex: 1, OutputTypeIndex: 0, Action: "copy"}}}
+	probe := func(videoStart, videoFrame string) map[string]any {
+		return map[string]any{
+			"format": map[string]any{"duration": "100"},
+			"streams": []any{
+				models.JSONMap{"index": 0, "codec_type": "video", "codec_name": "h264", "start_time": videoStart, "time_base": "1/1000", "avg_frame_rate": "24000/1001"},
+				models.JSONMap{"index": 1, "codec_type": "audio", "codec_name": "aac", "start_time": "0.000000", "time_base": "1/1000"},
+			},
+			"packets": []any{models.JSONMap{"stream_index": 1, "pts_time": "0.000000", "dts_time": "0.000000"}},
+			"frames":  []any{models.JSONMap{"media_type": "video", "stream_index": 0, "best_effort_timestamp_time": videoFrame}},
+		}
+	}
+	sourceProbe := probe("0.000000", "0.042000")
+	outputProbe := probe("0.042000", "0.042000")
+	if err := writeJobArtifact(db, job, "as-is", jobArtifact{Job: job, SourceProbe: sourceProbe, StreamPlan: streamPlan}); err != nil {
+		t.Fatal(err)
+	}
+	artifact := map[string]any{"job": map[string]any{"executionNumber": executionNumber}, "outputProbe": outputProbe}
+	findings, _ := evaluateValidationRules(db, job, artifact, resultArtifactIdentity{}, resultExecutionBinding{ExecutionNumber: executionNumber})
+	var alignment *validationFinding
+	for index := range findings {
+		if findings[index].Key == "timeline.av_alignment" {
+			alignment = &findings[index]
+			break
+		}
+	}
+	if alignment == nil || alignment.State != "PASS" {
+		t.Fatalf("presentation-aligned source and output did not persist a PASS finding: %#v", alignment)
+	}
+	if _, ok := alignment.Expected.(avTimingEvidence); !ok {
+		t.Fatalf("expected source evidence shape changed: %T", alignment.Expected)
+	}
+	if _, ok := alignment.Actual.(avTimingEvidence); !ok {
+		t.Fatalf("actual output evidence shape changed: %T", alignment.Actual)
+	}
+	details, ok := alignment.Details.(models.JSONMap)
+	if !ok {
+		t.Fatalf("A/V alignment finding omitted optional details: %T", alignment.Details)
+	}
+	tracks, ok := details["tracks"].([]models.JSONMap)
+	if !ok || len(tracks) != 1 || tracks[0]["decision"] != "validated" || math.Abs(tracks[0]["introducedOffsetMs"].(float64)) > .001 {
+		t.Fatalf("persisted per-track comparison details are incomplete: %#v", details)
+	}
+	encoded, err := json.Marshal(*alignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted validationFinding
+	if err := json.Unmarshal(encoded, &persisted); err != nil || persisted.Details == nil || persisted.Key != "timeline.av_alignment" {
+		t.Fatalf("finding details did not survive persistence encoding: finding=%#v err=%v", persisted, err)
+	}
+	var historical validationFinding
+	if err := json.Unmarshal([]byte(`{"key":"timeline.av_alignment","expected":{"frameRate":"24000/1001"},"actual":{"frameRate":"24000/1001"}}`), &historical); err != nil || historical.Details != nil {
+		t.Fatalf("historical finding without optional details is no longer readable: finding=%#v err=%v", historical, err)
+	}
+}
+
 func TestAddChapterFindingUsesExplicitOutputEvidence(t *testing.T) {
 	tests := []struct {
 		name          string

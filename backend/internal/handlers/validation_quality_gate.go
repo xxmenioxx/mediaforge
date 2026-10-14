@@ -33,6 +33,7 @@ type validationFinding struct {
 	Key                string   `json:"key"`
 	Expected           any      `json:"expected"`
 	Actual             any      `json:"actual"`
+	Details            any      `json:"details,omitempty"`
 	Severity           string   `json:"severity"`
 	Disposition        string   `json:"disposition"`
 	State              string   `json:"state"`
@@ -321,8 +322,14 @@ func evaluateValidationRules(db *gorm.DB, job models.QueueJob, artifact map[stri
 			}
 		}
 		streamPlan, planAvailable := resolvedStreamPlanForJobValidation(db, job)
-		sourceTiming, outputTiming := avTimingFromProbe(sourceProbe), avTimingFromProbe(outputProbe)
+		sourceTiming := avTimingFromProbeWithOrigin(sourceProbe, "queue.sourceEvidence")
+		outputTiming := avTimingFromProbeWithOrigin(outputProbe, "result.outputProbe")
 		sourceTiming, outputTiming = avTimingForQueueValidation(sourceTiming, outputTiming, streamPlan, planAvailable)
+		if identityMatches && planAvailable && sourceProbe != nil && sourceProbe["error"] == nil {
+			sourceTiming, outputTiming = avTimingWithBoundedPresentationFallback(
+				sourceTiming, outputTiming, job.MediaPath, job.OutputPath, probeAVTiming,
+			)
+		}
 		avPolicy := policy.Rules["timeline.av_alignment"]
 		timingReport := validateAVTimingWithThresholds(sourceTiming, outputTiming, avPolicy.Thresholds["passFrames"], avPolicy.Thresholds["warningFrames"])
 		timingState, timingSeverity, timingActionable := "PASS", "info", false
@@ -334,7 +341,13 @@ func evaluateValidationRules(db *gorm.DB, job models.QueueJob, artifact map[stri
 		case "warning":
 			timingState, timingSeverity, timingActionable = "WARNING", "warning", true
 		}
-		add("timeline.av_alignment", sourceTiming, outputTiming, timingSeverity, "blocking", timingState, timingActionable, true, "Measured A/V timestamp and frame timing uses the worker Result probe and source AS-IS evidence.", "result.outputProbe", "queue.sourceEvidence", "queue.trackSnapshot")
+		findings = append(findings, validationFinding{
+			Key: "timeline.av_alignment", Expected: sourceTiming, Actual: outputTiming, Details: timingReport,
+			Severity: timingSeverity, Disposition: "blocking", State: timingState,
+			Actionable: timingActionable, Overrideable: true,
+			Explanation:        "Initial A/V presentation alignment compares mapped source and Result timestamps; ongoing drift is not measured.",
+			EvidenceReferences: []string{"result.outputProbe", "queue.sourceEvidence", "queue.trackSnapshot"},
+		})
 		video := firstStreamByType(outputProbe, "video")
 		if video == nil {
 			add("video.properties", "at least one planned video stream", 0, "critical", "blocking", "FAIL", true, false, "The output contains no video stream for the frozen conversion plan.", "result.outputProbe", "executionPlan")

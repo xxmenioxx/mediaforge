@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-13
+goal: Prevent false introduced-offset warnings by comparing source and output
+  presentation anchors with explicit evidence
