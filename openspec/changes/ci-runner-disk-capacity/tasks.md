@@ -9,5 +9,6 @@
 - [x] 1.4 Document runner limits, cleanup targets, and recovery alternatives.
 - [x] 1.5 Validate YAML, scripts, focused workflow checks, and
   `./scripts/verify.sh --auto`.
-- [ ] 1.6 Run the GitHub-hosted workflow twice and report measured cleanup
-  recovery and build peak storage.
+- [x] 1.6 Run the GitHub-hosted workflow twice and report measured cleanup
+  recovery and post-build cache use; document that transient build peak was not
+  sampled.
