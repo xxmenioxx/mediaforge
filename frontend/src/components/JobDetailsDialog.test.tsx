@@ -55,8 +55,8 @@ describe('JobDetailsDialog subtitle stage', () => {
     };
     render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobDetailsDialog job={job} onClose={() => undefined} /></QueryClientProvider>);
 
-    expect(await screen.findByText('validation review')).toBeTruthy();
-    expect(screen.getByText('warning')).toBeTruthy();
+    expect(await screen.findAllByText('validation review')).toHaveLength(2);
+    expect(screen.getAllByText('warning')).toHaveLength(2);
   });
 
   it('shows an active archive stage without treating legacy completed history as terminal', async () => {
