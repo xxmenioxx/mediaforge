@@ -2589,34 +2589,52 @@ func ensureAssetPublishedOutbox(tx *gorm.DB, publication models.PublisherPublica
 	}).Error
 }
 
-func (p *AutoPublisher) recoverPublisherPublications() {
+func (p *AutoPublisher) recoverPublisherPublications() error {
+	var recoveryErrors []error
 	now := time.Now().UTC()
 	var expired []models.PublisherPublication
 	if err := p.db.Where("state = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", PublicationPublishing, now).Order("updated_at asc").Limit(25).Find(&expired).Error; err != nil {
-		return
+		return fmt.Errorf("load expired Publisher attempts: %w", err)
 	}
 	for _, publication := range expired {
 		claimed, owner, err := (PublisherHandler{db: p.db}).claimPublication(publication.PublicationID, publicationActorSystem, publicationActorSystem, true)
-		if err != nil || !claimed {
+		if err != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("reclaim publication %s: %w", publication.PublicationID, err))
+			continue
+		}
+		if !claimed {
 			continue
 		}
 		var job models.QueueJob
-		if p.db.First(&job, publication.QueueJobID).Error != nil {
-			_, _ = (PublisherHandler{db: p.db}).blockPublicationAttempt(job, publication, owner, "queue_job_missing", "Persisted Queue execution is missing; publication is blocked for review.")
+		if err := p.db.First(&job, publication.QueueJobID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				_, blockErr := (PublisherHandler{db: p.db}).blockPublicationAttempt(job, publication, owner, "queue_job_missing", "Persisted Queue execution is missing; publication is blocked for review.")
+				if blockErr != nil {
+					recoveryErrors = append(recoveryErrors, fmt.Errorf("block publication %s for missing Queue job: %w", publication.PublicationID, blockErr))
+				}
+			} else {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("load Queue job %d for publication %s: %w", publication.QueueJobID, publication.PublicationID, err))
+			}
 			continue
 		}
-		_, _ = (PublisherHandler{db: p.db}).runPublicationAttempt(job, publication, owner)
+		if _, err := (PublisherHandler{db: p.db}).runPublicationAttempt(job, publication, owner); err != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("resume publication %s: %w", publication.PublicationID, err))
+		}
 	}
 	var published []models.PublisherPublication
 	if err := p.db.Where("state = ? AND (original_archive_status IN ? OR (original_archive_status = ? AND original_archive_lease_expires_at IS NOT NULL AND original_archive_lease_expires_at <= ?))", PublicationPublished, []string{"pending", "failed"}, "archiving", now).Order("updated_at asc").Limit(25).Find(&published).Error; err != nil {
-		return
+		return errors.Join(append(recoveryErrors, fmt.Errorf("load published original archives: %w", err))...)
 	}
 	for _, publication := range published {
 		var job models.QueueJob
-		if p.db.First(&job, publication.QueueJobID).Error != nil {
+		if err := p.db.First(&job, publication.QueueJobID).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("load Queue job %d for published archive: %w", publication.QueueJobID, err))
+			}
 			continue
 		}
 		entries, _ := manifestEntries(publication.Manifest)
 		(PublisherHandler{db: p.db}).finishOriginalArchive(job, publication, entries)
 	}
+	return errors.Join(recoveryErrors...)
 }

@@ -793,6 +793,7 @@ func (h WorkerHandler) UpdateJobStatus(c *gin.Context) {
 		return
 	}
 
+	previousStatus := job.Status
 	now := time.Now()
 	job.Status = input.Status
 	job.Progress = normalizedProgress(input.Status, input.Progress)
@@ -816,11 +817,12 @@ func (h WorkerHandler) UpdateJobStatus(c *gin.Context) {
 		job.FinishedAt = &now
 	}
 
-	if err := h.db.Save(&job).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if err := transitionJobStage(h.db, &job, terminalStageForStatus(job.Status)); err != nil {
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&job).Error; err != nil {
+			return err
+		}
+		return transitionJobStage(tx, &job, stageForStatusUpdate(job, previousStatus))
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

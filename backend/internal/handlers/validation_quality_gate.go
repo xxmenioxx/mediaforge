@@ -693,6 +693,49 @@ func reduceValidationOutcome(findings []validationFinding) (string, bool) {
 	return models.QualityOutcomePass, false
 }
 
+func validationHandoffDecision(outcome string, findings []validationFinding) (bool, string) {
+	derivedOutcome, _ := reduceValidationOutcome(findings)
+	if derivedOutcome != outcome {
+		return false, fmt.Sprintf("ValidationRun outcome %s is inconsistent with canonical findings (%s)", outcome, derivedOutcome)
+	}
+	for _, finding := range findings {
+		if isUnresolvedValidationState(finding.State) && finding.Disposition != "blocking" && finding.Disposition != "advisory" {
+			return false, "unresolved Validation finding has an unknown disposition: " + finding.Key
+		}
+	}
+	switch outcome {
+	case models.QualityOutcomePass, models.QualityOutcomePassWithWarnings:
+		for _, finding := range findings {
+			if finding.Disposition == "blocking" && isUnresolvedValidationState(finding.State) {
+				return false, "unresolved blocking Validation finding: " + finding.Key
+			}
+		}
+		return true, ""
+	case models.QualityOutcomeFail:
+		return false, "FAIL Validation outcomes cannot hand off to Publisher"
+	case models.QualityOutcomeReviewRequired:
+		return false, "REVIEW_REQUIRED Validation outcomes cannot hand off to Publisher"
+	default:
+		return false, "unknown Validation outcome cannot hand off to Publisher"
+	}
+}
+
+func persistValidationHandoffStage(db *gorm.DB, job *models.QueueJob, run models.ValidationRun, findings []validationFinding, automatic bool) (string, string, error) {
+	eligible, reason := validationHandoffDecision(run.Outcome, findings)
+	if eligible && automatic && !automaticValidationOutcomeAllowed(db, run) {
+		eligible = false
+		reason = "Validation outcome is not enabled for automatic advancement"
+	}
+	target := JobStageValidationReview
+	if eligible {
+		target = JobStageReadyToPublish
+	}
+	if err := transitionJobStage(db, job, target); err != nil {
+		return "", reason, fmt.Errorf("persist %s after Validation: %w", target, err)
+	}
+	return target, reason, nil
+}
+
 func validationDisplayScore(findings []validationFinding, policies ...validationpolicy.Policy) int {
 	policy := validationpolicy.DefaultPolicy()
 	if len(policies) > 0 {
@@ -1356,8 +1399,20 @@ func canonicalRunAllowsPublish(db *gorm.DB, job models.QueueJob, automatic bool)
 	}
 	covered, _ := validationOverrideCoverage(overrides, run, automatic)
 	findings := validationFindingsForRun(run)
+	derivedOutcome, _ := reduceValidationOutcome(findings)
+	if derivedOutcome != run.Outcome {
+		return false, "ValidationRun outcome is inconsistent with its canonical findings"
+	}
+	if run.Outcome == models.QualityOutcomePass || run.Outcome == models.QualityOutcomePassWithWarnings {
+		if eligible, reason := validationHandoffDecision(run.Outcome, findings); !eligible {
+			return false, reason
+		}
+	}
 	hasBlockingFinding := false
 	for _, finding := range findings {
+		if isUnresolvedValidationState(finding.State) && finding.Disposition != "blocking" && finding.Disposition != "advisory" {
+			return false, "unresolved Validation finding has an unknown disposition: " + finding.Key
+		}
 		if finding.Key == "publication.readiness" || finding.Disposition != "blocking" || !isUnresolvedValidationState(finding.State) {
 			continue
 		}
@@ -1366,14 +1421,12 @@ func canonicalRunAllowsPublish(db *gorm.DB, job models.QueueJob, automatic bool)
 			return false, "blocking Validation finding has no eligible override: " + finding.Key
 		}
 	}
+	if run.Outcome == models.QualityOutcomeFail {
+		return false, "FAIL Validation outcomes cannot be published"
+	}
 	if automatic {
 		if !automaticValidationOutcomeAllowed(db, run) {
 			return false, "Validation outcome is not enabled for automatic advancement"
-		}
-		for _, finding := range findings {
-			if finding.Actionable && isUnresolvedValidationState(finding.State) && !covered[finding.Key] {
-				return false, "actionable Validation finding blocks automatic advancement: " + finding.Key
-			}
 		}
 	}
 	if (run.Outcome == "FAIL" || run.Outcome == "REVIEW_REQUIRED") && !hasBlockingFinding {

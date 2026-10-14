@@ -170,22 +170,31 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 	job.Progress = 100
 	job.ErrorMessage = ""
 	applog.Event("info", "ffmpeg", "process_completed", map[string]any{"jobId": jobID, "pid": cmd.Process.Pid}, nil)
-	_ = h.db.Save(&job).Error
-	_ = transitionJobStage(h.db, &job, JobStageValidating)
+	if err := h.db.Save(&job).Error; err != nil {
+		applog.Event("error", "queue", "conversion_completion_persist_failed", map[string]any{"jobId": jobID}, err)
+		return
+	}
 	if artifactErr := writeJobResultArtifact(h.db, job, map[string]any{
 		"status":   "completed",
 		"timing":   timing,
 		"progress": job.Progress,
 	}); artifactErr != nil {
 		job.Notes = appendNote(job.Notes, "Result artifact could not be finalized: "+artifactErr.Error())
-		_ = h.db.Model(&job).Update("notes", job.Notes).Error
-		_ = transitionJobStage(h.db, &job, JobStageValidationReview)
+		if err := h.db.Model(&job).Update("notes", job.Notes).Error; err != nil {
+			artifactErr = fmt.Errorf("%w; persist Result failure note: %v", artifactErr, err)
+		}
+		if err := transitionJobStage(h.db, &job, JobStageValidationReview); err != nil {
+			artifactErr = fmt.Errorf("%w; persist validation_review stage: %v", artifactErr, err)
+		}
+		applog.Event("error", "validation", "result_artifact_persist_failed", map[string]any{"jobId": jobID}, artifactErr)
 		return
 	}
-	_ = h.runAutomatedPipeline(job)
+	if _, pipelineErr := h.runAutomatedPipeline(job); pipelineErr != nil {
+		applog.Event("error", "pipeline", "automated_handoff_failed", map[string]any{"jobId": jobID}, pipelineErr)
+	}
 }
 
-func (h WorkerHandler) runAutomatedPipeline(job models.QueueJob) map[string]any {
+func (h WorkerHandler) runAutomatedPipeline(job models.QueueJob) (map[string]any, error) {
 	automation := pipelineAutomationSettings(h.db)
 	result := map[string]any{
 		"analysis":   automation.AutoAnalysisEnabled,
@@ -202,38 +211,49 @@ func (h WorkerHandler) runAutomatedPipeline(job models.QueueJob) map[string]any 
 	if !automation.AutoValidationEnabled {
 		result["stoppedAt"] = "validation"
 		result["message"] = "Automatic validation is disabled."
-		_ = transitionJobStage(h.db, &job, JobStageValidationReview)
-		return result
+		if err := transitionJobStage(h.db, &job, JobStageValidationReview); err != nil {
+			return result, fmt.Errorf("persist validation_review after automatic Validation was skipped: %w", err)
+		}
+		return result, nil
 	}
 
-	_ = transitionJobStage(h.db, &job, JobStageValidating)
+	if err := transitionJobStage(h.db, &job, JobStageValidating); err != nil {
+		return result, fmt.Errorf("persist validating before automatic Validation: %w", err)
+	}
 	gate, err := (ValidationHandler{db: h.db}).validateAndPersist(job, "system")
 	if err != nil {
 		result["error"] = err.Error()
 		result["stoppedAt"] = "validation"
-		_ = transitionJobStage(h.db, &job, JobStageValidationReview)
-		return result
+		if stageErr := transitionJobStage(h.db, &job, JobStageValidationReview); stageErr != nil {
+			return result, fmt.Errorf("automatic Validation failed: %w; persist validation_review: %v", err, stageErr)
+		}
+		return result, fmt.Errorf("automatic Validation failed: %w", err)
 	}
 	result["validationStatus"] = legacyValidationStatus(gate.Run.Outcome)
 	result["validationOutcome"] = gate.Run.Outcome
 	result["validationRunId"] = gate.Run.RunID
 	result["validationScore"] = gate.Run.Score
 	var current models.QueueJob
-	if h.db.First(&current, job.ID).Error == nil {
-		job = current
+	if err := h.db.First(&current, job.ID).Error; err != nil {
+		return result, fmt.Errorf("reload Queue job after automatic Validation: %w", err)
 	}
-	if !automaticValidationOutcomeAllowed(h.db, gate.Run) {
-		_ = transitionJobStage(h.db, &job, JobStageValidationReview)
+	job = current
+	handoffStage, reason, err := persistValidationHandoffStage(h.db, &job, gate.Run, gate.Findings, true)
+	if err != nil {
+		result["error"] = err.Error()
+		result["stoppedAt"] = "validation"
+		return result, err
+	}
+	if handoffStage != JobStageReadyToPublish {
 		result["stoppedAt"] = "validation_review"
-		result["message"] = "Validation outcome is not enabled for automatic advancement."
-		return result
+		result["message"] = reason
+		return result, nil
 	}
-	_ = transitionJobStage(h.db, &job, JobStageReadyToPublish)
 
 	if !automation.AutoPublisherEnabled {
 		result["stoppedAt"] = "publisher"
 		result["message"] = "Automatic publishing is disabled."
-		return result
+		return result, nil
 	}
 
 	publishResult, err := (PublisherHandler{db: h.db}).publishQueueJobWithMode(
@@ -244,14 +264,17 @@ func (h WorkerHandler) runAutomatedPipeline(job models.QueueJob) map[string]any 
 	if err != nil {
 		result["error"] = err.Error()
 		result["stoppedAt"] = "publisher"
-		return result
+		return result, fmt.Errorf("automatic Publisher handoff failed: %w", err)
 	}
 	result["publishedPath"] = publishResult.PublishedPath
 	result["stoppedAt"] = "complete"
-	return result
+	return result, nil
 }
 
 func automaticValidationOutcomeAllowed(db *gorm.DB, run models.ValidationRun) bool {
+	if eligible, _ := validationHandoffDecision(run.Outcome, validationFindingsForRun(run)); !eligible {
+		return false
+	}
 	setting := models.AppSetting{}
 	if err := db.First(&setting, "key = ?", "validation").Error; err != nil || setting.Value == nil {
 		return run.Outcome == "PASS"
@@ -262,9 +285,6 @@ func automaticValidationOutcomeAllowed(db *gorm.DB, run models.ValidationRun) bo
 	}
 	for _, outcome := range allowed {
 		if strings.EqualFold(strings.TrimSpace(outcome), run.Outcome) {
-			if run.Outcome == "PASS_WITH_WARNINGS" && run.ActionableWarnings {
-				return false
-			}
 			return run.Outcome == "PASS" || run.Outcome == "PASS_WITH_WARNINGS"
 		}
 	}

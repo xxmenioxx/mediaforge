@@ -57,6 +57,55 @@ describe('JobDetailsDialog subtitle stage', () => {
 
     expect(await screen.findAllByText('validation review')).toHaveLength(2);
     expect(screen.getAllByText('warning')).toHaveLength(2);
+    expect(screen.getByText('Conversion completed')).toBeTruthy();
+    expect(screen.getByText('Publication pending')).toBeTruthy();
+  });
+
+  it('keeps a completed conversion at Ready visibly unpublished', async () => {
+    const job: QueueJob = {
+      ...jobWithSidecars(),
+      status: 'completed',
+      stage: 'ready_to_publish',
+      stageHistory: [
+        { stage: 'validating', at: '2026-08-30T12:00:00Z' },
+        { stage: 'ready_to_publish', at: '2026-08-30T12:01:00Z' },
+      ],
+    };
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobDetailsDialog job={job} onClose={() => undefined} /></QueryClientProvider>);
+
+    expect(await screen.findByText('Conversion completed')).toBeTruthy();
+    expect(screen.getByText('Publication pending')).toBeTruthy();
+    expect(screen.getAllByText('active').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('not recorded').length).toBeGreaterThan(0);
+  });
+
+  it('shows Publishing as active and marks publication complete only with persisted evidence', async () => {
+    const pendingJob: QueueJob = {
+      ...jobWithSidecars(),
+      status: 'completed',
+      stage: 'publishing',
+      publicationState: 'PUBLISHING',
+      stageHistory: [
+        { stage: 'validating', at: '2026-08-30T12:00:00Z' },
+        { stage: 'ready_to_publish', at: '2026-08-30T12:01:00Z' },
+        { stage: 'publishing', at: '2026-08-30T12:02:00Z' },
+      ],
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(<QueryClientProvider client={client}><JobDetailsDialog job={pendingJob} onClose={() => undefined} /></QueryClientProvider>);
+
+    expect(await screen.findByText('Publication pending')).toBeTruthy();
+    expect(screen.getAllByText('active').length).toBeGreaterThan(0);
+
+    const publishedJob: QueueJob = {
+      ...pendingJob,
+      stage: 'completed',
+      publicationState: 'PUBLISHED',
+      publishedAt: '2026-08-30T12:03:00Z',
+      stageHistory: [...pendingJob.stageHistory, { stage: 'completed', at: '2026-08-30T12:03:00Z' }],
+    };
+    rerender(<QueryClientProvider client={client}><JobDetailsDialog job={publishedJob} onClose={() => undefined} /></QueryClientProvider>);
+    expect(screen.getByText('Publication completed')).toBeTruthy();
   });
 
   it('shows an active archive stage without treating legacy completed history as terminal', async () => {

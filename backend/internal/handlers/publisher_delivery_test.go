@@ -740,6 +740,202 @@ func TestPublisherMissingValidationRunDoesNotPersistPublication(t *testing.T) {
 	}
 }
 
+func TestPublisherClaimRollsBackWhenPublishingStageCannotPersist(t *testing.T) {
+	fixture := newPublisherDeliveryFixture(t, false)
+	if err := fixture.db.Exec(`CREATE TRIGGER reject_publishing_stage BEFORE UPDATE OF stage ON queue_jobs WHEN NEW.stage = 'publishing' BEGIN SELECT RAISE(ABORT, 'publishing stage write rejected'); END`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (PublisherHandler{db: fixture.db}).publishQueueJobWithMode(fixture.job, false, true); err == nil {
+		t.Fatal("publisher started despite failed publishing-stage persistence")
+	}
+	var publication models.PublisherPublication
+	if err := fixture.db.Where("queue_job_id = ? AND execution_number = ?", fixture.job.ID, *fixture.job.ExecutionNumber).First(&publication).Error; err != nil {
+		t.Fatal(err)
+	}
+	if publication.State != PublicationReady || publication.AttemptCount != 0 || publication.ActiveAttemptID != "" {
+		t.Fatalf("failed claim was not rolled back: state=%q attempts=%d active=%q", publication.State, publication.AttemptCount, publication.ActiveAttemptID)
+	}
+	var attempts int64
+	if err := fixture.db.Model(&models.PublisherPublicationAttempt{}).Where("publication_id = ?", publication.PublicationID).Count(&attempts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 {
+		t.Fatalf("failed publishing stage created %d attempt rows", attempts)
+	}
+	var job models.QueueJob
+	if err := fixture.db.First(&job, fixture.job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.Stage != JobStageReadyToPublish || len(job.StageHistory) != 0 {
+		t.Fatalf("failed publishing stage changed Queue history: stage=%q history=%#v", job.Stage, job.StageHistory)
+	}
+	if _, err := os.Stat(fixture.destination); !os.IsNotExist(err) {
+		t.Fatalf("Publisher materialized destination after claim rollback: stat error=%v", err)
+	}
+}
+
+func TestAutoPublisherReportsPublishingStagePersistenceFailure(t *testing.T) {
+	fixture := newPublisherDeliveryFixture(t, false)
+	if err := fixture.db.Create(&models.AppSetting{Key: "pipelineAutomation", Value: models.JSONMap{"autoPublisherEnabled": true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Exec(`CREATE TRIGGER reject_publishing_stage BEFORE UPDATE OF stage ON queue_jobs WHEN NEW.stage = 'publishing' BEGIN SELECT RAISE(ABORT, 'publishing stage write rejected'); END`).Error; err != nil {
+		t.Fatal(err)
+	}
+	err := (&AutoPublisher{db: fixture.db}).tick()
+	if err == nil || !strings.Contains(err.Error(), "publishing stage write rejected") {
+		t.Fatalf("AutoPublisher did not report publishing stage persistence failure: %v", err)
+	}
+	var job models.QueueJob
+	if err := fixture.db.First(&job, fixture.job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if job.Stage != JobStageReadyToPublish {
+		t.Fatalf("failed stage persistence moved job to %q", job.Stage)
+	}
+	var publication models.PublisherPublication
+	if err := fixture.db.Where("queue_job_id = ? AND execution_number = ?", job.ID, *job.ExecutionNumber).First(&publication).Error; err != nil {
+		t.Fatal(err)
+	}
+	if publication.State != PublicationReady || publication.AttemptCount != 0 || publication.ActiveAttemptID != "" {
+		t.Fatalf("failed AutoPublisher claim was not rolled back: %#v", publication)
+	}
+	var attempts int64
+	if err := fixture.db.Model(&models.PublisherPublicationAttempt{}).Where("publication_id = ?", publication.PublicationID).Count(&attempts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 {
+		t.Fatalf("failed AutoPublisher stage write created %d attempts", attempts)
+	}
+}
+
+func attachActionableAdvisoryWarningRun(t *testing.T, fixture publisherDeliveryFixture) models.QueueJob {
+	t.Helper()
+	var original models.ValidationRun
+	if err := fixture.db.Where("run_id = ?", fixture.job.ValidationRunID).First(&original).Error; err != nil {
+		t.Fatal(err)
+	}
+	original.ID = 0
+	original.RunID = "validation-run:advisory:" + strings.ReplaceAll(t.Name(), "/", "-")
+	original.Outcome = "PASS_WITH_WARNINGS"
+	original.ActionableWarnings = true
+	original.Findings = models.JSONList{models.JSONMap{
+		"key": "duration.timeline", "severity": "warning", "disposition": "advisory",
+		"state": "WARNING", "actionable": true, "overrideable": true,
+	}}
+	original.CreatedAt = time.Now().UTC()
+	if err := fixture.db.Create(&original).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := fixture.job
+	job.ValidationRunID = original.RunID
+	job.ValidationOutcome = original.Outcome
+	job.ValidationStatus = ValidationStatusWarning
+	job.ValidationActionable = true
+	if err := fixture.db.Save(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
+func TestAutoPublisherPublishesActionableAdvisoryWarningsOnlyAfterExplicitPolicy(t *testing.T) {
+	fixture := newPublisherDeliveryFixture(t, false)
+	job := attachActionableAdvisoryWarningRun(t, fixture)
+	now := time.Now().UTC()
+	job.Stage = JobStageReadyToPublish
+	job.StageUpdatedAt = &now
+	job.StageHistory = models.JSONList{models.JSONMap{"stage": JobStageReadyToPublish, "at": now.Format(time.RFC3339)}}
+	if err := fixture.db.Save(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Create(&models.AppSetting{Key: "pipelineAutomation", Value: models.JSONMap{"autoPublisherEnabled": true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	auto := &AutoPublisher{db: fixture.db}
+	auto.tick()
+	var count int64
+	if err := fixture.db.Model(&models.PublisherPublication{}).Where("queue_job_id = ?", job.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("warning job published without explicit automatic outcome policy: %d rows", count)
+	}
+	setting := models.AppSetting{Key: "validation", Value: models.JSONMap{"autoAdvanceOutcomes": []string{"PASS", "PASS_WITH_WARNINGS"}}}
+	if err := fixture.db.Create(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	if allowed, reason := canonicalRunAllowsPublish(fixture.db, job, true); !allowed {
+		t.Fatalf("explicit policy did not authorize the advisory warning: %s", reason)
+	}
+	setting.Value = models.JSONMap{"autoAdvanceOutcomes": []string{"PASS"}}
+	if err := fixture.db.Save(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	auto.tick()
+	if err := fixture.db.Model(&models.PublisherPublication{}).Where("queue_job_id = ?", job.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("Auto Publisher ignored policy removal before claim: %d rows", count)
+	}
+	setting.Value = models.JSONMap{"autoAdvanceOutcomes": []string{"PASS", "PASS_WITH_WARNINGS"}}
+	if err := fixture.db.Save(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	auto.tick()
+	var publication models.PublisherPublication
+	if err := fixture.db.Where("queue_job_id = ?", job.ID).First(&publication).Error; err != nil {
+		t.Fatal("explicit warning policy did not create a publication:", err)
+	}
+	if publication.State != PublicationPublished {
+		t.Fatalf("advisory warning publication state=%q summary=%q", publication.State, publication.FailureSummary)
+	}
+	var published models.QueueJob
+	if err := fixture.db.First(&published, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if published.Stage != JobStageCompleted || published.ValidationOutcome != "PASS_WITH_WARNINGS" || !published.ValidationActionable {
+		t.Fatalf("publication changed warning evidence or lifecycle: stage=%q outcome=%q actionable=%t", published.Stage, published.ValidationOutcome, published.ValidationActionable)
+	}
+	assertQueueStageSequence(t, published, JobStageReadyToPublish, JobStagePublishing, JobStageArchivingOriginal, JobStageCompleted)
+}
+
+func TestAutoPublisherDoesNotPromoteHistoricalReviewWarnings(t *testing.T) {
+	fixture := newPublisherDeliveryFixture(t, false)
+	job := attachActionableAdvisoryWarningRun(t, fixture)
+	now := time.Now().UTC()
+	job.Stage = JobStageValidationReview
+	job.StageUpdatedAt = &now
+	job.StageHistory = models.JSONList{
+		models.JSONMap{"stage": JobStageValidating, "at": now.Add(-time.Minute).Format(time.RFC3339)},
+		models.JSONMap{"stage": JobStageValidationReview, "at": now.Format(time.RFC3339)},
+	}
+	if err := fixture.db.Save(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	settings := []models.AppSetting{
+		{Key: "pipelineAutomation", Value: models.JSONMap{"autoPublisherEnabled": true}},
+		{Key: "validation", Value: models.JSONMap{"autoAdvanceOutcomes": []string{"PASS", "PASS_WITH_WARNINGS"}}},
+	}
+	for _, setting := range settings {
+		if err := fixture.db.Create(&setting).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	(&AutoPublisher{db: fixture.db}).tick()
+	var count int64
+	if err := fixture.db.Model(&models.PublisherPublication{}).Where("queue_job_id = ?", job.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	var current models.QueueJob
+	if err := fixture.db.First(&current, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 || current.Stage != JobStageValidationReview || len(current.StageHistory) != 2 {
+		t.Fatalf("deployment-style tick promoted historical review warning: rows=%d stage=%q history=%#v", count, current.Stage, current.StageHistory)
+	}
+}
+
 func TestAutoPublisherWaitsForCanonicalValidationBeforeFirstHandoff(t *testing.T) {
 	fixture := newPublisherDeliveryFixture(t, false)
 	var validation models.ValidationRun
@@ -995,11 +1191,10 @@ func TestPublisherIdentityBindsEligibleValidationOverrideEvent(t *testing.T) {
 		ValidatorVersion: validationEngineVersion, RulesetID: validationRulesetID, RulesetVersion: validationRulesetVersion,
 		PolicySchemaVersion: 1, PolicyVersion: "validation-policy-v1", PolicyPreset: "custom", PolicyFingerprint: "sha256:test-policy",
 		PolicySnapshot: models.JSONMap{"schemaVersion": 1, "policyVersion": "validation-policy-v1", "preset": "custom"},
-		ActorSource:    publicationActorSystem, ActorID: publicationActorSystem, Outcome: "FAIL",
-		Findings: models.JSONList{
-			models.JSONMap{"key": "duration.timeline", "disposition": "blocking", "state": "FAIL", "overrideable": true},
-			models.JSONMap{"key": "video.properties", "disposition": "blocking", "state": "UNVERIFIED", "overrideable": true},
-		},
+		ActorSource:    publicationActorSystem, ActorID: publicationActorSystem, Outcome: "REVIEW_REQUIRED",
+		Findings: models.JSONList{models.JSONMap{
+			"key": "duration.timeline", "disposition": "blocking", "state": "REVIEW_REQUIRED", "overrideable": true,
+		}},
 		Report: models.JSONMap{}, CreatedAt: time.Now().UTC(),
 	}
 	if err := fixture.db.Create(&run).Error; err != nil {
@@ -1011,19 +1206,19 @@ func TestPublisherIdentityBindsEligibleValidationOverrideEvent(t *testing.T) {
 		ResultGenerationVersion: run.ResultGenerationVersion, ResultOutputRevision: run.ResultOutputRevision,
 		PolicySchemaVersion: run.PolicySchemaVersion, PolicyVersion: run.PolicyVersion, PolicyFingerprint: run.PolicyFingerprint,
 		ActorSource: publicationActorOperator, ActorID: publicationActorOperator,
-		Reason: "Reviewed exception", RuleKeys: models.JSONList{"duration.timeline", "video.properties"},
+		Reason: "Reviewed exception", RuleKeys: models.JSONList{"duration.timeline"},
 		RequestedHandoff: "publisher", OverrideVersion: "v1", CreatedAt: time.Now().UTC(),
 	}
 	if err := fixture.db.Create(&override).Error; err != nil {
 		t.Fatal(err)
 	}
-	job.ValidationOutcome, job.ValidationStatus = "FAIL", ValidationStatusFailed
+	job.ValidationOutcome, job.ValidationStatus = "REVIEW_REQUIRED", ValidationStatusFailed
 	if err := fixture.db.Save(&job).Error; err != nil {
 		t.Fatal(err)
 	}
 	result, err := (PublisherHandler{db: fixture.db}).handoffAndPublishWithReason(job, false, "Reviewed the eligible Validation overrides")
 	if err != nil || result.Status != "published" {
-		t.Fatalf("eligible #53 override did not authorize Publisher handoff: result=%#v err=%v", result, err)
+		t.Fatalf("eligible #326 REVIEW_REQUIRED override did not authorize Publisher handoff: result=%#v err=%v", result, err)
 	}
 	var publication models.PublisherPublication
 	if err := fixture.db.Where("queue_job_id = ?", job.ID).First(&publication).Error; err != nil {
@@ -1054,6 +1249,7 @@ func TestPublisherRejectsNonOverrideableAndStaleOverrides(t *testing.T) {
 		noOverride    bool
 	}{
 		{name: "crafted mandatory identity skip", findingKey: "artifact.integrity", findingState: "FAIL"},
+		{name: "valid manual override cannot authorize FAIL", findingKey: "duration.timeline", findingState: "FAIL"},
 		{name: "wrong ValidationRun", findingKey: "duration.timeline", findingState: "FAIL", wrongRun: true},
 		{name: "wrong Result identity", findingKey: "duration.timeline", findingState: "FAIL", wrongResult: true},
 		{name: "wrong handoff target", findingKey: "duration.timeline", findingState: "FAIL", wrongHandoff: true},

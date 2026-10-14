@@ -1871,7 +1871,7 @@ func (h QueueHandler) Update(c *gin.Context) {
 			return err
 		}
 		if input.Status != "" {
-			if err := transitionJobStage(tx, &job, terminalStageForStatus(job.Status)); err != nil {
+			if err := transitionJobStage(tx, &job, stageForStatusUpdate(job, previousStatus)); err != nil {
 				return err
 			}
 		}

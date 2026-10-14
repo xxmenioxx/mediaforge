@@ -55,7 +55,10 @@ func TestAutomatedPipelineDoesNotRequireAutoAnalysis(t *testing.T) {
 	if err := db.Create(&setting).Error; err != nil {
 		t.Fatal(err)
 	}
-	result := NewWorkerHandler(db).runAutomatedPipeline(models.QueueJob{})
+	result, err := NewWorkerHandler(db).runAutomatedPipeline(models.QueueJob{})
+	if err != nil {
+		t.Fatalf("automatic pipeline failed while Validation was disabled: %v", err)
+	}
 	if result["analysisStatus"] != "skipped" || result["stoppedAt"] != "validation" {
 		t.Fatalf("unexpected independent pipeline result: %#v", result)
 	}
