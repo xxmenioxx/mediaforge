@@ -41,9 +41,11 @@ export function queueStagePresentation(job: QueueJob): { label: string; color: Q
       ? 'success'
       : job.stage === 'failed'
         ? 'error'
-        : job.stage === 'canceled' || job.stage === 'queued'
-          ? 'default'
-          : 'info';
+        : job.stage === 'validation_review'
+          ? 'warning'
+          : job.stage === 'canceled' || job.stage === 'queued'
+            ? 'default'
+            : 'info';
     return { label: job.stage.replaceAll('_', ' '), color };
   }
 

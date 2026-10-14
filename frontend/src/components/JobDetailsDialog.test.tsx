@@ -42,6 +42,23 @@ function jobWithSidecars(): QueueJob {
 }
 
 describe('JobDetailsDialog subtitle stage', () => {
+  it('shows persisted validation review as the current warning lifecycle stage', async () => {
+    const job: QueueJob = {
+      ...jobWithSidecars(),
+      status: 'completed',
+      stage: 'validation_review',
+      validationStatus: 'warning',
+      stageHistory: [
+        { stage: 'validating', at: '2026-08-30T12:00:00Z' },
+        { stage: 'validation_review', at: '2026-08-30T12:01:00Z' },
+      ],
+    };
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobDetailsDialog job={job} onClose={() => undefined} /></QueryClientProvider>);
+
+    expect(await screen.findByText('validation review')).toBeTruthy();
+    expect(screen.getByText('warning')).toBeTruthy();
+  });
+
   it('shows an active archive stage without treating legacy completed history as terminal', async () => {
     const job: QueueJob = {
       ...jobWithSidecars(),
