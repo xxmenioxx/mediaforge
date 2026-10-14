@@ -66,7 +66,16 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Record starting runner storage
+        run: ./scripts/ci/runner-disk-capacity.sh report "after checkout"
+      - name: Reclaim unused GitHub-hosted toolchains
+        if: ${{ runner.environment == 'github-hosted' }}
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: ./scripts/ci/runner-disk-capacity.sh reclaim
       - uses: docker/setup-buildx-action@v4.4.1
+      - name: Check storage before backend image build
+        run: ./scripts/ci/runner-disk-capacity.sh check "before backend build" --buildkit
       - name: Build backend image
         uses: docker/build-push-action@v7.4.0
         with:
@@ -75,6 +84,15 @@ jobs:
           tags: mvforge-backend:ci
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
+      - name: Record storage after backend image build
+        if: ${{ always() }}
+        run: ./scripts/ci/runner-disk-capacity.sh report "after backend build" --buildkit
+      - name: Release this job's backend BuildKit cache
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: ./scripts/ci/runner-disk-capacity.sh prune-buildkit
+      - name: Record storage before web image build
+        run: ./scripts/ci/runner-disk-capacity.sh report "after backend cache cleanup" --buildkit
       - name: Build web image
         uses: docker/build-push-action@v7.4.0
         with:
@@ -84,6 +102,9 @@ jobs:
           tags: mvforge-web:ci
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
+      - name: Record storage after web image build
+        if: ${{ always() }}
+        run: ./scripts/ci/runner-disk-capacity.sh report "after web build" --buildkit
       - name: Validate NAS Compose
         env:
           CONFIG_PATH: /tmp/mvforge/config
@@ -93,3 +114,6 @@ jobs:
           ARCHIVE_PATH: /tmp/mvforge/archive
           REPORTS_PATH: /tmp/mvforge/reports
         run: docker compose -f deploy/nas/compose.yml config --quiet
+      - name: Record final runner storage
+        if: ${{ always() }}
+        run: ./scripts/ci/runner-disk-capacity.sh report "after NAS Compose validation" --buildkit
