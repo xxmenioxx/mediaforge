@@ -9,9 +9,16 @@ import (
 )
 
 func timingEvidence(videoStart, audioStart float64) avTimingEvidence {
+	videoPresentation, audioPresentation := secondsPointer(videoStart), secondsPointer(audioStart)
 	return avTimingEvidence{
-		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(videoStart)},
-		Audio: []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(audioStart)}}, FrameRate: "24000/1001",
+		Video: &avStreamTiming{
+			Index: 0, StartSeconds: secondsPointer(videoStart), FirstPresentedSeconds: videoPresentation,
+			FirstPresentedSource: "frame.best_effort_timestamp_time", FirstPresentedOrigin: "test_fixture",
+		},
+		Audio: []avStreamTiming{{
+			Index: 1, StartSeconds: secondsPointer(audioStart), FirstPacketPTSSeconds: audioPresentation,
+			FirstPacketPTSSource: "packet.pts_time", FirstPacketPTSOrigin: "test_fixture",
+		}}, FrameRate: "24000/1001",
 	}
 }
 
@@ -79,13 +86,13 @@ func TestValidateAVTimingFramePolicyBoundaries(t *testing.T) {
 
 func TestValidateAVTimingQuantizedTwoFrameBoundaryWarns(t *testing.T) {
 	source := avTimingEvidence{
-		Video:     &avStreamTiming{Index: 0, StartSeconds: secondsPointer(.067), TimeBase: "1/1000"},
-		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), TimeBase: "1/1000"}},
+		Video:     &avStreamTiming{Index: 0, StartSeconds: secondsPointer(.067), FirstPresentedSeconds: secondsPointer(.067), TimeBase: "1/1000"},
+		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), FirstPacketPTSSeconds: secondsPointer(0), TimeBase: "1/1000"}},
 		FrameRate: "30000/1001",
 	}
 	output := avTimingEvidence{
-		Video:     &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), TimeBase: "1/1000"},
-		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), TimeBase: "1/1000"}},
+		Video:     &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), FirstPresentedSeconds: secondsPointer(0), TimeBase: "1/1000"},
+		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), FirstPacketPTSSeconds: secondsPointer(0), TimeBase: "1/1000"}},
 		FrameRate: "30000/1001",
 	}
 	report := validateAVTiming(source, output)
@@ -105,12 +112,13 @@ func TestValidateAVTimingRejectsQuantizedRegressionBeyondAllowance(t *testing.T)
 	frameSeconds := 1001.0 / 30000.0
 	source := avTimingEvidence{
 		Video:     &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), TimeBase: "1/1000"},
-		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), TimeBase: "1/1000"}},
+		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), FirstPacketPTSSeconds: secondsPointer(0), TimeBase: "1/1000"}},
 		FrameRate: "30000/1001",
 	}
+	source.Video.FirstPresentedSeconds = secondsPointer(0)
 	output := avTimingEvidence{
-		Video:     &avStreamTiming{Index: 0, StartSeconds: secondsPointer(2.25 * frameSeconds), TimeBase: "1/1000"},
-		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), TimeBase: "1/1000"}},
+		Video:     &avStreamTiming{Index: 0, StartSeconds: secondsPointer(2.25 * frameSeconds), FirstPresentedSeconds: secondsPointer(2.25 * frameSeconds), TimeBase: "1/1000"},
+		Audio:     []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(0), FirstPacketPTSSeconds: secondsPointer(0), TimeBase: "1/1000"}},
 		FrameRate: "30000/1001",
 	}
 	if report := validateAVTiming(source, output); report["status"] != "mismatch" {
@@ -157,11 +165,11 @@ func TestValidateAVTimingReportsDriftAsNotMeasured(t *testing.T) {
 
 func TestValidateAVTimingSeverityIsOrderIndependent(t *testing.T) {
 	statuses := func(frameOffsets ...float64) string {
-		source := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24000/1001"}
-		output := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24000/1001"}
+		source := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), FirstPresentedSeconds: secondsPointer(0)}, FrameRate: "24000/1001"}
+		output := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), FirstPresentedSeconds: secondsPointer(0)}, FrameRate: "24000/1001"}
 		for index, frames := range frameOffsets {
-			source.Audio = append(source.Audio, avStreamTiming{Index: index + 1, StartSeconds: secondsPointer(0)})
-			output.Audio = append(output.Audio, avStreamTiming{Index: index + 1, StartSeconds: secondsPointer(frames * 1001.0 / 24000.0)})
+			source.Audio = append(source.Audio, avStreamTiming{Index: index + 1, StartSeconds: secondsPointer(0), FirstPacketPTSSeconds: secondsPointer(0)})
+			output.Audio = append(output.Audio, avStreamTiming{Index: index + 1, StartSeconds: secondsPointer(0), FirstPacketPTSSeconds: secondsPointer(frames * 1001.0 / 24000.0)})
 		}
 		return validateAVTiming(source, output)["status"].(string)
 	}
@@ -185,12 +193,12 @@ func TestValidateAVTimingSeverityIsOrderIndependent(t *testing.T) {
 
 func TestValidateAVTimingDistinguishesMissingEvidenceFromZero(t *testing.T) {
 	missingVideo := timingEvidence(0, 0)
-	missingVideo.Video.StartSeconds = nil
+	missingVideo.Video.FirstPresentedSeconds = nil
 	if report := validateAVTiming(missingVideo, timingEvidence(0, 0)); report["status"] != "unverified" {
 		t.Fatalf("missing video evidence must be unverified: %#v", report)
 	}
 	missingAudio := timingEvidence(0, 0)
-	missingAudio.Audio[0].StartSeconds = nil
+	missingAudio.Audio[0].FirstPacketPTSSeconds = nil
 	if report := validateAVTiming(timingEvidence(0, 0), missingAudio); report["status"] != "unverified" {
 		t.Fatalf("missing audio evidence must be unverified: %#v", report)
 	}
@@ -201,16 +209,16 @@ func TestValidateAVTimingDistinguishesMissingEvidenceFromZero(t *testing.T) {
 
 func TestValidateAVTimingDoesNotHidePartiallyMissingAudioEvidence(t *testing.T) {
 	source := avTimingEvidence{
-		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24000/1001",
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), FirstPresentedSeconds: secondsPointer(0)}, FrameRate: "24000/1001",
 		Audio: []avStreamTiming{
-			{Index: 1, StartSeconds: secondsPointer(0)},
+			{Index: 1, StartSeconds: secondsPointer(0), FirstPacketPTSSeconds: secondsPointer(0)},
 			{Index: 2},
 		},
 	}
 	output := avTimingEvidence{
-		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24000/1001",
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), FirstPresentedSeconds: secondsPointer(0)}, FrameRate: "24000/1001",
 		Audio: []avStreamTiming{
-			{Index: 1, StartSeconds: secondsPointer(0)},
+			{Index: 1, StartSeconds: secondsPointer(0), FirstPacketPTSSeconds: secondsPointer(0)},
 			{Index: 2},
 		},
 	}
@@ -226,7 +234,7 @@ func TestValidateAVTimingDoesNotHidePartiallyMissingAudioEvidence(t *testing.T) 
 
 func TestValidateAVTimingDoesNotValidateOnlyCommonTrackPrefix(t *testing.T) {
 	source := timingEvidence(0, 0)
-	source.Audio = append(source.Audio, avStreamTiming{Index: 2, StartSeconds: secondsPointer(0)})
+	source.Audio = append(source.Audio, avStreamTiming{Index: 2, StartSeconds: secondsPointer(0), FirstPacketPTSSeconds: secondsPointer(0)})
 	report := validateAVTiming(source, timingEvidence(0, 0))
 	if report["status"] != "unverified" {
 		t.Fatalf("missing output track was ignored after validating common prefix: %#v", report)
@@ -257,12 +265,149 @@ func TestFirstPacketPTSandDTSAreCapturedIndependently(t *testing.T) {
 }
 
 func TestAVTimingFromProbeParsesFFprobeStringTimestamps(t *testing.T) {
-	evidence := avTimingFromProbe(map[string]any{"streams": []interface{}{
-		map[string]interface{}{"index": float64(0), "codec_type": "video", "start_time": "0.042000", "time_base": "1/24000", "avg_frame_rate": "24000/1001"},
-		map[string]interface{}{"index": float64(1), "codec_type": "audio", "start_time": "0.000000", "time_base": "1/48000"},
-	}})
-	if evidence.Video == nil || evidence.Video.StartSeconds == nil || math.Abs(*evidence.Video.StartSeconds-.042) > .0001 || evidence.Video.TimeBase != "1/24000" || len(evidence.Audio) != 1 || evidence.Audio[0].TimeBase != "1/48000" {
+	evidence := avTimingFromProbeWithOrigin(map[string]any{
+		"streams": []interface{}{
+			map[string]interface{}{"index": float64(0), "codec_type": "video", "start_time": "0.000000", "time_base": "1/24000", "avg_frame_rate": "24000/1001"},
+			map[string]interface{}{"index": float64(1), "codec_type": "audio", "start_time": "0.000000", "time_base": "1/48000"},
+		},
+		"packets": []interface{}{map[string]interface{}{"stream_index": float64(1), "pts_time": "0.000000", "dts_time": "0.000000"}},
+		"frames": []interface{}{
+			map[string]interface{}{"media_type": "video", "stream_index": float64(0), "best_effort_timestamp_time": "0.042000"},
+			map[string]interface{}{"media_type": "audio", "stream_index": float64(1), "best_effort_timestamp_time": "0.000000"},
+		},
+	}, "queue.sourceEvidence")
+	if evidence.Video == nil || evidence.Video.StartSeconds == nil || *evidence.Video.StartSeconds != 0 || evidence.Video.FirstPresentedSeconds == nil || math.Abs(*evidence.Video.FirstPresentedSeconds-.042) > .0001 || evidence.Video.TimeBase != "1/24000" || evidence.Video.FirstPresentedSource != "frame.best_effort_timestamp_time" || evidence.Video.FirstPresentedOrigin != "queue.sourceEvidence" || len(evidence.Audio) != 1 || evidence.Audio[0].TimeBase != "1/48000" || evidence.Audio[0].FirstPresentedSeconds == nil || *evidence.Audio[0].FirstPresentedSeconds != 0 || evidence.Audio[0].FirstPacketPTSSeconds == nil || evidence.Audio[0].FirstPacketPTSSource != "packet.pts_time" || evidence.Audio[0].FirstPacketPTSOrigin != "queue.sourceEvidence" {
 		t.Fatalf("FFprobe timing strings were not parsed: %#v", evidence)
+	}
+}
+
+func TestAVTimingReadIntervalIsBoundedToTwoSeconds(t *testing.T) {
+	if got := avTimingReadInterval(0); got != "%+2" {
+		t.Fatalf("initial timing probe interval=%q want a two-second bound", got)
+	}
+	if got := avTimingReadInterval(4.5); got != "4.5%+2" {
+		t.Fatalf("offset timing probe interval=%q want 4.5%%+2", got)
+	}
+}
+
+func TestAVTimingFallbackProbesOnlyMissingSideOnce(t *testing.T) {
+	source := timingEvidence(0, 0)
+	output := timingEvidence(0, 0)
+	output.Video.FirstPresentedSeconds = nil
+	output.Audio[0].FirstPacketPTSSeconds = nil
+	var paths []string
+	probe := func(path string, intervalStart float64) (avTimingEvidence, error) {
+		paths = append(paths, path)
+		if intervalStart != 0 {
+			t.Fatalf("fallback probe start=%f want initial interval", intervalStart)
+		}
+		measured := timingEvidence(.042, 0)
+		measured.Video.FirstPresentedOrigin = ""
+		measured.Audio[0].FirstPacketPTSOrigin = ""
+		markAVTimingPresentationOrigin(&measured, "bounded_ffprobe_fallback")
+		measured.PresentationProbeStatus = "completed"
+		return measured, nil
+	}
+	measuredSource, measuredOutput := avTimingWithBoundedPresentationFallback(source, output, "/source.mkv", "/output.mkv", probe)
+	if len(paths) != 1 || paths[0] != "/output.mkv" {
+		t.Fatalf("fallback probe paths=%v want only the side missing presentation evidence", paths)
+	}
+	if measuredSource.PresentationProbeStatus != "" || measuredOutput.PresentationProbeStatus != "completed" || measuredOutput.Video.FirstPresentedSeconds == nil || *measuredOutput.Video.FirstPresentedSeconds != .042 || measuredOutput.Video.FirstPresentedOrigin != "bounded_ffprobe_fallback" {
+		t.Fatalf("fallback evidence was not merged with provenance: source=%#v output=%#v", measuredSource, measuredOutput)
+	}
+}
+
+func TestAVTimingFallbackFailureKeepsOffsetsUnverified(t *testing.T) {
+	source, output := timingEvidence(0, 0), timingEvidence(0, 0)
+	source.Video.FirstPresentedSeconds, output.Video.FirstPresentedSeconds = nil, nil
+	source.Audio[0].FirstPresentedSeconds, source.Audio[0].FirstPacketPTSSeconds = nil, nil
+	output.Audio[0].FirstPresentedSeconds, output.Audio[0].FirstPacketPTSSeconds = nil, nil
+	probeCalls := 0
+	probe := func(string, float64) (avTimingEvidence, error) {
+		probeCalls++
+		return avTimingEvidence{}, fmt.Errorf("probe unavailable")
+	}
+	source, output = avTimingWithBoundedPresentationFallback(source, output, "/source.mkv", "/output.mkv", probe)
+	report := validateAVTiming(source, output)
+	tracks := report["tracks"].([]models.JSONMap)
+	if probeCalls != 2 || source.PresentationProbeStatus != "failed" || output.PresentationProbeStatus != "failed" || report["status"] != "unverified" || len(tracks) != 1 {
+		t.Fatalf("failed bounded probes fabricated or hid evidence: calls=%d source=%#v output=%#v report=%#v", probeCalls, source, output, report)
+	}
+	if _, exists := tracks[0]["introducedOffsetMs"]; exists {
+		t.Fatalf("failed probe recorded a fabricated offset: %#v", tracks[0])
+	}
+}
+
+func TestValidateAVTimingComparesVC1AndOutputAtSamePresented42msFrame(t *testing.T) {
+	probe := func(streamStart, firstVideoFrame, audioPTS string) map[string]any {
+		return map[string]any{
+			"streams": []interface{}{
+				map[string]interface{}{"index": float64(0), "codec_type": "video", "start_time": streamStart, "time_base": "1/1000", "avg_frame_rate": "24000/1001"},
+				map[string]interface{}{"index": float64(1), "codec_type": "audio", "start_time": "0.000000", "time_base": "1/1000"},
+			},
+			"packets": []interface{}{map[string]interface{}{"stream_index": float64(1), "pts_time": audioPTS}},
+			"frames":  []interface{}{map[string]interface{}{"media_type": "video", "stream_index": float64(0), "best_effort_timestamp_time": firstVideoFrame}},
+		}
+	}
+	source := avTimingFromProbeWithOrigin(probe("0.000000", "0.042000", "0.000000"), "queue.sourceEvidence")
+	output := avTimingFromProbeWithOrigin(probe("0.042000", "0.042000", "0.000000"), "result.outputProbe")
+	report := validateAVTiming(source, output)
+	track := report["tracks"].([]models.JSONMap)[0]
+	if report["status"] != "validated" || math.Abs(track["sourceOffsetMs"].(float64)+42) > .001 || math.Abs(track["outputOffsetMs"].(float64)+42) > .001 || math.Abs(track["introducedOffsetMs"].(float64)) > .001 {
+		t.Fatalf("same 42 ms presented frame was treated as an introduced offset: %#v", report)
+	}
+	if track["decision"] != "validated" || track["passToleranceFrames"] != float64(1) || track["warningToleranceFrames"] != float64(2) {
+		t.Fatalf("per-track decision or policy thresholds are missing: %#v", track)
+	}
+	evidenceUsed := track["evidenceUsed"].(models.JSONMap)
+	sourceVideoEvidence := evidenceUsed["sourceVideo"].(models.JSONMap)
+	if sourceVideoEvidence["field"] != "frame.best_effort_timestamp_time" || sourceVideoEvidence["origin"] != "queue.sourceEvidence" || sourceVideoEvidence["timestampSeconds"] != .042 {
+		t.Fatalf("source presentation provenance was not reported: %#v", evidenceUsed)
+	}
+}
+
+func TestValidateAVTimingH264ZeroPresentedTimestampControl(t *testing.T) {
+	probe := func() map[string]any {
+		return map[string]any{
+			"streams": []interface{}{
+				map[string]interface{}{"index": float64(0), "codec_type": "video", "start_time": "0.000000", "time_base": "1/1000", "avg_frame_rate": "24000/1001"},
+				map[string]interface{}{"index": float64(1), "codec_type": "audio", "start_time": "0.000000", "time_base": "1/1000"},
+			},
+			"packets": []interface{}{map[string]interface{}{"stream_index": float64(1), "pts_time": "0.000000"}},
+			"frames":  []interface{}{map[string]interface{}{"media_type": "video", "stream_index": float64(0), "best_effort_timestamp_time": "0.000000"}},
+		}
+	}
+	report := validateAVTiming(avTimingFromProbe(probe()), avTimingFromProbe(probe()))
+	track := report["tracks"].([]models.JSONMap)[0]
+	if report["status"] != "validated" || track["introducedOffsetMs"] != float64(0) {
+		t.Fatalf("zero-offset presentation control did not pass: %#v", report)
+	}
+}
+
+func TestValidateAVTimingDoesNotFallBackToStreamStartTime(t *testing.T) {
+	source, output := timingEvidence(0, 0), timingEvidence(0, 0)
+	source.Video.FirstPresentedSeconds = nil
+	output.Video.FirstPresentedSeconds = nil
+	source.Audio[0].FirstPresentedSeconds, source.Audio[0].FirstPacketPTSSeconds = nil, nil
+	output.Audio[0].FirstPresentedSeconds, output.Audio[0].FirstPacketPTSSeconds = nil, nil
+	report := validateAVTiming(source, output)
+	tracks := report["tracks"].([]models.JSONMap)
+	if report["status"] != "unverified" || len(tracks) != 1 || tracks[0]["status"] != "unverified" {
+		t.Fatalf("stream start times were used without presentation anchors: %#v", report)
+	}
+	if tracks[0]["decision"] != "unverified" || tracks[0]["evidenceUsed"].(models.JSONMap)["sourceVideo"].(models.JSONMap)["available"] != false {
+		t.Fatalf("missing presentation provenance did not remain explicit: %#v", tracks[0])
+	}
+	if _, exists := tracks[0]["introducedOffsetMs"]; exists {
+		t.Fatalf("unverified evidence invented an introduced offset: %#v", tracks[0])
+	}
+}
+
+func TestValidateAVTimingDetectsIntroducedAudioDrift(t *testing.T) {
+	report := validateAVTiming(timingEvidence(0, 0), timingEvidence(0, .100))
+	track := report["tracks"].([]models.JSONMap)[0]
+	if report["status"] != "mismatch" || track["decision"] != "mismatch" || math.Abs(track["introducedOffsetMs"].(float64)-100) > .001 {
+		t.Fatalf("real introduced audio offset was hidden: %#v", report)
 	}
 }
 
@@ -271,6 +416,9 @@ func TestValidateAVTimingFFprobeDecimalStringsKeepProductionBoundaryAdvisory(t *
 		return map[string]any{"streams": []interface{}{
 			map[string]interface{}{"index": float64(0), "codec_type": "video", "start_time": videoStart, "time_base": "1/1000", "avg_frame_rate": "30000/1001"},
 			map[string]interface{}{"index": float64(1), "codec_type": "audio", "start_time": audioStart, "time_base": "1/1000"},
+		}, "frames": []interface{}{
+			map[string]interface{}{"media_type": "video", "stream_index": float64(0), "best_effort_timestamp_time": videoStart},
+			map[string]interface{}{"media_type": "audio", "stream_index": float64(1), "best_effort_timestamp_time": audioStart},
 		}}
 	}
 	source := avTimingFromProbe(probe("0.067000", "0.000000"))
@@ -279,6 +427,9 @@ func TestValidateAVTimingFFprobeDecimalStringsKeepProductionBoundaryAdvisory(t *
 	track := report["tracks"].([]models.JSONMap)[0]
 	if report["status"] != "warning" || track["status"] != "warning" {
 		t.Fatalf("ffprobe decimal timestamp boundary must remain warning: %#v", report)
+	}
+	if track["passToleranceFrames"] != float64(1) || track["warningToleranceFrames"] != float64(2) || track["decision"] != "warning" {
+		t.Fatalf("track report lost policy tolerance details: %#v", track)
 	}
 }
 
@@ -293,19 +444,19 @@ func TestAVTimingForSelectedAudioMatchesAbsoluteInputIndex(t *testing.T) {
 
 func TestAVTimingForStreamPlanDoesNotPairRemovedAudioByArrayPosition(t *testing.T) {
 	source := avTimingEvidence{
-		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)},
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), FirstPresentedSeconds: secondsPointer(0)},
 		Audio: []avStreamTiming{
-			{Index: 1, Language: "spa", Title: "Spanish", StartSeconds: secondsPointer(0)},
-			{Index: 2, Language: "eng", Title: "English", StartSeconds: secondsPointer(.080)},
-			{Index: 3, Language: "eng", Title: "Commentary", StartSeconds: secondsPointer(.160)},
+			{Index: 1, Language: "spa", Title: "Spanish", StartSeconds: secondsPointer(0), FirstPacketPTSSeconds: secondsPointer(0)},
+			{Index: 2, Language: "eng", Title: "English", StartSeconds: secondsPointer(.080), FirstPacketPTSSeconds: secondsPointer(.080)},
+			{Index: 3, Language: "eng", Title: "Commentary", StartSeconds: secondsPointer(.160), FirstPacketPTSSeconds: secondsPointer(.160)},
 		},
 		FrameRate: "24000/1001",
 	}
 	output := avTimingEvidence{
-		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(.042)},
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(.042), FirstPresentedSeconds: secondsPointer(.042)},
 		Audio: []avStreamTiming{
-			{Index: 1, Language: "eng", Title: "English", StartSeconds: secondsPointer(.122)},
-			{Index: 2, Language: "eng", Title: "Commentary", StartSeconds: secondsPointer(.202)},
+			{Index: 1, Language: "eng", Title: "English", StartSeconds: secondsPointer(.122), FirstPacketPTSSeconds: secondsPointer(.122)},
+			{Index: 2, Language: "eng", Title: "Commentary", StartSeconds: secondsPointer(.202), FirstPacketPTSSeconds: secondsPointer(.202)},
 		},
 		FrameRate: "24000/1001",
 	}
@@ -330,10 +481,10 @@ func TestAVTimingForStreamPlanDoesNotPairRemovedAudioByArrayPosition(t *testing.
 func TestAVTimingForStreamPlanSkipsDerivedWhenOriginalExists(t *testing.T) {
 	source := timingEvidence(0, 0)
 	output := avTimingEvidence{
-		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24000/1001",
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), FirstPresentedSeconds: secondsPointer(0)}, FrameRate: "24000/1001",
 		Audio: []avStreamTiming{
-			{Index: 1, StartSeconds: secondsPointer(0)},
-			{Index: 2, StartSeconds: secondsPointer(.5)},
+			{Index: 1, StartSeconds: secondsPointer(0), FirstPacketPTSSeconds: secondsPointer(0)},
+			{Index: 2, StartSeconds: secondsPointer(.5), FirstPacketPTSSeconds: secondsPointer(.5)},
 		},
 	}
 	duplicate := 1
@@ -350,8 +501,8 @@ func TestAVTimingForStreamPlanSkipsDerivedWhenOriginalExists(t *testing.T) {
 func TestAVTimingForStreamPlanUsesDerivedWhenOriginalIsNotPreserved(t *testing.T) {
 	source := timingEvidence(0, .080)
 	output := avTimingEvidence{
-		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(.042)}, FrameRate: "24000/1001",
-		Audio: []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(.122)}},
+		Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(.042), FirstPresentedSeconds: secondsPointer(.042)}, FrameRate: "24000/1001",
+		Audio: []avStreamTiming{{Index: 1, StartSeconds: secondsPointer(.122), FirstPacketPTSSeconds: secondsPointer(.122)}},
 	}
 	duplicate := 1
 	plan := ResolvedStreamPlan{Audio: []PlannedStream{{InputIndex: 1, OutputIndex: 1, OutputTypeIndex: 0, Action: "derive", DuplicateOf: &duplicate}}}
@@ -364,14 +515,14 @@ func TestAVTimingForStreamPlanUsesDerivedWhenOriginalIsNotPreserved(t *testing.T
 func TestAVTimingForStreamPlanMissingOutputDoesNotShiftLaterPairs(t *testing.T) {
 	for _, missingOutput := range []int{1, 2} {
 		t.Run(fmt.Sprintf("missing_output_%d", missingOutput), func(t *testing.T) {
-			source := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24/1"}
-			output := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0)}, FrameRate: "24/1"}
+			source := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), FirstPresentedSeconds: secondsPointer(0)}, FrameRate: "24/1"}
+			output := avTimingEvidence{Video: &avStreamTiming{Index: 0, StartSeconds: secondsPointer(0), FirstPresentedSeconds: secondsPointer(0)}, FrameRate: "24/1"}
 			plan := ResolvedStreamPlan{}
 			for index := 1; index <= 3; index++ {
-				source.Audio = append(source.Audio, avStreamTiming{Index: index, StartSeconds: secondsPointer(float64(index) / 10)})
+				source.Audio = append(source.Audio, avStreamTiming{Index: index, StartSeconds: secondsPointer(float64(index) / 10), FirstPacketPTSSeconds: secondsPointer(float64(index) / 10)})
 				plan.Audio = append(plan.Audio, PlannedStream{InputIndex: index, OutputIndex: index, OutputTypeIndex: index - 1, Action: "copy"})
 				if index != missingOutput {
-					output.Audio = append(output.Audio, avStreamTiming{Index: index, StartSeconds: secondsPointer(float64(index) / 10)})
+					output.Audio = append(output.Audio, avStreamTiming{Index: index, StartSeconds: secondsPointer(float64(index) / 10), FirstPacketPTSSeconds: secondsPointer(float64(index) / 10)})
 				}
 			}
 			selectedSource, selectedOutput := avTimingForStreamPlan(source, output, plan)

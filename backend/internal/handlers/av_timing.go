@@ -2,12 +2,14 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
 )
@@ -19,25 +21,35 @@ type avStreamTiming struct {
 	FirstPacketPTSSeconds *float64 `json:"firstPacketPtsSeconds,omitempty"`
 	FirstPacketDTSSeconds *float64 `json:"firstPacketDtsSeconds,omitempty"`
 	FirstPresentedSeconds *float64 `json:"firstPresentedSeconds,omitempty"`
+	FirstPacketPTSSource  string   `json:"firstPacketPtsSource,omitempty"`
+	FirstPacketPTSOrigin  string   `json:"firstPacketPtsOrigin,omitempty"`
+	FirstPresentedSource  string   `json:"firstPresentedSource,omitempty"`
+	FirstPresentedOrigin  string   `json:"firstPresentedOrigin,omitempty"`
 	Language              string   `json:"language,omitempty"`
 	Title                 string   `json:"title,omitempty"`
 }
 
+const avTimingProbeWindowSeconds = 2.0
+const avTimingProbeTimeout = 5 * time.Second
+
 func probeAVTiming(path string, intervalStart float64) (avTimingEvidence, error) {
-	interval := "%+2"
-	if intervalStart > 0 {
-		interval = strconv.FormatFloat(intervalStart, 'f', -1, 64) + "%+2"
-	}
+	interval := avTimingReadInterval(intervalStart)
 	args := []string{
 		"-v", "error", "-read_intervals", interval,
 		"-show_entries", "stream=index,codec_type,start_time,time_base,avg_frame_rate:stream_tags=language,title:packet=stream_index,pts_time,dts_time:frame=media_type,stream_index,best_effort_timestamp_time",
 		"-show_streams", "-show_packets", "-show_frames", "-of", "json", path,
 	}
-	cmd := exec.Command("ffprobe", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), avTimingProbeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ffprobe", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return avTimingEvidence{}, fmt.Errorf("probe A/V timing: %s", strings.TrimSpace(stderr.String()))
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return avTimingEvidence{}, fmt.Errorf("probe A/V timing: %s", detail)
 	}
 	var response struct {
 		Streams []struct {
@@ -88,16 +100,32 @@ func probeAVTiming(path string, intervalStart float64) (avTimingEvidence, error)
 	}
 	for _, frame := range response.Frames {
 		timing := byIndex[frame.StreamIndex]
-		if frame.MediaType == "video" && timing != nil && timing.FirstPresentedSeconds == nil {
-			timing.FirstPresentedSeconds = optionalSeconds(frame.Presented)
+		if (frame.MediaType == "video" || frame.MediaType == "audio") && timing != nil && timing.FirstPresentedSeconds == nil {
+			if presented := optionalSeconds(frame.Presented); presented != nil {
+				timing.FirstPresentedSeconds = presented
+				timing.FirstPresentedSource = "frame.best_effort_timestamp_time"
+			}
 		}
 	}
+	markAVTimingPresentationOrigin(&evidence, "bounded_ffprobe_fallback")
+	evidence.PresentationProbeStatus = "completed"
 	return evidence, nil
+}
+
+func avTimingReadInterval(intervalStart float64) string {
+	window := strconv.FormatFloat(avTimingProbeWindowSeconds, 'f', -1, 64)
+	if intervalStart > 0 {
+		return strconv.FormatFloat(intervalStart, 'f', -1, 64) + "%+" + window
+	}
+	return "%+" + window
 }
 
 func captureFirstPacketTimes(timing *avStreamTiming, pts, dts string) {
 	if timing.FirstPacketPTSSeconds == nil {
-		timing.FirstPacketPTSSeconds = optionalSeconds(pts)
+		if timestamp := optionalSeconds(pts); timestamp != nil {
+			timing.FirstPacketPTSSeconds = timestamp
+			timing.FirstPacketPTSSource = "packet.pts_time"
+		}
 	}
 	if timing.FirstPacketDTSSeconds == nil {
 		timing.FirstPacketDTSSeconds = optionalSeconds(dts)
@@ -117,9 +145,10 @@ func optionalSeconds(value string) *float64 {
 }
 
 type avTimingEvidence struct {
-	Video     *avStreamTiming  `json:"video,omitempty"`
-	Audio     []avStreamTiming `json:"audio"`
-	FrameRate string           `json:"frameRate,omitempty"`
+	Video                   *avStreamTiming  `json:"video,omitempty"`
+	Audio                   []avStreamTiming `json:"audio"`
+	FrameRate               string           `json:"frameRate,omitempty"`
+	PresentationProbeStatus string           `json:"presentationProbeStatus,omitempty"`
 }
 
 type avTimingTolerancePolicy struct {
@@ -160,11 +189,16 @@ func avTimingFromInventory(streams MediaStreamInventory) avTimingEvidence {
 }
 
 func avTimingFromProbe(probe map[string]any) avTimingEvidence {
+	return avTimingFromProbeWithOrigin(probe, "stored_probe")
+}
+
+func avTimingFromProbeWithOrigin(probe map[string]any, origin string) avTimingEvidence {
 	evidence := avTimingEvidence{Audio: []avStreamTiming{}}
 	streams, _ := probe["streams"].([]interface{})
+	byIndex := map[int]*avStreamTiming{}
 	for _, raw := range streams {
-		stream, ok := raw.(map[string]interface{})
-		if !ok {
+		stream := unknownRecord(raw)
+		if stream == nil {
 			continue
 		}
 		timing := avStreamTiming{
@@ -180,12 +214,132 @@ func avTimingFromProbe(probe map[string]any) avTimingEvidence {
 			if evidence.Video == nil {
 				evidence.Video = &timing
 				evidence.FrameRate = stringFromUnknown(stream["avg_frame_rate"])
+				byIndex[timing.Index] = evidence.Video
 			}
 		case "audio":
 			evidence.Audio = append(evidence.Audio, timing)
 		}
 	}
+	for index := range evidence.Audio {
+		byIndex[evidence.Audio[index].Index] = &evidence.Audio[index]
+	}
+	packets, _ := probe["packets"].([]interface{})
+	for _, raw := range packets {
+		packet := unknownRecord(raw)
+		if packet == nil {
+			continue
+		}
+		if timing := byIndex[workerIntValue(packet["stream_index"], -1)]; timing != nil {
+			captureFirstPacketTimes(timing, stringFromUnknown(packet["pts_time"]), stringFromUnknown(packet["dts_time"]))
+		}
+	}
+	frames, _ := probe["frames"].([]interface{})
+	for _, raw := range frames {
+		frame := unknownRecord(raw)
+		if frame == nil {
+			continue
+		}
+		mediaType := stringFromUnknown(frame["media_type"])
+		if mediaType != "video" && mediaType != "audio" {
+			continue
+		}
+		timing := byIndex[workerIntValue(frame["stream_index"], -1)]
+		if timing == nil || timing.FirstPresentedSeconds != nil {
+			continue
+		}
+		if presented := optionalSeconds(stringFromUnknown(frame["best_effort_timestamp_time"])); presented != nil {
+			timing.FirstPresentedSeconds = presented
+			timing.FirstPresentedSource = "frame.best_effort_timestamp_time"
+		}
+	}
+	markAVTimingPresentationOrigin(&evidence, origin)
 	return evidence
+}
+
+func markAVTimingPresentationOrigin(evidence *avTimingEvidence, origin string) {
+	mark := func(timing *avStreamTiming) {
+		if timing.FirstPresentedSeconds != nil && timing.FirstPresentedOrigin == "" {
+			timing.FirstPresentedOrigin = origin
+		}
+		if timing.FirstPacketPTSSeconds != nil && timing.FirstPacketPTSOrigin == "" {
+			timing.FirstPacketPTSOrigin = origin
+		}
+	}
+	if evidence.Video != nil {
+		mark(evidence.Video)
+	}
+	for index := range evidence.Audio {
+		mark(&evidence.Audio[index])
+	}
+}
+
+func avTimingWithBoundedPresentationFallback(source, output avTimingEvidence, sourcePath, outputPath string, probe func(string, float64) (avTimingEvidence, error)) (avTimingEvidence, avTimingEvidence) {
+	if len(source.Audio) == 0 && len(output.Audio) == 0 {
+		return source, output
+	}
+	if avTimingNeedsPresentationProbe(source) && sourcePath != "" {
+		measured, err := probe(sourcePath, 0)
+		if err != nil {
+			source.PresentationProbeStatus = "failed"
+		} else {
+			mergeAVTimingPresentationEvidence(&source, measured)
+		}
+	}
+	if avTimingNeedsPresentationProbe(output) && outputPath != "" {
+		measured, err := probe(outputPath, 0)
+		if err != nil {
+			output.PresentationProbeStatus = "failed"
+		} else {
+			mergeAVTimingPresentationEvidence(&output, measured)
+		}
+	}
+	return source, output
+}
+
+func avTimingNeedsPresentationProbe(evidence avTimingEvidence) bool {
+	if evidence.Video == nil || evidence.Video.FirstPresentedSeconds == nil {
+		return true
+	}
+	for _, audio := range evidence.Audio {
+		if audio.FirstPresentedSeconds == nil && audio.FirstPacketPTSSeconds == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeAVTimingPresentationEvidence(target *avTimingEvidence, measured avTimingEvidence) {
+	target.PresentationProbeStatus = "completed"
+	if target.FrameRate == "" {
+		target.FrameRate = measured.FrameRate
+	}
+	if target.Video == nil && measured.Video != nil {
+		video := *measured.Video
+		target.Video = &video
+	} else if target.Video != nil && measured.Video != nil && target.Video.Index == measured.Video.Index {
+		mergeAVStreamPresentationEvidence(target.Video, *measured.Video)
+	}
+	for index := range target.Audio {
+		for _, measuredAudio := range measured.Audio {
+			if target.Audio[index].Index == measuredAudio.Index {
+				mergeAVStreamPresentationEvidence(&target.Audio[index], measuredAudio)
+				break
+			}
+		}
+	}
+}
+
+func mergeAVStreamPresentationEvidence(target *avStreamTiming, measured avStreamTiming) {
+	if target.FirstPresentedSeconds == nil && measured.FirstPresentedSeconds != nil {
+		target.FirstPresentedSeconds = measured.FirstPresentedSeconds
+		target.FirstPresentedSource = measured.FirstPresentedSource
+		target.FirstPresentedOrigin = measured.FirstPresentedOrigin
+	}
+	if target.FirstPacketPTSSeconds == nil && measured.FirstPacketPTSSeconds != nil {
+		target.FirstPacketPTSSeconds = measured.FirstPacketPTSSeconds
+		target.FirstPacketPTSSource = measured.FirstPacketPTSSource
+		target.FirstPacketPTSOrigin = measured.FirstPacketPTSOrigin
+	}
 }
 
 func avTimingForStreamPlan(source, output avTimingEvidence, plan ResolvedStreamPlan) (avTimingEvidence, avTimingEvidence) {
@@ -291,11 +445,27 @@ func validateAVTimingWithThresholds(source, output avTimingEvidence, passFrames,
 		outputVideoStart, outputVideoOK := videoPresentationStart(*output.Video)
 		sourceAudioStart, sourceAudioOK := audioPresentationStart(source.Audio[index])
 		outputAudioStart, outputAudioOK := audioPresentationStart(output.Audio[index])
+		validatedBoundaryMs := frameDurationMs * passFrames
+		mismatchBoundaryMs := frameDurationMs * warningFrames
+		quantizationToleranceMs := avTimingQuantizationToleranceMs(
+			frameDurationMs,
+			*source.Video, source.Audio[index], *output.Video, output.Audio[index],
+		)
+		evidenceUsed := models.JSONMap{
+			"sourceVideo": presentationTimestampEvidence(*source.Video, true),
+			"sourceAudio": presentationTimestampEvidence(source.Audio[index], false),
+			"outputVideo": presentationTimestampEvidence(*output.Video, true),
+			"outputAudio": presentationTimestampEvidence(output.Audio[index], false),
+		}
 		if !sourceVideoOK || !outputVideoOK || !sourceAudioOK || !outputAudioOK {
 			tracks = append(tracks, models.JSONMap{
 				"sourceAudioIndex": source.Audio[index].Index, "outputAudioIndex": output.Audio[index].Index,
 				"language": source.Audio[index].Language, "title": source.Audio[index].Title,
-				"withinTolerance": false, "status": "unverified",
+				"passToleranceFrames": passFrames, "passToleranceMs": validatedBoundaryMs,
+				"warningToleranceFrames": warningFrames, "warningToleranceMs": mismatchBoundaryMs,
+				"timestampQuantizationToleranceMs": quantizationToleranceMs,
+				"evidenceUsed":                     evidenceUsed, "withinTolerance": false,
+				"decision": "unverified", "status": "unverified",
 			})
 			overall = higherAVTimingSeverity(overall, "unverified")
 			continue
@@ -305,12 +475,6 @@ func validateAVTimingWithThresholds(source, output avTimingEvidence, passFrames,
 		introduced := outputOffset - sourceOffset
 		equivalentFrames := introduced / frameDurationMs
 		status := "validated"
-		validatedBoundaryMs := frameDurationMs * passFrames
-		mismatchBoundaryMs := frameDurationMs * warningFrames
-		quantizationToleranceMs := avTimingQuantizationToleranceMs(
-			frameDurationMs,
-			*source.Video, source.Audio[index], *output.Video, output.Audio[index],
-		)
 		absoluteOffsetMs := math.Abs(introduced)
 		withinTolerance := atOrBelowAVTimingBoundary(absoluteOffsetMs, validatedBoundaryMs)
 		if !withinTolerance {
@@ -325,7 +489,10 @@ func validateAVTimingWithThresholds(source, output avTimingEvidence, passFrames,
 			"language": source.Audio[index].Language, "title": source.Audio[index].Title,
 			"sourceOffsetMs": sourceOffset, "outputOffsetMs": outputOffset, "introducedOffsetMs": introduced,
 			"introducedOffsetFrames": equivalentFrames, "timestampQuantizationToleranceMs": quantizationToleranceMs,
-			"withinTolerance": withinTolerance, "status": status,
+			"passToleranceFrames": passFrames, "passToleranceMs": validatedBoundaryMs,
+			"warningToleranceFrames": warningFrames, "warningToleranceMs": mismatchBoundaryMs,
+			"evidenceUsed": evidenceUsed, "withinTolerance": withinTolerance,
+			"decision": status, "status": status,
 		})
 	}
 	report["status"] = overall
@@ -383,21 +550,42 @@ func videoPresentationStart(timing avStreamTiming) (float64, bool) {
 	if timing.FirstPresentedSeconds != nil {
 		return *timing.FirstPresentedSeconds, true
 	}
-	if timing.FirstPacketPTSSeconds != nil {
-		return *timing.FirstPacketPTSSeconds, true
-	}
-	if timing.StartSeconds != nil {
-		return *timing.StartSeconds, true
-	}
 	return 0, false
 }
 
+func presentationTimestampEvidence(timing avStreamTiming, video bool) models.JSONMap {
+	if video {
+		if timing.FirstPresentedSeconds == nil {
+			return models.JSONMap{"available": false}
+		}
+		return presentationEvidence(timing.FirstPresentedSeconds, timing.FirstPresentedSource, timing.FirstPresentedOrigin)
+	}
+	if timing.FirstPresentedSeconds != nil {
+		return presentationEvidence(timing.FirstPresentedSeconds, timing.FirstPresentedSource, timing.FirstPresentedOrigin)
+	}
+	if timing.FirstPacketPTSSeconds != nil {
+		return presentationEvidence(timing.FirstPacketPTSSeconds, timing.FirstPacketPTSSource, timing.FirstPacketPTSOrigin)
+	}
+	return models.JSONMap{"available": false}
+}
+
+func presentationEvidence(timestamp *float64, field, origin string) models.JSONMap {
+	evidence := models.JSONMap{"available": true, "timestampSeconds": *timestamp, "unit": "seconds"}
+	if field != "" {
+		evidence["field"] = field
+	}
+	if origin != "" {
+		evidence["origin"] = origin
+	}
+	return evidence
+}
+
 func audioPresentationStart(timing avStreamTiming) (float64, bool) {
+	if timing.FirstPresentedSeconds != nil {
+		return *timing.FirstPresentedSeconds, true
+	}
 	if timing.FirstPacketPTSSeconds != nil {
 		return *timing.FirstPacketPTSSeconds, true
-	}
-	if timing.StartSeconds != nil {
-		return *timing.StartSeconds, true
 	}
 	return 0, false
 }

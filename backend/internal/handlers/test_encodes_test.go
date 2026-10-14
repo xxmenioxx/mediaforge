@@ -767,7 +767,7 @@ func TestTestEncodeValidationReportsTrackAndDurationMismatch(t *testing.T) {
 		Profile: models.Profile{VideoCodec: "x265", AudioCodec: "copy"},
 		Streams: MediaStreamInventory{Video: []MediaStream{{Index: 0, FrameRate: "24/1", StartTimeValid: true}}, Audio: []MediaAudioStream{{Index: 1, StartTimeValid: true}}},
 	}
-	passed := testEncodeValidationReport(plan, MediaStreamInventory{Video: []MediaStream{{Index: 0, FrameRate: "24/1", StartTimeValid: true}}, Audio: []MediaAudioStream{{Index: 1, StartTimeValid: true}}, Duration: 20}, 20)
+	passed := testEncodeValidationReportWithTiming(plan, MediaStreamInventory{Video: []MediaStream{{Index: 0, FrameRate: "24/1", StartTimeValid: true}}, Audio: []MediaAudioStream{{Index: 1, StartTimeValid: true}}, Duration: 20}, 20, timingEvidence(0, 0), timingEvidence(0, 0))
 	if passed["passed"] != true {
 		t.Fatalf("equivalent sample did not validate: %#v", passed)
 	}
@@ -811,10 +811,11 @@ func TestTestEncodeValidationRejectsLargeIntroducedAVOffset(t *testing.T) {
 			Audio: []MediaAudioStream{{Index: 1, StartTime: 0, StartTimeValid: true}},
 		},
 	}
-	report := testEncodeValidationReport(plan, MediaStreamInventory{
+	streams := MediaStreamInventory{
 		Video: []MediaStream{{Index: 0, FrameRate: "24000/1001", StartTime: .563, StartTimeValid: true}},
 		Audio: []MediaAudioStream{{Index: 1, StartTime: 0, StartTimeValid: true}}, Duration: 20,
-	}, 20)
+	}
+	report := testEncodeValidationReportWithTiming(plan, streams, 20, timingEvidence(0, 0), timingEvidence(.563, 0))
 	if report["passed"] != false {
 		t.Fatalf("large introduced A/V offset passed validation: %#v", report)
 	}
