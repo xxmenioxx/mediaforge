@@ -1055,7 +1055,10 @@ func TestWorkerAutomatedPipelineValidatesOnlyAfterResultArtifactExists(t *testin
 	if _, _, err := readLatestJobArtifact(db, job, "result"); err != nil {
 		t.Fatalf("Result artifact was not committed before worker Validation: %v", err)
 	}
-	result := (WorkerHandler{db: db}).runAutomatedPipeline(job)
+	result, err := (WorkerHandler{db: db}).runAutomatedPipeline(job)
+	if err != nil {
+		t.Fatalf("automatic Validation pipeline failed: %v", err)
+	}
 	if result["validationRunId"] == nil || result["validationOutcome"] == nil {
 		t.Fatalf("automated pipeline did not persist a canonical run after Result creation: %#v", result)
 	}
@@ -1071,6 +1074,67 @@ func TestWorkerAutomatedPipelineValidatesOnlyAfterResultArtifactExists(t *testin
 	}
 	if job.ValidationRunID != run.RunID || job.Stage != JobStageValidationReview {
 		t.Fatalf("worker did not project canonical run/review stage: run=%q expected=%q stage=%q outcome=%q", job.ValidationRunID, run.RunID, job.Stage, run.Outcome)
+	}
+}
+
+func TestWorkerAutomatedPipelineStopsWhenValidatingStageCannotPersist(t *testing.T) {
+	db := testEncodeTestDB(t, "quality-gate-worker-stage-failure", &models.QueueJob{}, &models.AppSetting{}, &models.ValidationRun{}, &models.ExecutionPlan{}, &models.ValidationOverride{})
+	if err := db.Create(&models.AppSetting{Key: "pipelineAutomation", Value: models.JSONMap{"autoValidationEnabled": true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := models.QueueJob{Status: JobStatusCompleted, Stage: JobStageConverting}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TRIGGER reject_validating_stage BEFORE UPDATE OF stage ON queue_jobs WHEN NEW.stage = 'validating' BEGIN SELECT RAISE(ABORT, 'validating stage write rejected'); END`).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, err := (WorkerHandler{db: db}).runAutomatedPipeline(job)
+	if err == nil || !strings.Contains(err.Error(), "persist validating") {
+		t.Fatalf("validating persistence failure was not propagated: %v", err)
+	}
+	var persisted models.QueueJob
+	if err := db.First(&persisted, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Stage != JobStageConverting {
+		t.Fatalf("failed validating transition changed stage to %q", persisted.Stage)
+	}
+	var runs int64
+	if err := db.Model(&models.ValidationRun{}).Count(&runs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if runs != 0 {
+		t.Fatalf("Validation ran after its stage write failed: %d runs", runs)
+	}
+}
+
+func TestManualValidationPropagatesFallbackReviewStageFailure(t *testing.T) {
+	db := testEncodeTestDB(t, "quality-gate-manual-review-stage-failure", &models.QueueJob{}, &models.AppSetting{}, &models.ValidationRun{}, &models.ExecutionPlan{}, &models.ValidationOverride{})
+	job := models.QueueJob{Status: JobStatusCompleted, Stage: JobStageCompleted}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TRIGGER reject_validation_review BEFORE UPDATE OF stage ON queue_jobs WHEN NEW.stage = 'validation_review' BEGIN SELECT RAISE(ABORT, 'review stage write rejected'); END`).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.POST("/api/validation/jobs/:id", NewValidationHandler(db).ValidateJob)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/validation/jobs/"+strconv.FormatUint(uint64(job.ID), 10), nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "failed to persist validation_review stage") {
+		t.Fatalf("fallback stage persistence cause was lost: %s", recorder.Body.String())
+	}
+	var persisted models.QueueJob
+	if err := db.First(&persisted, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Stage != JobStageValidating {
+		t.Fatalf("failed fallback stage changed persisted stage to %q", persisted.Stage)
 	}
 }
 
@@ -1316,20 +1380,25 @@ func TestPublisherEligibilityUsesCanonicalRunNotQueueSummary(t *testing.T) {
 
 func TestAutomaticAdvancementRequiresAllowedCanonicalOutcome(t *testing.T) {
 	tests := []struct {
-		name         string
-		outcome      string
-		actionable   bool
-		findingState string
-		policy       []any
-		unbound      bool
-		wantAllowed  bool
+		name               string
+		outcome            string
+		actionable         bool
+		findingState       string
+		findingDisposition string
+		policy             []any
+		unbound            bool
+		wantAllowed        bool
+		wantManualAllowed  bool
 	}{
-		{name: "clean pass defaults allowed", outcome: "PASS", wantAllowed: true},
-		{name: "warning needs policy", outcome: "PASS_WITH_WARNINGS", wantAllowed: false},
-		{name: "configured non-actionable warning", outcome: "PASS_WITH_WARNINGS", policy: []any{"PASS", "PASS_WITH_WARNINGS"}, wantAllowed: true},
-		{name: "actionable warning blocks even when configured", outcome: "PASS_WITH_WARNINGS", actionable: true, findingState: "WARNING", policy: []any{"PASS", "PASS_WITH_WARNINGS"}, wantAllowed: false},
-		{name: "review required blocks", outcome: "REVIEW_REQUIRED", actionable: true, findingState: "UNVERIFIED", wantAllowed: false},
-		{name: "failure blocks", outcome: "FAIL", actionable: true, findingState: "FAIL", wantAllowed: false},
+		{name: "clean pass defaults allowed", outcome: "PASS", wantAllowed: true, wantManualAllowed: true},
+		{name: "warning needs policy", outcome: "PASS_WITH_WARNINGS", findingState: "WARNING", wantManualAllowed: true},
+		{name: "empty policy defaults to pass only", outcome: "PASS_WITH_WARNINGS", findingState: "WARNING", policy: []any{}, wantManualAllowed: true},
+		{name: "configured non-actionable advisory warning", outcome: "PASS_WITH_WARNINGS", findingState: "WARNING", policy: []any{"PASS", "PASS_WITH_WARNINGS"}, wantAllowed: true, wantManualAllowed: true},
+		{name: "configured actionable advisory warning", outcome: "PASS_WITH_WARNINGS", actionable: true, findingState: "WARNING", policy: []any{"PASS", "PASS_WITH_WARNINGS"}, wantAllowed: true, wantManualAllowed: true},
+		{name: "configured policy with blocking warning stays blocked", outcome: "REVIEW_REQUIRED", findingState: "WARNING", findingDisposition: "blocking", policy: []any{"PASS", "PASS_WITH_WARNINGS", "REVIEW_REQUIRED"}},
+		{name: "critical unverified evidence blocks", outcome: "REVIEW_REQUIRED", actionable: true, findingState: "UNVERIFIED", findingDisposition: "blocking"},
+		{name: "advisory unverified evidence is a warning", outcome: "PASS_WITH_WARNINGS", findingState: "UNVERIFIED", policy: []any{"PASS", "PASS_WITH_WARNINGS"}, wantAllowed: true, wantManualAllowed: true},
+		{name: "failure blocks", outcome: "FAIL", actionable: true, findingState: "FAIL", findingDisposition: "blocking"},
 		{name: "legacy outcome without run blocks", outcome: "PASS", unbound: true, wantAllowed: false},
 	}
 	for _, test := range tests {
@@ -1343,7 +1412,7 @@ func TestAutomaticAdvancementRequiresAllowedCanonicalOutcome(t *testing.T) {
 			if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"resultsReportsPath": filepath.Join(root, "results")}}).Error; err != nil {
 				t.Fatal(err)
 			}
-			if len(test.policy) > 0 {
+			if test.policy != nil {
 				if err := db.Create(&models.AppSetting{Key: "validation", Value: models.JSONMap{"autoAdvanceOutcomes": test.policy}}).Error; err != nil {
 					t.Fatal(err)
 				}
@@ -1368,6 +1437,9 @@ func TestAutomaticAdvancementRequiresAllowedCanonicalOutcome(t *testing.T) {
 				}
 				if allowed, _ := canonicalRunAllowsPublish(db, job, true); allowed != test.wantAllowed {
 					t.Fatalf("unbound legacy outcome allowed=%t want=%t", allowed, test.wantAllowed)
+				}
+				if allowed, _ := canonicalRunAllowsPublish(db, job, false); allowed {
+					t.Fatal("unbound legacy Validation outcome authorized manual Publisher")
 				}
 				return
 			}
@@ -1395,10 +1467,15 @@ func TestAutomaticAdvancementRequiresAllowedCanonicalOutcome(t *testing.T) {
 				Findings: models.JSONList{}, Report: models.JSONMap{},
 			}
 			if test.findingState != "" {
-				finding := models.JSONMap{"key": "duration.timeline", "severity": "warning", "disposition": "advisory", "state": test.findingState, "actionable": test.actionable, "overrideable": true}
-				if test.findingState == "UNVERIFIED" || test.findingState == "FAIL" {
-					finding["disposition"], finding["severity"] = "blocking", "error"
+				disposition := test.findingDisposition
+				if disposition == "" {
+					disposition = "advisory"
 				}
+				severity := "warning"
+				if disposition == "blocking" {
+					severity = "error"
+				}
+				finding := models.JSONMap{"key": "duration.timeline", "severity": severity, "disposition": disposition, "state": test.findingState, "actionable": test.actionable, "overrideable": true}
 				run.Findings = models.JSONList{finding}
 			}
 			if err := db.Create(&run).Error; err != nil {
@@ -1411,6 +1488,10 @@ func TestAutomaticAdvancementRequiresAllowedCanonicalOutcome(t *testing.T) {
 			allowed, reason := canonicalRunAllowsPublish(db, job, true)
 			if allowed != test.wantAllowed {
 				t.Fatalf("automatic handoff allowed=%t want=%t reason=%q", allowed, test.wantAllowed, reason)
+			}
+			manualAllowed, manualReason := canonicalRunAllowsPublish(db, job, false)
+			if manualAllowed != test.wantManualAllowed {
+				t.Fatalf("manual handoff allowed=%t want=%t reason=%q", manualAllowed, test.wantManualAllowed, manualReason)
 			}
 		})
 	}
@@ -1435,6 +1516,128 @@ func TestValidationOutcomeReductionUsesRulesAndDispositionNotScore(t *testing.T)
 				t.Fatalf("outcome=%q want=%q", outcome, test.want)
 			}
 		})
+	}
+}
+
+func TestValidationHandoffDecisionUsesBlockingDispositionNotActionability(t *testing.T) {
+	tests := []struct {
+		name     string
+		outcome  string
+		findings []validationFinding
+		want     bool
+	}{
+		{name: "clean pass", outcome: "PASS", findings: []validationFinding{{Disposition: "blocking", State: "PASS"}}, want: true},
+		{name: "nonactionable advisory warning", outcome: "PASS_WITH_WARNINGS", findings: []validationFinding{{Disposition: "advisory", State: "WARNING"}}, want: true},
+		{name: "actionable advisory warning", outcome: "PASS_WITH_WARNINGS", findings: []validationFinding{{Disposition: "advisory", State: "WARNING", Actionable: true}}, want: true},
+		{name: "advisory unverified warning", outcome: "PASS_WITH_WARNINGS", findings: []validationFinding{{Disposition: "advisory", State: "UNVERIFIED"}}, want: true},
+		{name: "blocking warning", outcome: "REVIEW_REQUIRED", findings: []validationFinding{{Disposition: "blocking", State: "WARNING"}}, want: false},
+		{name: "critical unverified evidence", outcome: "REVIEW_REQUIRED", findings: []validationFinding{{Disposition: "blocking", State: "UNVERIFIED"}}, want: false},
+		{name: "known failure", outcome: "FAIL", findings: []validationFinding{{Disposition: "blocking", State: "FAIL"}}, want: false},
+		{name: "review required", outcome: "REVIEW_REQUIRED", findings: []validationFinding{{Disposition: "blocking", State: "REVIEW_REQUIRED"}}, want: false},
+		{name: "inconsistent warning outcome", outcome: "PASS_WITH_WARNINGS", findings: []validationFinding{{Disposition: "blocking", State: "PASS"}}, want: false},
+		{name: "unknown unresolved disposition", outcome: "PASS_WITH_WARNINGS", findings: []validationFinding{{Disposition: "unknown", State: "WARNING"}}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, reason := validationHandoffDecision(test.outcome, test.findings)
+			if got != test.want {
+				t.Fatalf("handoff eligible=%t want=%t reason=%q", got, test.want, reason)
+			}
+			if !test.want && reason == "" {
+				t.Fatal("blocked handoff must explain its reason")
+			}
+		})
+	}
+}
+
+func TestPersistValidationHandoffStageKeepsManualAndAutomaticDecisionsAligned(t *testing.T) {
+	tests := []struct {
+		name       string
+		outcome    string
+		findings   []validationFinding
+		actionable bool
+		policy     []any
+		automatic  bool
+		wantStage  string
+	}{
+		{name: "manual pass", outcome: "PASS", automatic: false, wantStage: JobStageReadyToPublish},
+		{name: "automatic pass defaults allowed", outcome: "PASS", automatic: true, wantStage: JobStageReadyToPublish},
+		{name: "manual actionable advisory warning", outcome: "PASS_WITH_WARNINGS", findings: []validationFinding{{Disposition: "advisory", State: "WARNING", Actionable: true}}, actionable: true, wantStage: JobStageReadyToPublish},
+		{name: "automatic advisory warning requires explicit policy", outcome: "PASS_WITH_WARNINGS", findings: []validationFinding{{Disposition: "advisory", State: "WARNING", Actionable: true}}, actionable: true, automatic: true, wantStage: JobStageValidationReview},
+		{name: "automatic advisory warning explicitly allowed", outcome: "PASS_WITH_WARNINGS", findings: []validationFinding{{Disposition: "advisory", State: "WARNING", Actionable: true}}, actionable: true, policy: []any{"PASS", "PASS_WITH_WARNINGS"}, automatic: true, wantStage: JobStageReadyToPublish},
+		{name: "blocking warning remains review", outcome: "REVIEW_REQUIRED", findings: []validationFinding{{Disposition: "blocking", State: "WARNING"}}, automatic: true, policy: []any{"PASS", "PASS_WITH_WARNINGS", "REVIEW_REQUIRED"}, wantStage: JobStageValidationReview},
+		{name: "failure remains review", outcome: "FAIL", findings: []validationFinding{{Disposition: "blocking", State: "FAIL"}}, automatic: false, wantStage: JobStageValidationReview},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := testEncodeTestDB(t, "handoff-stage-"+strings.ReplaceAll(test.name, " ", "-"), &models.QueueJob{}, &models.AppSetting{})
+			if test.policy != nil {
+				if err := db.Create(&models.AppSetting{Key: "validation", Value: models.JSONMap{"autoAdvanceOutcomes": test.policy}}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Now().UTC()
+			job := models.QueueJob{Status: JobStatusCompleted, Stage: JobStageValidating, StageUpdatedAt: &now, StageHistory: models.JSONList{models.JSONMap{"stage": JobStageValidating, "at": now.Format(time.RFC3339)}}}
+			if err := db.Create(&job).Error; err != nil {
+				t.Fatal(err)
+			}
+			run := models.ValidationRun{Outcome: test.outcome, ActionableWarnings: test.actionable}
+			for _, finding := range test.findings {
+				key := finding.Key
+				if key == "" {
+					key = "test.finding"
+				}
+				run.Findings = append(run.Findings, models.JSONMap{
+					"key": key, "disposition": finding.Disposition, "state": finding.State,
+					"actionable": finding.Actionable, "overrideable": finding.Overrideable,
+				})
+			}
+			stage, _, err := persistValidationHandoffStage(db, &job, run, test.findings, test.automatic)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stage != test.wantStage {
+				t.Fatalf("stage=%q want=%q", stage, test.wantStage)
+			}
+			var persisted models.QueueJob
+			if err := db.First(&persisted, job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if persisted.Stage != test.wantStage || len(persisted.StageHistory) != 2 {
+				t.Fatalf("persisted stage=%q history=%#v", persisted.Stage, persisted.StageHistory)
+			}
+		})
+	}
+}
+
+func TestPersistValidationHandoffStageFailureStopsBeforePublisher(t *testing.T) {
+	db := testEncodeTestDB(t, "handoff-stage-ready-failure", &models.QueueJob{}, &models.AppSetting{}, &models.PublisherPublication{})
+	now := time.Now().UTC()
+	job := models.QueueJob{Status: JobStatusCompleted, Stage: JobStageValidating, StageUpdatedAt: &now, StageHistory: models.JSONList{models.JSONMap{"stage": JobStageValidating, "at": now.Format(time.RFC3339)}}}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TRIGGER reject_ready_handoff BEFORE UPDATE OF stage ON queue_jobs WHEN NEW.stage = 'ready_to_publish' BEGIN SELECT RAISE(ABORT, 'ready stage write rejected'); END`).Error; err != nil {
+		t.Fatal(err)
+	}
+	run := models.ValidationRun{Outcome: "PASS"}
+	stage, _, err := persistValidationHandoffStage(db, &job, run, nil, false)
+	if err == nil || stage != "" {
+		t.Fatalf("failed Ready transition stage=%q err=%v", stage, err)
+	}
+	var persisted models.QueueJob
+	if err := db.First(&persisted, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Stage != JobStageValidating {
+		t.Fatalf("failed Ready transition changed stage to %q", persisted.Stage)
+	}
+	var publications int64
+	if err := db.Model(&models.PublisherPublication{}).Count(&publications).Error; err != nil {
+		t.Fatal(err)
+	}
+	if publications != 0 {
+		t.Fatalf("failed Ready transition created %d Publisher rows", publications)
 	}
 }
 

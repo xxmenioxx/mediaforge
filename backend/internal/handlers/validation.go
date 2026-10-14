@@ -69,15 +69,13 @@ func (h ValidationHandler) ValidateJob(c *gin.Context) {
 	}
 	gate, err := h.validateAndPersist(job, "local_operator")
 	if err != nil {
-		_ = transitionJobStage(h.db, &job, JobStageValidationReview)
+		if stageErr := transitionJobStage(h.db, &job, JobStageValidationReview); stageErr != nil {
+			err = fmt.Errorf("%w; failed to persist validation_review stage: %v", err, stageErr)
+		}
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
-	finalStage := JobStageReadyToPublish
-	if gate.Run.Outcome != "PASS" {
-		finalStage = JobStageValidationReview
-	}
-	if err := transitionJobStage(h.db, &job, finalStage); err != nil {
+	if _, _, err := persistValidationHandoffStage(h.db, &job, gate.Run, gate.Findings, false); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

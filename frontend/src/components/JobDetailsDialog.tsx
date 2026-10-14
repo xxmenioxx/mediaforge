@@ -308,7 +308,8 @@ type PipelineStageState = 'pending' | 'active' | 'success' | 'warning' | 'error'
 
 function PipelineStages({ job }: { job: QueueJob }) {
   const history = normalizedStageHistory(job);
-  const terminal = job.status === 'completed' || job.status === 'failed' || job.status === 'canceled';
+  const terminal = ['completed', 'failed', 'canceled'].includes(job.stage || '') || job.status === 'failed' || job.status === 'canceled';
+  const publicationComplete = Boolean(job.publishedAt) || job.publicationState === 'PUBLISHED';
   const archiveStillActive = job.originalArchiveStatus === 'pending' || job.originalArchiveStatus === 'archiving';
   const failedHistoryIndex = history.findIndex((item) => item.stage === 'failed');
   const failedStage = failedHistoryIndex > 0 ? history[failedHistoryIndex - 1].stage : '';
@@ -317,6 +318,10 @@ function PipelineStages({ job }: { job: QueueJob }) {
       <Typography color="text.secondary">
         Persisted lifecycle stages for this execution. Durations are calculated from the recorded stage transitions.
       </Typography>
+      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+        <Chip size="small" variant="outlined" color={job.status === 'completed' ? 'success' : 'default'} label={job.status === 'completed' ? 'Conversion completed' : `Conversion ${job.status}`} />
+        <Chip size="small" variant="outlined" color={publicationComplete ? 'success' : 'default'} label={publicationComplete ? 'Publication completed' : 'Publication pending'} />
+      </Stack>
       {pipelineStages.map((stage) => {
         const event = stage === 'completed' && archiveStillActive ? undefined : history.find((item) => item.stage === stage);
         const state = pipelineStageState(job, stage, Boolean(event), terminal, failedStage);
