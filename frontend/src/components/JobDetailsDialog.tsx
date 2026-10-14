@@ -300,7 +300,7 @@ export function JobDetailsDialog({ job, onClose }: JobDetailsDialogProps) {
 
 const pipelineStages = [
   'queued', 'claimed', 'preparing_workspace', 'copying_to_workspace', 'analyzing_as_is',
-  'preparing_subtitles', 'converting', 'validating', 'directplay_analysis', 'ready_to_publish',
+  'preparing_subtitles', 'converting', 'validating', 'validation_review', 'directplay_analysis', 'ready_to_publish',
   'publishing', 'archiving_original', 'analyzing_final', 'cleaning_workspace', 'completed', 'failed', 'canceled',
 ] as const;
 
@@ -395,6 +395,7 @@ function normalizedStageHistory(job: QueueJob) {
 }
 
 function pipelineStageState(job: QueueJob, stage: string, visited: boolean, terminal: boolean, failedStage: string): PipelineStageState {
+  if (stage === 'validation_review' && visited) return 'warning';
   if (stage === 'validating' && visited && job.validationStatus === 'warning') return 'warning';
   if (job.status === 'failed' && (stage === job.stage || stage === failedStage)) return 'error';
   if (job.status === 'canceled' && stage === job.stage) return 'warning';

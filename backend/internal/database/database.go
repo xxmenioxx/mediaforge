@@ -687,30 +687,160 @@ func backfillQueueLifecycleStages(db *gorm.DB) error {
 	}
 	for i := range jobs {
 		job := &jobs[i]
-		stage := "queued"
-		if job.PublishedAt != nil {
-			stage = "completed"
-		} else {
-			switch job.Status {
-			case "running":
-				stage = "converting"
-			case "completed":
-				stage = "ready_to_publish"
-			case "failed":
-				stage = "failed"
-			case "canceled":
-				stage = "canceled"
-			}
-		}
-		if job.Stage == stage {
+		if queueJobLifecycleStateIsProtected(job) {
 			continue
 		}
-		now := time.Now()
-		if err := db.Model(job).Updates(map[string]any{"stage": stage, "stage_updated_at": &now}).Error; err != nil {
+
+		if len(job.StageHistory) == 0 {
+			stage, ok := legacyQueueLifecycleStage(job.Status)
+			if !ok || job.Stage == stage {
+				continue
+			}
+			// A timestamp on a different current stage can represent a real
+			// transition whose history predates the history contract. Without
+			// events, only repair the uninitialized projection.
+			if job.StageUpdatedAt != nil {
+				continue
+			}
+			now := time.Now().UTC()
+			if err := updateQueueLifecycleStageIfUnchanged(db, job, stage, &now); err != nil {
+				return err
+			}
+			continue
+		}
+
+		latest, valid := latestQueueLifecycleEvent(job.StageHistory)
+		if !valid || job.Stage == latest.stage {
+			continue
+		}
+		fallback, knownStatus := legacyQueueLifecycleStage(job.Status)
+		if !knownStatus || (job.Stage != "" && job.Stage != fallback) {
+			// A non-fallback stage may be a later legitimate transition. Do not
+			// infer that it is stale merely because history is older.
+			continue
+		}
+		if queueLifecycleStageIsTerminal(latest.stage) {
+			continue
+		}
+		if err := updateQueueLifecycleStageIfUnchanged(db, job, latest.stage, &latest.at); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+type queueLifecycleEvent struct {
+	stage string
+	at    time.Time
+}
+
+func legacyQueueLifecycleStage(status string) (string, bool) {
+	switch status {
+	case "queued":
+		return "queued", true
+	case "running":
+		return "converting", true
+	case "completed":
+		return "ready_to_publish", true
+	case "failed":
+		return "failed", true
+	case "canceled":
+		return "canceled", true
+	default:
+		return "", false
+	}
+}
+
+func latestQueueLifecycleEvent(history models.JSONList) (queueLifecycleEvent, bool) {
+	if len(history) == 0 {
+		return queueLifecycleEvent{}, false
+	}
+	var latest queueLifecycleEvent
+	for index, raw := range history {
+		event, ok := raw.(models.JSONMap)
+		if !ok {
+			event, ok = raw.(map[string]any)
+		}
+		if !ok {
+			return queueLifecycleEvent{}, false
+		}
+		stage, ok := event["stage"].(string)
+		if !ok || !validQueueLifecycleStage(stage) {
+			return queueLifecycleEvent{}, false
+		}
+		atText, ok := event["at"].(string)
+		if !ok {
+			return queueLifecycleEvent{}, false
+		}
+		at, err := time.Parse(time.RFC3339Nano, atText)
+		if err != nil || (index > 0 && at.Before(latest.at)) {
+			return queueLifecycleEvent{}, false
+		}
+		latest = queueLifecycleEvent{stage: stage, at: at.UTC()}
+	}
+	return latest, true
+}
+
+func validQueueLifecycleStage(stage string) bool {
+	switch stage {
+	case "queued", "claimed", "preparing_workspace", "copying_to_workspace", "analyzing_as_is",
+		"preparing_subtitles", "converting", "validating", "validation_review", "directplay_analysis",
+		"ready_to_publish", "publishing", "archiving_original", "analyzing_final", "cleaning_workspace",
+		"completed", "failed", "canceled":
+		return true
+	default:
+		return false
+	}
+}
+
+func queueLifecycleStageIsTerminal(stage string) bool {
+	switch stage {
+	case "completed", "failed", "canceled":
+		return true
+	default:
+		return false
+	}
+}
+
+func queueJobLifecycleStateIsProtected(job *models.QueueJob) bool {
+	if job.PublishedAt != nil || job.PublicationRetiredAt != nil || job.PublishedPath != "" || job.PublishedFingerprint != "" || job.OriginalArchivedPath != "" || strings.EqualFold(strings.TrimSpace(job.PublicationState), "PUBLISHED") {
+		return true
+	}
+	if job.Status == "failed" || job.Status == "canceled" || queueLifecycleStageIsTerminal(job.Stage) {
+		return true
+	}
+	return false
+}
+
+func updateQueueLifecycleStageIfUnchanged(db *gorm.DB, job *models.QueueJob, stage string, stageUpdatedAt *time.Time) error {
+	query := db.Model(&models.QueueJob{}).
+		Where("id = ? AND status = ? AND stage = ?", job.ID, job.Status, job.Stage).
+		Where("published_path = ? AND published_fingerprint = ? AND publication_state = ?", job.PublishedPath, job.PublishedFingerprint, job.PublicationState).
+		Where("original_archived_path = ?", job.OriginalArchivedPath)
+	if job.StageUpdatedAt == nil {
+		query = query.Where("stage_updated_at IS NULL")
+	} else {
+		query = query.Where("stage_updated_at = ?", job.StageUpdatedAt)
+	}
+	if job.PublishedAt == nil {
+		query = query.Where("published_at IS NULL")
+	} else {
+		query = query.Where("published_at = ?", job.PublishedAt)
+	}
+	if job.PublicationRetiredAt == nil {
+		query = query.Where("publication_retired_at IS NULL")
+	} else {
+		query = query.Where("publication_retired_at = ?", job.PublicationRetiredAt)
+	}
+	if len(job.StageHistory) == 0 {
+		query = query.Where("(stage_history IS NULL OR stage_history = ?)", job.StageHistory)
+	} else {
+		query = query.Where("stage_history = ?", job.StageHistory)
+	}
+	if !job.UpdatedAt.IsZero() {
+		query = query.Where("updated_at = ?", job.UpdatedAt)
+	}
+	return query.Updates(map[string]any{"stage": stage, "stage_updated_at": stageUpdatedAt}).Error
 }
 
 func backfillPendingExecutionPlans(db *gorm.DB) error {

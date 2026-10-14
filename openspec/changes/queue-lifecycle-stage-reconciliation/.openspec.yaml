@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-10-13
+goal: Reconcile stale Queue stage projections from durable lifecycle history
