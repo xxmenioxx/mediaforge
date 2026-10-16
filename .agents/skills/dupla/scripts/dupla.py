@@ -15,6 +15,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -282,8 +283,13 @@ def check_duplicate_sessions(common_dir: Path, issue_ids: Sequence[int]) -> None
             ) != "not_running"
             for issue_id in overlap
         )
-        if overlap and (session.get("status") != "complete" or inconsistent_live):
-            raise DuplaError("Issue(s) {} already belong to unfinished session {}; use resume/status first".format(
+        publication_pending = any(
+            str(issue_id) in session.get("workers", {})
+            and session["workers"][str(issue_id)].get("publication", {}).get("status") != "published"
+            for issue_id in overlap
+        )
+        if overlap and (session.get("status") != "complete" or inconsistent_live or publication_pending):
+            raise DuplaError("Issue(s) {} already belong to unfinished or unpublished session {}; use resume/status first".format(
                 ", ".join("#{}".format(i) for i in sorted(overlap)), path.stem))
 
 
@@ -422,7 +428,8 @@ def inspect_session(common_dir: Path, issue_ids: Optional[Sequence[int]] = None)
                 item["worktree_status"] = git(worktree, "status", "--short").stdout.splitlines()
                 item["commits_since_base"] = git(worktree, "rev-list", "--count", "{}..HEAD".format(worker.get("base_sha", "HEAD"))).stdout.strip()
             workers[issue_id] = item
-        reports.append({"session": path.stem, "status": state.get("status"), "base_sha": state.get("base_sha"),
+        reports.append({"session": path.stem, "status": state.get("status"),
+                        "publication_status": state.get("publication_status"), "base_sha": state.get("base_sha"),
                         "updated_at": state.get("updated_at"), "workers": workers, "state_file": str(path)})
     return reports
 
@@ -442,16 +449,17 @@ Required:
 - Implement only this issue; preserve existing changes and inspect status before editing.
 - Never switch to or modify another issue's branch/worktree. The Git common directory is shared; commit only the assigned current branch.
 - Use Serena for supported code navigation. Add or update focused tests.
-- Run focused checks and `./scripts/verify.sh --auto` through the serialized helper lock:
+- Run issue-specific tests, then `./scripts/verify.sh --auto` through the serialized helper lock:
   python3 {helper} lock --scope shared-validation -- ./scripts/verify.sh --auto
 - Never run shared Docker/service/port/SQLite integration checks outside that same lock.
 - Keep all temporary Go, npm, OCR, and test outputs in the unique environment paths provided.
-- If validation fails, save the evidence, fix only in scope, and retry the relevant check.
-- Make a local conventional commit only after required checks pass. Do not push, open a PR, merge, change the issue, or remove any worktree or branch.
+- If validation fails, save the evidence, fix only in scope, and retry the relevant tests and verifier. If a check still fails, preserve its log and report the failure; a Draft PR may still be published with the failure documented.
+- Before committing, inspect `git diff --check`, all changed paths, and changed lines for secrets. Do not include credentials or tokens. Commit the issue-scoped changes locally with `#{issue_id}` in every commit. If validation still fails after retries, retain the evidence and commit the scoped changes so the parent can publish a failure-documented Draft. The parent owns push and Draft PR creation.
+- Never push, create or edit a PR, approve/request approval, mark a PR ready, enable auto-merge, merge/squash, close the issue, or delete branches/worktrees.
 
-Finish with exactly one JSON object as your final message, using keys: status, issue, branch, worktree, commits, files, tests, verify, pending. Use PASS only when test and verifier logs show actual success; otherwise use FAIL, BLOCKED, or PARTIAL. Include commands and observed outcomes, and say NOT_RUN when the canonical verifier did not run.
+Finish with exactly one JSON object as your final message, using keys: status, issue, branch, worktree, summary, commits, files, tests, verify, pending. `files` must list every changed path. Use PASS only when test and verifier logs show actual success; otherwise use FAIL, BLOCKED, or PARTIAL. Include commands and observed outcomes, and say NOT_RUN when the canonical verifier did not run.
 """.format(worktree=worker["worktree"], branch=worker["branch"], base_sha=worker["base_sha"],
-           issue_json=issue_json, helper=helper)
+           issue_id=issue["number"], issue_json=issue_json, helper=helper)
 
 
 def worker_environment(common_dir: Path, issue_id: int, attempt: int) -> Dict[str, str]:
@@ -508,8 +516,6 @@ def run_workers(common_dir: Path, issue_ids: Sequence[int], resume: bool = False
     children: Dict[int, subprocess.Popen] = {}
     child_paths: Dict[int, Tuple[Path, Path]] = {}
     try:
-        if not shutil.which("codex"):
-            raise DuplaError("Codex CLI not found")
         helper = Path(__file__).resolve()
         for issue_id in issue_ids:
             worker = state.get("workers", {}).get(str(issue_id))
@@ -537,6 +543,8 @@ def run_workers(common_dir: Path, issue_ids: Sequence[int], resume: bool = False
                 continue
             if worker.get("status") != "prepared" and not resume:
                 continue
+            if not shutil.which("codex"):
+                raise DuplaError("Codex CLI not found; existing completed workers and publication retries remain available")
             attempt = int(worker.get("attempt", 0)) + 1
             worker["attempt"] = attempt
             run_dir = state_root(common_dir) / "sessions" / pair_key(issue_ids) / "issue-{}-attempt-{}".format(issue_id, attempt)
@@ -583,7 +591,8 @@ def run_workers(common_dir: Path, issue_ids: Sequence[int], resume: bool = False
                 if summary_path.is_file():
                     try:
                         worker["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
-                        required = {"status", "issue", "branch", "worktree", "commits", "files", "tests", "verify", "pending"}
+                        required = {"status", "issue", "branch", "worktree", "summary", "commits", "files",
+                                    "tests", "verify", "pending"}
                         summary = worker["summary"]
                         if not isinstance(summary, dict) or not required.issubset(summary):
                             worker["summary_parse_error"] = "last message does not match the required summary fields"
@@ -634,6 +643,333 @@ def run_workers(common_dir: Path, issue_ids: Sequence[int], resume: bool = False
         release_locks(held)
 
 
+SECRET_PATTERNS = (
+    ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----")),
+    ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
+    ("cloud-token", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("slack-token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b")),
+    ("api-key-assignment", re.compile(
+        r"(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|"
+        r"secret[_-]?key|password|passwd|token)\b\s*[:=]\s*[\"']?([A-Za-z0-9_./+=-]{20,})"
+    )),
+)
+SECRET_PLACEHOLDERS = {"changeme", "change_me", "example", "placeholder", "your_token_here"}
+SENSITIVE_PATH_SUFFIXES = (".pem", ".p12", ".pfx", ".key", ".p8")
+
+
+def secret_indicators(text: str, source: str) -> List[Dict[str, str]]:
+    findings = []
+    for line_number, line in enumerate(text.splitlines(), 1):
+        for label, pattern in SECRET_PATTERNS:
+            match = pattern.search(line)
+            if not match:
+                continue
+            if label == "api-key-assignment":
+                value = match.group(1).strip("\"'.,;)")
+                if value.lower() in SECRET_PLACEHOLDERS or value.lower().startswith(("example_", "test_", "fake_")):
+                    continue
+            findings.append({"source": source, "line": str(line_number), "rule": label})
+    return findings
+
+
+def inspect_patch_for_secrets(worktree: Path, base_sha: str) -> List[Dict[str, str]]:
+    diff = git(worktree, "diff", "--no-ext-diff", "--no-color", "--unified=0", base_sha + "...HEAD").stdout
+    findings: List[Dict[str, str]] = []
+    # Scan each file independently so the report identifies paths but never emits matched values.
+    current_path = "diff"
+    file_text: List[str] = []
+    for line in diff.splitlines():
+        if line.startswith("+++ b/"):
+            if file_text:
+                findings.extend(secret_indicators("\n".join(file_text), current_path))
+            current_path = line[6:]
+            file_text = []
+        elif line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
+            file_text.append(line[1:])
+    if file_text:
+        findings.extend(secret_indicators("\n".join(file_text), current_path))
+
+    changed = git(worktree, "diff", "--name-only", base_sha + "...HEAD").stdout.splitlines()
+    for path in changed:
+        name = Path(path).name.lower()
+        example_file = name.endswith((".example", ".sample", ".template"))
+        if not example_file and (name == ".env" or name.startswith(".env.")
+                                 or name.endswith(SENSITIVE_PATH_SUFFIXES)
+                                 or name in ("id_rsa", "id_ed25519", ".netrc", ".npmrc", ".pypirc")):
+            findings.append({"source": path, "line": "-", "rule": "sensitive-filename"})
+    unique = {(item["source"], item["line"], item["rule"]): item for item in findings}
+    return [unique[key] for key in sorted(unique)]
+
+
+def pretty_report_value(value: Any) -> str:
+    if value is None:
+        return "NOT_REPORTED"
+    if isinstance(value, str):
+        return value.strip() or "NOT_REPORTED"
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def make_pull_request_body(issue_id: int, issue: Dict[str, Any], summary: Dict[str, Any], changed_paths: Sequence[str]) -> str:
+    summary_status = str(summary.get("status", "PARTIAL")).upper()
+    verify = pretty_report_value(summary.get("verify"))
+    notes = []
+    if summary_status != "PASS":
+        notes.append("Implementation status is {}. This draft does not mark the issue complete.".format(summary_status))
+    if not verify_passed(summary.get("verify")):
+        notes.append("Canonical verifier did not report ALL CHECKS PASSED; keep this PR in Draft until resolved.")
+    pending = pretty_report_value(summary.get("pending"))
+    if pending not in ("[]", "NOT_REPORTED", "null"):
+        notes.append(pending)
+    if not notes:
+        notes.append("No worker-reported blockers remain.")
+    title = str(issue.get("title", "")).strip()
+    lines = [
+        "## Summary", pretty_report_value(summary.get("summary")), "",
+        "## Issue", "Refs #{}{}".format(issue_id, (" — " + title) if title else ""), "",
+        "## Main files modified",
+    ]
+    lines.extend("- `{}`".format(path) for path in changed_paths)
+    lines.extend(["", "## Tests executed", pretty_report_value(summary.get("tests")), "",
+                  "## `./scripts/verify.sh --auto`", verify, "",
+                  "## Risks, limitations, and pending work"])
+    lines.extend("- {}".format(note) for note in notes)
+    lines.extend(["", "This pull request was opened as Draft by `dupla`; it was not approved, marked ready, or merged."])
+    return "\n".join(lines).strip() + "\n"
+
+
+def verify_passed(value: Any) -> bool:
+    rendered = pretty_report_value(value).upper()
+    return rendered == "PASS" or "ALL CHECKS PASSED" in rendered
+
+
+def check_rollup(value: Any) -> Dict[str, Any]:
+    checks = value if isinstance(value, list) else []
+    states = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        conclusion = str(check.get("conclusion") or check.get("state") or "").upper()
+        status = str(check.get("status") or "").upper()
+        name = check.get("name") or check.get("context") or "unnamed check"
+        if conclusion in ("SUCCESS", "NEUTRAL", "SKIPPED"):
+            result = "passed"
+        elif conclusion in ("FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED"):
+            result = "failed"
+        elif status in ("IN_PROGRESS", "QUEUED", "PENDING") or conclusion in ("", "PENDING"):
+            result = "pending"
+        else:
+            result = "unknown"
+        states.append({"name": str(name), "result": result})
+    return {"total": len(states), "passed": sum(s["result"] == "passed" for s in states),
+            "failed": sum(s["result"] == "failed" for s in states),
+            "pending": sum(s["result"] == "pending" for s in states), "checks": states}
+
+
+def gh_run(worktree: Path, *args: str) -> subprocess.CompletedProcess:
+    gh = shutil.which("gh")
+    if not gh:
+        raise DuplaError("GitHub CLI 'gh' is required to publish issue branches")
+    try:
+        return subprocess.run([gh, *args], cwd=worktree, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise DuplaError("gh {} timed out; publication can be retried with resume".format(" ".join(args[:2])))
+
+
+def publication_error(publication: Dict[str, Any], message: str) -> Dict[str, Any]:
+    publication.update({"status": "failed", "error": message, "updated_at": now()})
+    return publication
+
+
+def publish_issue(common_dir: Path, issue_ids: Sequence[int], issue_id: int) -> Dict[str, Any]:
+    path = session_path(common_dir, issue_ids)
+    held = acquire_issue_locks(common_dir, [issue_id])
+    try:
+        state = read_json(path)
+        worker = state.get("workers", {}).get(str(issue_id))
+        if not worker:
+            raise DuplaError("Issue #{} is not present in the saved dupla".format(issue_id))
+        publication = worker.setdefault("publication", {})
+        publication.update({"attempts": int(publication.get("attempts", 0)) + 1,
+                            "status": "checking", "updated_at": now()})
+        publication.pop("secret_scan", None)
+        write_json(path, state)
+        try:
+            issue = worker.get("issue", {})
+            worktree = Path(worker.get("worktree", "")).resolve()
+            if not worktree.is_dir() or not same_common_dir(worktree, common_dir):
+                raise DuplaError("Issue #{} worktree is missing or belongs to another repository".format(issue_id))
+            if worker.get("status") == "running":
+                raise DuplaError("Issue #{} worker is still marked running; check status before publishing".format(issue_id))
+            if git(worktree, "branch", "--show-current").stdout.strip() != worker.get("branch"):
+                raise DuplaError("Issue #{} worktree is not on its saved branch".format(issue_id))
+            if not issue_in_branch(worker.get("branch", ""), issue_id):
+                raise DuplaError("Branch is not unambiguously associated with issue #{}".format(issue_id))
+            if not isinstance(worker.get("summary"), dict) or worker.get("summary_parse_error"):
+                raise DuplaError("Issue #{} has no valid worker summary; resume the implementation first".format(issue_id))
+            summary = worker["summary"]
+            summary_status = str(summary.get("status", "PARTIAL")).upper()
+            try:
+                summary_issue = int(summary.get("issue", 0))
+            except (TypeError, ValueError):
+                summary_issue = 0
+            if summary_issue != issue_id or summary.get("status") not in ("PASS", "FAIL", "BLOCKED", "PARTIAL"):
+                raise DuplaError("Issue #{} worker summary identity or status is invalid".format(issue_id))
+            if summary.get("branch") != worker.get("branch") or str(Path(summary.get("worktree", "")).resolve()) != str(worktree):
+                raise DuplaError("Issue #{} worker summary branch/worktree does not match its assigned environment".format(issue_id))
+            if not str(summary.get("summary", "")).strip():
+                raise DuplaError("Issue #{} worker summary has no implementation summary".format(issue_id))
+            publication_summary = dict(summary)
+            if worker.get("exit_code") not in (None, 0):
+                publication_summary["status"] = "PARTIAL"
+                pending = publication_summary.get("pending", [])
+                if not isinstance(pending, list):
+                    pending = [pending]
+                pending.append("Codex worker exited with code {}; inspect its log.".format(worker.get("exit_code")))
+                publication_summary["pending"] = pending
+            summary_status = str(publication_summary.get("status", "PARTIAL")).upper()
+
+            base_sha = worker.get("base_sha")
+            if not base_sha:
+                raise DuplaError("Issue #{} has no saved base commit".format(issue_id))
+            ancestor = git(worktree, "merge-base", "--is-ancestor", base_sha, "HEAD", check=False)
+            if ancestor.returncode:
+                raise DuplaError("Issue #{} branch no longer descends from its saved base".format(issue_id))
+            branch = worker["branch"]
+            head_sha = git(worktree, "rev-parse", "HEAD").stdout.strip()
+            commits = git(worktree, "log", "--format=%H%x09%s", base_sha + "..HEAD").stdout.splitlines()
+            if not commits:
+                raise DuplaError("Issue #{} has no commits; refusing to create an empty PR".format(issue_id))
+            commit_bodies = git(worktree, "log", "--format=%x00%B", base_sha + "..HEAD").stdout.split("\x00")
+            issue_reference = re.compile(r"(?<!\d)#{}(?!\d)".format(issue_id))
+            if any(not issue_reference.search(message) for message in commit_bodies if message.strip()):
+                raise DuplaError("Every commit for issue #{} must reference its issue number".format(issue_id))
+            changed_paths = git(worktree, "diff", "--name-only", base_sha + "...HEAD").stdout.splitlines()
+            if not changed_paths:
+                raise DuplaError("Issue #{} has no changed files; refusing to create an empty PR".format(issue_id))
+            clean = git(worktree, "status", "--porcelain=v1", "--untracked-files=all").stdout
+            if clean:
+                raise DuplaError("Issue #{} worktree contains uncommitted or untracked changes; preserve them and inspect before publishing".format(issue_id))
+            diff_check = git(worktree, "diff", "--check", base_sha + "...HEAD", check=False)
+            if diff_check.returncode:
+                raise DuplaError("Issue #{} git diff --check failed; inspect the saved worktree before publishing".format(issue_id))
+            actual_files = set(changed_paths)
+            stated_files = summary.get("files")
+            if not isinstance(stated_files, list) or any(not isinstance(item, str) for item in stated_files):
+                raise DuplaError("Issue #{} worker summary must list every changed file".format(issue_id))
+            if {item.replace("\\", "/") for item in stated_files} != actual_files:
+                raise DuplaError("Issue #{} worker file list does not match the committed diff; review before publishing".format(issue_id))
+            findings = inspect_patch_for_secrets(worktree, base_sha)
+            if findings:
+                publication["secret_scan"] = findings
+                raise DuplaError("Potential secret detected in committed changes (paths and rule names are saved in session status); publication blocked")
+
+            body = make_pull_request_body(issue_id, issue, publication_summary, changed_paths)
+            body_findings = secret_indicators(body, "pull-request-body")
+            if body_findings:
+                publication["secret_scan"] = body_findings
+                raise DuplaError("Potential secret detected in generated PR text; publication blocked")
+
+            listed = gh_run(worktree, "pr", "list", "--head", branch, "--state", "all", "--limit", "100",
+                            "--json", "number,url,title,state,isDraft,baseRefName,headRefName,headRefOid,statusCheckRollup")
+            if listed.returncode:
+                raise DuplaError("Could not query PRs for branch {}: {}".format(branch, listed.stderr.strip()[-1200:]))
+            try:
+                candidates = json.loads(listed.stdout)
+            except json.JSONDecodeError:
+                raise DuplaError("gh returned invalid PR list JSON; publication can be retried with resume")
+            if not isinstance(candidates, list):
+                raise DuplaError("gh PR list did not return an array")
+            matches = [item for item in candidates if isinstance(item, dict) and item.get("headRefName") == branch]
+            if len(matches) > 1:
+                raise DuplaError("More than one PR is associated with branch {}; refusing to choose or duplicate".format(branch))
+            existing = matches[0] if matches else None
+            if existing and existing.get("baseRefName") != "main":
+                raise DuplaError("Existing PR #{} targets {}, not main; refusing to change its base or create a duplicate".format(
+                    existing.get("number"), existing.get("baseRefName")))
+            if existing and str(existing.get("state", "")).upper() == "MERGED":
+                if existing.get("headRefOid") == head_sha:
+                    publication.update({"status": "published", "number": existing.get("number"),
+                                        "url": existing.get("url"), "state": "MERGED",
+                                        "is_draft": existing.get("isDraft"), "head_sha": head_sha,
+                                        "action": "reused existing merged PR; no duplicate created",
+                                        "updated_at": now()})
+                    write_json(path, state)
+                    return publication
+                raise DuplaError("Existing PR #{} is merged but local branch has newer commits; refusing a duplicate PR".format(
+                    existing.get("number")))
+
+            push = subprocess.run(["git", "-C", str(worktree), "push", "--set-upstream", "origin", branch],
+                                  text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+            if push.returncode:
+                raise DuplaError("Normal push of {} failed: {}".format(branch, push.stderr.strip()[-1200:]))
+            publication.update({"status": "pushed", "head_sha": head_sha, "updated_at": now()})
+            write_json(path, state)
+
+            title = "[#{}] {}".format(issue_id, str(issue.get("title", "Issue #{}".format(issue_id))).strip())[:256]
+            with tempfile.TemporaryDirectory(prefix="dupla-pr-", dir=str(path.parent)) as temp_dir:
+                body_file = Path(temp_dir) / "body.md"
+                body_file.write_text(body, encoding="utf-8")
+                if existing:
+                    number = str(existing["number"])
+                    result = gh_run(worktree, "pr", "edit", number, "--title", title, "--body-file", str(body_file))
+                    action = "updated existing PR"
+                else:
+                    result = gh_run(worktree, "pr", "create", "--draft", "--base", "main", "--head", branch,
+                                    "--title", title, "--body-file", str(body_file))
+                    action = "created Draft PR"
+            if result.returncode:
+                raise DuplaError("Branch pushed but PR {} failed: {}; use resume to retry without duplicating".format(
+                    "update" if existing else "creation", result.stderr.strip()[-1200:]))
+
+            pr_number = int(existing["number"]) if existing else None
+            pr_url = existing.get("url") if existing else None
+            if not pr_number and result.stdout.strip():
+                url_match = re.search(r"/pull/(\d+)", result.stdout.strip())
+                if url_match:
+                    pr_number = int(url_match.group(1))
+                    pr_url = result.stdout.strip().splitlines()[-1]
+            observed: Dict[str, Any] = {}
+            if pr_number:
+                view = gh_run(worktree, "pr", "view", str(pr_number), "--json",
+                              "number,url,state,isDraft,baseRefName,headRefName,headRefOid,statusCheckRollup")
+                if view.returncode == 0:
+                    with contextlib.suppress(json.JSONDecodeError):
+                        value = json.loads(view.stdout)
+                        if isinstance(value, dict):
+                            observed = value
+            pr_number = observed.get("number", pr_number)
+            pr_url = observed.get("url", pr_url)
+            publication.update({
+                "status": "published", "number": pr_number, "url": pr_url,
+                "state": observed.get("state", existing.get("state") if existing else "OPEN"),
+                "is_draft": observed.get("isDraft", existing.get("isDraft") if existing else True),
+                "base": observed.get("baseRefName", "main"), "head": branch, "head_sha": head_sha,
+                "checks": check_rollup(observed.get("statusCheckRollup")), "action": action,
+                "validation_status": summary_status,
+                "validation_passed": summary_status == "PASS" and verify_passed(summary.get("verify")),
+                "updated_at": now(),
+            })
+            write_json(path, state)
+            return publication
+        except (DuplaError, OSError, TypeError, ValueError, subprocess.TimeoutExpired) as exc:
+            publication_error(publication, str(exc))
+            write_json(path, state)
+            return publication
+    finally:
+        release_locks(held)
+
+
+def publish_ready_workers(common_dir: Path, issue_ids: Sequence[int]) -> Dict[str, Any]:
+    results = {}
+    for issue_id in issue_ids:
+        try:
+            results[str(issue_id)] = publish_issue(common_dir, issue_ids, issue_id)
+        except DuplaError as exc:
+            results[str(issue_id)] = {"status": "failed", "error": str(exc)}
+    return results
+
+
 def cmd_prepare(args: argparse.Namespace) -> int:
     ids = validate_pair(args.issues)
     current_root, _, common_dir = repo_context()
@@ -648,11 +984,32 @@ def cmd_prepare(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
     ids = validate_pair(args.issues)
     _, _, common_dir = repo_context()
-    state = run_workers(common_dir, ids, resume=resume)
-    print(json.dumps({"session": pair_key(ids), "status": state["status"], "workers": {
-        k: {key: v.get(key) for key in ("status", "branch", "worktree", "pid", "exit_code", "log", "summary_file", "summary")}
-        for k, v in state.get("workers", {}).items()}}, ensure_ascii=False, indent=2))
-    return 0 if state.get("status") == "complete" else 1
+    run_workers(common_dir, ids, resume=resume)
+    publications = publish_ready_workers(common_dir, ids)
+    state = read_json(session_path(common_dir, ids))
+    workers = state.get("workers", {})
+    publication_status = "published" if all(workers.get(str(i), {}).get("publication", {}).get("status") == "published"
+                                             for i in ids) else "pending"
+    state["publication_status"] = publication_status
+    state["updated_at"] = now()
+    write_json(session_path(common_dir, ids), state)
+    report = {"session": pair_key(ids), "status": state.get("status"), "workers": {
+        k: {"status": (v.get("summary") or {}).get("status", v.get("status")),
+            "worker_state": v.get("status"),
+            **{key: v.get(key) for key in ("branch", "worktree", "pid", "exit_code", "log",
+                                            "summary_file", "summary", "publication")}}
+        for k, v in workers.items()},
+        "publication_status": publication_status,
+        "pull_requests": {k: v.get("url") for k, v in publications.items() if v.get("url")}}
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    all_passed = state.get("status") == "complete"
+    for issue_id in ids:
+        worker = workers.get(str(issue_id), {})
+        summary = worker.get("summary", {})
+        publication = worker.get("publication", {})
+        all_passed = all_passed and summary.get("status") == "PASS" and verify_passed(summary.get("verify"))
+        all_passed = all_passed and publication.get("status") == "published"
+    return 0 if all_passed else 1
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -718,6 +1075,7 @@ def review_pair(common_dir: Path, issue_ids: Sequence[int]) -> Dict[str, Any]:
             "status": worker.get("status"), "exit_code": worker.get("exit_code"), "commits": git(worktree, "rev-list", "--count", base + "..HEAD").stdout.strip(),
             "commit_details": git(worktree, "log", "--format=%H %s", base + "..HEAD").stdout.splitlines(),
             "changed_files": all_paths, "log": worker.get("log"), "summary_file": worker.get("summary_file"),
+            "publication": worker.get("publication"),
         }
     report["changed_path_overlap"] = sorted(path_sets[0].intersection(path_sets[1]))
     merge = git(roots[0], "merge-tree", "--write-tree", "--merge-base=" + base,

@@ -1,6 +1,6 @@
 ---
 name: dupla
-description: Prepare, run, inspect, resume, review, or safely clean up two MediaForge GitHub Issues in independent Git worktrees.
+description: Implement and validate two MediaForge GitHub Issues in independent worktrees, publish one Draft PR per issue, and safely inspect, resume, or clean up the pair.
 metadata:
   short-description: Coordinate two isolated MediaForge issues
 ---
@@ -25,21 +25,27 @@ For an execution request, only after that review:
    `main` commit for both sibling worktrees and refuses unsafe path/branch
    collisions. It never edits the primary checkout.
 2. Run `scripts/dupla.py run A B`. This starts at most two supervised
-   `codex exec` processes, each with its own worktree, log, summary file, and
-   temporary Go/test directories. Workers may commit locally after their
-   checks pass; pushes, PRs, merges, issue changes, and deletion remain
-   unauthorized.
-3. Run `scripts/dupla.py review A B` and report each worker's observed status,
-   branch, worktree, commits, changed files, commands and evidence, plus
-   integration conflicts. Inspect the actual changed code and tests against
-   both issue scopes; a clean merge-tree or a worker's PASS claim is not a
-   correctness review or validation evidence.
+   `codex exec` processes, each with its own worktree, logs, summary, and
+   temporary Go/test directories. Workers test, run `verify.sh --auto`, inspect
+   changes, and commit only their issue. The parent then checks the committed
+   diff and secrets, pushes each branch normally to `origin`, and creates or
+   updates one Draft PR targeting `main`. A failed validation can be published
+   as Draft only when its failure is documented; it remains a failed issue.
+3. Run `scripts/dupla.py review A B` and inspect both changes and integration
+   conflicts. Report issue result, branch, worktree, commits, tests, verifier,
+   publication state, and both PR URLs. A clean merge-tree or worker PASS claim
+   alone is not a correctness review or validation evidence.
 
 Read [references/operation.md](references/operation.md) for command behavior and
 recovery. Read [references/isolation.md](references/isolation.md) before
 validation or cleanup. The executable contract and fixture tests are in
 `scripts/dupla.py` and `scripts/test_dupla.py`.
 
-`cleanup` only previews by default. Ask the user before removal, then pass the
-exact approved worktree paths with `--execute --confirm-worktree PATH`. Dirty
-worktrees, active workers, branches, logs, and state are preserved.
+`resume` also retries a failed push or PR operation: it queries by exact branch
+before creating anything and edits an existing PR instead of duplicating it.
+GitHub authentication comes from the user's existing `gh` configuration; do
+not pass or copy credentials. Never approve/request approval, mark a PR ready,
+enable auto-merge, merge/squash, close an issue, force-push, or delete branches
+or worktrees. `cleanup` only previews by default. Ask the user before removal,
+then pass the exact approved worktree paths with `--execute --confirm-worktree
+PATH`. Dirty worktrees, active workers, branches, logs, and state are preserved.
