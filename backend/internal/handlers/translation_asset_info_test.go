@@ -269,7 +269,10 @@ func (fixture *assetInfoTranslationOllamaFixture) Translate(_ context.Context, b
 	}
 	result := TranslationBatchResult{ContractVersion: batch.ContractVersion}
 	for _, cue := range batch.Cues {
-		result.Cues = append(result.Cues, TranslatedCue{ID: cue.ID, Text: strings.ReplaceAll(cue.Text, "Hello", "Hola")})
+		text := strings.ReplaceAll(cue.Text, "Hello", "Hola")
+		text = strings.ReplaceAll(text, "안녕하세요", "Hola")
+		text = strings.ReplaceAll(text, "Bonjour", "Hola")
+		result.Cues = append(result.Cues, TranslatedCue{ID: cue.ID, Text: text})
 	}
 	return result, nil
 }
@@ -291,6 +294,12 @@ func (fixture *assetInfoTranslationOllamaFixture) callsSnapshot() int {
 	fixture.mu.Lock()
 	defer fixture.mu.Unlock()
 	return fixture.calls
+}
+
+func (fixture *assetInfoTranslationOllamaFixture) batchesSnapshot() []TranslationBatch {
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	return append([]TranslationBatch(nil), fixture.batches...)
 }
 
 func (fixture *assetInfoTranslationOllamaFixture) readinessCallsSnapshot() int {
@@ -432,11 +441,16 @@ func startAssetInfoTranslationAndWait(t *testing.T, handler AssetHandler, body s
 
 func TestAssetInfoTranslationEntryPointExternalSRTAndASS(t *testing.T) {
 	for _, testCase := range []struct {
-		name, extension, language, sourceLanguage, locale, expected string
+		name, extension, language, sourceLanguage, locale, expected, model, effectiveLanguage, sourceText string
 	}{
-		{name: "English SRT", extension: "srt", language: "eng", sourceLanguage: "en", locale: "es-419", expected: "Hola"},
-		{name: "Japanese SRT", extension: "srt", language: "jpn", sourceLanguage: "ja", locale: "es-419", expected: "Hola"},
-		{name: "English ASS", extension: "ass", language: "eng", sourceLanguage: "en", locale: "es-ES", expected: "{\\an8}Hola{\\pos(10,20)}"},
+		{name: "English SRT", extension: "srt", language: "eng", sourceLanguage: "en", locale: "es-419", expected: "Hola", effectiveLanguage: "en", sourceText: "Hello"},
+		{name: "Japanese SRT", extension: "srt", language: "jpn", sourceLanguage: "ja", locale: "es-419", expected: "Hola", effectiveLanguage: "ja", sourceText: "Hello"},
+		{name: "English ASS", extension: "ass", language: "eng", sourceLanguage: "en", locale: "es-ES", expected: "{\\an8}Hola{\\pos(10,20)}", effectiveLanguage: "en", sourceText: "Hello"},
+		{name: "Korean SRT explicit ko", extension: "srt", language: "kor", sourceLanguage: "ko", locale: "es-419", expected: "Hola", model: "translategemma:4b", effectiveLanguage: "ko", sourceText: "안녕하세요"},
+		{name: "Korean SRT alias and metadata Auto", extension: "srt", language: "kor", sourceLanguage: "auto", locale: "es-419", expected: "Hola", model: "translategemma:12b", effectiveLanguage: "ko", sourceText: "안녕하세요"},
+		{name: "Korean ASS alias", extension: "ass", language: "kor", sourceLanguage: "kor", locale: "es-ES", expected: "{\\an8}Hola{\\pos(10,20)}", model: "translategemma:27b", effectiveLanguage: "ko", sourceText: "안녕하세요"},
+		{name: "French SRT alias and metadata Auto", extension: "srt", language: "fra", sourceLanguage: "auto", locale: "es-419", expected: "Hola", model: "translategemma:4b", effectiveLanguage: "fr", sourceText: "Bonjour"},
+		{name: "French ASS legacy fre", extension: "ass", language: "fra", sourceLanguage: "fre", locale: "es-ES", expected: "{\\an8}Hola{\\pos(10,20)}", model: "translategemma:12b", effectiveLanguage: "fr", sourceText: "Bonjour"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -444,19 +458,31 @@ func TestAssetInfoTranslationEntryPointExternalSRTAndASS(t *testing.T) {
 			mediaPath := filepath.Join(root, "episode.mkv")
 			writeTestFile(t, mediaPath, "media fixture")
 			sourcePath := filepath.Join(root, "episode."+testCase.language+"."+testCase.extension)
-			content := "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n"
+			content := "1\n00:00:01,000 --> 00:00:02,000\n" + testCase.sourceText + "\n\n"
 			if testCase.extension == "ass" {
-				content = "[Script Info]\nTitle: Fixture\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, AlphaLevel, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,1,2,0,2,10,10,10,0,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}Hello{\\pos(10,20)}\n"
+				content = "[Script Info]\nTitle: Fixture\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, AlphaLevel, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,1,2,0,2,10,10,10,0,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}" + testCase.sourceText + "{\\pos(10,20)}\n"
 			}
 			writeTestFile(t, sourcePath, content)
 			fixture := newAssetInfoTranslationOllamaFixture()
 			db := translationSourceTestDB(t, root, mediaPath)
-			persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
+			settings := readyAssetInfoTranslationSettings("http://nas:11434")
+			if testCase.model != "" {
+				settings.OllamaModel = testCase.model
+				settings.ReadinessIdentity = translationProviderConfigurationIdentity(settings)
+			}
+			persistTranslationSettingsFixture(t, db, settings)
 			handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
 			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":%q,"targetLocale":%q,"outputRepresentation":%q}`, mediaPath, sourcePath, testCase.sourceLanguage, testCase.locale, testCase.extension)
 			capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath))
 			if capabilityStatus != http.StatusOK {
 				t.Fatalf("capability status=%d body=%s", capabilityStatus, capabilityBody)
+			}
+			var capability subtitleTranslationCapabilityResponse
+			if err := json.Unmarshal([]byte(capabilityBody), &capability); err != nil {
+				t.Fatal(err)
+			}
+			if hasKoreanFrench := len(capability.SourceLanguages) == 5; hasKoreanFrench != (testCase.model != "") {
+				t.Fatalf("capability source languages=%v for model %q", capability.SourceLanguages, testCase.model)
 			}
 			if paths := fixture.pathsSnapshot(); len(paths) != 0 {
 				t.Fatalf("capability performed provider readiness work: %v", paths)
@@ -472,11 +498,23 @@ func TestAssetInfoTranslationEntryPointExternalSRTAndASS(t *testing.T) {
 			if operation.Result == nil || len(operation.Result.Artifacts) != 1 || len(operation.Result.Created) != 1 {
 				t.Fatalf("translation result did not expose the published artifact: %#v", operation.Result)
 			}
+			requestedLanguage, err := normalizeTranslationLanguage(testCase.sourceLanguage, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			metadata := operation.Result.Artifacts[0].Translation
+			if metadata == nil || metadata.RequestedSourceLanguage != requestedLanguage || metadata.EffectiveSourceLanguage != testCase.effectiveLanguage {
+				t.Fatalf("artifact language identity=%#v, want requested=%q effective=%q", metadata, requestedLanguage, testCase.effectiveLanguage)
+			}
 			if got, err := os.ReadFile(sourcePath); err != nil || !bytes.Equal(got, beforeSource) {
 				t.Fatalf("source changed during translation: err=%v", err)
 			}
 			if fixture.callsSnapshot() != 1 {
 				t.Fatalf("provider calls=%d, want 1", fixture.callsSnapshot())
+			}
+			batches := fixture.batchesSnapshot()
+			if len(batches) != 1 || batches[0].SourceLanguage != testCase.effectiveLanguage || batches[0].TargetLocale != testCase.locale {
+				t.Fatalf("provider language pair=%#v, want %s to %s", batches, testCase.effectiveLanguage, testCase.locale)
 			}
 			if fixture.readinessCallsSnapshot() != 0 {
 				t.Fatalf("normal translation performed readiness calls=%d", fixture.readinessCallsSnapshot())
@@ -506,22 +544,53 @@ func TestAssetInfoTranslationEntryPointExternalSRTAndASS(t *testing.T) {
 	}
 }
 
+func TestAssetInfoTranslationStartRejectsUnverifiedKoreanAndFrenchModel(t *testing.T) {
+	for _, testCase := range []struct {
+		language, sourceLanguage string
+	}{
+		{language: "kor", sourceLanguage: "ko"},
+		{language: "fra", sourceLanguage: "fr"},
+		{language: "kor", sourceLanguage: "auto"},
+		{language: "fra", sourceLanguage: "auto"},
+	} {
+		t.Run(testCase.language+"/"+testCase.sourceLanguage, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "episode.mkv")
+			sourcePath := filepath.Join(root, "episode."+testCase.language+".srt")
+			writeTestFile(t, mediaPath, "media fixture")
+			writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nsubtitle\n\n")
+			db := translationSourceTestDB(t, root, mediaPath)
+			persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
+			fixture := newAssetInfoTranslationOllamaFixture()
+			handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
+			body := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":%q,"targetLocale":"es-419"}`, mediaPath, sourcePath, testCase.sourceLanguage)
+			status, response := postAssetInfoTranslationStart(t, handler, body)
+			if status != http.StatusConflict || !strings.Contains(response, "TranslateGemma") {
+				t.Fatalf("unsupported model status=%d response=%s", status, response)
+			}
+			if fixture.factoryCallsSnapshot() != 0 || fixture.callsSnapshot() != 0 {
+				t.Fatalf("unsupported pair constructed or called provider: factories=%d calls=%d", fixture.factoryCallsSnapshot(), fixture.callsSnapshot())
+			}
+		})
+	}
+}
+
 func TestAssetInfoTranslationRetryRefreshesSourceAndProviderThroughHTTP(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
 	mediaPath := filepath.Join(root, "episode.mkv")
-	sourcePath := filepath.Join(root, "episode.eng.srt")
+	sourcePath := filepath.Join(root, "episode.kor.srt")
 	writeTestFile(t, mediaPath, "media fixture")
-	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello v1\n\n")
+	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\n안녕하세요 v1\n\n")
 	db := translationSourceTestDB(t, root, mediaPath)
 	settingsV1 := readyAssetInfoTranslationSettings("http://nas:11434")
-	settingsV1.OllamaModel = "model-v1"
+	settingsV1.OllamaModel = "translategemma:4b"
 	settingsV1.ReadinessIdentity = translationProviderConfigurationIdentity(settingsV1)
 	persistTranslationSettingsFixture(t, db, settingsV1)
 	fixture := newAssetInfoTranslationOllamaFixture()
 	fixture.failures = []error{&TranslationProviderError{Class: translationProviderErrorUnavailable, Err: errors.New("first provider attempt")}}
 	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
-	startBody := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
+	startBody := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"kor","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
 	status, responseBody := postAssetInfoTranslationStart(t, handler, startBody)
 	if status != http.StatusAccepted {
 		t.Fatalf("initial translation status=%d body=%s", status, responseBody)
@@ -534,14 +603,14 @@ func TestAssetInfoTranslationRetryRefreshesSourceAndProviderThroughHTTP(t *testi
 	}
 	oldID := startResponse.Operation.ID
 	oldOperation := waitForSubtitleTranslationOperation(t, oldID, "error")
-	if oldOperation.Translation == nil || !oldOperation.Translation.Retryable || oldOperation.Translation.Model != "model-v1" {
+	if oldOperation.Translation == nil || !oldOperation.Translation.Retryable || oldOperation.Translation.Model != "translategemma:4b" || oldOperation.translationRequest.RequestedSourceLanguage != "ko" {
 		t.Fatalf("unexpected terminal predecessor: %#v", oldOperation.Translation)
 	}
 	oldRevision := oldOperation.translationRequest.SourceRevision
 
-	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello v2\n\n")
+	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\n안녕하세요 v2\n\n")
 	settingsV2 := settingsV1
-	settingsV2.OllamaModel = "model-v2"
+	settingsV2.OllamaModel = "translategemma:12b"
 	settingsV2.ReadinessIdentity = translationProviderConfigurationIdentity(settingsV2)
 	persistTranslationSettingsFixture(t, db, settingsV2)
 
@@ -562,7 +631,7 @@ func TestAssetInfoTranslationRetryRefreshesSourceAndProviderThroughHTTP(t *testi
 	if newOperation.translationRequest.SourceRevision == oldRevision {
 		t.Fatalf("retry reused source revision %q", oldRevision)
 	}
-	if newOperation.Translation == nil || newOperation.Translation.Provider != "ollama" || newOperation.Translation.Model != "model-v2" {
+	if newOperation.Translation == nil || newOperation.Translation.Provider != "ollama" || newOperation.Translation.Model != "translategemma:12b" || newOperation.translationRequest.RequestedSourceLanguage != "ko" {
 		t.Fatalf("retry did not use current provider configuration: %#v", newOperation.Translation)
 	}
 	if oldAfter := snapshotSubtitleOperation(oldID); oldAfter.ID != oldID || oldAfter.Status != "error" || oldAfter.translationRequest.SourceRevision != oldRevision {
@@ -572,8 +641,8 @@ func TestAssetInfoTranslationRetryRefreshesSourceAndProviderThroughHTTP(t *testi
 		t.Fatalf("retry performed readiness preflight: %d", fixture.readinessCallsSnapshot())
 	}
 	settingsSeen := fixture.factorySettingsSnapshot()
-	if len(settingsSeen) != 2 || settingsSeen[0].OllamaModel != "model-v1" || settingsSeen[1].OllamaModel != "model-v2" {
-		t.Fatalf("provider factory settings=%v, want model-v1 then model-v2", settingsSeen)
+	if len(settingsSeen) != 2 || settingsSeen[0].OllamaModel != "translategemma:4b" || settingsSeen[1].OllamaModel != "translategemma:12b" {
+		t.Fatalf("provider factory settings=%v, want TranslateGemma 4B then 12B", settingsSeen)
 	}
 	published := assetInfoPublishedFiles(t, root, mediaPath)
 	var translated []byte
@@ -585,7 +654,7 @@ func TestAssetInfoTranslationRetryRefreshesSourceAndProviderThroughHTTP(t *testi
 	if !strings.Contains(string(translated), "Hola v2") {
 		t.Fatalf("retry output did not use current source: %q", translated)
 	}
-	if got, err := os.ReadFile(sourcePath); err != nil || !strings.Contains(string(got), "Hello v2") {
+	if got, err := os.ReadFile(sourcePath); err != nil || !strings.Contains(string(got), "안녕하세요 v2") {
 		t.Fatalf("exact source changed after retry: err=%v content=%q", err, got)
 	}
 }

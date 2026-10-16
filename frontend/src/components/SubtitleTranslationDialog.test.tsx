@@ -235,8 +235,12 @@ describe('SubtitleTranslationDialog', () => {
     expect(screen.getByRole('button', { name: 'Retry translation' })).toBeTruthy();
   });
 
-  it('retries a terminal operation with a new ID and never starts a second operation', async () => {
+  it.each([
+    ['English', 'en'],
+    ['Korean', 'ko'],
+  ])('retries a terminal %s translation with a new ID and never starts a second operation', async (languageLabel, sourceLanguage) => {
     const user = userEvent.setup();
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(capability({ sourceLanguages: ['auto', 'en', 'ko'] }));
     vi.mocked(api.startSubtitleTranslation).mockResolvedValue({
       operation: operation({
         status: 'error',
@@ -259,11 +263,15 @@ describe('SubtitleTranslationDialog', () => {
     renderDialog();
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Start translation' })).toHaveProperty('disabled', false));
+    const sourceLanguageSelect = screen.getByRole('combobox', { name: 'Source language' });
+    await user.click(sourceLanguageSelect);
+    await user.click(await screen.findByRole('option', { name: languageLabel }));
     await user.click(screen.getByRole('button', { name: 'Start translation' }));
     expect(await screen.findByText(/provider_unavailable: Provider unavailable\./)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Retry translation' }));
 
     expect(api.retrySubtitleTranslation).toHaveBeenCalledWith('translation-1');
+    expect(vi.mocked(api.startSubtitleTranslation).mock.calls[0]?.[0]).toEqual(expect.objectContaining({ sourceLanguage }));
     expect(api.startSubtitleTranslation).toHaveBeenCalledTimes(1);
     expect(await screen.findByText('Translating · 3 / 8')).toBeTruthy();
     expect(api.subtitleOperation).toHaveBeenCalledWith('translation-2');
@@ -372,6 +380,26 @@ describe('SubtitleTranslationDialog', () => {
     expect(await screen.findByRole('option', { name: 'Auto' })).toBeTruthy();
     expect(screen.getByRole('option', { name: 'Japanese' })).toBeTruthy();
     expect(screen.queryByRole('option', { name: 'English' })).toBeNull();
+  });
+
+  it.each([
+    ['ko', 'Korean'],
+    ['fr', 'French'],
+  ])('renders and submits the canonical %s source language code', async (code, label) => {
+    const user = userEvent.setup();
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(capability({
+      sourceLanguages: ['auto', 'en', 'ja', 'ko', 'fr'],
+    }));
+    renderDialog();
+
+    const sourceLanguage = await screen.findByRole('combobox', { name: 'Source language' });
+    await user.click(sourceLanguage);
+    expect(await screen.findByRole('option', { name: label })).toBeTruthy();
+    await user.click(screen.getByRole('option', { name: label }));
+    await user.click(screen.getByRole('button', { name: 'Start translation' }));
+
+    await waitFor(() => expect(api.startSubtitleTranslation).toHaveBeenCalled());
+    expect(vi.mocked(api.startSubtitleTranslation).mock.calls[0]?.[0].sourceLanguage).toBe(code);
   });
 
   it('keeps es-419 and es-ES distinct in the start request', async () => {

@@ -164,6 +164,12 @@ func (h AssetHandler) SubtitleTranslationCapability(c *gin.Context) {
 	}
 	settings := loadTranslationSettings(h.db)
 	available, reason := translationCapabilityAvailability(settings)
+	if available {
+		if err := validateRequestedTranslationLanguageCapability(settings.Provider, settings.OllamaModel, "auto", source.Language); err != nil {
+			available = false
+			reason = err.Error()
+		}
+	}
 	provider := subtitleTranslationCapabilityProvider{
 		Name:            strings.ToLower(strings.TrimSpace(settings.Provider)),
 		Model:           strings.TrimSpace(settings.OllamaModel),
@@ -174,7 +180,7 @@ func (h AssetHandler) SubtitleTranslationCapability(c *gin.Context) {
 		Eligible:              true,
 		Available:             available,
 		Reason:                reason,
-		SourceLanguages:       []string{"auto", "en", "ja"},
+		SourceLanguages:       translationSourceLanguagesForProvider(settings.Provider, settings.OllamaModel),
 		TargetLocales:         []string{"es-419", "es-ES"},
 		Provider:              provider,
 		OutputRepresentations: translationCapabilityOutputs(source.Representation),
@@ -210,6 +216,21 @@ func requestedTranslationOutput(sourceRepresentation, requested string) (string,
 		return sourceRepresentation, nil
 	}
 	return resolveTranslationOutputRepresentation(sourceRepresentation, requested)
+}
+
+func validateRequestedTranslationLanguageCapability(provider, model, requestedLanguage, sourceLanguageMetadata string) error {
+	requested, err := normalizeTranslationLanguage(requestedLanguage, true)
+	if err != nil {
+		return err
+	}
+	if requested != "auto" {
+		return validateTranslationProviderLanguageCapability(provider, model, requested)
+	}
+	metadataLanguage, found, err := translationLanguageFromMetadata([]string{sourceLanguageMetadata})
+	if err != nil || !found {
+		return nil
+	}
+	return validateTranslationProviderLanguageCapability(provider, model, metadataLanguage)
 }
 
 func (h AssetHandler) StartSubtitleTranslation(c *gin.Context) {
@@ -249,6 +270,10 @@ func (h AssetHandler) StartSubtitleTranslation(c *gin.Context) {
 	available, reason := translationCapabilityAvailability(settings)
 	if !available {
 		c.JSON(http.StatusConflict, gin.H{"error": reason})
+		return
+	}
+	if err := validateRequestedTranslationLanguageCapability(settings.Provider, settings.OllamaModel, requestedLanguage, source.Language); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
 		return
 	}
 	protectedRequested := modelLifecycleEnabled()
@@ -454,6 +479,10 @@ func (h AssetHandler) retrySubtitleTranslation(c *gin.Context) {
 	requestedLanguage, err := normalizeTranslationLanguage(oldRequest.RequestedSourceLanguage, true)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateRequestedTranslationLanguageCapability(settings.Provider, settings.OllamaModel, requestedLanguage, source.Language); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
 		return
 	}
 	requestedRepresentation, err := requestedTranslationOutput(source.Representation, oldRequest.RequestedRepresentation)
@@ -763,6 +792,9 @@ func executeTextTranslation(
 		AdvisoryMediaContext:   translationContext,
 	})
 	if err != nil {
+		return subtitleTranslationExecutionResult{}, err
+	}
+	if err := validateTranslationProviderLanguageCapability(request.Provider, request.ProviderModel, language.EffectiveLanguage); err != nil {
 		return subtitleTranslationExecutionResult{}, err
 	}
 	envelopes := translationCueEnvelopesForSourceCues(request.SourceIdentity, source.Representation, "", cues)

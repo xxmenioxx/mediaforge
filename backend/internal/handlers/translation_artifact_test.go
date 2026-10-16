@@ -88,6 +88,46 @@ func TestTranslationIdentityNormalizesSupportedLocalesAndRejectsUnsupported(t *t
 	}
 }
 
+func TestTranslationIdentityNormalizesKoreanAndFrenchAliases(t *testing.T) {
+	for _, testCase := range []struct {
+		alias, canonical string
+	}{
+		{alias: "ko", canonical: "ko"},
+		{alias: "kor", canonical: "ko"},
+		{alias: "korean", canonical: "ko"},
+		{alias: "fr", canonical: "fr"},
+		{alias: "fra", canonical: "fr"},
+		{alias: "fre", canonical: "fr"},
+		{alias: "french", canonical: "fr"},
+	} {
+		input := translationIdentityTestInput()
+		input.RequestedSourceLanguage = testCase.alias
+		input.EffectiveSourceLanguage = testCase.alias
+		aliased, err := newTranslationIdentity(input)
+		if err != nil {
+			t.Fatalf("alias %q rejected: %v", testCase.alias, err)
+		}
+		input.RequestedSourceLanguage = testCase.canonical
+		input.EffectiveSourceLanguage = testCase.canonical
+		canonical, err := newTranslationIdentity(input)
+		if err != nil {
+			t.Fatalf("canonical %q rejected: %v", testCase.canonical, err)
+		}
+		if aliased.RequestedSourceLanguage != testCase.canonical || aliased.EffectiveSourceLanguage != testCase.canonical || aliased.key() != canonical.key() {
+			t.Fatalf("alias %q did not canonicalize to %q: alias=%#v canonical=%#v", testCase.alias, testCase.canonical, aliased, canonical)
+		}
+	}
+	for _, testCase := range []struct{ metadata, effective string }{{metadata: "kor", effective: "ko"}, {metadata: "fre", effective: "fr"}} {
+		input := translationIdentityTestInput()
+		input.RequestedSourceLanguage = "auto"
+		input.EffectiveSourceLanguage = testCase.effective
+		identity, err := newTranslationIdentity(input)
+		if err != nil || identity.RequestedSourceLanguage != "auto" || identity.EffectiveSourceLanguage != testCase.effective {
+			t.Fatalf("Auto identity for metadata %q lost requested/effective language: identity=%#v err=%v", testCase.metadata, identity, err)
+		}
+	}
+}
+
 func TestTranslatedSubtitleArtifactMetadataRequiresExactIdentity(t *testing.T) {
 	identity, err := newTranslationIdentity(translationIdentityTestInput())
 	if err != nil {

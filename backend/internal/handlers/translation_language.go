@@ -143,6 +143,7 @@ func appendBoundedTranslationLanguageEvidence(evidence *[]string, text string, b
 
 func classifyBoundedTranslationLanguageEvidence(texts []string) (string, string, error) {
 	kanaCount := 0
+	hangulCount := 0
 	hanCount := 0
 	usefulCueCount := 0
 	englishMarkers := make(map[string]struct{})
@@ -154,6 +155,9 @@ func classifyBoundedTranslationLanguageEvidence(texts []string) (string, string,
 			switch {
 			case isJapaneseKana(r):
 				kanaCount++
+				lettersOrDigits = true
+			case unicode.Is(unicode.Hangul, r):
+				hangulCount++
 				lettersOrDigits = true
 			case isHanRune(r):
 				hanCount++
@@ -178,6 +182,12 @@ func classifyBoundedTranslationLanguageEvidence(texts []string) (string, string,
 		}
 	}
 
+	if hangulCount >= 2 && (kanaCount >= 2 || len(englishMarkers) >= 2) {
+		return "", "", ambiguousTranslationLanguageError("mixed Korean and other language evidence")
+	}
+	if hangulCount >= 2 {
+		return "ko", "strong Korean script evidence", nil
+	}
 	if kanaCount >= 2 && len(englishMarkers) >= 2 {
 		return "", "", ambiguousTranslationLanguageError("mixed English and Japanese evidence")
 	}
@@ -202,7 +212,7 @@ func isHanRune(r rune) bool {
 }
 
 func ambiguousTranslationLanguageError(reason string) error {
-	return fmt.Errorf("source language is ambiguous; select English or Japanese explicitly (%s)", reason)
+	return fmt.Errorf("source language is ambiguous; select a supported source language explicitly (%s)", reason)
 }
 
 func boundedTranslationLanguageSummary(value string) string {

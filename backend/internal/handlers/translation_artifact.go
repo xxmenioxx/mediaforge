@@ -239,6 +239,10 @@ func normalizeTranslationLanguage(value string, allowAuto bool) (string, error) 
 		return "en", nil
 	case "ja", "jpn", "japanese":
 		return "ja", nil
+	case "ko", "kor", "korean":
+		return "ko", nil
+	case "fr", "fra", "fre", "french":
+		return "fr", nil
 	}
 	return "", fmt.Errorf("unsupported translation language %q", value)
 }

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -43,6 +44,40 @@ func TestTranslationProviderContractCarriesOnlyBoundedTextInputs(t *testing.T) {
 	batch.Context.NeighboringCues = make([]TranslationContextCue, defaultTranslationSettings().MaxContextCues+1)
 	if err := validateTranslationBatch(batch, defaultTranslationSettings()); err == nil {
 		t.Fatal("oversized context accepted")
+	}
+}
+
+func TestTranslationProviderLanguageCapabilitiesRequireVerifiedOllamaModel(t *testing.T) {
+	for _, model := range []string{"translategemma", "translategemma:latest", "translategemma:4b", "translategemma:12b", "translategemma:27b", "library/translategemma:4b"} {
+		languages := translationSourceLanguagesForProvider(translationProviderOllama, model)
+		if len(languages) != 5 || languages[3] != "ko" || languages[4] != "fr" {
+			t.Fatalf("model %q source languages=%v, want Auto/EN/JP/KO/FR", model, languages)
+		}
+		for _, source := range []string{"ko", "kor", "fr", "fre"} {
+			if err := validateTranslationProviderLanguageCapability(translationProviderOllama, model, source); err != nil {
+				t.Fatalf("verified model %q rejected source %q: %v", model, source, err)
+			}
+		}
+	}
+	for _, model := range []string{"fixture-model", "llama3", "translategemma-custom:4b"} {
+		languages := translationSourceLanguagesForProvider(translationProviderOllama, model)
+		if len(languages) != 3 {
+			t.Fatalf("unverified model %q advertised Korean/French: %v", model, languages)
+		}
+		for _, source := range []string{"ko", "fra"} {
+			err := validateTranslationProviderLanguageCapability(translationProviderOllama, model, source)
+			if err == nil || !strings.Contains(err.Error(), "not verified") || !strings.Contains(err.Error(), "TranslateGemma") {
+				t.Fatalf("unverified model %q did not fail clearly for %s: %v", model, source, err)
+			}
+		}
+	}
+	for _, source := range []string{"en", "eng", "ja", "jpn"} {
+		if err := validateTranslationProviderLanguageCapability(translationProviderOllama, "fixture-model", source); err != nil {
+			t.Fatalf("existing language %q was gated for a legacy model: %v", source, err)
+		}
+	}
+	if _, err := normalizeTranslationTargetLocale("fr-FR"); err == nil {
+		t.Fatal("unsupported non-Spanish target was accepted")
 	}
 }
 

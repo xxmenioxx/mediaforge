@@ -220,7 +220,7 @@ func TestTranslationMultiBatchCheckpointStaysMonotonicAndRecoversFailure(t *test
 	request := subtitleTranslationOperationRequest{
 		AssetPath: "/fixture/source.mkv", SourceType: "external", SourceReference: source.ExternalPath,
 		Format: translationRepresentationSRT, SourceIdentity: source.SourceIdentity, SourceRevision: source.SourceRevision,
-		RequestedSourceLanguage: "en", TargetLocale: "es-MX", RequestedRepresentation: translationRepresentationSRT,
+		RequestedSourceLanguage: "en", TargetLocale: "es-419", RequestedRepresentation: translationRepresentationSRT,
 		Provider: translationProviderOllama, ProviderModel: lifecycleTestModel,
 		ContextMode: "none", ContextSource: "none",
 	}
@@ -1083,7 +1083,7 @@ func TestTranslationWaitingRecoveryReconstructsSameOperationAndWaitsWithoutBypas
 	baseHandler := AssetHandler{db: db}
 	request := subtitleTranslationOperationRequest{
 		AssetPath: mediaPath, SourceType: "external", SourceReference: subtitlePath,
-		RequestedSourceLanguage: "en", TargetLocale: "es-MX", RequestedRepresentation: "srt",
+		RequestedSourceLanguage: "en", TargetLocale: "es-419", RequestedRepresentation: "srt",
 		Provider: translationProviderOllama, ProviderModel: lifecycleTestModel,
 		ContextMode: "none", ContextSource: "none",
 	}
@@ -1213,7 +1213,7 @@ func TestTranslationPublicationCrashReconciliationUsesFingerprints(t *testing.T)
 func TestTranslationCheckpointMetadataDoesNotStoreProviderPayloadOrEndpoint(t *testing.T) {
 	metadata, err := checkpointMetadata(subtitleTranslationOperationRequest{
 		AssetPath: "/media/source.mkv", SourceType: "external", Format: "srt", SourceIdentity: "asset:identity",
-		SourceReference: "/media/source.srt", RequestedSourceLanguage: "en", TargetLocale: "es-MX",
+		SourceReference: "/media/source.srt", RequestedSourceLanguage: "en", TargetLocale: "es-419",
 		RequestedRepresentation: "srt", Provider: translationProviderOllama, ProviderModel: lifecycleTestModel,
 		ContextMode: "none", ContextSource: "none", SourceRevision: "revision-v1",
 	})
@@ -1231,7 +1231,7 @@ func TestTranslationWaitingCheckpointValidationFailsClosed(t *testing.T) {
 	now := time.Now().UTC()
 	request := subtitleTranslationOperationRequest{
 		AssetPath: "/media/source.mkv", SourceType: "external", Format: "srt", SourceIdentity: "asset:identity",
-		SourceReference: "/media/source.srt", RequestedSourceLanguage: "en", TargetLocale: "es-MX",
+		SourceReference: "/media/source.srt", RequestedSourceLanguage: "en", TargetLocale: "es-419",
 		RequestedRepresentation: "srt", Provider: translationProviderOllama, ProviderModel: lifecycleTestModel,
 		ContextMode: "none", ContextSource: "none", SourceRevision: "source-revision",
 	}
