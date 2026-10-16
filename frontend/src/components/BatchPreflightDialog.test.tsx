@@ -126,8 +126,8 @@ describe('BatchPreflightDialog', () => {
     expect(screen.getByText(/v3 · captured 2026-09-28/)).toBeTruthy();
     expect(screen.getByText(/Encoder fallback reviewed/)).toBeTruthy();
     expect(screen.getByText('Source video bitrate: 1.10 Mbps')).toBeTruthy();
-    expect(screen.getByText('Packet windows succeeded: 4/5')).toBeTruthy();
-    expect(screen.getByText(/BPPPF planning rail: high-risk/)).toBeTruthy();
+    expect(screen.getByText('Samples analyzed: 4 of 5')).toBeTruthy();
+    expect(screen.getByText(/Encoding estimate: High risk/)).toBeTruthy();
     expect(screen.getByText(/Profile Qualification: PASS_WITH_WARNINGS/)).toBeTruthy();
     expect(screen.getAllByText(/qualification:reviewed/).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
