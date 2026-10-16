@@ -8,6 +8,10 @@ import {
   Card,
   CardContent,
   Checkbox,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Chip,
   FormControlLabel,
   Grid,
@@ -122,18 +126,25 @@ const fidelityFieldLabels: Record<string, string> = {
   bitDepth: 'Bit depth', chromaLocation: 'Chroma location', hevcLevel: 'HEVC level', hevcTier: 'HEVC tier', colorPolicy: 'Color contract',
 };
 
-export function ValidationPolicySettingsCard({ value, saving, onSave }: {
+export function ValidationPolicySettingsCard({ value, saving, autoPublisherEnabled, onSave }: {
   value: Record<string, unknown> | undefined;
   saving: boolean;
+  autoPublisherEnabled?: boolean;
   onSave: (value: Record<string, unknown>) => void;
 }) {
   const storedPolicy = useMemo(() => validationPolicyFromSetting(value), [value]);
   const [draft, setDraft] = useState(storedPolicy);
   const [showDifferences, setShowDifferences] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [confirmWarningOptInOpen, setConfirmWarningOptInOpen] = useState(false);
 
   useEffect(() => { setDraft(storedPolicy); }, [storedPolicy]);
 
+  const storedOutcomeSetting = value?.autoAdvanceOutcomes;
+  const currentAutoAdvanceOutcomes = normalizeAutoAdvanceOutcomes(storedOutcomeSetting);
+  const draftAutoAdvanceOutcomes = normalizeAutoAdvanceOutcomes(draft.autoAdvanceOutcomes);
+  const currentOutcomeSettingMissing = !Array.isArray(storedOutcomeSetting) || storedOutcomeSetting.length === 0;
+  const allowsWarningAdvancement = draftAutoAdvanceOutcomes.includes('PASS_WITH_WARNINGS');
   const basePreset = draft.preset === 'custom' ? (draft.basedOn ?? 'default') : draft.preset;
   const basePolicy = draft.presetDefaults?.[basePreset];
   const differences = policyDifferences(draft, basePolicy);
@@ -145,7 +156,7 @@ export function ValidationPolicySettingsCard({ value, saving, onSave }: {
     }
     const factory = draft.presetDefaults?.[preset];
     if (!factory) return;
-    setDraft({ ...factory, presetDefaults: draft.presetDefaults, autoAdvanceOutcomes: draft.autoAdvanceOutcomes });
+    setDraft((current) => ({ ...current, ...factory, presetDefaults: current.presetDefaults, autoAdvanceOutcomes: current.autoAdvanceOutcomes }));
   };
 
   const updateRule = (key: string, update: (rule: ValidationRulePolicy) => ValidationRulePolicy) => {
@@ -163,12 +174,30 @@ export function ValidationPolicySettingsCard({ value, saving, onSave }: {
 
   const restoreDefaults = () => {
     const factory = draft.presetDefaults?.[basePreset];
-    if (factory) setDraft({ ...factory, presetDefaults: draft.presetDefaults, autoAdvanceOutcomes: draft.autoAdvanceOutcomes });
+    if (factory) setDraft((current) => ({ ...current, ...factory, presetDefaults: current.presetDefaults, autoAdvanceOutcomes: current.autoAdvanceOutcomes }));
   };
 
   const save = () => {
-    const { presetDefaults: _presets, differenceCount: _count, differences: _differences, autoAdvanceOutcomes: _automation, ...policy } = draft;
-    onSave(policy as unknown as Record<string, unknown>);
+    const policy: Record<string, unknown> = { ...(value ?? {}), ...draft, autoAdvanceOutcomes: draftAutoAdvanceOutcomes };
+    delete policy.presetDefaults;
+    delete policy.differenceCount;
+    delete policy.differences;
+    onSave(policy);
+  };
+
+  const setWarningAdvancement = (enabled: boolean) => {
+    setDraft((current) => ({
+      ...current,
+      autoAdvanceOutcomes: enabled ? ['PASS', 'PASS_WITH_WARNINGS'] : ['PASS'],
+    }));
+  };
+
+  const handleWarningAdvancementChange = (enabled: boolean) => {
+    if (enabled && !allowsWarningAdvancement) {
+      setConfirmWarningOptInOpen(true);
+      return;
+    }
+    setWarningAdvancement(enabled);
   };
 
   return (
@@ -191,6 +220,32 @@ export function ValidationPolicySettingsCard({ value, saving, onSave }: {
             <Grid size={{ xs: 12, md: 7 }}><Typography color="text.secondary">{presetDescriptions[draft.preset]}</Typography></Grid>
           </Grid>
           {draft.preset === 'disabled' ? <Alert severity="warning">Quality Validation is disabled. MVForge will still verify Result identity, artifact integrity, frozen execution binding, and publication package safety. These checks cannot be disabled or overridden.</Alert> : null}
+          <Stack spacing={1}>
+            <Typography variant="h6">Automatic Validation advancement</Typography>
+            <Typography variant="body2" color="text.secondary">
+              PASS is always allowed. Optionally allow PASS_WITH_WARNINGS when its findings are advisory. Actionable findings remain visible for follow-up; blocking findings still prevent handoff. FAIL and REVIEW_REQUIRED are never automatic opt-ins.
+            </Typography>
+            <Alert severity="info">
+              <b>Current effective policy:</b> {automaticOutcomeLabel(currentAutoAdvanceOutcomes)}{currentOutcomeSettingMissing ? ' (the missing or empty setting defaults to PASS only).' : '.'}
+            </Alert>
+            {autoPublisherEnabled === false ? (
+              <Alert severity="info">Auto Publisher is disabled. Saving an outcome policy will not start automatic publication while Auto Publisher remains disabled.</Alert>
+            ) : autoPublisherEnabled === true ? (
+              <Alert severity="success">Auto Publisher is enabled and will apply this policy at its next authorization check.</Alert>
+            ) : (
+              <Alert severity="info">Auto Publisher status is unavailable until its Settings value loads.</Alert>
+            )}
+            <FormControlLabel
+              control={<Checkbox checked={allowsWarningAdvancement} disabled={saving} onChange={(event) => handleWarningAdvancementChange(event.target.checked)} />}
+              label="Allow PASS_WITH_WARNINGS for automatic advancement"
+            />
+            {automaticOutcomeLabel(currentAutoAdvanceOutcomes) !== automaticOutcomeLabel(draftAutoAdvanceOutcomes) ? (
+              <Typography variant="body2">Unsaved outcome policy: {automaticOutcomeLabel(draftAutoAdvanceOutcomes)}.</Typography>
+            ) : null}
+            <Alert severity="warning">
+              This setting does not dismiss Validation findings or bypass Publisher checks. Publisher independently verifies Result identity, required sidecars, destination readiness, replacement authority, and other delivery requirements.
+            </Alert>
+          </Stack>
           {draft.preset === 'custom' ? <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'flex-start', sm: 'center' }} spacing={1}>
             <Typography>Custom · Based on: {presetLabels[basePreset]} · {differences.length} {differences.length === 1 ? 'value differs' : 'values differ'}</Typography>
             <Button size="small" onClick={() => setShowDifferences((current) => !current)}>{showDifferences ? 'Hide differences' : 'Show differences'}</Button>
@@ -229,16 +284,41 @@ export function ValidationPolicySettingsCard({ value, saving, onSave }: {
               })}
             </Stack></AccordionDetails>
           </Accordion>
-          <Button startIcon={<SaveIcon />} variant="contained" onClick={save} disabled={saving}>Save Validation policy</Button>
+          <Button startIcon={<SaveIcon />} variant="contained" onClick={save} disabled={saving}>Save Validation settings</Button>
         </Stack>
       </CardContent>
+      <Dialog open={confirmWarningOptInOpen} onClose={() => setConfirmWarningOptInOpen(false)} aria-labelledby="validation-warning-opt-in-title">
+        <DialogTitle id="validation-warning-opt-in-title">Confirm automatic warning advancement</DialogTitle>
+        <DialogContent>
+          <Typography>
+            After you confirm and save, the next Auto Publisher tick may attempt eligible jobs already at ready_to_publish with PASS_WITH_WARNINGS, as well as future jobs. This applies only while Auto Publisher is enabled. It does not trigger publication by itself, and every attempt still passes the independent Publisher identity and delivery checks.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmWarningOptInOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={() => { setWarningAdvancement(true); setConfirmWarningOptInOpen(false); }}>
+            Confirm warning opt-in
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Card>
   );
 }
 
 function validationPolicyFromSetting(value: Record<string, unknown> | undefined): ValidationPolicy {
-  if (value && typeof value.rules === 'object' && value.rules !== null) return value as unknown as ValidationPolicy;
-  return { schemaVersion: 1, policyVersion: 'validation-policy-v1', preset: 'default', rules: {}, presetDefaults: {} };
+  const policy = value && typeof value.rules === 'object' && value.rules !== null
+    ? value as unknown as ValidationPolicy
+    : { schemaVersion: 1, policyVersion: 'validation-policy-v1', preset: 'default' as const, rules: {}, presetDefaults: {} };
+  return { ...policy, autoAdvanceOutcomes: normalizeAutoAdvanceOutcomes(value?.autoAdvanceOutcomes) };
+}
+
+function normalizeAutoAdvanceOutcomes(value: unknown): string[] {
+  const outcomes = Array.isArray(value) ? value.filter((outcome): outcome is string => typeof outcome === 'string') : [];
+  return outcomes.includes('PASS_WITH_WARNINGS') ? ['PASS', 'PASS_WITH_WARNINGS'] : ['PASS'];
+}
+
+function automaticOutcomeLabel(outcomes: string[]): string {
+  return outcomes.includes('PASS_WITH_WARNINGS') ? 'PASS and PASS_WITH_WARNINGS' : 'PASS only';
 }
 
 function policyDifferences(policy: ValidationPolicy, base: ValidationPolicy | undefined): string[] {
