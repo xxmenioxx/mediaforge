@@ -26,7 +26,7 @@ function sourceInterpretation(confidence: string, method: string) {
   if (confidence === 'low') return 'This source bitrate estimate is uncertain; treat it as a guide.';
   if (confidence === 'unavailable') return 'A reliable source bitrate could not be established.';
   if (method === 'packet_sampling' && (confidence === 'high' || confidence === 'medium')) {
-    return 'The source bitrate looks consistent across the sampled scenes.';
+    return 'The source bitrate estimate is based on successful sampled windows.';
   }
   if (confidence === 'high') return 'MVForge has high confidence in this source bitrate estimate.';
   if (confidence === 'medium') return 'MVForge has moderate confidence in this source bitrate estimate.';

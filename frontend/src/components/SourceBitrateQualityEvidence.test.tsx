@@ -79,4 +79,20 @@ describe('SourceBitrateQualityEvidence', () => {
     expect(screen.getByText('Confidence: High')).toBeTruthy();
     expect(screen.getAllByRole('alert')[0].className).toContain('MuiAlert-colorSuccess');
   });
+
+  it('describes packet-sampling confidence using successful windows', () => {
+    render(<SourceBitrateQualityEvidence source={{
+      schemaVersion: 1,
+      samplingPolicyVersion: 1,
+      bitrate: 5_910_000,
+      method: 'packet_sampling',
+      confidence: 'medium',
+      requestedWindows: 5,
+      successfulWindows: 3,
+      sampledWindows: [],
+    }} />);
+
+    expect(screen.getByText('The source bitrate estimate is based on successful sampled windows.')).toBeTruthy();
+    expect(screen.getByText('Samples analyzed: 3 of 5')).toBeTruthy();
+  });
 });
