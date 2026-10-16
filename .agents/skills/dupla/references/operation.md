@@ -61,7 +61,7 @@ changing the worktree. A
 failed push or `gh` operation is saved in session state; `resume` repeats the
 checks and push, queries PRs by exact head branch, and updates the existing
 PR's title/body when found instead of creating a duplicate. PR text includes
-the implementation summary, `Refs #N` (never a closing keyword), changed
+the implementation summary, `Closes #N`, changed
 files, test outcomes, the verifier result, risks, limitations, and pending
 work. The parent records the PR URL, Draft/state, and best-effort CI rollup.
 

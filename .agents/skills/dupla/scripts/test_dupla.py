@@ -288,7 +288,8 @@ summary.write_text(json.dumps({
         self.assertEqual([item["action"] for item in gh_state["actions"]], ["create", "edit"])
         pr = gh_state["prs"][0]
         self.assertTrue(pr["isDraft"])
-        self.assertIn("Refs #41", pr["body"])
+        self.assertIn("Closes #41", pr["body"])
+        self.assertNotIn("Refs #41", pr["body"])
         self.assertIn("Updated implementation summary", pr["body"])
         self.assertIn("go test ./fixture", pr["body"])
         self.assertIn("FAIL: fixture verifier failure", pr["body"])
