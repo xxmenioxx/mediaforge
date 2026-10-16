@@ -1304,6 +1304,124 @@ func (h AssetHandler) assetLifecycleProjections(records []models.AssetRecord) (m
 	return projections, nil
 }
 
+type assetLifecycleProjectionLoad struct {
+	AssetRecords       int
+	QueueJobs          int
+	DirectPublications int
+	AssetRecordQuery   time.Duration
+	PublicationQuery   time.Duration
+	ProjectionResolve  time.Duration
+}
+
+// assetLifecycleProjectionForArchiveDelete loads only the records needed to
+// resolve one Library asset's current publication and archived originals.
+// ResolveAssetLifecycleProjection remains the canonical relationship policy;
+// this adapter only bounds its database inputs for destructive Archive work.
+func (h AssetHandler) assetLifecycleProjectionForArchiveDelete(record models.AssetRecord) (AssetLifecycleProjection, assetLifecycleProjectionLoad, error) {
+	load := assetLifecycleProjectionLoad{AssetRecords: 1}
+	if h.db == nil {
+		return AssetLifecycleProjection{}, load, nil
+	}
+
+	pathCandidates := []string{record.Path, filepath.Clean(record.Path)}
+	if pathCandidates[0] == pathCandidates[1] {
+		pathCandidates = pathCandidates[:1]
+	}
+	publicationQueryStarted := time.Now()
+	var jobs []models.QueueJob
+	if h.db.Migrator().HasTable(&models.QueueJob{}) {
+		if err := h.db.Where("source_asset_record_id = ? OR published_path IN ?", record.ID, pathCandidates).Find(&jobs).Error; err != nil {
+			return AssetLifecycleProjection{}, load, err
+		}
+	}
+	load.QueueJobs = len(jobs)
+
+	var directPublications []models.DirectPublication
+	if h.db.Migrator().HasTable(&models.DirectPublication{}) {
+		if err := h.db.Where("source_asset_record_id = ? OR published_path IN ?", record.ID, pathCandidates).Find(&directPublications).Error; err != nil {
+			return AssetLifecycleProjection{}, load, err
+		}
+	}
+	load.DirectPublications = len(directPublications)
+	load.PublicationQuery = time.Since(publicationQueryStarted)
+
+	assetRecordIDs := make(map[uint]struct{})
+	archivePaths := make(map[string]struct{})
+	for _, job := range jobs {
+		if job.SourceAssetRecordID != nil && *job.SourceAssetRecordID > 0 {
+			assetRecordIDs[*job.SourceAssetRecordID] = struct{}{}
+		}
+		if path := cleanAssetLifecyclePath(job.OriginalArchivedPath); path != "" {
+			archivePaths[path] = struct{}{}
+		}
+	}
+	for _, publication := range directPublications {
+		if publication.SourceAssetRecordID != nil && *publication.SourceAssetRecordID > 0 {
+			assetRecordIDs[*publication.SourceAssetRecordID] = struct{}{}
+		}
+	}
+
+	recordsByID := map[uint]models.AssetRecord{record.ID: record}
+	ids := make([]uint, 0, len(assetRecordIDs))
+	for id := range assetRecordIDs {
+		if id != record.ID {
+			ids = append(ids, id)
+		}
+	}
+	paths := make([]string, 0, len(archivePaths))
+	for path := range archivePaths {
+		paths = append(paths, path)
+	}
+	if len(ids) > 0 || len(paths) > 0 {
+		assetRecordQueryStarted := time.Now()
+		query := h.db.Model(&models.AssetRecord{})
+		switch {
+		case len(ids) > 0 && len(paths) > 0:
+			query = query.Where("id IN ? OR (status = ? AND path IN ?)", ids, "archive", paths)
+		case len(ids) > 0:
+			query = query.Where("id IN ?", ids)
+		default:
+			query = query.Where("status = ? AND path IN ?", "archive", paths)
+		}
+		var related []models.AssetRecord
+		if err := query.Find(&related).Error; err != nil {
+			return AssetLifecycleProjection{}, load, err
+		}
+		for _, relatedRecord := range related {
+			recordsByID[relatedRecord.ID] = relatedRecord
+		}
+		load.AssetRecordQuery += time.Since(assetRecordQueryStarted)
+	}
+	records := make([]models.AssetRecord, 0, len(recordsByID))
+	for _, relatedRecord := range recordsByID {
+		records = append(records, relatedRecord)
+	}
+	load.AssetRecords = len(records)
+
+	var libraries []models.Library
+	if h.db.Migrator().HasTable(&models.Library{}) {
+		libraryQueryStarted := time.Now()
+		if err := h.db.Find(&libraries).Error; err != nil {
+			return AssetLifecycleProjection{}, load, err
+		}
+		load.PublicationQuery += time.Since(libraryQueryStarted)
+	}
+	archiveRootQueryStarted := time.Now()
+	archiveRoot, err := originalsArchivePath(h.db)
+	if err != nil {
+		return AssetLifecycleProjection{}, load, err
+	}
+	load.PublicationQuery += time.Since(archiveRootQueryStarted)
+	projectionStarted := time.Now()
+	projection := ResolveAssetLifecycleProjection(AssetLifecycleProjectionInput{
+		Record: record, Records: records, Libraries: libraries,
+		QueueJobs: jobs, DirectPublications: directPublications,
+		ArchiveRoot: archiveRoot,
+	})
+	load.ProjectionResolve = time.Since(projectionStarted)
+	return projection, load, nil
+}
+
 // assetHasActiveWork is the shared execution-time guard used by destructive
 // asset mutations and capability snapshots. It prefers the durable source
 // AssetRecord reference and retains path matching for legacy rows.

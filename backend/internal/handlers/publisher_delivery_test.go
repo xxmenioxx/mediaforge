@@ -352,6 +352,50 @@ func TestPublisherUsesQueueFrozenDestinationAfterLibrarySettingChanges(t *testin
 	}
 }
 
+func TestPublishedLibraryInventoryUsesPublisherPathAndKeepsOriginalSeparate(t *testing.T) {
+	fixture := newPublisherDeliveryFixture(t, false)
+	result, err := (PublisherHandler{db: fixture.db}).publishQueueJobWithMode(fixture.job, false, false)
+	if err != nil || result.Status != "published" {
+		t.Fatalf("publication result=%#v err=%v", result, err)
+	}
+	inventory, err := (AssetHandler{db: fixture.db}).assetInventoryFromDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var published Asset
+	for _, asset := range inventory.Library {
+		if filepath.Clean(asset.Path) == filepath.Clean(result.PublishedPath) {
+			published = asset
+			break
+		}
+	}
+	if published.ID == 0 {
+		t.Fatalf("Library inventory omitted Publisher's current path %q", result.PublishedPath)
+	}
+	if filepath.Clean(published.Path) != filepath.Clean(fixture.destination) || published.Lifecycle == nil || filepath.Clean(published.Lifecycle.CurrentPublication.PublishedPath) != filepath.Clean(fixture.destination) {
+		t.Fatalf("Library inventory path disagrees with current Publisher authority: asset=%#v", published)
+	}
+	if filepath.Clean(published.Path) == filepath.Clean(fixture.original) {
+		t.Fatalf("Library primary path points at the original: %#v", published)
+	}
+	var publishedJob models.QueueJob
+	if err := fixture.db.First(&publishedJob, fixture.job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if publishedJob.OriginalArchivedPath == "" || filepath.Clean(publishedJob.OriginalArchivedPath) == filepath.Clean(published.Path) {
+		t.Fatalf("original provenance was not kept separate from the Library path: job=%#v asset=%#v", publishedJob, published)
+	}
+	linkedOriginal := false
+	for _, original := range published.Lifecycle.ArchivedOriginals {
+		if filepath.Clean(original.Path) == filepath.Clean(publishedJob.OriginalArchivedPath) {
+			linkedOriginal = true
+		}
+	}
+	if !linkedOriginal {
+		t.Fatalf("archived original was not presented as separate lifecycle evidence: %#v", published.Lifecycle.ArchivedOriginals)
+	}
+}
+
 func TestPublisherBlocksSymlinkedDestinationStagingRoot(t *testing.T) {
 	fixture := newPublisherDeliveryFixture(t, false)
 	outside := filepath.Join(fixture.root, "outside")

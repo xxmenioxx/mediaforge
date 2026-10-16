@@ -93,7 +93,8 @@ import { formatEstimatedByteRange } from '../utils/qualityEstimate';
 import { normalizeLegacyVideoCodec } from '../utils/videoCodec';
 import { withStreamSelection } from '../utils/assetTrackSelection';
 import { assetInfoDiscardDraft, assetInfoDocumentsEqual, assetInfoEditDocument, assetInfoHydrationReconciliation, assetInfoRefreshReconciliation, assetInfoSaveFailureReconciliation, assetInfoSaveReconciliation, assetInfoTracksSaveReconciliation, assetTracksPatch, mergeAssetTracks, type AssetInfoEditDocument } from '../utils/assetInfoEditing';
-import { hasNonTerminalQueueLifecycle, originalArchiveStatusLabel } from '../utils/queueLifecycle';
+import { hasNonTerminalQueueLifecycle, originalArchiveStatusLabel, queueJobPublicationChanged } from '../utils/queueLifecycle';
+import { measureArchiveDeletePhase } from '../utils/archiveDeleteTiming';
 import { patchAssetInventoryAsset } from '../utils/assetInventoryPatch';
 import { effectiveVideoProfileLabel, hidePreConversionActionsForAsset, testEncodeConfigurationReason, testEncodeEligibleAsset } from '../utils/testEncodeEligibility';
 import { customUpscaleHeightError, smartUpscaleControlsDisabled } from '../upscale';
@@ -318,6 +319,14 @@ export function AssetsPage() {
     refetchInterval: (query) => query.state.data?.operations.some((operation) => operation.status === 'running') ? 1500 : false,
   });
   const queryClient = useQueryClient();
+  const previousQueueJobsForAssetRefresh = useRef<typeof jobs.data>(undefined);
+  useEffect(() => {
+    if (!jobs.data) return;
+    if (queueJobPublicationChanged(previousQueueJobsForAssetRefresh.current, jobs.data)) {
+      void queryClient.invalidateQueries({ queryKey: ['assets'] });
+    }
+    previousQueueJobsForAssetRefresh.current = jobs.data;
+  }, [jobs.data, queryClient]);
   const syncAssets = useMutation({
     mutationFn: api.syncAssets,
     onSuccess: async () => {
@@ -4136,12 +4145,30 @@ function AssetRow({
       await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
+  const archiveDeleteFeedbackStartedAt = useRef<number | null>(null);
   const deleteArchiveAsset = useMutation({
-    mutationFn: api.deleteArchiveAsset,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    mutationFn: async (input: Parameters<typeof api.deleteArchiveAsset>[0]) => {
+      const startedAt = performance.now();
+      try {
+        return await api.deleteArchiveAsset(input);
+      } finally {
+        measureArchiveDeletePhase('delete-request', startedAt);
+      }
+    },
+    onSuccess: () => {
+      archiveDeleteFeedbackStartedAt.current = performance.now();
+      const refreshStartedAt = performance.now();
+      void queryClient.invalidateQueries({ queryKey: ['assets'] }).then(
+        () => measureArchiveDeletePhase('assets-refresh', refreshStartedAt),
+        () => measureArchiveDeletePhase('assets-refresh', refreshStartedAt),
+      );
     },
   });
+  useEffect(() => {
+    if (!deleteArchiveAsset.isSuccess || archiveDeleteFeedbackStartedAt.current === null) return;
+    measureArchiveDeletePhase('feedback-render', archiveDeleteFeedbackStartedAt.current);
+    archiveDeleteFeedbackStartedAt.current = null;
+  }, [deleteArchiveAsset.isSuccess]);
   const deleteConvertedAsset = useMutation({
     mutationFn: api.deleteConvertedAsset,
     onSuccess: async () => {

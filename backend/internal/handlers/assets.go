@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/anuelvs/mvforge/backend/internal/applog"
 	"github.com/anuelvs/mvforge/backend/internal/capabilities"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/anuelvs/mvforge/backend/internal/scheduler"
@@ -770,7 +771,7 @@ func (h AssetHandler) Recover(c *gin.Context) {
 		return
 	}
 	record, libraryRecord, sourceRecord, status, err := h.validateArchivedOriginalIdentity(
-		input.ArchiveAssetRecordID, input.LibraryAssetRecordID, path,
+		input.ArchiveAssetRecordID, input.LibraryAssetRecordID, path, nil,
 	)
 	if err != nil {
 		c.JSON(status, gin.H{"error": err.Error()})
@@ -805,7 +806,7 @@ func (h AssetHandler) Recover(c *gin.Context) {
 	// Capabilities are advisory. Re-resolve identity, active work, roots and
 	// filesystem targets immediately before moving the archive original.
 	record, libraryRecord, sourceRecord, status, err = h.validateArchivedOriginalIdentity(
-		input.ArchiveAssetRecordID, input.LibraryAssetRecordID, path,
+		input.ArchiveAssetRecordID, input.LibraryAssetRecordID, path, nil,
 	)
 	if err != nil {
 		c.JSON(status, gin.H{"error": err.Error()})
@@ -889,9 +890,71 @@ func (h AssetHandler) Recover(c *gin.Context) {
 	})
 }
 
+type archiveDeleteTiming struct {
+	kind                     string
+	outcome                  string
+	total                    time.Duration
+	ownerResolution          time.Duration
+	initialIdentity          time.Duration
+	initialActiveWork        time.Duration
+	initialFilesystem        time.Duration
+	finalIdentity            time.Duration
+	finalActiveWork          time.Duration
+	finalFilesystem          time.Duration
+	unlink                   time.Duration
+	inventoryWrite           time.Duration
+	auditLog                 time.Duration
+	assetRecordLoad          time.Duration
+	publicationLoad          time.Duration
+	projectionResolve        time.Duration
+	assetRecordsLoaded       int
+	queueJobsLoaded          int
+	directPublicationsLoaded int
+	batchItems               int
+	completed                int
+	failures                 int
+}
+
+func (timing archiveDeleteTiming) fields() map[string]any {
+	return map[string]any{
+		"operation":                  timing.kind,
+		"outcome":                    timing.outcome,
+		"total_us":                   timing.total.Microseconds(),
+		"owner_resolution_us":        timing.ownerResolution.Microseconds(),
+		"initial_identity_us":        timing.initialIdentity.Microseconds(),
+		"initial_active_work_us":     timing.initialActiveWork.Microseconds(),
+		"initial_filesystem_us":      timing.initialFilesystem.Microseconds(),
+		"final_identity_us":          timing.finalIdentity.Microseconds(),
+		"final_active_work_us":       timing.finalActiveWork.Microseconds(),
+		"final_filesystem_us":        timing.finalFilesystem.Microseconds(),
+		"unlink_us":                  timing.unlink.Microseconds(),
+		"inventory_write_us":         timing.inventoryWrite.Microseconds(),
+		"audit_log_us":               timing.auditLog.Microseconds(),
+		"asset_record_load_us":       timing.assetRecordLoad.Microseconds(),
+		"publication_load_us":        timing.publicationLoad.Microseconds(),
+		"projection_resolve_us":      timing.projectionResolve.Microseconds(),
+		"asset_records_loaded":       timing.assetRecordsLoaded,
+		"queue_jobs_loaded":          timing.queueJobsLoaded,
+		"direct_publications_loaded": timing.directPublicationsLoaded,
+		"batch_items":                timing.batchItems,
+		"completed":                  timing.completed,
+		"failures":                   timing.failures,
+	}
+}
+
 func (h AssetHandler) DeleteArchive(c *gin.Context) {
+	started := time.Now()
+	timing := archiveDeleteTiming{kind: "single"}
+	defer func() {
+		timing.total = time.Since(started)
+		if timing.outcome == "" {
+			timing.outcome = "rejected"
+		}
+		applog.Event("info", "system", "archive_asset_delete_timing", timing.fields(), nil)
+	}()
 	path := filepath.Clean(strings.TrimSpace(c.Query("path")))
 	if path == "." || path == "" {
+		timing.outcome = "invalid_path"
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
 		return
 	}
@@ -901,18 +964,24 @@ func (h AssetHandler) DeleteArchive(c *gin.Context) {
 		LibraryAssetRecordID uint `json:"libraryAssetRecordId"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil && !errors.Is(err, io.EOF) {
+		timing.outcome = "invalid_request"
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if !input.Confirmed {
+		timing.outcome = "confirmation_required"
 		c.JSON(http.StatusBadRequest, gin.H{"error": "permanent archive deletion requires explicit confirmation"})
 		return
 	}
 
-	if status, err := h.permanentlyDeleteArchiveAsset(path, input.ArchiveAssetRecordID, input.LibraryAssetRecordID); err != nil {
+	if status, err := h.permanentlyDeleteArchiveAsset(path, input.ArchiveAssetRecordID, input.LibraryAssetRecordID, &timing); err != nil {
+		timing.outcome = fmt.Sprintf("http_%d", status)
+		timing.failures = 1
 		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
+	timing.outcome = "deleted"
+	timing.completed = 1
 	c.JSON(http.StatusOK, gin.H{
 		"status": "deleted", "path": path,
 		"message": "Archive asset permanently deleted. Jobs, reports, logs, snapshots, and publication provenance were preserved.",
@@ -920,46 +989,101 @@ func (h AssetHandler) DeleteArchive(c *gin.Context) {
 }
 
 func (h AssetHandler) DeleteArchiveBatch(c *gin.Context) {
+	started := time.Now()
+	timing := archiveDeleteTiming{kind: "batch"}
+	defer func() {
+		timing.total = time.Since(started)
+		if timing.outcome == "" {
+			timing.outcome = "rejected"
+		}
+		applog.Event("info", "system", "archive_asset_delete_batch_timing", timing.fields(), nil)
+	}()
 	var input struct {
 		Paths     []string `json:"paths"`
 		Confirmed bool     `json:"confirmed"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
+		timing.outcome = "invalid_request"
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if !input.Confirmed {
+		timing.outcome = "confirmation_required"
 		c.JSON(http.StatusBadRequest, gin.H{"error": "permanent archive deletion requires explicit confirmation"})
 		return
 	}
 	paths := normalizedUniquePaths(input.Paths)
 	if len(paths) == 0 {
+		timing.outcome = "empty_batch"
 		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one path is required"})
 		return
 	}
+	timing.batchItems = len(paths)
 	completed := 0
 	failures := make([]gin.H, 0)
 	for _, path := range paths {
-		archiveID, libraryID, resolveStatus, resolveErr := h.resolveCurrentArchiveOwner(path)
+		itemStarted := time.Now()
+		itemTiming := archiveDeleteTiming{kind: "batch_item"}
+		resolveStarted := time.Now()
+		archiveID, libraryID, resolveStatus, resolveErr := h.resolveCurrentArchiveOwner(path, &itemTiming)
+		itemTiming.ownerResolution = time.Since(resolveStarted)
 		if resolveErr != nil {
 			failures = append(failures, gin.H{"path": path, "status": resolveStatus, "error": resolveErr.Error()})
+			itemTiming.outcome = fmt.Sprintf("http_%d", resolveStatus)
+			itemTiming.failures = 1
+			itemTiming.total = time.Since(itemStarted)
+			applog.Event("info", "system", "archive_asset_delete_timing", itemTiming.fields(), nil)
+			accumulateArchiveDeleteTiming(&timing, itemTiming)
 			continue
 		}
-		if status, err := h.permanentlyDeleteArchiveAsset(path, archiveID, libraryID); err != nil {
+		if status, err := h.permanentlyDeleteArchiveAsset(path, archiveID, libraryID, &itemTiming); err != nil {
 			failures = append(failures, gin.H{"path": path, "status": status, "error": err.Error()})
+			itemTiming.outcome = fmt.Sprintf("http_%d", status)
+			itemTiming.failures = 1
+			itemTiming.total = time.Since(itemStarted)
+			applog.Event("info", "system", "archive_asset_delete_timing", itemTiming.fields(), nil)
+			accumulateArchiveDeleteTiming(&timing, itemTiming)
 			continue
 		}
+		itemTiming.outcome = "deleted"
+		itemTiming.completed = 1
+		itemTiming.total = time.Since(itemStarted)
+		applog.Event("info", "system", "archive_asset_delete_timing", itemTiming.fields(), nil)
+		accumulateArchiveDeleteTiming(&timing, itemTiming)
 		completed++
 	}
+	timing.completed = completed
+	timing.failures = len(failures)
+	timing.outcome = "completed"
 	c.JSON(http.StatusOK, gin.H{"status": "completed", "completed": completed, "failures": failures})
 }
 
-func (h AssetHandler) validateArchivedOriginalIdentity(archiveRecordID, libraryAssetRecordID uint, locator string) (models.AssetRecord, models.AssetRecord, models.AssetRecord, int, error) {
+func accumulateArchiveDeleteTiming(total *archiveDeleteTiming, item archiveDeleteTiming) {
+	total.ownerResolution += item.ownerResolution
+	total.initialIdentity += item.initialIdentity
+	total.initialActiveWork += item.initialActiveWork
+	total.initialFilesystem += item.initialFilesystem
+	total.finalIdentity += item.finalIdentity
+	total.finalActiveWork += item.finalActiveWork
+	total.finalFilesystem += item.finalFilesystem
+	total.unlink += item.unlink
+	total.inventoryWrite += item.inventoryWrite
+	total.auditLog += item.auditLog
+	total.assetRecordLoad += item.assetRecordLoad
+	total.publicationLoad += item.publicationLoad
+	total.projectionResolve += item.projectionResolve
+	total.assetRecordsLoaded += item.assetRecordsLoaded
+	total.queueJobsLoaded += item.queueJobsLoaded
+	total.directPublicationsLoaded += item.directPublicationsLoaded
+}
+
+func (h AssetHandler) validateArchivedOriginalIdentity(archiveRecordID, libraryAssetRecordID uint, locator string, timing *archiveDeleteTiming) (models.AssetRecord, models.AssetRecord, models.AssetRecord, int, error) {
 	locator = filepath.Clean(strings.TrimSpace(locator))
 	if archiveRecordID == 0 || libraryAssetRecordID == 0 || locator == "." || locator == "" {
 		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusBadRequest, fmt.Errorf("archive record and related Library asset identities are required")
 	}
 	var archiveRecord models.AssetRecord
+	assetLoadStarted := time.Now()
 	if err := h.db.First(&archiveRecord, archiveRecordID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("archived-original record identity is stale")
@@ -982,16 +1106,22 @@ func (h AssetHandler) validateArchivedOriginalIdentity(archiveRecordID, libraryA
 	if libraryRecord.Missing || libraryRecord.LibraryID == 0 {
 		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusConflict, fmt.Errorf("related Library asset is unavailable")
 	}
-	var records []models.AssetRecord
-	if err := h.db.Find(&records).Error; err != nil {
-		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusInternalServerError, err
+	if timing != nil {
+		timing.assetRecordLoad += time.Since(assetLoadStarted)
 	}
-	projections, err := h.assetLifecycleProjections(records)
+	projection, load, err := h.assetLifecycleProjectionForArchiveDelete(libraryRecord)
 	if err != nil {
 		return models.AssetRecord{}, models.AssetRecord{}, models.AssetRecord{}, http.StatusInternalServerError, err
 	}
-	projection := projections[libraryRecord.ID]
-	if projection == nil || projection.Location != AssetLocationLibrary ||
+	if timing != nil {
+		timing.assetRecordLoad += load.AssetRecordQuery
+		timing.publicationLoad += load.PublicationQuery
+		timing.projectionResolve += load.ProjectionResolve
+		timing.assetRecordsLoaded += load.AssetRecords
+		timing.queueJobsLoaded += load.QueueJobs
+		timing.directPublicationsLoaded += load.DirectPublications
+	}
+	if projection.Location != AssetLocationLibrary ||
 		projection.CurrentPublication.State != assetCurrentPublicationPublished ||
 		projection.CurrentPublication.Authority != assetPublicationAuthorityQueue ||
 		projection.CurrentPublication.ID == 0 || projection.CurrentPublication.LibraryAssetID != libraryRecord.ID {
@@ -1042,7 +1172,7 @@ func (h AssetHandler) validateArchivedOriginalIdentity(archiveRecordID, libraryA
 	return archiveRecord, libraryRecord, sourceRecord, http.StatusOK, nil
 }
 
-func (h AssetHandler) resolveCurrentArchiveOwner(path string) (uint, uint, int, error) {
+func (h AssetHandler) resolveCurrentArchiveOwner(path string, timing *archiveDeleteTiming) (uint, uint, int, error) {
 	path = filepath.Clean(strings.TrimSpace(path))
 	var archiveRecord models.AssetRecord
 	if err := h.db.First(&archiveRecord, "path = ?", path).Error; err != nil {
@@ -1051,24 +1181,54 @@ func (h AssetHandler) resolveCurrentArchiveOwner(path string) (uint, uint, int, 
 		}
 		return 0, 0, http.StatusInternalServerError, err
 	}
-	var records []models.AssetRecord
-	if err := h.db.Find(&records).Error; err != nil {
-		return 0, 0, http.StatusInternalServerError, err
+	var jobs []models.QueueJob
+	if h.db.Migrator().HasTable(&models.QueueJob{}) {
+		if err := h.db.Where("original_archived_path = ?", path).Find(&jobs).Error; err != nil {
+			return 0, 0, http.StatusInternalServerError, err
+		}
 	}
-	projections, err := h.assetLifecycleProjections(records)
-	if err != nil {
-		return 0, 0, http.StatusInternalServerError, err
+	publishedPaths := make(map[string]struct{}, len(jobs))
+	for _, job := range jobs {
+		if publishedPath := cleanAssetLifecyclePath(job.PublishedPath); publishedPath != "" {
+			publishedPaths[publishedPath] = struct{}{}
+		}
+	}
+	paths := make([]string, 0, len(publishedPaths))
+	for publishedPath := range publishedPaths {
+		paths = append(paths, publishedPath)
+	}
+	var libraryRecords []models.AssetRecord
+	if len(paths) > 0 {
+		if err := h.db.Where("path IN ?", paths).Find(&libraryRecords).Error; err != nil {
+			return 0, 0, http.StatusInternalServerError, err
+		}
+	}
+	if timing != nil {
+		timing.assetRecordsLoaded += len(libraryRecords) + 1
+		timing.queueJobsLoaded += len(jobs)
 	}
 	var ownerID uint
-	for libraryID, projection := range projections {
+	for _, libraryRecord := range libraryRecords {
+		projection, load, err := h.assetLifecycleProjectionForArchiveDelete(libraryRecord)
+		if err != nil {
+			return 0, 0, http.StatusInternalServerError, err
+		}
+		if timing != nil {
+			timing.assetRecordsLoaded += load.AssetRecords
+			timing.queueJobsLoaded += load.QueueJobs
+			timing.directPublicationsLoaded += load.DirectPublications
+			timing.assetRecordLoad += load.AssetRecordQuery
+			timing.publicationLoad += load.PublicationQuery
+			timing.projectionResolve += load.ProjectionResolve
+		}
 		for _, original := range projection.ArchivedOriginals {
 			if original.AssetRecordID != archiveRecord.ID || original.Relationship != "current" {
 				continue
 			}
-			if ownerID != 0 && ownerID != libraryID {
+			if ownerID != 0 && ownerID != libraryRecord.ID {
 				return 0, 0, http.StatusConflict, fmt.Errorf("archive original has conflicting current Library relationships")
 			}
-			ownerID = libraryID
+			ownerID = libraryRecord.ID
 		}
 	}
 	if ownerID == 0 {
@@ -1234,69 +1394,145 @@ func validateUnoccupiedPathWithinRoot(candidate, root string) error {
 	return nil
 }
 
-func (h AssetHandler) permanentlyDeleteArchiveAsset(path string, archiveRecordID, libraryAssetRecordID uint) (int, error) {
+func (h AssetHandler) permanentlyDeleteArchiveAsset(path string, archiveRecordID, libraryAssetRecordID uint, timing *archiveDeleteTiming) (int, error) {
 	path = filepath.Clean(strings.TrimSpace(path))
 	if path == "." || path == "" {
 		return http.StatusBadRequest, fmt.Errorf("path is required")
 	}
-	record, libraryRecord, sourceRecord, status, err := h.validateArchivedOriginalIdentity(archiveRecordID, libraryAssetRecordID, path)
+	phaseStarted := time.Now()
+	record, libraryRecord, sourceRecord, status, err := h.validateArchivedOriginalIdentity(archiveRecordID, libraryAssetRecordID, path, timing)
+	if timing != nil {
+		timing.initialIdentity += time.Since(phaseStarted)
+	}
 	if err != nil {
 		return status, err
 	}
-	if active, err := h.archivedOriginalHasActiveWork(record, libraryRecord, sourceRecord); err != nil {
-		return http.StatusInternalServerError, fmt.Errorf("check active asset work: %w", err)
-	} else if active {
-		return http.StatusConflict, fmt.Errorf("asset has active work")
+	phaseStarted = time.Now()
+	active, activeErr := h.archivedOriginalHasActiveWork(record, libraryRecord, sourceRecord)
+	if timing != nil {
+		timing.initialActiveWork += time.Since(phaseStarted)
 	}
-	archiveRoot, err := originalsArchivePath(h.db)
-	if err != nil {
-		return http.StatusInternalServerError, err
-	}
-	archiveRoot = filepath.Clean(archiveRoot)
-	if err := validateRegularFileWithinRoot(record.Path, archiveRoot); err != nil {
-		return http.StatusForbidden, err
-	}
-	if err := validateRegularFileWithinRoot(libraryRecord.Path, libraryRecord.RootPath); err != nil {
-		return http.StatusConflict, fmt.Errorf("current Library publication is unavailable or unsafe: %w", err)
-	}
-	if filepath.Clean(record.Path) == filepath.Clean(libraryRecord.Path) {
-		return http.StatusConflict, fmt.Errorf("archive target is the current Library publication")
-	}
-
-	// Revalidate the identity and both protected files immediately before unlink.
-	record, libraryRecord, sourceRecord, status, err = h.validateArchivedOriginalIdentity(archiveRecordID, libraryAssetRecordID, path)
-	if err != nil {
-		return status, err
-	}
-	currentArchiveRoot, err := originalsArchivePath(h.db)
-	if err != nil {
-		return http.StatusInternalServerError, err
-	}
-	if filepath.Clean(currentArchiveRoot) != archiveRoot {
-		return http.StatusConflict, fmt.Errorf("configured archive root changed; reload the Library asset")
-	}
-	if active, activeErr := h.archivedOriginalHasActiveWork(record, libraryRecord, sourceRecord); activeErr != nil {
+	if activeErr != nil {
 		return http.StatusInternalServerError, fmt.Errorf("check active asset work: %w", activeErr)
 	} else if active {
 		return http.StatusConflict, fmt.Errorf("asset has active work")
 	}
-	if err := validateRegularFileWithinRoot(record.Path, currentArchiveRoot); err != nil {
+	phaseStarted = time.Now()
+	archiveRoot, err := originalsArchivePath(h.db)
+	if err != nil {
+		if timing != nil {
+			timing.initialFilesystem += time.Since(phaseStarted)
+		}
+		return http.StatusInternalServerError, err
+	}
+	archiveRoot = filepath.Clean(archiveRoot)
+	if err := validateRegularFileWithinRoot(record.Path, archiveRoot); err != nil {
+		if timing != nil {
+			timing.initialFilesystem += time.Since(phaseStarted)
+		}
 		return http.StatusForbidden, err
 	}
 	if err := validateRegularFileWithinRoot(libraryRecord.Path, libraryRecord.RootPath); err != nil {
+		if timing != nil {
+			timing.initialFilesystem += time.Since(phaseStarted)
+		}
 		return http.StatusConflict, fmt.Errorf("current Library publication is unavailable or unsafe: %w", err)
 	}
+	if filepath.Clean(record.Path) == filepath.Clean(libraryRecord.Path) {
+		if timing != nil {
+			timing.initialFilesystem += time.Since(phaseStarted)
+		}
+		return http.StatusConflict, fmt.Errorf("archive target is the current Library publication")
+	}
+	if timing != nil {
+		timing.initialFilesystem += time.Since(phaseStarted)
+	}
+
+	// Revalidate the identity and both protected files immediately before unlink.
+	phaseStarted = time.Now()
+	record, libraryRecord, sourceRecord, status, err = h.validateArchivedOriginalIdentity(archiveRecordID, libraryAssetRecordID, path, timing)
+	if timing != nil {
+		timing.finalIdentity += time.Since(phaseStarted)
+	}
+	if err != nil {
+		return status, err
+	}
+	phaseStarted = time.Now()
+	currentArchiveRoot, err := originalsArchivePath(h.db)
+	if err != nil {
+		if timing != nil {
+			timing.finalFilesystem += time.Since(phaseStarted)
+		}
+		return http.StatusInternalServerError, err
+	}
+	if filepath.Clean(currentArchiveRoot) != archiveRoot {
+		if timing != nil {
+			timing.finalFilesystem += time.Since(phaseStarted)
+		}
+		return http.StatusConflict, fmt.Errorf("configured archive root changed; reload the Library asset")
+	}
+	if timing != nil {
+		timing.finalFilesystem += time.Since(phaseStarted)
+	}
+	phaseStarted = time.Now()
+	active, activeErr = h.archivedOriginalHasActiveWork(record, libraryRecord, sourceRecord)
+	if timing != nil {
+		timing.finalActiveWork += time.Since(phaseStarted)
+	}
+	if activeErr != nil {
+		return http.StatusInternalServerError, fmt.Errorf("check active asset work: %w", activeErr)
+	} else if active {
+		return http.StatusConflict, fmt.Errorf("asset has active work")
+	}
+	phaseStarted = time.Now()
+	if err := validateRegularFileWithinRoot(record.Path, currentArchiveRoot); err != nil {
+		if timing != nil {
+			timing.finalFilesystem += time.Since(phaseStarted)
+		}
+		return http.StatusForbidden, err
+	}
+	if err := validateRegularFileWithinRoot(libraryRecord.Path, libraryRecord.RootPath); err != nil {
+		if timing != nil {
+			timing.finalFilesystem += time.Since(phaseStarted)
+		}
+		return http.StatusConflict, fmt.Errorf("current Library publication is unavailable or unsafe: %w", err)
+	}
+	if timing != nil {
+		timing.finalFilesystem += time.Since(phaseStarted)
+	}
+	phaseStarted = time.Now()
 	if err := os.Remove(record.Path); err != nil {
+		if timing != nil {
+			timing.unlink += time.Since(phaseStarted)
+		}
 		return http.StatusInternalServerError, fmt.Errorf("archive asset could not be deleted: %w", err)
 	}
+	if timing != nil {
+		timing.unlink += time.Since(phaseStarted)
+	}
 	now := time.Now()
+	phaseStarted = time.Now()
 	if err := h.db.Model(&models.AssetRecord{}).Where("id = ?", record.ID).Updates(map[string]any{
 		"missing": true, "synced_at": now, "updated_at": now,
 	}).Error; err != nil {
+		if timing != nil {
+			timing.inventoryWrite += time.Since(phaseStarted)
+		}
+		logStarted := time.Now()
 		appendSystemLog(h.db, "archive_asset_deleted_inventory_update_failed", map[string]string{"path": path}, err)
+		if timing != nil {
+			timing.auditLog += time.Since(logStarted)
+		}
 		return http.StatusInternalServerError, fmt.Errorf("archive file was deleted, but inventory could not be updated: %w", err)
 	}
+	if timing != nil {
+		timing.inventoryWrite += time.Since(phaseStarted)
+	}
+	logStarted := time.Now()
 	appendSystemLog(h.db, "archive_asset_permanently_deleted", map[string]string{"path": path, "fileName": record.FileName, "library": record.LibraryName}, nil)
+	if timing != nil {
+		timing.auditLog += time.Since(logStarted)
+	}
 	return http.StatusOK, nil
 }
 
