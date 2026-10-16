@@ -122,6 +122,9 @@ func executeBitmapTranslation(ctx context.Context, request bitmapTranslationExec
 	if err != nil {
 		return bitmapTranslationExecutionResult{}, fmt.Errorf("canonical OCR source language is unavailable: %w", err)
 	}
+	if err := validateTranslationProviderLanguageCapability(request.Settings.Provider, request.Settings.OllamaModel, language.EffectiveLanguage); err != nil {
+		return bitmapTranslationExecutionResult{}, err
+	}
 	effectiveLanguage := language.EffectiveLanguage
 	if err := ctx.Err(); err != nil {
 		return bitmapTranslationExecutionResult{}, err

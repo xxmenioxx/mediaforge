@@ -45,9 +45,26 @@ func TestResolveTranslationSourceLanguageAutoUsesReliableMetadata(t *testing.T) 
 			t.Fatalf("metadata %q did not resolve Japanese: result=%#v err=%v", metadata, result, err)
 		}
 	}
+	for _, metadata := range []string{"ko", "kor", "korean"} {
+		result, err := resolveTranslationSourceLanguage(translationLanguageResolutionInput{RequestedLanguage: "auto", SourceLanguageMetadata: []string{metadata}})
+		if err != nil || result.EffectiveLanguage != "ko" || result.EvidenceSource != translationLanguageEvidenceSourceMetadata {
+			t.Fatalf("metadata %q did not resolve Korean: result=%#v err=%v", metadata, result, err)
+		}
+	}
+	for _, metadata := range []string{"fr", "fra", "fre", "french"} {
+		result, err := resolveTranslationSourceLanguage(translationLanguageResolutionInput{RequestedLanguage: "auto", SourceLanguageMetadata: []string{metadata}})
+		if err != nil || result.EffectiveLanguage != "fr" || result.EvidenceSource != translationLanguageEvidenceSourceMetadata {
+			t.Fatalf("metadata %q did not resolve French: result=%#v err=%v", metadata, result, err)
+		}
+	}
 	for _, metadata := range [][]string{{"und"}, {""}, {"spa"}, {"eng", "jpn"}} {
 		if result, err := resolveTranslationSourceLanguage(translationLanguageResolutionInput{RequestedLanguage: "auto", SourceLanguageMetadata: metadata, Cues: []translationSourceCue{{Text: "Name"}}}); err == nil {
 			t.Fatalf("metadata %v unexpectedly resolved: %#v", metadata, result)
+		}
+	}
+	for _, metadata := range [][]string{{"kor", "fre"}, {"fr", "ko"}} {
+		if _, err := resolveTranslationSourceLanguage(translationLanguageResolutionInput{RequestedLanguage: "auto", SourceLanguageMetadata: metadata}); err == nil {
+			t.Fatalf("mixed language metadata %v was not rejected", metadata)
 		}
 	}
 }
@@ -61,13 +78,23 @@ func TestResolveTranslationSourceLanguageUsesConservativeBoundedCueEvidence(t *t
 	if err != nil || english.EffectiveLanguage != "en" {
 		t.Fatalf("strong English evidence did not resolve English: %#v err=%v", english, err)
 	}
-	for _, text := range []string{"東京", "John Smith", "ROLL CREDITS", "12345 !!!", "de la que", "https://example.com"} {
+	korean, err := resolveTranslationSourceLanguage(translationLanguageResolutionInput{RequestedLanguage: "auto", Cues: []translationSourceCue{{Text: "안녕하세요 세계"}}})
+	if err != nil || korean.EffectiveLanguage != "ko" {
+		t.Fatalf("strong Hangul script evidence did not resolve Korean: %#v err=%v", korean, err)
+	}
+	for _, text := range []string{"東京", "안", "John Smith", "ROLL CREDITS", "12345 !!!", "de la que", "Bonjour tout le monde", "https://example.com"} {
 		if result, err := resolveTranslationSourceLanguage(translationLanguageResolutionInput{RequestedLanguage: "auto", Cues: []translationSourceCue{{Text: text}}}); err == nil {
 			t.Fatalf("weak evidence %q unexpectedly resolved: %#v", text, result)
 		}
 	}
 	if _, err := resolveTranslationSourceLanguage(translationLanguageResolutionInput{RequestedLanguage: "auto", Cues: []translationSourceCue{{Text: "This is the text"}, {Text: "こんにちは"}}}); err == nil {
 		t.Fatal("mixed strong English/Japanese evidence resolved")
+	}
+	if _, err := resolveTranslationSourceLanguage(translationLanguageResolutionInput{RequestedLanguage: "auto", Cues: []translationSourceCue{{Text: "This is Korean 안녕하세요"}}}); err == nil {
+		t.Fatal("mixed strong English/Korean evidence resolved")
+	}
+	if _, err := resolveTranslationSourceLanguage(translationLanguageResolutionInput{RequestedLanguage: "auto", Cues: []translationSourceCue{{Text: "안녕하세요"}, {Text: "こんにちは"}}}); err == nil {
+		t.Fatal("mixed Korean/Japanese script evidence resolved")
 	}
 }
 

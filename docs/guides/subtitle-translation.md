@@ -37,16 +37,30 @@ antes.
 
 ## Idioma de origen
 
-Las opciones V1 son:
+Las opciones disponibles dependen de las capacidades que anuncie el backend
+para la fuente y el modelo configurado. Se puede seleccionar explícitamente
+**Korean** (`ko`) o **French** (`fr`) y traducirlos a los destinos españoles
+indicados abajo cuando Ollama tiene seleccionado un ID oficial de
+TranslateGemma: `translategemma:4b`, `translategemma:12b`,
+`translategemma:27b` o `translategemma:latest`. El catálogo oficial de Ollama
+describe TranslateGemma como una colección de traducción para 55 idiomas e
+incluye coreano, francés y español en su lista de idiomas.
 
-- **Auto**: usa metadatos confiables y evidencia acotada de los cues. No es
-  detección genérica de cualquier idioma.
-- **English**: trata la fuente seleccionada como inglés.
-- **Japanese**: trata la fuente seleccionada como japonés.
+Para otros modelos, la capacidad no anuncia `ko` ni `fr`. Si se pide uno de
+esos idiomas explícitamente, o **Auto** lo resuelve a Korean/French, MVForge
+rechaza la operación con un error de capacidad que indica que el modelo no
+admite ese idioma de origen. Cambiar a otro idioma no debe usarse para eludir
+ese rechazo.
 
-Si **Auto** no puede distinguir inglés de japonés con suficiente confianza,
-MVForge detiene la operación antes de contactar al proveedor. En ese caso,
-selecciona explícitamente **English** o **Japanese**.
+**Auto** usa metadatos de idioma confiables cuando están disponibles. Si los
+metadatos faltan, son contradictorios o no bastan para una resolución segura,
+MVForge falla de forma cerrada. Para Korean también puede resolver evidencia
+clara del alfabeto Hangul en los cues. Para French se requieren metadatos de
+idioma inequívocos; no se infiere sólo por texto latino. La evidencia mixta o
+inconclusa detiene la operación antes de contactar al proveedor.
+
+English y Japanese siguen disponibles como idiomas de origen con los modelos
+que anuncien esas capacidades.
 
 ## Idioma de destino
 
@@ -153,9 +167,13 @@ consumo.
 El modelo configurado debe existir en el servidor Ollama, poder usarse mediante
 `/api/chat`, seguir la instrucción acotada de MVForge y devolver JSON
 estructurado. Debe conservar exactamente los IDs de los cues, devolver un
-texto por cada cue solicitado, traducir inglés/japonés al locale español
-solicitado y completar la solicitud dentro de los límites de request y timeout
-del proveedor.
+texto por cada cue solicitado, traducir el idioma de origen anunciado al
+locale español solicitado y completar la solicitud dentro de los límites de
+request y timeout del proveedor. Ollama documenta TranslateGemma como modelo de
+traducción para 55 idiomas, incluidos `ko` (Korean), `fr` (French) y `es`
+(Spanish); esto no certifica la calidad de traducción ni el cumplimiento del
+contrato estructurado de MVForge. Evalúa muestras antes de confiar en los
+resultados.
 
 MVForge envía una solicitud equivalente a:
 
@@ -258,8 +276,9 @@ requisito: MVForge envía lotes acotados.
 
 ### Evaluar un candidato
 
-Prueba muestras representativas: inglés y japonés hacia `es-419` y `es-ES`,
-cues cortos y multilínea, nombres propios, diálogo informal, subtítulos
+Prueba muestras representativas de cada idioma anunciado —incluidos Korean o
+French si están disponibles— hacia `es-419` y `es-ES`, cues cortos y
+multilínea, nombres propios, diálogo informal, subtítulos
 forced/de signos y ASS con estructura protegida. Evalúa significado, español
 natural y regional, nombres/terminología, ausencia de texto de origen o
 comentarios añadidos y cumplimiento del JSON con IDs exactos. No se define una
@@ -274,7 +293,9 @@ formato y carga del host.
 1. Abre **Asset Info** para el asset.
 2. Busca la entrada exacta del subtítulo embebido o el sidecar externo.
 3. Pulsa **Translate...** en esa entrada.
-4. Selecciona **Auto**, **English** o **Japanese**.
+4. Selecciona **Auto** o un idioma de origen ofrecido por el backend para esa
+   fuente y proveedor. Puede incluir **Korean** o **French** cuando estén
+   anunciados como capacidades disponibles.
 5. Selecciona `es-419` o `es-ES`.
 6. Elige el formato sólo si el backend ofrece más de una representación.
 7. Inicia la traducción.
@@ -332,8 +353,15 @@ PGS/VobSub
 ```
 
 El manejo OCR de japonés, incluidos `jpn` y `jpn_vert`, ocurre antes de la
-traducción. El proveedor recibe los cues canónicos resultantes, no imágenes ni
-una ruta OCR alternativa.
+traducción. En fuentes bitmap, Korean se procesa con el idioma OCR `kor`; los
+alias de French se normalizan a `fra`. El backend comprueba que el runtime
+Tesseract tenga el traineddata necesario. Si falta, el error indica que se
+instale el paquete traineddata correspondiente en el runtime OCR y se reintente.
+La extracción también requiere las herramientas OCR del backend. No se afirma
+que el runtime se haya ejercitado en todos los despliegues. Si OCR no puede
+completar la extracción, MVForge detiene la traducción y no envía imágenes
+bitmap al proveedor. El proveedor recibe cues de texto canónicos, no imágenes
+ni una ruta OCR alternativa.
 
 ## Progreso de la operación
 
@@ -426,6 +454,13 @@ Si Ollama falla después de haber sido configurado y habilitado:
 Vuelve a **Settings** y ejecuta **Test Connection** para diagnosticar el
 estado actual del proveedor.
 
+La capacidad disponible depende del modelo y su identidad. KO/FR sólo se
+anuncian para los IDs oficiales de Ollama TranslateGemma indicados arriba; en
+otros modelos, un idioma explícito o resuelto por Auto se rechaza claramente
+antes de traducir. Si el proveedor no cumple el contrato de respuesta, la
+operación informa el fallo; MVForge no cambia de idioma, modelo ni proveedor
+silenciosamente.
+
 ## Troubleshooting
 
 | Síntoma | Significado o acción |
@@ -435,7 +470,11 @@ estado actual del proveedor.
 | Ready pero `Enabled: No` | Pulsa **Enable translation**. |
 | Unavailable | Revisa el host y la red de Ollama; luego repite **Test Connection**. |
 | Model not found | Confirma que el modelo configurado exista en Ollama. |
-| Auto no determina el idioma | Selecciona **English** o **Japanese** explícitamente. |
+| Auto no determina el idioma | Selecciona explícitamente un idioma ofrecido para esa fuente y proveedor. |
+| KO/FR falla por capacidad | Usa un ID oficial de Ollama TranslateGemma (`translategemma:4b`, `:12b`, `:27b` o `:latest`) para esos idiomas de origen. |
+| Auto no resuelve French | Asegura que el subtítulo tenga metadatos de idioma inequívocos; French no se infiere sólo por texto latino. |
+| Korean bitmap OCR indica traineddata ausente | Instala el traineddata `kor` en el runtime Tesseract del backend y reintenta. |
+| French bitmap OCR indica traineddata ausente | Instala el traineddata `fra` en el runtime Tesseract del backend y reintenta. |
 | Stale source | Actualiza Asset Info y reintenta sobre la fuente actual. |
 | Cancelled | Pulsa **Retry** si la operación lo ofrece. |
 
@@ -461,7 +500,16 @@ hardware.
 
 ## Limitaciones V1
 
-- idiomas de origen: English y Japanese, con selección **Auto**;
+- Korean (`ko`) y French (`fr`) sólo se anuncian para Ollama
+  TranslateGemma: `translategemma:4b`, `:12b`, `:27b` y `:latest`; explicitarlos
+  o resolverlos por Auto con otro modelo falla por capacidad;
+- English y Japanese siguen disponibles cuando el backend los anuncia para el
+  modelo seleccionado;
+- Auto exige metadatos inequívocos para French; Korean también puede resolverse
+  desde evidencia clara de Hangul. Evidencia mixta o insuficiente falla de
+  forma cerrada;
+- Korean bitmap OCR usa `kor`; alias de French usan `fra`. El runtime valida
+  traineddata y da una instrucción de instalación/reintento cuando falta;
 - destinos: `es-419` y `es-ES`;
 - proveedor implementado: Ollama;
 - traducción explícita desde Asset Info;
@@ -470,6 +518,8 @@ hardware.
 - no hay traducción genérica de idiomas arbitrarios.
 
 ## Referencias de implementación
+
+- [Catálogo oficial de Ollama: TranslateGemma](https://ollama.com/library/translategemma)
 
 - `backend/internal/handlers/translation_asset_info.go`
 - `backend/internal/handlers/translation_readiness.go`

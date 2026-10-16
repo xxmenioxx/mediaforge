@@ -430,8 +430,8 @@ func runBitmapOCRWithTiming(
 	if err != nil {
 		return bitmapOCRResult{Message: capabilityMessage}, err
 	}
-	if _, available := capabilities[language]; !available {
-		return bitmapOCRResult{Message: capabilityMessage}, fmt.Errorf("OCR language %q is unavailable in the running Tesseract runtime; install its traineddata and retry", language)
+	if err := requireOCRLanguageAvailable(capabilities, language); err != nil {
+		return bitmapOCRResult{Message: capabilityMessage}, err
 	}
 
 	ocrInputPath := mediaPath
@@ -570,6 +570,13 @@ func parseTesseractLanguages(output string) map[string]struct{} {
 		capabilities[language] = struct{}{}
 	}
 	return capabilities
+}
+
+func requireOCRLanguageAvailable(capabilities map[string]struct{}, language string) error {
+	if _, available := capabilities[language]; available {
+		return nil
+	}
+	return fmt.Errorf("OCR language %q is unavailable in the running Tesseract runtime; install its traineddata and retry", language)
 }
 
 func sortedOCRLanguages(capabilities map[string]struct{}) []string {
@@ -1045,6 +1052,10 @@ func normalizedOCRLanguage(requested string, detected string) string {
 	switch value {
 	case "es", "spa", "esp", "spanish":
 		return "spa"
+	case "ko", "kor", "korean":
+		return "kor"
+	case "fr", "fra", "fre", "french":
+		return "fra"
 	case "ja", "jp", "jpn", "japanese":
 		return "jpn"
 	case "jpn_vert", "ja_vert", "japanese_vertical":

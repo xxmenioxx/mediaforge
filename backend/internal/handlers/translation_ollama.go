@@ -229,6 +229,9 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 	if err := validateTranslationBatch(batch, settings); err != nil {
 		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorConfiguration, Err: err}
 	}
+	if err := validateTranslationProviderLanguageCapability(translationProviderOllama, provider.model, batch.SourceLanguage); err != nil {
+		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorConfiguration, Err: err}
+	}
 	prompt, err := ollamaTranslationPrompt(batch)
 	if err != nil {
 		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorConfiguration, Err: err}
@@ -306,11 +309,31 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 }
 
 func ollamaTranslationPrompt(batch TranslationBatch) (string, error) {
+	sourceLanguage, err := normalizeTranslationLanguage(batch.SourceLanguage, false)
+	if err != nil {
+		return "", fmt.Errorf("unsupported translation source language: %w", err)
+	}
+	targetLocale, err := normalizeTranslationTargetLocale(batch.TargetLocale)
+	if err != nil {
+		return "", fmt.Errorf("unsupported translation target locale: %w", err)
+	}
+	batch.SourceLanguage = sourceLanguage
+	batch.TargetLocale = targetLocale
 	payload, err := json.Marshal(batch)
 	if err != nil {
 		return "", fmt.Errorf("encode translation contract: %w", err)
 	}
-	return "Translate only the target cue text in this translation-provider batch. Preserve every cue ID exactly once, return exactly one translated text for every target cue, and do not add, remove, merge, split, or reorder cues. Do not translate neighboring or media context. Do not emit explanations or markdown. Return only the structured translation result JSON.\n\n" + string(payload), nil
+	targetLabel := "Spanish (es)"
+	if targetLocale == "es-419" {
+		targetLabel = "Spanish (Latin America, es-419; es)"
+	} else {
+		targetLabel = "Spanish (Spain, es-ES; es)"
+	}
+	instructions := fmt.Sprintf(
+		"You are a professional %s (%s) to %s subtitle translator. Translate only the target cue text in this translation-provider batch. Preserve every cue ID exactly once, return exactly one translated text for every target cue, and do not add, remove, merge, split, or reorder cues. Do not translate neighboring or media context. Do not emit explanations or markdown. Return only the structured translation result JSON.\n\n",
+		translationLanguageName(sourceLanguage), sourceLanguage, targetLabel,
+	)
+	return instructions + string(payload), nil
 }
 
 func readBoundedOllamaResponse(ctx context.Context, body io.Reader) ([]byte, error) {

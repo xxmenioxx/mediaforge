@@ -26,6 +26,8 @@ const languageLabels: Record<string, string> = {
   auto: 'Auto',
   en: 'English',
   ja: 'Japanese',
+  ko: 'Korean',
+  fr: 'French',
 };
 
 const localeLabels: Record<string, string> = {

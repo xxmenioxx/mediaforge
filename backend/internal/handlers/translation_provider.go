@@ -35,6 +35,59 @@ type TranslationBatch struct {
 	Context         *TranslationContext
 }
 
+func translationSourceLanguagesForProvider(provider, model string) []string {
+	languages := []string{"auto", "en", "ja"}
+	if supportsTranslationGemmaLanguagePair(provider, model) {
+		languages = append(languages, "ko", "fr")
+	}
+	return languages
+}
+
+func supportsTranslationGemmaLanguagePair(provider, model string) bool {
+	if !strings.EqualFold(strings.TrimSpace(provider), translationProviderOllama) {
+		return false
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	if separator := strings.LastIndex(model, "/"); separator >= 0 {
+		model = model[separator+1:]
+	}
+	switch model {
+	case "translategemma", "translategemma:latest", "translategemma:4b", "translategemma:12b", "translategemma:27b":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateTranslationProviderLanguageCapability(provider, model, sourceLanguage string) error {
+	language, err := normalizeTranslationLanguage(sourceLanguage, false)
+	if err != nil {
+		return err
+	}
+	if language != "ko" && language != "fr" {
+		return nil
+	}
+	if !supportsTranslationGemmaLanguagePair(provider, model) {
+		return fmt.Errorf("configured translation provider/model is not verified for %s to Spanish; select Ollama TranslateGemma (4B, 12B, or 27B)", translationLanguageName(language))
+	}
+	return nil
+}
+
+func translationLanguageName(language string) string {
+	switch language {
+	case "en":
+		return "English"
+	case "ja":
+		return "Japanese"
+	case "ko":
+		return "Korean"
+	case "fr":
+		return "French"
+	default:
+		return language
+	}
+}
+
 type TranslationCue struct {
 	ID   string
 	Text string
@@ -86,6 +139,12 @@ func validateTranslationBatch(batch TranslationBatch, settings translationSettin
 	}
 	if strings.TrimSpace(batch.SourceLanguage) == "" || strings.TrimSpace(batch.TargetLocale) == "" {
 		return fmt.Errorf("translation language and locale are required")
+	}
+	if _, err := normalizeTranslationLanguage(batch.SourceLanguage, false); err != nil {
+		return fmt.Errorf("unsupported translation source language: %w", err)
+	}
+	if _, err := normalizeTranslationTargetLocale(batch.TargetLocale); err != nil {
+		return fmt.Errorf("unsupported translation target locale: %w", err)
 	}
 	if len(batch.Cues) == 0 || len(batch.Cues) > settings.MaxCuesPerRequest {
 		return fmt.Errorf("translation batch must contain between 1 and %d cues", settings.MaxCuesPerRequest)

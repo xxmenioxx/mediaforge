@@ -3007,10 +3007,19 @@ func TestBitmapSubtitleOCRHelpers(t *testing.T) {
 	if got := matroskaTrackNumber(FFProbeStream{Index: 4}); got != 5 {
 		t.Fatalf("fallback track ID = %d, want 5", got)
 	}
-	for input, want := range map[string]string{"spa": "spa", "es": "spa", "jpn": "jpn", "ja": "jpn", "eng": "eng", "und": "eng"} {
+	for input, want := range map[string]string{
+		"spa": "spa", "es": "spa", "jpn": "jpn", "ja": "jpn", "eng": "eng", "und": "eng",
+		"ko": "kor", "kor": "kor", "korean": "kor", "fr": "fra", "fra": "fra", "fre": "fra", "french": "fra",
+	} {
 		if got := normalizedOCRLanguage(input, ""); got != want {
 			t.Fatalf("OCR language %q = %q, want %q", input, got, want)
 		}
+	}
+	if err := requireOCRLanguageAvailable(map[string]struct{}{"eng": {}}, "kor"); err == nil || !strings.Contains(err.Error(), "install its traineddata and retry") {
+		t.Fatalf("missing Korean OCR data error was not actionable: %v", err)
+	}
+	if err := requireOCRLanguageAvailable(map[string]struct{}{"fra": {}}, "fra"); err != nil {
+		t.Fatalf("installed French OCR data was rejected: %v", err)
 	}
 	if got := normalizedOCRLanguage("jpn_vert", ""); got != "jpn_vert" {
 		t.Fatalf("vertical Japanese OCR language = %q", got)

@@ -14,6 +14,12 @@ import (
 	"time"
 )
 
+type ollamaTestRoundTripper func(*http.Request) (*http.Response, error)
+
+func (roundTripper ollamaTestRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTripper(request)
+}
+
 func TestOllamaDurationMillis(t *testing.T) {
 	oldFalseOverflowThreshold := math.MaxInt64 / int64(time.Millisecond)
 	tests := []struct {
@@ -37,6 +43,54 @@ func TestOllamaDurationMillis(t *testing.T) {
 				t.Fatalf("ollamaDurationMillis(%d)=%d, want %d", test.nanoseconds, got, test.wantMillis)
 			}
 		})
+	}
+}
+
+func TestOllamaTranslationPromptMapsKoreanAndFrenchToSpanish(t *testing.T) {
+	for _, testCase := range []struct {
+		name, sourceLanguage, canonicalSource, targetLocale, wantLanguageLabel string
+	}{
+		{name: "Korean bibliographic alias", sourceLanguage: "kor", canonicalSource: "ko", targetLocale: "es-419", wantLanguageLabel: "Korean (ko) to Spanish (Latin America, es-419; es)"},
+		{name: "French legacy alias", sourceLanguage: "fre", canonicalSource: "fr", targetLocale: "es-ES", wantLanguageLabel: "French (fr) to Spanish (Spain, es-ES; es)"},
+	} {
+		batch := TranslationBatch{
+			ContractVersion: translationProviderContractVersion,
+			SourceLanguage:  testCase.sourceLanguage,
+			TargetLocale:    testCase.targetLocale,
+			Cues:            []TranslationCue{{ID: "cue-1", Text: "source"}},
+		}
+		prompt, err := ollamaTranslationPrompt(batch)
+		if err != nil {
+			t.Fatalf("%s prompt failed: %v", testCase.name, err)
+		}
+		if !strings.Contains(prompt, testCase.wantLanguageLabel) || !strings.Contains(prompt, `"SourceLanguage":"`+testCase.canonicalSource+`"`) || !strings.Contains(prompt, `"TargetLocale":"`+testCase.targetLocale+`"`) {
+			t.Fatalf("%s prompt did not preserve canonical language pair: %s", testCase.name, prompt)
+		}
+	}
+}
+
+func TestOllamaTranslationProviderRejectsUnverifiedKoreanModelBeforeRequest(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: ollamaTestRoundTripper(func(request *http.Request) (*http.Response, error) {
+		requests++
+		return nil, errors.New("unexpected Ollama request")
+	})}
+	settings := translationSettings{Provider: translationProviderOllama, OllamaEndpoint: "http://ollama.invalid", OllamaModel: "llama3"}
+	provider, err := newOllamaTranslationProviderWithClient(settings, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Translate(context.Background(), TranslationBatch{
+		ContractVersion: translationProviderContractVersion,
+		SourceLanguage:  "ko",
+		TargetLocale:    "es-419",
+		Cues:            []TranslationCue{{ID: "cue-1", Text: "안녕하세요"}},
+	})
+	if err == nil || translationProviderErrorClassOf(err) != translationProviderErrorConfiguration || !strings.Contains(err.Error(), "TranslateGemma") {
+		t.Fatalf("unverified model did not fail with a capability diagnostic: %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("unverified language request reached Ollama: %d calls", requests)
 	}
 }
 
