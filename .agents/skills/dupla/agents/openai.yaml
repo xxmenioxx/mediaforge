@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dupla"
+  short_description: "Run two MediaForge issues in isolated worktrees"
+  default_prompt: "Use $dupla to prepare and run two MediaForge issues in parallel."
