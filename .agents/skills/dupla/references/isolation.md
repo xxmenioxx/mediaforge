@@ -17,10 +17,21 @@ create/update. Credentials are not passed in process arguments, prompts, logs,
 or PR bodies. Never invoke approval, ready, auto-merge, merge, issue-close,
 branch/worktree-delete, or force-push operations.
 
-For each issue, the helper gives unique paths for `GOCACHE`, `GOTMPDIR`,
-`MVFORGE_GOTMPDIR`, `MVFORGE_OCR_LIFECYCLE_ROOT`, `TMPDIR`, `TMP`, `TEMP`,
-`npm_config_cache`, and `MVFORGE_DUPLA_ROOT`. Worktree-local build outputs stay
-in that worktree. Do not point tests at the same SQLite file or mutable fixture.
+For each issue and attempt, the helper gives unique paths for `GOCACHE`,
+`GOTMPDIR`, `MVFORGE_GOTMPDIR`, `MVFORGE_OCR_LIFECYCLE_ROOT`,
+`MVFORGE_OCR_PERSISTENT_ROOT`, `TMPDIR`, `TMP`, `TEMP`, `npm_config_cache`, and
+`MVFORGE_DUPLA_ROOT`. OCR persistent snapshots live under the attempt's
+Git-metadata resource directory (`ocr-persistent`), outside checked-out
+worktree files. The helper overwrites any inherited shell value for this
+variable, so concurrent workers and retries cannot silently share a snapshot
+root. Worktree-local build outputs stay in that worktree. Do not point tests at
+the same SQLite file or mutable fixture.
+
+OCR tests that need independent state must set `MVFORGE_OCR_PERSISTENT_ROOT` to
+a test-owned temporary directory (for table cases, one directory per subtest),
+for example with `t.Setenv` and `t.TempDir()`. This keeps those tests
+deterministic even when they exercise persistent snapshots and prevents
+generated OCR state from falling back to a directory in the source checkout.
 
 Tests that bind shared ports, start services, use Docker/FFmpeg integration
 fixtures, or mutate shared volumes must run through the serialized lock:
