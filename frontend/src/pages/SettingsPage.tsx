@@ -311,6 +311,10 @@ export function SettingsPage() {
   const runtimeProfilesQuery = useQuery({ queryKey: ['runtime-profiles'], queryFn: api.runtimeProfiles });
   const profilesQuery = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const schedulerRecovery = useQuery({ queryKey: ['scheduler-recovery'], queryFn: api.schedulerRecovery });
+  const autoPublisherSetting = settings.data?.find((item) => item.key === 'pipelineAutomation');
+  const autoPublisherEnabled = settings.data
+    ? autoPublisherSetting?.value.autoPublisherEnabled === true
+    : undefined;
   const legacyAnalysisRecords = settings.data?.find((item) => item.key === 'analysisRecords')?.value.records;
   const hasLegacyAnalysisRecords = Array.isArray(legacyAnalysisRecords) && legacyAnalysisRecords.length > 0;
   const [tab, setTab] = useState<'general' | 'advanced'>('general');
@@ -913,6 +917,7 @@ export function SettingsPage() {
               <ValidationPolicySettingsCard
                 value={settings.data?.find((item) => item.key === 'validation')?.value}
                 saving={updateSetting.isPending}
+                autoPublisherEnabled={autoPublisherEnabled}
                 onSave={(value) => updateSetting.mutate({ key: 'validation', value })}
               />
             ) : null}
