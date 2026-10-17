@@ -204,6 +204,43 @@ func TestAssetDefaultsPreferredSubtitleRulesStayInGlobalCustomFallback(t *testin
 		t.Fatalf("global preferred rules were not applied: %#v", got)
 	}
 
+	videoExternalization := MediaJobPlan{
+		Profile: models.Profile{WorkerConfig: models.JSONMap{"externalSubtitleFormat": "both"}},
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{
+			{Index: 3, Codec: "subrip", Language: "spa"},
+			{Index: 4, Codec: "subrip", Language: "eng"},
+			{Index: 5, Codec: "subrip", Language: "jpn"},
+		}},
+		ResolvedTracks: &globalPlan,
+	}
+	applyProfileSubtitleExternalization(&videoExternalization)
+	if len(videoExternalization.Override.SubtitleTransforms) != 0 {
+		t.Fatalf("Video Profile expanded global Track defaults: %#v", videoExternalization.Override.SubtitleTransforms)
+	}
+	if len(globalPlan.SidecarOutputs) != 2 || globalPlan.SidecarOutputs[0].StreamIndex != 3 || globalPlan.SidecarOutputs[1].StreamIndex != 4 || globalPlan.SidecarOutputs[0].Format != "srt" || globalPlan.SidecarOutputs[1].Format != "srt" {
+		t.Fatalf("global preferred rules or requested output formats changed: %#v", globalPlan.SidecarOutputs)
+	}
+
+	skipPlan, err := resolveTrackPlan(models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 3, "codec": "subrip", "language": "spa"},
+		map[string]any{"index": 4, "codec": "subrip", "language": "eng"},
+	}}, map[string]any{
+		"trackDispositionVersion": 1,
+		"subtitleDisposition":     "remove",
+		"attachmentPolicy":        "auto",
+		"chapterPolicy":           "keep",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	videoExternalization.ResolvedTracks = &skipPlan
+	videoExternalization.Streams.Subtitle = videoExternalization.Streams.Subtitle[:2]
+	videoExternalization.Override = AssetConversionOverrideState{}
+	applyProfileSubtitleExternalization(&videoExternalization)
+	if len(skipPlan.SidecarOutputs) != 0 || len(videoExternalization.Override.SubtitleTransforms) != 0 || hasSubtitleArtifactWork(videoExternalization) {
+		t.Fatalf("global SKIP policy scheduled subtitle work: plan=%#v override=%#v", skipPlan, videoExternalization.Override)
+	}
+
 	explicit := models.JSONMap{
 		"trackDispositionVersion": 1,
 		"subtitleDisposition":     "remove",

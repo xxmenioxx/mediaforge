@@ -306,11 +306,7 @@ for argument do
 done
 printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' 'bad{' > "$output"
 `)
-	writeExecutable(t, filepath.Join(bin, "ffmpeg"), `#!/bin/sh
-output=""
-for argument do output="$argument"; done
-case "$output" in *.sup) : > "$output" ;; esac
-`)
+	installPGSSUPTestExtractor(t, bin)
 	lifecycleRoot := filepath.Join(root, "ocr-cache")
 	persistentRoot := filepath.Join(root, "ocr-state")
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", lifecycleRoot)
@@ -500,7 +496,7 @@ func TestExecuteBitmapTranslationOCRFailureAndZeroRecognitionDoNotCallProvider(t
 				t.Fatal(err)
 			}
 			bin := installCanonicalOCRTestTools(t, "#!/bin/sh\n"+test.seconvBody+"\n")
-			writeExecutable(t, filepath.Join(bin, "ffmpeg"), "#!/bin/sh\noutput=\"\"\nfor argument do output=\"$argument\"; done\ncase \"$output\" in *.sup) : > \"$output\" ;; esac\n")
+			installPGSSUPTestExtractor(t, bin)
 			t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
 			provider := &bitmapTranslationProviderSpy{}
 			result, err := executeBitmapTranslation(context.Background(), bitmapTranslationExecutionRequest{
@@ -521,7 +517,7 @@ func TestExecuteBitmapTranslationCancellationDuringOCRDoesNotCallProvider(t *tes
 		t.Fatal(err)
 	}
 	bin := installCanonicalOCRTestTools(t, "#!/bin/sh\ntouch \"$MVFORGE_TRANSLATION_OCR_STARTED\"\nwhile true; do sleep 1; done\n")
-	writeExecutable(t, filepath.Join(bin, "ffmpeg"), "#!/bin/sh\noutput=\"\"\nfor argument do output=\"$argument\"; done\ncase \"$output\" in *.sup) : > \"$output\" ;; esac\n")
+	installPGSSUPTestExtractor(t, bin)
 	started := filepath.Join(root, "ocr-started")
 	t.Setenv("MVFORGE_TRANSLATION_OCR_STARTED", started)
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))

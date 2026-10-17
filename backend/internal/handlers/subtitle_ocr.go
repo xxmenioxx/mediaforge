@@ -52,6 +52,22 @@ type bitmapOCRProcessError struct {
 	err         error
 }
 
+type bitmapNoEligibleCueError struct {
+	format   string
+	evidence pgsSUPCueEvidence
+}
+
+func (e *bitmapNoEligibleCueError) Error() string {
+	return fmt.Sprintf(
+		"no eligible PGS bitmap cues (display sets=%d, presentation composition events=%d, bitmap object references=%d, geometry cue records=%d); required %s artifact was not created and OCR was not attempted",
+		e.evidence.DisplaySets,
+		e.evidence.PresentationCompositionEvents,
+		e.evidence.BitmapObjectReferences,
+		e.evidence.GeometryCueRecords,
+		strings.ToUpper(e.format),
+	)
+}
+
 func (e *bitmapOCRProcessError) Error() string {
 	diagnostics := conciseCommandOutput(e.diagnostics, 1200)
 	if diagnostics == "" {
@@ -275,6 +291,10 @@ func generateBitmapSubtitleAtPathWithResult(ctx context.Context, mediaPath strin
 	request := canonicalOCRRequestFor(mediaPath, stream, language, ocrMode, segmentStart, segmentDuration)
 	evidence, err := canonicalOCREvidenceForRequest(ctx, request, onProgress)
 	if err != nil {
+		var noEligibleCues *bitmapNoEligibleCueError
+		if errors.As(err, &noEligibleCues) {
+			return result, fmt.Errorf("subtitle stream %d (%s): %w", stream.Index, stream.CodecName, err)
+		}
 		return result, fmt.Errorf("OCR failed for subtitle stream %d (%s): %w", stream.Index, stream.CodecName, err)
 	}
 	result.EffectiveLanguage = evidence.EffectiveLanguage
@@ -426,17 +446,13 @@ func runBitmapOCRWithTiming(
 	result := bitmapOCRResult{}
 	mode = normalizedOCRMode(mode)
 	dir := filepath.Dir(outputPath)
-	capabilities, capabilityMessage, err := probeTesseractLanguages(ctx)
-	if err != nil {
-		return bitmapOCRResult{Message: capabilityMessage}, err
-	}
-	if err := requireOCRLanguageAvailable(capabilities, language); err != nil {
-		return bitmapOCRResult{Message: capabilityMessage}, err
-	}
 
 	ocrInputPath := mediaPath
 	useTrackNumber := true
 	extractionMessage := ""
+	geometry := []bitmapCueGeometry{}
+	pgsEvidence := pgsSUPCueEvidence{}
+	pgsEvidenceKnown := false
 
 	switch strings.ToLower(strings.TrimSpace(stream.CodecName)) {
 	case "hdmv_pgs_subtitle", "pgssub":
@@ -458,28 +474,45 @@ func runBitmapOCRWithTiming(
 		extractionMessage = message
 		ocrInputPath = pgsPath
 		useTrackNumber = false
+		geometry, pgsEvidence, pgsEvidenceKnown = bitmapSubtitleGeometryEvidenceForPath(pgsPath, stream.CodecName, preparedLocal, preparationStart)
+		if pgsEvidenceKnown && pgsEvidence.BitmapObjectReferences == 0 {
+			return bitmapOCRResult{Message: pgsCueEvidenceSummary(stream.CodecName, pgsEvidence, true)}, &bitmapNoEligibleCueError{
+				format: format, evidence: pgsEvidence,
+			}
+		}
+	default:
+		geometry, _, _ = bitmapSubtitleGeometryEvidenceForPath(ocrInputPath, stream.CodecName, preparedLocal, preparationStart)
 	}
-	geometry := bitmapSubtitleGeometryForPath(ocrInputPath, stream.CodecName, preparedLocal, preparationStart)
+	capabilities, capabilityMessage, err := probeTesseractLanguages(ctx)
+	if err != nil {
+		return bitmapOCRResult{Message: capabilityMessage}, err
+	}
+	if err := requireOCRLanguageAvailable(capabilities, language); err != nil {
+		return bitmapOCRResult{Message: capabilityMessage}, err
+	}
 	ocrTimingProvenance := originalSourceAbsolute
 	if preparedLocal {
 		ocrTimingProvenance = preparedInputLocal
 	}
 
 	primary := runBitmapOCRLanguageAttempt(ctx, ocrInputPath, stream, format, language, mode, dir, "primary", useTrackNumber, onProgress)
-	message := strings.TrimSpace(fmt.Sprintf("OCR requested language: %s\nOCR effective language: %s\n%s\n%s", language, language, extractionMessage, primary.message))
+	message := strings.TrimSpace(fmt.Sprintf("OCR requested language: %s\nOCR effective language: %s\nOCR mode: %s\n%s\n%s\n%s", language, language, mode, extractionMessage, pgsCueEvidenceSummary(stream.CodecName, pgsEvidence, pgsEvidenceKnown), primary.message))
 	chosen := primary.chosenPath
 	successfulLanguage := language
 	if primary.zero {
 		alternate := oppositeJapaneseOCRLanguage(language)
 		if alternate == "" {
-			return bitmapOCRResult{Message: message}, conciseZeroRecognitionError(language, "")
+			message = appendZeroRecognitionDiagnostic(message, stream, []string{language}, mode, pgsEvidence, pgsEvidenceKnown)
+			return bitmapOCRResult{Message: message, EffectiveLanguage: language}, conciseZeroRecognitionError(language, "")
 		}
 		if _, available := capabilities[alternate]; !available {
+			message = appendZeroRecognitionDiagnostic(message, stream, []string{language}, mode, pgsEvidence, pgsEvidenceKnown)
 			return bitmapOCRResult{Message: message}, fmt.Errorf("OCR recognized no subtitle text using %s; alternate Japanese orientation %s is unavailable in the running Tesseract runtime", language, alternate)
 		}
 		fallbackAttempt := runBitmapOCRLanguageAttempt(ctx, ocrInputPath, stream, format, alternate, mode, dir, "fallback", useTrackNumber, onProgress)
 		message = strings.TrimSpace(message + "\nOCR fallback language: " + alternate + "\n" + fallbackAttempt.message)
 		if fallbackAttempt.zero {
+			message = appendZeroRecognitionDiagnostic(message, stream, []string{language, alternate}, mode, pgsEvidence, pgsEvidenceKnown)
 			return bitmapOCRResult{Message: message}, conciseZeroRecognitionError(language, alternate)
 		}
 		if fallbackAttempt.err != nil {
@@ -1009,24 +1042,51 @@ func preferSecondaryOCR(primary, secondary float64) bool {
 	return secondary > primary+margin
 }
 
-func emptyOCRTrackMessage(streamIndex int, language string, output string) string {
-	dropped := ocrDroppedCountPattern.FindStringSubmatch(output)
-	if len(dropped) != 2 {
-		return ""
+func pgsCueEvidenceSummary(codec string, evidence pgsSUPCueEvidence, known bool) string {
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	if codec != "hdmv_pgs_subtitle" && codec != "pgssub" {
+		return fmt.Sprintf("Bitmap event/cue counts for codec %s: unknown (no bounded source counter is available)", codec)
 	}
-	count := dropped[1]
-	if total := ocrBitmapCountPattern.FindStringSubmatch(output); len(total) == 2 {
-		count = total[1]
-	}
-	noun := "bitmap event"
-	if count != "1" {
-		noun = "bitmap events"
+	if !known {
+		return "PGS event/object/cue counts: unknown (SUP evidence was unavailable or incomplete)"
 	}
 	return fmt.Sprintf(
-		"OCR completed for subtitle stream %d, but its %s %s contained no text recognizable as %s. "+
-			"The track may be empty or decorative, or the OCR language may be incorrect; no subtitle file was created.",
-		streamIndex, count, noun, language,
+		"PGS parsed evidence: display sets=%d; presentation composition events=%d; bitmap object references=%d; geometry-backed cue records=%d",
+		evidence.DisplaySets, evidence.PresentationCompositionEvents, evidence.BitmapObjectReferences, evidence.GeometryCueRecords,
 	)
+}
+
+func appendZeroRecognitionDiagnostic(message string, stream FFProbeStream, languages []string, mode string, evidence pgsSUPCueEvidence, evidenceKnown bool) string {
+	effectiveLanguage := "unknown"
+	if len(languages) > 0 {
+		effectiveLanguage = languages[0]
+	}
+	observedCounts := func(pattern *regexp.Regexp) string {
+		matches := pattern.FindAllStringSubmatch(message, -1)
+		values := make([]string, 0, len(matches))
+		for _, match := range matches {
+			if len(match) == 2 {
+				values = append(values, match[1])
+			}
+		}
+		if len(values) == 0 {
+			return "unknown"
+		}
+		return strings.Join(values, ",")
+	}
+	diagnostic := fmt.Sprintf(
+		"OCR zero-recognition evidence: stream=%d; effective input language=%s; successful OCR language=none; attempted languages=[%s]; mode=%s; %s; SeConv bitmap image counts=[%s]; SeConv no-text image counts=[%s]; candidate glyph presence=unknown; decision=required sidecar failed; no empty artifact was created.",
+		stream.Index,
+		effectiveLanguage,
+		strings.Join(languages, ","),
+		mode,
+		pgsCueEvidenceSummary(stream.CodecName, evidence, evidenceKnown),
+		observedCounts(ocrBitmapCountPattern),
+		observedCounts(ocrDroppedCountPattern),
+	)
+	// canonicalOCRFailure bounds displayed diagnostics from the front, so put
+	// the structured decision first and keep raw tool output behind it.
+	return strings.TrimSpace(diagnostic + "\n" + message)
 }
 
 func conciseCommandOutput(value string, limit int) string {

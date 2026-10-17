@@ -924,6 +924,17 @@ func applyProfileSubtitleExternalization(plan *MediaJobPlan) {
 	if plan == nil || strings.TrimSpace(plan.Override.TrackProfileKey) != "" || len(plan.Override.SubtitleTransforms) > 0 {
 		return
 	}
+	// A frozen Track plan owns stream eligibility and output representations.
+	// Video Profile externalization must not add work around that decision.
+	if plan.ResolvedTracks != nil {
+		return
+	}
+	// A Video Profile format alone does not select source streams. Nil means
+	// inherit, so only an explicit track selection (or explicit asset
+	// externalization request) can authorize the fallback path below.
+	if plan.Override.KeepSubtitleStreams == nil && strings.TrimSpace(plan.Override.ExternalSubtitleFormat) == "" {
+		return
+	}
 	format := effectiveExternalSubtitleFormat(plan.Profile)
 	if format == "" {
 		return

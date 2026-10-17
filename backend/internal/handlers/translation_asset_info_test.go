@@ -837,7 +837,7 @@ func TestAssetInfoTranslationEntryPointBitmapPGSAndVobSub(t *testing.T) {
 			stream := FFProbeStream{Index: 4, ID: testCase.streamID, CodecType: "subtitle", CodecName: testCase.codec, Tags: map[string]string{"language": "eng"}}
 			if testCase.codec == "hdmv_pgs_subtitle" {
 				bin := installCanonicalOCRTestTools(t, "#!/bin/sh\noutput=\nfor argument do\n  case \"$argument\" in\n    --output-filename:*) output=\"${argument#--output-filename:}\" ;;\n  esac\ndone\nprintf '%s\\n' '1' '00:00:01,000 --> 00:00:02,000' 'Hello' > \"$output\"\n")
-				writeExecutable(t, filepath.Join(bin, "ffmpeg"), "#!/bin/sh\noutput=\nfor argument do output=\"$argument\"; done\ncase \"$output\" in *.sup) : > \"$output\" ;; esac\n")
+				installPGSSUPTestExtractor(t, bin)
 			} else {
 				cacheBitmapTranslationEvidence(t, mediaPath, stream, "eng", "clean", "eng", []canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: "Hello", SourceOrdinal: 1, TimingProvenance: originalSourceAbsolute}})
 			}
@@ -891,7 +891,7 @@ for argument do
 done
 printf '%s\n' '1' '00:00:01,000 --> 00:00:02,000' '123 !!!' > "$output"
 `)
-	writeExecutable(t, filepath.Join(bin, "ffmpeg"), "#!/bin/sh\noutput=\nfor argument do output=\"$argument\"; done\ncase \"$output\" in *.sup) : > \"$output\" ;; esac\n")
+	installPGSSUPTestExtractor(t, bin)
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
 	db := translationSourceTestDB(t, root, mediaPath)
 	persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
