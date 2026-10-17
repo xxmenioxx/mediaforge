@@ -3881,6 +3881,9 @@ func TestDeleteArchiveBatchReportsPartialFailureAndSupportsRetry(t *testing.T) {
 
 func TestArchiveDeleteProjectionUsesScopedRecordsAndIndexedRelationships(t *testing.T) {
 	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "delete-archive-scoped-projection")
+	if err := db.AutoMigrate(&models.DirectPublication{}); err != nil {
+		t.Fatal(err)
+	}
 	archivePath := filepath.Join(archiveRoot, "show", "episode.mkv")
 	writeTestFile(t, archivePath, "archived original")
 	archive, libraryAsset, source, job := seedContextualArchivedOriginal(t, db, rawRoot, libraryRoot, archiveRoot, "show/episode.mkv", archivePath)
@@ -3928,6 +3931,9 @@ func TestArchiveDeleteProjectionUsesScopedRecordsAndIndexedRelationships(t *test
 		indexes []string
 	}{
 		{query: "EXPLAIN QUERY PLAN SELECT id FROM queue_jobs WHERE source_asset_record_id = ? OR published_path IN (?)", args: []any{libraryAsset.ID, libraryAsset.Path}, indexes: []string{"idx_queue_jobs_source_asset_record_id", "idx_queue_jobs_published_path"}},
+		{query: "EXPLAIN QUERY PLAN SELECT id FROM queue_jobs WHERE library_id IN (?) AND instr(published_path, ?) > 0", args: []any{libraryAsset.LibraryID, string(filepath.Separator) + filepath.Base(libraryAsset.Path)}, indexes: []string{"idx_queue_jobs_library_id"}},
+		{query: "EXPLAIN QUERY PLAN SELECT id FROM direct_publications WHERE source_asset_record_id = ? OR published_path IN (?)", args: []any{libraryAsset.ID, libraryAsset.Path}, indexes: []string{"idx_direct_publications_source_asset_record_id", "idx_direct_publications_published_path"}},
+		{query: "EXPLAIN QUERY PLAN SELECT id FROM direct_publications WHERE library_id IN (?) AND instr(published_path, ?) > 0", args: []any{libraryAsset.LibraryID, string(filepath.Separator) + filepath.Base(libraryAsset.Path)}, indexes: []string{"idx_direct_publications_library_id"}},
 		{query: "EXPLAIN QUERY PLAN SELECT id FROM queue_jobs WHERE original_archived_path = ?", args: []any{archivePath}, indexes: []string{"idx_queue_jobs_original_archived_path"}},
 	} {
 		var rows []struct {
@@ -3979,6 +3985,65 @@ func TestArchiveDeleteProjectionRejectsReusedPublishedPath(t *testing.T) {
 	}
 	if _, err := os.Stat(archivePath); err != nil {
 		t.Fatalf("stale archive relation modified original: %v", err)
+	}
+}
+
+func TestDeleteArchiveRejectsNormalizedDirectPublicationConflict(t *testing.T) {
+	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "delete-archive-normalized-publication-conflict")
+	if err := db.AutoMigrate(&models.DirectPublication{}); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(archiveRoot, "show", "episode.mkv")
+	writeTestFile(t, archivePath, "archived original")
+	archive, libraryAsset, _, currentJob := seedContextualArchivedOriginal(t, db, rawRoot, libraryRoot, archiveRoot, "show/episode.mkv", archivePath)
+
+	conflictingSourcePath := filepath.Join(rawRoot, "replacement", "episode.mkv")
+	conflictingSource := models.AssetRecord{
+		Path: conflictingSourcePath, RootPath: rawRoot, RelativePath: "replacement/episode.mkv",
+		FileName: "episode.mkv", Status: "unprocessed", Missing: true,
+	}
+	if err := db.Create(&conflictingSource).Error; err != nil {
+		t.Fatal(err)
+	}
+	conflictingPublishedPath := filepath.Dir(libraryAsset.Path) + string(os.PathSeparator) + "." + string(os.PathSeparator) + filepath.Base(libraryAsset.Path)
+	if conflictingPublishedPath == libraryAsset.Path || cleanAssetLifecyclePath(conflictingPublishedPath) != cleanAssetLifecyclePath(libraryAsset.Path) {
+		t.Fatalf("fixture path must differ as a string but normalize to the current publication: current=%q conflict=%q", libraryAsset.Path, conflictingPublishedPath)
+	}
+	conflictingPublication := models.DirectPublication{
+		SourcePath: conflictingSourcePath, SourceAssetRecordID: &conflictingSource.ID,
+		PublishedPath: conflictingPublishedPath, LibraryID: currentJob.LibraryID,
+		PublishedAt: time.Now().Add(time.Minute),
+	}
+	if err := db.Create(&conflictingPublication).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.DELETE("/api/assets/archive", NewAssetHandler(db).DeleteArchive)
+	endpoint := "/api/assets/archive?path=" + url.QueryEscape(archivePath)
+	requestBody, err := json.Marshal(map[string]any{
+		"confirmed": true, "archiveAssetRecordId": archive.ID,
+		"libraryAssetRecordId": libraryAsset.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, endpoint, strings.NewReader(string(requestBody))))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("normalized publication conflict status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("normalized publication conflict modified the archived original: %v", err)
+	}
+
+	projection, load, err := (AssetHandler{db: db}).assetLifecycleProjectionForArchiveDelete(libraryAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.CurrentPublication.State != assetCurrentPublicationConflict || load.DirectPublications == 0 {
+		t.Fatalf("scoped projection omitted normalized direct publication conflict: state=%q load=%#v publication=%#v", projection.CurrentPublication.State, load, projection.CurrentPublication)
 	}
 }
 

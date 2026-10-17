@@ -1323,26 +1323,118 @@ func (h AssetHandler) assetLifecycleProjectionForArchiveDelete(record models.Ass
 		return AssetLifecycleProjection{}, load, nil
 	}
 
-	pathCandidates := []string{record.Path, filepath.Clean(record.Path)}
-	if pathCandidates[0] == pathCandidates[1] {
-		pathCandidates = pathCandidates[:1]
+	pathCandidates := make([]string, 0, 3)
+	seenPathCandidates := make(map[string]struct{}, 3)
+	normalizedPath := cleanAssetLifecyclePath(record.Path)
+	for _, candidate := range []string{record.Path, filepath.Clean(record.Path), normalizedPath} {
+		if _, exists := seenPathCandidates[candidate]; exists {
+			continue
+		}
+		seenPathCandidates[candidate] = struct{}{}
+		pathCandidates = append(pathCandidates, candidate)
 	}
+	pathNeedle := ""
+	if normalizedPath != "" {
+		pathNeedle = filepath.Base(normalizedPath)
+		if strings.Contains(normalizedPath, string(filepath.Separator)) {
+			pathNeedle = string(filepath.Separator) + pathNeedle
+		}
+	}
+
 	publicationQueryStarted := time.Now()
-	var jobs []models.QueueJob
-	if h.db.Migrator().HasTable(&models.QueueJob{}) {
-		if err := h.db.Where("source_asset_record_id = ? OR published_path IN ?", record.ID, pathCandidates).Find(&jobs).Error; err != nil {
+	var libraries []models.Library
+	if h.db.Migrator().HasTable(&models.Library{}) {
+		if err := h.db.Find(&libraries).Error; err != nil {
 			return AssetLifecycleProjection{}, load, err
 		}
 	}
+	librariesByID := make(map[uint]models.Library, len(libraries))
+	for _, library := range libraries {
+		librariesByID[library.ID] = library
+	}
+	publicationLibraryIDs := make([]uint, 0, len(libraries))
+	if record.LibraryID > 0 {
+		publicationLibraryIDs = append(publicationLibraryIDs, record.LibraryID)
+	} else {
+		for _, library := range libraries {
+			if pathIsInside(record.Path, library.DestinationPath) {
+				publicationLibraryIDs = append(publicationLibraryIDs, library.ID)
+			}
+		}
+	}
+
+	var jobs []models.QueueJob
+	if h.db.Migrator().HasTable(&models.QueueJob{}) {
+		var pathJobs []models.QueueJob
+		if err := h.db.Where("source_asset_record_id = ? OR published_path IN ?", record.ID, pathCandidates).Find(&pathJobs).Error; err != nil {
+			return AssetLifecycleProjection{}, load, err
+		}
+		jobs = append(jobs, pathJobs...)
+		if len(publicationLibraryIDs) > 0 && pathNeedle != "" {
+			// SQL equality cannot reproduce filepath.Clean for stored historical paths.
+			// Use the indexed Library scope and final path component as a bounded candidate,
+			// then retain only canonical matches below.
+			var normalizedPathJobs []models.QueueJob
+			if err := h.db.Where("library_id IN ? AND instr(published_path, ?) > 0", publicationLibraryIDs, pathNeedle).Find(&normalizedPathJobs).Error; err != nil {
+				return AssetLifecycleProjection{}, load, err
+			}
+			jobs = append(jobs, normalizedPathJobs...)
+		}
+	}
+	seenQueueJobIDs := make(map[uint]struct{}, len(jobs))
+	uniqueJobs := jobs[:0]
+	for _, job := range jobs {
+		if _, exists := seenQueueJobIDs[job.ID]; exists {
+			continue
+		}
+		seenQueueJobIDs[job.ID] = struct{}{}
+		uniqueJobs = append(uniqueJobs, job)
+	}
+	jobs = uniqueJobs
 	load.QueueJobs = len(jobs)
+	relevantJobs := jobs[:0]
+	for _, job := range jobs {
+		sourceMatch := job.SourceAssetRecordID != nil && *job.SourceAssetRecordID == record.ID
+		if sourceMatch || assetLifecycleDestinationMatches(record, job.LibraryID, job.PublishedPath, librariesByID) {
+			relevantJobs = append(relevantJobs, job)
+		}
+	}
+	jobs = relevantJobs
 
 	var directPublications []models.DirectPublication
 	if h.db.Migrator().HasTable(&models.DirectPublication{}) {
-		if err := h.db.Where("source_asset_record_id = ? OR published_path IN ?", record.ID, pathCandidates).Find(&directPublications).Error; err != nil {
+		var pathPublications []models.DirectPublication
+		if err := h.db.Where("source_asset_record_id = ? OR published_path IN ?", record.ID, pathCandidates).Find(&pathPublications).Error; err != nil {
 			return AssetLifecycleProjection{}, load, err
 		}
+		directPublications = append(directPublications, pathPublications...)
+		if len(publicationLibraryIDs) > 0 && pathNeedle != "" {
+			var normalizedPathPublications []models.DirectPublication
+			if err := h.db.Where("library_id IN ? AND instr(published_path, ?) > 0", publicationLibraryIDs, pathNeedle).Find(&normalizedPathPublications).Error; err != nil {
+				return AssetLifecycleProjection{}, load, err
+			}
+			directPublications = append(directPublications, normalizedPathPublications...)
+		}
 	}
+	seenDirectPublicationIDs := make(map[uint]struct{}, len(directPublications))
+	uniqueDirectPublications := directPublications[:0]
+	for _, publication := range directPublications {
+		if _, exists := seenDirectPublicationIDs[publication.ID]; exists {
+			continue
+		}
+		seenDirectPublicationIDs[publication.ID] = struct{}{}
+		uniqueDirectPublications = append(uniqueDirectPublications, publication)
+	}
+	directPublications = uniqueDirectPublications
 	load.DirectPublications = len(directPublications)
+	relevantDirectPublications := directPublications[:0]
+	for _, publication := range directPublications {
+		sourceMatch := publication.SourceAssetRecordID != nil && *publication.SourceAssetRecordID == record.ID
+		if sourceMatch || assetLifecycleDestinationMatches(record, publication.LibraryID, publication.PublishedPath, librariesByID) {
+			relevantDirectPublications = append(relevantDirectPublications, publication)
+		}
+	}
+	directPublications = relevantDirectPublications
 	load.PublicationQuery = time.Since(publicationQueryStarted)
 
 	assetRecordIDs := make(map[uint]struct{})
@@ -1398,14 +1490,6 @@ func (h AssetHandler) assetLifecycleProjectionForArchiveDelete(record models.Ass
 	}
 	load.AssetRecords = len(records)
 
-	var libraries []models.Library
-	if h.db.Migrator().HasTable(&models.Library{}) {
-		libraryQueryStarted := time.Now()
-		if err := h.db.Find(&libraries).Error; err != nil {
-			return AssetLifecycleProjection{}, load, err
-		}
-		load.PublicationQuery += time.Since(libraryQueryStarted)
-	}
 	archiveRootQueryStarted := time.Now()
 	archiveRoot, err := originalsArchivePath(h.db)
 	if err != nil {

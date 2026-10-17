@@ -14,7 +14,7 @@ type QueueJob struct {
 	MediaPath                   string     `json:"mediaPath" gorm:"not null"`
 	SourceAssetRecordID         *uint      `json:"sourceAssetRecordId,omitempty" gorm:"index"`
 	PublishMode                 string     `json:"publishMode" gorm:"not null;default:standard"`
-	LibraryID                   uint       `json:"libraryId" gorm:"not null"`
+	LibraryID                   uint       `json:"libraryId" gorm:"not null;index"`
 	ProfileID                   uint       `json:"profileId" gorm:"not null"`
 	ProfileVersion              int        `json:"profileVersion" gorm:"not null;default:1"`
 	ProfileSnapshot             JSONMap    `json:"profileSnapshot" gorm:"type:json"`
