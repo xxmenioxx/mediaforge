@@ -726,7 +726,7 @@ def make_pull_request_body(issue_id: int, issue: Dict[str, Any], summary: Dict[s
     title = str(issue.get("title", "")).strip()
     lines = [
         "## Summary", pretty_report_value(summary.get("summary")), "",
-        "## Issue", "Refs #{}{}".format(issue_id, (" — " + title) if title else ""), "",
+        "## Issue", "Closes #{}{}".format(issue_id, (" — " + title) if title else ""), "",
         "## Main files modified",
     ]
     lines.extend("- `{}`".format(path) for path in changed_paths)
