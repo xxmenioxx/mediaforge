@@ -197,6 +197,32 @@ class DuplaWorktreeTests(unittest.TestCase):
         self.assertEqual(report["workers"]["42"]["status"], "unknown")
         self.assertEqual(report["merge_tree"]["exit_code"], 0)
 
+    def test_worker_environment_isolates_ocr_persistent_root_per_issue_attempt(self):
+        inherited_root = self.parent / "inherited ocr snapshots"
+        with mock.patch.dict(os.environ, {"MVFORGE_OCR_PERSISTENT_ROOT": str(inherited_root)}):
+            first = dupla.worker_environment(self.common, 41, 1)
+            second = dupla.worker_environment(self.common, 42, 1)
+            retry = dupla.worker_environment(self.common, 41, 2)
+
+        roots = [
+            Path(first["MVFORGE_OCR_PERSISTENT_ROOT"]),
+            Path(second["MVFORGE_OCR_PERSISTENT_ROOT"]),
+            Path(retry["MVFORGE_OCR_PERSISTENT_ROOT"]),
+        ]
+        expected = [
+            dupla.state_root(self.common) / "resources" / "issue-41-attempt-1" / "ocr-persistent",
+            dupla.state_root(self.common) / "resources" / "issue-42-attempt-1" / "ocr-persistent",
+            dupla.state_root(self.common) / "resources" / "issue-41-attempt-2" / "ocr-persistent",
+        ]
+
+        self.assertEqual(roots, expected)
+        self.assertEqual(len(set(roots)), len(roots))
+        for root in roots:
+            self.assertTrue(root.is_dir())
+            self.assertTrue(root.resolve().is_relative_to(self.common.resolve()))
+            self.assertNotEqual(root, inherited_root)
+        self.assertFalse(inherited_root.exists())
+
     def test_supervisor_collects_second_worker_when_first_fails(self):
         self.prepare()
         fake_bin = self.parent / "fake bin"

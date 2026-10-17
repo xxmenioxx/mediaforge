@@ -472,6 +472,7 @@ def worker_environment(common_dir: Path, issue_id: int, attempt: int) -> Dict[st
         "GOCACHE": base / "go-cache", "GOTMPDIR": base / "go-tmp",
         "MVFORGE_GOTMPDIR": base / "mvforge-go-tmp",
         "MVFORGE_OCR_LIFECYCLE_ROOT": base / "ocr-lifecycle",
+        "MVFORGE_OCR_PERSISTENT_ROOT": base / "ocr-persistent",
         "TMPDIR": base / "tmp", "TMP": base / "tmp", "TEMP": base / "tmp",
         "npm_config_cache": base / "npm-cache", "MVFORGE_DUPLA_ROOT": base,
         "MVFORGE_DUPLA_LOCK_DIR": state_root(common_dir) / "locks",
