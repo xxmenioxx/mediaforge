@@ -12,4 +12,4 @@
 ## 3. Validate the scoped change
 
 - [x] 3.1 Run focused subtitle and Queue planning tests and validate the OpenSpec change with strict validation.
-- [ ] 3.2 Run `./scripts/verify.sh --auto` through the serialized shared-validation lock and confirm `ALL CHECKS PASSED`.
+- [x] 3.2 Run `./scripts/verify.sh --auto` through the serialized shared-validation lock and confirm `ALL CHECKS PASSED`.
