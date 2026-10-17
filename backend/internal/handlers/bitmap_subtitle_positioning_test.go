@@ -46,6 +46,48 @@ func TestParsePGSSUPGeometryScopesObjectDimensionsToDisplaySet(t *testing.T) {
 	}
 }
 
+func TestParsePGSSUPGeometryReportsCueEvidenceAndUnknownMalformedInput(t *testing.T) {
+	sup := testPGSSUP(t, []struct{ id, x, y, width, height int }{
+		{id: 1, x: 100, y: 100, width: 320, height: 80},
+	})
+	geometry, evidence, err := parsePGSSUPGeometryWithEvidence(sup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !evidence.Known || evidence.DisplaySets != 1 || evidence.PresentationCompositionEvents != 1 || evidence.BitmapObjectReferences != 1 || evidence.GeometryCueRecords != 1 || len(geometry) != 1 {
+		t.Fatalf("PGS evidence=%#v geometry=%#v", evidence, geometry)
+	}
+
+	noComposition := pgsTestSegment(90000, 0x14, []byte{0, 0})
+	if _, evidence, err := parsePGSSUPGeometryWithEvidence(noComposition); err != nil || !evidence.Known || evidence.PresentationCompositionEvents != 0 || evidence.BitmapObjectReferences != 0 {
+		t.Fatalf("valid no-event PGS evidence=%#v err=%v", evidence, err)
+	}
+	if _, evidence, err := parsePGSSUPGeometryWithEvidence([]byte("PG")); err == nil || evidence.Known {
+		t.Fatalf("malformed PGS evidence must remain unknown: evidence=%#v err=%v", evidence, err)
+	}
+}
+
+func TestBitmapSubtitleGeometryEvidenceDistinguishesEmptyAndMalformedSUP(t *testing.T) {
+	root := t.TempDir()
+	emptySUP := filepath.Join(root, "empty.sup")
+	if err := os.WriteFile(emptySUP, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	geometry, evidence, known := bitmapSubtitleGeometryEvidenceForPath(emptySUP, "hdmv_pgs_subtitle", false, 0)
+	if !known || len(geometry) != 0 || evidence.PresentationCompositionEvents != 0 || evidence.BitmapObjectReferences != 0 {
+		t.Fatalf("empty SUP evidence=%#v known=%t geometry=%#v", evidence, known, geometry)
+	}
+
+	malformedSUP := filepath.Join(root, "malformed.sup")
+	if err := os.WriteFile(malformedSUP, []byte("PG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, evidence, known = bitmapSubtitleGeometryEvidenceForPath(malformedSUP, "hdmv_pgs_subtitle", false, 0)
+	if known || evidence.Known {
+		t.Fatalf("malformed SUP was treated as known evidence: %#v", evidence)
+	}
+}
+
 func TestBitmapSubtitleTimingNormalizationUsesProvenance(t *testing.T) {
 	if got, ok := normalizeBitmapTiming(1, preparedInputLocal, 42.5); !ok || got != 1 {
 		t.Fatalf("prepared-local timing=%v,%t", got, ok)

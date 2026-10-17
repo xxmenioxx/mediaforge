@@ -3035,16 +3035,24 @@ func TestBitmapSubtitleOCRHelpers(t *testing.T) {
 	if !preferSecondaryOCR(1000, 1100) {
 		t.Fatal("a materially better alternate OCR score should be selected")
 	}
-	message := emptyOCRTrackMessage(3, "eng", `
+	message := appendZeroRecognitionDiagnostic(`
 Running tesseract OCR on 1 MKV VobSub image(s) (track #4)...
-Note: 1 image(s) produced no OCR text and were dropped.
+1 image(s) produced no OCR text
 Converted 0 file(s)
-`)
-	if !strings.Contains(message, "its 1 bitmap event contained no text recognizable as eng") {
-		t.Fatalf("unexpected empty OCR message: %q", message)
+	`, FFProbeStream{Index: 3, CodecName: "dvd_subtitle"}, []string{"eng"}, "accurate", pgsSUPCueEvidence{}, false)
+	for _, expected := range []string{
+		"stream=3", "attempted languages=[eng]", "mode=accurate", "SeConv bitmap image counts=[1]",
+		"SeConv no-text image counts=[1]", "candidate glyph presence=unknown", "no empty artifact was created",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("zero-recognition diagnostic omitted %q: %s", expected, message)
+		}
 	}
-	if got := emptyOCRTrackMessage(3, "eng", "unrelated failure"); got != "" {
-		t.Fatalf("unrelated OCR output should not be classified as empty: %q", got)
+	if bounded := conciseCommandOutput(message, 1200); !strings.Contains(bounded, "candidate glyph presence=unknown") || !strings.Contains(bounded, "no empty artifact was created") {
+		t.Fatalf("bounded OCR diagnostics lost the structured decision: %q", bounded)
+	}
+	if strings.Contains(strings.ToLower(message), "track is empty") {
+		t.Fatalf("zero recognition was incorrectly classified as an empty stream: %s", message)
 	}
 	if got := conciseCommandOutput("first\n  second", 100); got != "first second" {
 		t.Fatalf("unexpected concise output: %q", got)

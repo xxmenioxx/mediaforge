@@ -1640,6 +1640,7 @@ func TestAssetOverrideExternalizesAllSubtitlesBeforeConversion(t *testing.T) {
 			{Index: 2, Codec: "subrip", Language: "eng"},
 			{Index: 3, Codec: "hdmv_pgs_subtitle", Language: "spa"},
 		}},
+		Override: AssetConversionOverrideState{ExternalSubtitleFormat: "ass"},
 	}
 
 	applyProfileSubtitleExternalization(&plan)
@@ -1657,7 +1658,7 @@ func TestAssetOverrideExternalizesAllSubtitlesBeforeConversion(t *testing.T) {
 	}
 }
 
-func TestProfileExternalizesEverySubtitleWhenNoTrackProfileIsSelected(t *testing.T) {
+func TestProfileDoesNotExternalizeInheritedSubtitleStreamsWithoutTrackSelection(t *testing.T) {
 	plan := MediaJobPlan{
 		Profile: models.Profile{WorkerConfig: models.JSONMap{"externalSubtitleFormat": "srt", "subtitleOCRMode": "clean", "subtitleOCRLanguage": "spa"}},
 		Streams: MediaStreamInventory{Subtitle: []MediaStream{
@@ -1668,19 +1669,34 @@ func TestProfileExternalizesEverySubtitleWhenNoTrackProfileIsSelected(t *testing
 
 	applyProfileSubtitleExternalization(&plan)
 
-	if len(plan.Override.SubtitleTransforms) != 2 {
-		t.Fatalf("expected every subtitle to be externalized, got %#v", plan.Override.SubtitleTransforms)
+	if len(plan.Override.SubtitleTransforms) != 0 || hasSubtitleArtifactWork(plan) {
+		t.Fatalf("Video Profile externalization inferred all inherited source tracks: %#v", plan.Override)
 	}
-	for _, transform := range plan.Override.SubtitleTransforms {
-		if transform.Format != "srt" || !transform.RemoveEmbedded {
-			t.Fatalf("expected validated SRT externalization with embedded removal, got %#v", transform)
-		}
-		if transform.OCRMode != "clean" || transform.OCRLanguage != "spa" {
-			t.Fatalf("expected profile OCR settings to reach every generated transform, got %#v", transform)
-		}
+}
+
+func TestProfileExternalizationDoesNotExpandFrozenTrackPlan(t *testing.T) {
+	plan := MediaJobPlan{
+		Profile: models.Profile{WorkerConfig: models.JSONMap{"externalSubtitleFormat": "both"}},
+		Streams: MediaStreamInventory{Subtitle: []MediaStream{
+			{Index: 2, Codec: "subrip", Language: "eng"},
+			{Index: 4, Codec: "dvd_subtitle", Language: "spa"},
+		}},
+		ResolvedTracks: &ResolvedTrackPlan{
+			SubtitleStreams: []ResolvedSubtitleTrack{
+				{StreamIndex: 2, Action: SubtitleDispositionExtract},
+				{StreamIndex: 4, Action: SubtitleDispositionRemove},
+			},
+			SidecarOutputs: []ResolvedTrackSidecar{{StreamIndex: 2, Codec: "subrip", Format: "srt", Mode: "converted"}},
+		},
 	}
-	if !plan.Override.SubtitleTransforms[0].MakeDefault {
-		t.Fatalf("expected source default disposition to be retained in sidecar naming")
+
+	applyProfileSubtitleExternalization(&plan)
+
+	if len(plan.Override.SubtitleTransforms) != 0 {
+		t.Fatalf("Video Profile added a representation outside the frozen Track plan: %#v", plan.Override.SubtitleTransforms)
+	}
+	if len(plan.ResolvedTracks.SidecarOutputs) != 1 || plan.ResolvedTracks.SidecarOutputs[0].StreamIndex != 2 || plan.ResolvedTracks.SidecarOutputs[0].Format != "srt" {
+		t.Fatalf("Video Profile changed frozen subtitle artifacts: %#v", plan.ResolvedTracks.SidecarOutputs)
 	}
 }
 

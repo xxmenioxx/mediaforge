@@ -143,18 +143,31 @@ type pgsDisplaySet struct {
 	dimensions   map[uint16]pgsObjectDimension
 }
 
+type pgsSUPCueEvidence struct {
+	Known                         bool
+	DisplaySets                   int
+	PresentationCompositionEvents int
+	BitmapObjectReferences        int
+	GeometryCueRecords            int
+}
+
 func parsePGSSUPGeometry(data []byte) ([]bitmapCueGeometry, error) {
+	geometry, _, err := parsePGSSUPGeometryWithEvidence(data)
+	return geometry, err
+}
+
+func parsePGSSUPGeometryWithEvidence(data []byte) ([]bitmapCueGeometry, pgsSUPCueEvidence, error) {
 	if len(data) < 12 {
-		return nil, fmt.Errorf("PGS SUP is too short")
+		return nil, pgsSUPCueEvidence{}, fmt.Errorf("PGS SUP is too short")
 	}
 	displaySets := []pgsDisplaySet{}
 	current := pgsDisplaySet{dimensions: map[uint16]pgsObjectDimension{}}
 	for offset, segmentCount := 0, 0; offset < len(data); segmentCount++ {
 		if segmentCount >= 10000 {
-			return nil, fmt.Errorf("PGS SUP contains too many segments")
+			return nil, pgsSUPCueEvidence{}, fmt.Errorf("PGS SUP contains too many segments")
 		}
 		if len(data)-offset < 13 || data[offset] != 'P' || data[offset+1] != 'G' {
-			return nil, fmt.Errorf("invalid PGS SUP segment at offset %d", offset)
+			return nil, pgsSUPCueEvidence{}, fmt.Errorf("invalid PGS SUP segment at offset %d", offset)
 		}
 		pts := binary.BigEndian.Uint32(data[offset+2 : offset+6])
 		segmentType := data[offset+10]
@@ -162,45 +175,45 @@ func parsePGSSUPGeometry(data []byte) ([]bitmapCueGeometry, error) {
 		payloadStart := offset + 13
 		payloadEnd := payloadStart + payloadLength
 		if payloadEnd > len(data) {
-			return nil, fmt.Errorf("truncated PGS SUP segment at offset %d", offset)
+			return nil, pgsSUPCueEvidence{}, fmt.Errorf("truncated PGS SUP segment at offset %d", offset)
 		}
 		payload := data[payloadStart:payloadEnd]
 		switch segmentType {
 		case 0x14:
 			// PDS: palette id/version followed by five-byte entries.
 			if len(payload) < 2 || (len(payload)-2)%5 != 0 {
-				return nil, fmt.Errorf("invalid PGS palette definition")
+				return nil, pgsSUPCueEvidence{}, fmt.Errorf("invalid PGS palette definition")
 			}
 		case 0x15:
 			// ODS: object id/version/sequence, then dimensions on the first
 			// fragment. Dimensions belong to this display set, not globally to
 			// the object id, because PGS may reuse ids with different sizes.
 			if len(payload) < 4 {
-				return nil, fmt.Errorf("invalid PGS object definition")
+				return nil, pgsSUPCueEvidence{}, fmt.Errorf("invalid PGS object definition")
 			}
 			objectID := binary.BigEndian.Uint16(payload[0:2])
 			sequence := payload[3]
 			if sequence&0x80 != 0 {
 				if len(payload) < 11 {
-					return nil, fmt.Errorf("truncated PGS object dimensions")
+					return nil, pgsSUPCueEvidence{}, fmt.Errorf("truncated PGS object dimensions")
 				}
 				width := int(binary.BigEndian.Uint16(payload[7:9]))
 				height := int(binary.BigEndian.Uint16(payload[9:11]))
 				if width <= 0 || height <= 0 {
-					return nil, fmt.Errorf("invalid PGS object dimensions")
+					return nil, pgsSUPCueEvidence{}, fmt.Errorf("invalid PGS object dimensions")
 				}
 				current.dimensions[objectID] = pgsObjectDimension{width: width, height: height}
 			}
 		case 0x16:
 			composition, err := parsePGSComposition(pts, payload)
 			if err != nil {
-				return nil, err
+				return nil, pgsSUPCueEvidence{}, err
 			}
 			current.compositions = append(current.compositions, composition)
 		case 0x17:
 			// WDS: window count followed by nine-byte window definitions.
 			if len(payload) < 1 || (len(payload)-1)%9 != 0 {
-				return nil, fmt.Errorf("invalid PGS window definition")
+				return nil, pgsSUPCueEvidence{}, fmt.Errorf("invalid PGS window definition")
 			}
 		case 0x80:
 			if len(current.compositions) > 0 {
@@ -215,10 +228,13 @@ func parsePGSSUPGeometry(data []byte) ([]bitmapCueGeometry, error) {
 	}
 	compositions := make([]pgsComposition, 0)
 	dimensionsByComposition := make([]map[uint16]pgsObjectDimension, 0)
+	evidence := pgsSUPCueEvidence{Known: true, DisplaySets: len(displaySets)}
 	for _, displaySet := range displaySets {
 		for _, composition := range displaySet.compositions {
 			compositions = append(compositions, composition)
 			dimensionsByComposition = append(dimensionsByComposition, displaySet.dimensions)
+			evidence.PresentationCompositionEvents++
+			evidence.BitmapObjectReferences += len(composition.objects)
 		}
 	}
 	result := make([]bitmapCueGeometry, 0)
@@ -244,7 +260,8 @@ func parsePGSSUPGeometry(data []byte) ([]bitmapCueGeometry, error) {
 			}
 		}
 	}
-	return result, nil
+	evidence.GeometryCueRecords = len(result)
+	return result, evidence, nil
 }
 
 func parsePGSComposition(pts uint32, payload []byte) (pgsComposition, error) {
@@ -284,26 +301,34 @@ func parsePGSComposition(pts uint32, payload []byte) (pgsComposition, error) {
 }
 
 func bitmapSubtitleGeometryForPath(inputPath, codec string, preparedLocal bool, preparationStart float64) []bitmapCueGeometry {
+	values, _, _ := bitmapSubtitleGeometryEvidenceForPath(inputPath, codec, preparedLocal, preparationStart)
+	return values
+}
+
+func bitmapSubtitleGeometryEvidenceForPath(inputPath, codec string, preparedLocal bool, preparationStart float64) ([]bitmapCueGeometry, pgsSUPCueEvidence, bool) {
 	codec = strings.ToLower(strings.TrimSpace(codec))
 	if codec == "hdmv_pgs_subtitle" || codec == "pgssub" || strings.HasSuffix(strings.ToLower(inputPath), ".sup") {
 		data, err := os.ReadFile(inputPath)
 		if err != nil {
-			return nil
+			return nil, pgsSUPCueEvidence{}, false
 		}
-		values, err := parsePGSSUPGeometry(data)
+		if len(data) == 0 {
+			return nil, pgsSUPCueEvidence{Known: true}, true
+		}
+		values, evidence, err := parsePGSSUPGeometryWithEvidence(data)
 		if err != nil {
-			return nil
+			return nil, pgsSUPCueEvidence{}, false
 		}
 		provenance := originalSourceAbsolute
 		if preparedLocal {
 			provenance = preparedInputLocal
 		}
-		return normalizeBitmapGeometryTiming(values, provenance, preparationStart)
+		return normalizeBitmapGeometryTiming(values, provenance, preparationStart), evidence, true
 	}
 	if codec == "dvd_subtitle" || codec == "vobsub" {
-		return parseVobSubGeometry(inputPath, preparedLocal, preparationStart)
+		return parseVobSubGeometry(inputPath, preparedLocal, preparationStart), pgsSUPCueEvidence{}, false
 	}
-	return nil
+	return nil, pgsSUPCueEvidence{}, false
 }
 
 func parseVobSubGeometry(inputPath string, preparedLocal bool, preparationStart float64) []bitmapCueGeometry {
