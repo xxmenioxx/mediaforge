@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ValidationFinding, ValidationOverride, ValidationRun } from '../../api/types';
 import { ValidationFindingsTable } from './ValidationFindingsTable';
@@ -129,27 +129,36 @@ describe('ValidationTechnicalEvidence', () => {
   });
 
   it('downloads the immutable run with a sanitized run-identified filename', async () => {
-    const user = userEvent.setup();
+    vi.useFakeTimers();
     const originalCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
     const originalRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
     const createObjectURL = vi.fn(() => 'blob:validation-run');
     const revokeObjectURL = vi.fn();
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
-    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    let downloadAtClick: { href: string; name: string } | undefined;
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {
+      const anchor = document.querySelector<HTMLAnchorElement>('a[download]');
+      if (anchor) downloadAtClick = { href: anchor.href, name: anchor.download };
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+    });
     try {
       render(<ValidationTechnicalEvidence run={run()} />);
-      await user.click(screen.getByRole('button', { name: 'Download JSON' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Download JSON' }));
       expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
       expect(click).toHaveBeenCalledTimes(1);
+      expect(downloadAtClick).toEqual({ href: 'blob:validation-run', name: 'validation-validation-run-technical-evidence.json' });
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+      await vi.runAllTimersAsync();
       expect(revokeObjectURL).toHaveBeenCalledWith('blob:validation-run');
-      expect((await screen.findByRole('status')).textContent).toContain('validation-validation-run-technical-evidence.json');
+      expect(screen.getByRole('status').textContent).toContain('validation-validation-run-technical-evidence.json');
     } finally {
       click.mockRestore();
       if (originalCreate) Object.defineProperty(URL, 'createObjectURL', originalCreate);
       else delete (URL as { createObjectURL?: typeof URL.createObjectURL }).createObjectURL;
       if (originalRevoke) Object.defineProperty(URL, 'revokeObjectURL', originalRevoke);
       else delete (URL as { revokeObjectURL?: typeof URL.revokeObjectURL }).revokeObjectURL;
+      vi.useRealTimers();
     }
   });
 });

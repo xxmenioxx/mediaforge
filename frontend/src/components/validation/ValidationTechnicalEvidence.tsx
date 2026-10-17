@@ -41,7 +41,10 @@ export function ValidationTechnicalEvidence({ run }: { run: ValidationRun }) {
     } catch {
       setMessage('Download is unavailable in this browser. The complete JSON remains available below.');
     } finally {
-      if (objectUrl && typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(objectUrl);
+      if (objectUrl && typeof URL.revokeObjectURL === 'function') {
+        const urlToRevoke = objectUrl;
+        window.setTimeout(() => URL.revokeObjectURL(urlToRevoke), 1000);
+      }
     }
   };
 
