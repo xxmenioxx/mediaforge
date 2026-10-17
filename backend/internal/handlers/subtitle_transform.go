@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -416,11 +417,25 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			}
 			if formats["srt"] && formats["ass"] {
 				shared, err := generateSharedConvertedSubtitleArtifacts(ctx, plan, group, base, usedPaths, &bitmapStreams, progress)
-				artifacts = append(artifacts, shared...)
 				processedShared[sharedKey] = true
 				if err != nil {
+					if optionalPGSZeroCueArtifact(plan, err) {
+						for index := range shared {
+							shared[index].StagedPath = ""
+							shared[index].DisplayName = ""
+							shared[index].SizeBytes = 0
+							shared[index].Status = "skipped"
+							shared[index].Error = err.Error()
+							if progress != nil {
+								progress(shared[index])
+							}
+						}
+						continue
+					}
+					artifacts = append(artifacts, shared...)
 					return artifacts, err
 				}
+				artifacts = append(artifacts, shared...)
 				continue
 			}
 		}
@@ -487,6 +502,19 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 			}
 			ocrResult, err := generateBitmapSubtitleAtPathWithResult(ctx, plan.InputPath, bitmapStream, format, ocrLanguage, decision.OCRMode, current.StagedPath, plan.SegmentStartSeconds, plan.SegmentDurationSeconds, nil, subtitleStylePolicyWithRole(plan.SubtitleStyling, decision.Role))
 			if err != nil {
+				if optionalPGSZeroCueArtifact(plan, err) {
+					_ = os.Remove(current.StagedPath)
+					current.StagedPath = ""
+					current.DisplayName = ""
+					current.SizeBytes = 0
+					current.Status = "skipped"
+					current.Error = err.Error()
+					if progress != nil {
+						progress(*current)
+					}
+					artifacts = artifacts[:len(artifacts)-1]
+					continue
+				}
 				current.Status, current.Error = "failed", err.Error()
 				if progress != nil {
 					progress(*current)
@@ -938,6 +966,14 @@ func validOriginalSubtitleSidecar(format string, content []byte) bool {
 
 func emptySubtitleArtifactCanBeSkipped(plan MediaJobPlan) bool {
 	return plan.AllowEmptySubtitleArtifacts && plan.SegmentDurationSeconds > 0
+}
+
+func optionalPGSZeroCueArtifact(plan MediaJobPlan, err error) bool {
+	if !emptySubtitleArtifactCanBeSkipped(plan) {
+		return false
+	}
+	var noEligibleCues *bitmapNoEligibleCueError
+	return errors.As(err, &noEligibleCues)
 }
 
 func cueFreeSubtitleArtifactCanBeSkipped(plan MediaJobPlan, format string, content []byte) bool {

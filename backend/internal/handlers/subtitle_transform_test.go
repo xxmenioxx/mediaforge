@@ -206,6 +206,174 @@ func TestGenerateResolvedBitmapOCRFailureDoesNotLeaveArtifact(t *testing.T) {
 	}
 }
 
+func TestOptionalZeroCuePGSSidecarsLeaveQueueArtifactsTerminal(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		format string
+	}{
+		{name: "single format", format: "srt"},
+		{name: "shared both formats", format: "both"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "Episode.mkv")
+			if err := os.WriteFile(mediaPath, []byte("synthetic source"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			marker := installZeroCuePGSTestTools(t)
+
+			decisions := []ResolvedTrackSidecar{{
+				StreamIndex: 4, Codec: "hdmv_pgs_subtitle", SourceType: "bitmap", Language: "eng",
+				Format: "srt", RequestedFormat: testCase.format, Mode: "converted", OCRRequired: true,
+				OCRLanguage: "eng", OCRMode: "accurate",
+			}}
+			if testCase.format == "both" {
+				logicalKey := "subtitle:4:converted:both"
+				decisions[0].LogicalTransformKey = logicalKey
+				decisions = append(decisions, decisions[0])
+				decisions[1].Format = "ass"
+			}
+			for index := range decisions {
+				if decisions[index].LogicalTransformKey == "" {
+					decisions[index].LogicalTransformKey = subtitleArtifactID(4, "converted", decisions[index].Format)
+				}
+			}
+			plan := MediaJobPlan{
+				InputPath: mediaPath, OutputPath: filepath.Join(root, "Episode.partial.mkv"),
+				SegmentDurationSeconds: 20, AllowEmptySubtitleArtifacts: true,
+				Streams:        MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: "hdmv_pgs_subtitle", Language: "eng"}}},
+				ResolvedTracks: &ResolvedTrackPlan{SidecarOutputs: decisions},
+			}
+
+			planned := make([]SubtitleArtifact, 0, len(decisions))
+			for _, decision := range decisions {
+				planned = append(planned, SubtitleArtifact{
+					ArtifactID: subtitleArtifactID(4, "converted", decision.Format), Type: "subtitle_sidecar",
+					StreamIndex: 4, SourceCodec: decision.Codec, Format: decision.Format, Mode: "converted",
+					Status: "planned", StagedPath: filepath.Join(root, "planned."+decision.Format),
+				})
+			}
+			job := models.QueueJob{Status: JobStatusRunning, SubtitleArtifacts: sidecarArtifactsJSON(planned, nil)}
+			db := queueJobTestDB(t)
+			if err := db.Create(&job).Error; err != nil {
+				t.Fatal(err)
+			}
+			progress := func(update SubtitleArtifact) {
+				current := subtitleArtifactsFromJSON(job.SubtitleArtifacts)
+				job.SubtitleArtifacts = sidecarArtifactsJSON(
+					mergeSubtitleArtifactProgress(current, update),
+					fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts),
+				)
+				if err := db.Model(&job).Update("subtitle_artifacts", job.SubtitleArtifacts).Error; err != nil {
+					t.Errorf("persist QueueJob sidecar progress: %v", err)
+				}
+			}
+
+			artifacts, err := generateSubtitleArtifactsWithProgress(context.Background(), plan, progress)
+			if err != nil {
+				job.Status = JobStatusFailed
+				job.ErrorMessage = err.Error()
+				_ = db.Save(&job).Error
+				t.Fatalf("optional zero-cue sidecar failed QueueJob subtitle preparation: %v", err)
+			}
+			if len(artifacts) != 0 {
+				t.Fatalf("optional zero-cue sidecars were returned as publishable artifacts: %#v", artifacts)
+			}
+			var finalJob models.QueueJob
+			if err := db.First(&finalJob, job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if finalJob.Status == JobStatusFailed || finalJob.ErrorMessage != "" {
+				t.Fatalf("QueueJob failed during optional sidecar preparation: status=%q error=%q", finalJob.Status, finalJob.ErrorMessage)
+			}
+			finalArtifacts := subtitleArtifactsFromJSON(finalJob.SubtitleArtifacts)
+			if len(finalArtifacts) != len(decisions) {
+				t.Fatalf("QueueJob final sidecar artifact count=%d, want %d: %#v", len(finalArtifacts), len(decisions), finalArtifacts)
+			}
+			for _, artifact := range finalArtifacts {
+				if artifact.Status != "skipped" || artifact.StagedPath != "" || artifact.Error == "" {
+					t.Errorf("optional zero-cue sidecar did not reach a terminal skipped state: %#v", artifact)
+				}
+			}
+			if log, readErr := os.ReadFile(marker); readErr == nil {
+				t.Fatalf("zero-cue PGS invoked OCR tools: %q", log)
+			} else if !os.IsNotExist(readErr) {
+				t.Fatalf("read OCR invocation marker: %v", readErr)
+			}
+		})
+	}
+}
+
+func TestRequiredZeroCuePGSSidecarStillFailsExplicitly(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "Episode.mkv")
+	if err := os.WriteFile(mediaPath, []byte("synthetic source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := installZeroCuePGSTestTools(t)
+	plan := MediaJobPlan{
+		InputPath: mediaPath, OutputPath: filepath.Join(root, "Episode.partial.mkv"),
+		SegmentDurationSeconds: 20,
+		Streams:                MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: "hdmv_pgs_subtitle", Language: "eng"}}},
+		ResolvedTracks: &ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{{
+			StreamIndex: 4, Codec: "hdmv_pgs_subtitle", SourceType: "bitmap", Language: "eng",
+			Format: "srt", RequestedFormat: "srt", Mode: "converted", OCRRequired: true,
+			OCRLanguage: "eng", OCRMode: "accurate",
+		}}},
+	}
+
+	artifacts, err := generateResolvedSubtitleArtifacts(context.Background(), plan, nil)
+	if err == nil || !strings.Contains(err.Error(), "no eligible PGS bitmap cues") || !strings.Contains(err.Error(), "OCR was not attempted") {
+		t.Fatalf("required zero-cue sidecar did not fail explicitly: artifacts=%#v err=%v", artifacts, err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Status != "failed" {
+		t.Fatalf("required sidecar final state=%#v, want one failed artifact", artifacts)
+	}
+	if log, readErr := os.ReadFile(marker); readErr == nil {
+		t.Fatalf("zero-cue PGS invoked OCR tools: %q", log)
+	} else if !os.IsNotExist(readErr) {
+		t.Fatalf("read OCR invocation marker: %v", readErr)
+	}
+}
+
+func installZeroCuePGSTestTools(t *testing.T) string {
+	t.Helper()
+	bin := t.TempDir()
+	fixturePath := filepath.Join(t.TempDir(), "zero-cue.sup")
+	if err := os.WriteFile(fixturePath, testPGSSUP(t, nil), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "ocr-tools-started")
+	t.Setenv("MVFORGE_TEST_PGS_SUP_FIXTURE", fixturePath)
+	t.Setenv("MVFORGE_TEST_OCR_MARKER", marker)
+	commands := map[string]string{
+		"ffprobe": `#!/bin/sh
+printf '%s\n' '{"streams":[{"index":4,"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle","tags":{"language":"eng"}}]}'
+`,
+		"ffmpeg": `#!/bin/sh
+output=""
+for argument do output="$argument"; done
+case "$output" in *.sup) cp "$MVFORGE_TEST_PGS_SUP_FIXTURE" "$output" ;; esac
+`,
+		"tesseract": `#!/bin/sh
+if [ "$1" = "--list-langs" ]; then printf '%s\n' eng; exit 0; fi
+printf 'tesseract %s\n' "$*" >> "$MVFORGE_TEST_OCR_MARKER"
+exit 0
+`,
+		"seconv": `#!/bin/sh
+printf 'seconv %s\n' "$*" >> "$MVFORGE_TEST_OCR_MARKER"
+exit 0
+`,
+	}
+	for name, contents := range commands {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(contents), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return marker
+}
+
 func TestGenerateBitmapSubtitleBothReportsMissingOCRTools(t *testing.T) {
 	for _, test := range []struct {
 		name          string

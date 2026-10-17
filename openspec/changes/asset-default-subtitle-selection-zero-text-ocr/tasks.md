@@ -8,6 +8,7 @@
 - [x] 2.1 Extend bounded PGS SUP parsing with event/object/cue counts; verify valid zero-cue, cue-present, and malformed/unknown fixtures.
 - [x] 2.2 Stop before OCR for proven zero-cue PGS inputs and return a required-artifact failure; verify fake Tesseract/SeConv tools are not invoked and no sidecar is created.
 - [x] 2.3 Preserve zero-recognition stream, language, mode, available count, and unknown-evidence diagnostics; verify this stays distinct from missing language/runtime/tool failures and does not publish an empty artifact.
+- [x] 2.4 Skip proven zero-cue PGS sidecars only for segmented Test Encode plans that allow empty artifacts; verify Queue progress is terminal, OCR recognition is not invoked, and required sidecars still fail.
 
 ## 3. Validate the scoped change
 

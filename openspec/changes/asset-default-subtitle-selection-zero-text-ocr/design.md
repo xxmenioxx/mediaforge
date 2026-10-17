@@ -62,6 +62,12 @@ Tesseract/SeConv and return an actionable no-eligible-cues failure. Existing
 Queue sidecars remain required by their plan/Validation contract; no successful
 empty SRT/ASS file is fabricated.
 
+For a segmented Test Encode whose plan sets `AllowEmptySubtitleArtifacts`, the
+same proven zero-cue result omits the optional sidecar and records a terminal
+`skipped` progress update for Queue artifact snapshots. The Test Encode can
+continue without a sidecar. This does not make full Queue sidecars optional and
+does not apply to zero-recognition or unknown/malformed PGS evidence.
+
 **Alternative considered:** treat any empty geometry result as no cues. Rejected
 because the current parser can return no geometry when source evidence is
 incomplete or malformed.

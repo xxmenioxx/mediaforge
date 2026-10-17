@@ -13,10 +13,22 @@ counts SHALL remain explicitly unknown. A required artifact with no recovered
 text or no eligible cues SHALL fail actionably without publishing a fabricated
 empty SRT/ASS artifact.
 
+A segmented Test Encode whose plan explicitly allows empty subtitle artifacts
+MAY omit a PGS sidecar when bounded parsing proves there are no eligible cues.
+The omission SHALL be terminally recorded as skipped during Queue artifact
+preparation, SHALL not run OCR recognition or publish an empty sidecar, and
+SHALL allow the Test Encode to continue. Queue sidecars remain required when
+their plan does not allow omission.
+
 #### Scenario: PGS evidence proves there are no eligible cues
 
 - **WHEN** a bounded PGS demux/parse establishes that the selected stream has no presentation events or eligible bitmap cues
 - **THEN** OCR and serialization do not run, the failure identifies the known zero event/cue counts and says the required artifact was not created
+
+#### Scenario: Optional segmented Test Encode sidecar has no eligible PGS cues
+
+- **WHEN** a segmented Test Encode plan allows empty subtitle artifacts and bounded PGS parsing proves there are no eligible cues
+- **THEN** the sidecar is skipped without OCR recognition or serialization, Queue artifact progress reaches a terminal skipped state, and the Test Encode continues without a fabricated sidecar
 
 #### Scenario: OCR completes with bitmap events but recognizes no text
 
