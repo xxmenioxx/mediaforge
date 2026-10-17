@@ -106,13 +106,7 @@ func TestBitmapTranslationSourceForPGSUsesCanonicalOCRAndBuildsEnvelopes(t *test
 	previousDictionaryRoot := ocrDictionaryFolderOverride
 	ocrDictionaryFolderOverride = dictionaryRoot
 	defer func() { ocrDictionaryFolderOverride = previousDictionaryRoot }()
-	writeExecutable(t, filepath.Join(bin, "ffmpeg"), `#!/bin/sh
-output=""
-for argument do output="$argument"; done
-case "$output" in
-  *.sup) : > "$output" ;;
-esac
-`)
+	installPGSSUPTestExtractor(t, bin)
 	writeExecutable(t, filepath.Join(bin, "seconv"), `#!/bin/sh
 output=""
 for argument do

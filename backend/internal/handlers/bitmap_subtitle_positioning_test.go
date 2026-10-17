@@ -366,6 +366,21 @@ func testPGSSUP(t *testing.T, objects []struct{ id, x, y, width, height int }) [
 	return testPGSDisplaySet(90000, objects)
 }
 
+func installPGSSUPTestExtractor(t *testing.T, bin string) {
+	t.Helper()
+	fixturePath := filepath.Join(t.TempDir(), "subtitle.sup")
+	fixture := testPGSSUP(t, []struct{ id, x, y, width, height int }{{id: 1, x: 100, y: 100, width: 200, height: 60}})
+	if err := os.WriteFile(fixturePath, fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MVFORGE_TEST_PGS_SUP_FIXTURE", fixturePath)
+	writeExecutable(t, filepath.Join(bin, "ffmpeg"), `#!/bin/sh
+output=""
+for argument do output="$argument"; done
+case "$output" in *.sup) cp "$MVFORGE_TEST_PGS_SUP_FIXTURE" "$output" ;; esac
+`)
+}
+
 func testPGSDisplaySet(pts uint32, objects []struct{ id, x, y, width, height int }) []byte {
 	pcs := make([]byte, 11+8*len(objects))
 	binary.BigEndian.PutUint16(pcs[0:2], 1920)
