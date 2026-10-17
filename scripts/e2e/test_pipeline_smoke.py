@@ -34,6 +34,7 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             self.assertIn("--network", args)
             self.assertEqual(args[args.index("--network") + 1], "none")
             self.assertIn("--read-only", args)
+            self.assertEqual(args[args.index("--user") + 1], pipeline_smoke.host_user())
             mount = args[args.index("--mount") + 1]
             self.assertEqual(mount, f"type=bind,src={sandbox.resolve()},dst=/media")
             self.assertNotIn("--volume", args)
@@ -43,6 +44,7 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
 
     def test_inspect_rejects_unexpected_network_or_host_mount(self) -> None:
         valid = {
+            "Config": {"User": pipeline_smoke.host_user()},
             "HostConfig": {
                 "NetworkMode": "none",
                 "ReadonlyRootfs": True,

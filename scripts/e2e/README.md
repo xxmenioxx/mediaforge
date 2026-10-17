@@ -15,7 +15,9 @@ cadence and track dispositions. No binary media fixture is checked in.
 Each run creates a unique directory directly under the operating system temp
 directory (`RUNNER_TEMP` in GitHub Actions). The backend container has no
 network, a read-only image filesystem, dropped Linux capabilities, no devices,
-and exactly one host bind: that run's temporary sandbox at `/media`. SQLite,
+and exactly one host bind: that run's temporary sandbox at `/media`. It runs as
+the host UID/GID so the Linux CI runner can write that temporary bind without
+root. SQLite,
 the Library destination, staging, reports, home/cache/temp directories, and both
 OCR roots live below that mount. Docker gets no checkout, Docker socket, NAS path,
 or production media mount. A fresh SQLite database starts only the smoke job;

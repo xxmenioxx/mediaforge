@@ -116,6 +116,12 @@ def docker_mount(sandbox: Path) -> str:
     return f"type=bind,src={source},dst=/media"
 
 
+def host_user() -> str:
+    if not hasattr(os, "getuid") or not hasattr(os, "getgid"):
+        raise SmokeFailure("the isolated Docker smoke requires a POSIX host UID/GID")
+    return f"{os.getuid()}:{os.getgid()}"
+
+
 def runtime_container_args(name: str, image: str, sandbox: Path) -> list[str]:
     env = {
         "HOME": "/media/config/home",
@@ -135,7 +141,7 @@ def runtime_container_args(name: str, image: str, sandbox: Path) -> list[str]:
     args = [
         "docker", "run", "--detach", "--name", name,
         "--network", "none", "--read-only", "--cap-drop", "ALL",
-        "--security-opt", "no-new-privileges:true", "--pids-limit", "256",
+        "--security-opt", "no-new-privileges:true", "--user", host_user(), "--pids-limit", "256",
         "--memory", "3g", "--cpus", "2",
         "--mount", docker_mount(sandbox),
     ]
@@ -162,6 +168,8 @@ def validate_container_inspect(data: dict[str, Any], sandbox: Path) -> None:
         raise SmokeFailure("container has an unexpected host device or GPU request")
     if host.get("PortBindings") not in (None, {}):
         raise SmokeFailure("container unexpectedly publishes host ports")
+    if (data.get("Config") or {}).get("User") != host_user():
+        raise SmokeFailure("container is not running as the host user that owns the isolated sandbox")
 
     mounts = data.get("Mounts") or []
     if len(mounts) != 1:
@@ -212,6 +220,7 @@ def generate_fixture(image: str, sandbox: Path) -> None:
     args = [
         "docker", "run", "--rm", "--network", "none", "--read-only",
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+        "--user", host_user(),
         "--mount", docker_mount(sandbox),
         "--env", "HOME=/media/config/home", "--env", "TMPDIR=/media/tmp",
         "--entrypoint", "ffmpeg", image,
