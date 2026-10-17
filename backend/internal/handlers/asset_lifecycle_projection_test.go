@@ -646,7 +646,7 @@ func TestDeleteArchiveRevalidatesActiveWork(t *testing.T) {
 	if active, err := (AssetHandler{db: db}).assetHasActiveWork(libraryAsset); err != nil || !active {
 		t.Fatalf("focused active-work setup did not resolve: active=%t err=%v record=%#v", active, err, libraryAsset)
 	}
-	validatedArchive, validatedLibrary, validatedSource, status, err := (AssetHandler{db: db}).validateArchivedOriginalIdentity(archive.ID, libraryAsset.ID, archivePath)
+	validatedArchive, validatedLibrary, validatedSource, status, err := (AssetHandler{db: db}).validateArchivedOriginalIdentity(archive.ID, libraryAsset.ID, archivePath, nil)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("canonical identity setup status=%d err=%v", status, err)
 	}
@@ -668,7 +668,42 @@ func TestDeleteArchiveRevalidatesActiveWork(t *testing.T) {
 	if _, err := os.Stat(archivePath); err != nil {
 		t.Fatalf("active-work rejection modified the archive target: %v", err)
 	}
-	if gotStatus, err := (AssetHandler{db: db}).permanentlyDeleteArchiveAsset(archivePath, archive.ID, libraryAsset.ID); err == nil || gotStatus != http.StatusConflict {
+	if gotStatus, err := (AssetHandler{db: db}).permanentlyDeleteArchiveAsset(archivePath, archive.ID, libraryAsset.ID, nil); err == nil || gotStatus != http.StatusConflict {
 		t.Fatalf("archive TOCTOU guard status=%d err=%v", gotStatus, err)
+	}
+}
+
+func TestDeleteArchiveRechecksIdentityAfterRelationshipChanges(t *testing.T) {
+	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "archive-delete-identity-toctou")
+	archivePath := filepath.Join(archiveRoot, "Show", "E02.mkv")
+	writeTestFile(t, archivePath, "archive bytes")
+	archive, libraryAsset, _, job := seedContextualArchivedOriginal(t, db, rawRoot, libraryRoot, archiveRoot, "Show/E02.mkv", archivePath)
+	libraryReads := 0
+	changed := false
+	if err := db.Callback().Query().After("gorm:query").Register("test:mutate-archive-link-before-fence", func(tx *gorm.DB) {
+		if tx.Statement.Table != "libraries" {
+			return
+		}
+		libraryReads++
+		if libraryReads != 2 {
+			return
+		}
+		if err := db.Model(&models.QueueJob{}).Where("id = ?", job.ID).Update("original_archived_path", filepath.Join(archiveRoot, "Show", "changed.mkv")).Error; err != nil {
+			t.Errorf("change archived-original relationship at fence: %v", err)
+			return
+		}
+		changed = true
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if status, err := (AssetHandler{db: db}).permanentlyDeleteArchiveAsset(archivePath, archive.ID, libraryAsset.ID, nil); err == nil || status != http.StatusConflict {
+		t.Fatalf("changed archive relationship status=%d err=%v", status, err)
+	}
+	if !changed {
+		t.Fatal("test did not change the relationship after initial identity validation")
+	}
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("changed relationship was not fenced before unlink: %v", err)
 	}
 }

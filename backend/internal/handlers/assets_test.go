@@ -3879,6 +3879,174 @@ func TestDeleteArchiveBatchReportsPartialFailureAndSupportsRetry(t *testing.T) {
 	}
 }
 
+func TestArchiveDeleteProjectionUsesScopedRecordsAndIndexedRelationships(t *testing.T) {
+	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "delete-archive-scoped-projection")
+	if err := db.AutoMigrate(&models.DirectPublication{}); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(archiveRoot, "show", "episode.mkv")
+	writeTestFile(t, archivePath, "archived original")
+	archive, libraryAsset, source, job := seedContextualArchivedOriginal(t, db, rawRoot, libraryRoot, archiveRoot, "show/episode.mkv", archivePath)
+	distractors := make([]models.AssetRecord, 500)
+	for index := range distractors {
+		path := filepath.Join(rawRoot, "unrelated", fmt.Sprintf("asset-%04d.mkv", index))
+		distractors[index] = models.AssetRecord{Path: path, RootPath: rawRoot, RelativePath: filepath.ToSlash(filepath.Join("unrelated", filepath.Base(path))), FileName: filepath.Base(path), Status: "unprocessed"}
+	}
+	if err := db.CreateInBatches(&distractors, 250).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	var catalogRecords int64
+	if err := db.Model(&models.AssetRecord{}).Count(&catalogRecords).Error; err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	projection, load, err := (AssetHandler{db: db}).assetLifecycleProjectionForArchiveDelete(libraryAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.CurrentPublication.ID != job.ID || projection.CurrentPublication.PublishedPath != libraryAsset.Path {
+		t.Fatalf("scoped projection lost current publication: %#v", projection.CurrentPublication)
+	}
+	if projection.CurrentRawCorrelation.State != assetCorrelationResolved || projection.CurrentRawCorrelation.RawAssetRecordID != source.ID {
+		t.Fatalf("scoped projection lost canonical source identity: %#v", projection.CurrentRawCorrelation)
+	}
+	linkedArchive := false
+	for _, original := range projection.ArchivedOriginals {
+		if original.AssetRecordID == archive.ID && original.Relationship == "current" {
+			linkedArchive = true
+		}
+	}
+	if !linkedArchive {
+		t.Fatalf("scoped projection lost current archived original: %#v", projection.ArchivedOriginals)
+	}
+	if int64(load.AssetRecords) >= catalogRecords {
+		t.Fatalf("scoped projection loaded the full catalog: loaded=%d catalog=%d", load.AssetRecords, catalogRecords)
+	}
+	t.Logf("archive_delete_fixture catalog_records=%d scoped_records=%d publication_records=%d adapter_us=%d asset_record_query_us=%d publication_query_us=%d projection_us=%d", catalogRecords, load.AssetRecords, load.QueueJobs+load.DirectPublications, time.Since(started).Microseconds(), load.AssetRecordQuery.Microseconds(), load.PublicationQuery.Microseconds(), load.ProjectionResolve.Microseconds())
+
+	for _, check := range []struct {
+		query   string
+		args    []any
+		indexes []string
+	}{
+		{query: "EXPLAIN QUERY PLAN SELECT id FROM queue_jobs WHERE source_asset_record_id = ? OR published_path IN (?)", args: []any{libraryAsset.ID, libraryAsset.Path}, indexes: []string{"idx_queue_jobs_source_asset_record_id", "idx_queue_jobs_published_path"}},
+		{query: "EXPLAIN QUERY PLAN SELECT id FROM queue_jobs WHERE library_id IN (?) AND instr(published_path, ?) > 0", args: []any{libraryAsset.LibraryID, string(filepath.Separator) + filepath.Base(libraryAsset.Path)}, indexes: []string{"idx_queue_jobs_library_id"}},
+		{query: "EXPLAIN QUERY PLAN SELECT id FROM direct_publications WHERE source_asset_record_id = ? OR published_path IN (?)", args: []any{libraryAsset.ID, libraryAsset.Path}, indexes: []string{"idx_direct_publications_source_asset_record_id", "idx_direct_publications_published_path"}},
+		{query: "EXPLAIN QUERY PLAN SELECT id FROM direct_publications WHERE library_id IN (?) AND instr(published_path, ?) > 0", args: []any{libraryAsset.LibraryID, string(filepath.Separator) + filepath.Base(libraryAsset.Path)}, indexes: []string{"idx_direct_publications_library_id"}},
+		{query: "EXPLAIN QUERY PLAN SELECT id FROM queue_jobs WHERE original_archived_path = ?", args: []any{archivePath}, indexes: []string{"idx_queue_jobs_original_archived_path"}},
+	} {
+		var rows []struct {
+			Detail string `gorm:"column:detail"`
+		}
+		if err := db.Raw(check.query, check.args...).Scan(&rows).Error; err != nil {
+			t.Fatal(err)
+		}
+		plan := make([]string, 0, len(rows))
+		for _, row := range rows {
+			plan = append(plan, row.Detail)
+		}
+		for _, index := range check.indexes {
+			if !strings.Contains(strings.Join(plan, " "), index) {
+				t.Fatalf("query plan did not use %s: %v", index, plan)
+			}
+		}
+	}
+}
+
+func TestArchiveDeleteProjectionRejectsReusedPublishedPath(t *testing.T) {
+	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "delete-archive-published-path-reuse")
+	archivePath := filepath.Join(archiveRoot, "show", "episode.mkv")
+	writeTestFile(t, archivePath, "archived original")
+	archive, libraryAsset, _, currentJob := seedContextualArchivedOriginal(t, db, rawRoot, libraryRoot, archiveRoot, "show/episode.mkv", archivePath)
+	newSourcePath := filepath.Join(rawRoot, "replacement", "episode.mkv")
+	newSource := models.AssetRecord{Path: newSourcePath, RootPath: rawRoot, RelativePath: "replacement/episode.mkv", FileName: "episode.mkv", Status: "unprocessed"}
+	if err := db.Create(&newSource).Error; err != nil {
+		t.Fatal(err)
+	}
+	laterPublicationAt := time.Now().Add(time.Minute)
+	laterJob := models.QueueJob{
+		MediaPath: newSourcePath, SourceAssetRecordID: &newSource.ID, LibraryID: currentJob.LibraryID,
+		Status: JobStatusCompleted, PublishedPath: libraryAsset.Path, PublishedAt: &laterPublicationAt,
+	}
+	if err := db.Create(&laterJob).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	projection, _, err := (AssetHandler{db: db}).assetLifecycleProjectionForArchiveDelete(libraryAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.CurrentPublication.ID != laterJob.ID || projection.CurrentRawCorrelation.State != assetCorrelationUnresolved {
+		t.Fatalf("scoped projection rebound a reused Library path: publication=%#v correlation=%#v", projection.CurrentPublication, projection.CurrentRawCorrelation)
+	}
+	if _, _, _, status, err := (AssetHandler{db: db}).validateArchivedOriginalIdentity(archive.ID, libraryAsset.ID, archivePath, nil); err == nil || status != http.StatusConflict {
+		t.Fatalf("stale archive relation status=%d err=%v", status, err)
+	}
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("stale archive relation modified original: %v", err)
+	}
+}
+
+func TestDeleteArchiveRejectsNormalizedDirectPublicationConflict(t *testing.T) {
+	db, rawRoot, libraryRoot, archiveRoot := safeDeleteTestDB(t, "delete-archive-normalized-publication-conflict")
+	if err := db.AutoMigrate(&models.DirectPublication{}); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(archiveRoot, "show", "episode.mkv")
+	writeTestFile(t, archivePath, "archived original")
+	archive, libraryAsset, _, currentJob := seedContextualArchivedOriginal(t, db, rawRoot, libraryRoot, archiveRoot, "show/episode.mkv", archivePath)
+
+	conflictingSourcePath := filepath.Join(rawRoot, "replacement", "episode.mkv")
+	conflictingSource := models.AssetRecord{
+		Path: conflictingSourcePath, RootPath: rawRoot, RelativePath: "replacement/episode.mkv",
+		FileName: "episode.mkv", Status: "unprocessed", Missing: true,
+	}
+	if err := db.Create(&conflictingSource).Error; err != nil {
+		t.Fatal(err)
+	}
+	conflictingPublishedPath := filepath.Dir(libraryAsset.Path) + string(os.PathSeparator) + "." + string(os.PathSeparator) + filepath.Base(libraryAsset.Path)
+	if conflictingPublishedPath == libraryAsset.Path || cleanAssetLifecyclePath(conflictingPublishedPath) != cleanAssetLifecyclePath(libraryAsset.Path) {
+		t.Fatalf("fixture path must differ as a string but normalize to the current publication: current=%q conflict=%q", libraryAsset.Path, conflictingPublishedPath)
+	}
+	conflictingPublication := models.DirectPublication{
+		SourcePath: conflictingSourcePath, SourceAssetRecordID: &conflictingSource.ID,
+		PublishedPath: conflictingPublishedPath, LibraryID: currentJob.LibraryID,
+		PublishedAt: time.Now().Add(time.Minute),
+	}
+	if err := db.Create(&conflictingPublication).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.DELETE("/api/assets/archive", NewAssetHandler(db).DeleteArchive)
+	endpoint := "/api/assets/archive?path=" + url.QueryEscape(archivePath)
+	requestBody, err := json.Marshal(map[string]any{
+		"confirmed": true, "archiveAssetRecordId": archive.ID,
+		"libraryAssetRecordId": libraryAsset.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, endpoint, strings.NewReader(string(requestBody))))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("normalized publication conflict status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("normalized publication conflict modified the archived original: %v", err)
+	}
+
+	projection, load, err := (AssetHandler{db: db}).assetLifecycleProjectionForArchiveDelete(libraryAsset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.CurrentPublication.State != assetCurrentPublicationConflict || load.DirectPublications == 0 {
+		t.Fatalf("scoped projection omitted normalized direct publication conflict: state=%q load=%#v publication=%#v", projection.CurrentPublication.State, load, projection.CurrentPublication)
+	}
+}
+
 func seedRecoveredAssetOverrides(t *testing.T, db *gorm.DB, paths ...string) {
 	t.Helper()
 	conversion := map[string]AssetConversionOverrideState{}
@@ -4032,7 +4200,7 @@ func TestDeleteConvertedIsBlockedWhenArchivedOriginalIsMissing(t *testing.T) {
 	}
 }
 
-func safeDeleteTestDB(t *testing.T, name string) (*gorm.DB, string, string, string) {
+func safeDeleteTestDB(t testing.TB, name string) (*gorm.DB, string, string, string) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:safe-delete-"+name+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -4048,13 +4216,13 @@ func safeDeleteTestDB(t *testing.T, name string) (*gorm.DB, string, string, stri
 			t.Fatal(err)
 		}
 	}
-	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"rawRoot": rawRoot, "libraryRoot": libraryRoot, "originalsArchivePath": archiveRoot, "stagingPath": filepath.Join(root, "staging")}}).Error; err != nil {
+	if err := db.Create(&models.AppSetting{Key: "paths", Value: models.JSONMap{"rawRoot": rawRoot, "libraryRoot": libraryRoot, "originalsArchivePath": archiveRoot, "stagingPath": filepath.Join(root, "staging"), "logsPath": filepath.Join(root, "logs")}}).Error; err != nil {
 		t.Fatal(err)
 	}
 	return db, rawRoot, libraryRoot, archiveRoot
 }
 
-func seedContextualArchivedOriginal(t *testing.T, db *gorm.DB, rawRoot, libraryRoot, archiveRoot, relative, archivePath string) (models.AssetRecord, models.AssetRecord, models.AssetRecord, models.QueueJob) {
+func seedContextualArchivedOriginal(t testing.TB, db *gorm.DB, rawRoot, libraryRoot, archiveRoot, relative, archivePath string) (models.AssetRecord, models.AssetRecord, models.AssetRecord, models.QueueJob) {
 	t.Helper()
 	var library models.Library
 	if err := db.First(&library).Error; errors.Is(err, gorm.ErrRecordNotFound) {
@@ -4102,7 +4270,7 @@ func seedContextualArchivedOriginal(t *testing.T, db *gorm.DB, rawRoot, libraryR
 	return archive, libraryAsset, source, job
 }
 
-func writeTestFile(t *testing.T, path string, content string) {
+func writeTestFile(t testing.TB, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-16
+goal: Keep Archive original deletion safe and responsive while presenting the
+  current Publisher path after publication.

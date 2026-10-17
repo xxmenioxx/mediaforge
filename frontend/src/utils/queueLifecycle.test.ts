@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { QueueJob } from '../api/types';
-import { hasNonTerminalQueueLifecycle, originalArchiveStatusLabel } from './queueLifecycle';
+import { hasNonTerminalQueueLifecycle, originalArchiveStatusLabel, queueJobPublicationChanged } from './queueLifecycle';
 
 function job(overrides: Partial<QueueJob> = {}): QueueJob {
   return {
@@ -42,6 +42,27 @@ describe('Queue lifecycle refresh predicate', () => {
       expect(hasNonTerminalQueueLifecycle([job({ publicationState })], true)).toBe(false);
     },
   );
+});
+
+describe('published asset refresh', () => {
+  it('refreshes Assets when a previously observed Queue job becomes PUBLISHED', () => {
+    const publishing = job({ id: 81, publicationState: 'PUBLISHING', publishedPath: '' });
+    const published = job({ id: 81, publicationState: 'PUBLISHED', publishedPath: '/library/show/episode.mkv', publicationId: 'pub-81' });
+
+    expect(queueJobPublicationChanged([publishing], [published])).toBe(true);
+    expect(queueJobPublicationChanged([published], [published])).toBe(false);
+  });
+
+  it('does not invalidate Assets for the initial Queue snapshot', () => {
+    expect(queueJobPublicationChanged(undefined, [job({ id: 81, publishedPath: '/library/show/episode.mkv' })])).toBe(false);
+  });
+
+  it('refreshes Assets when a current publication path or identity changes', () => {
+    const previous = job({ id: 81, publishedPath: '/library/old.mkv', publicationId: 'pub-old' });
+    const current = job({ id: 81, publishedPath: '/library/new.mkv', publicationId: 'pub-new' });
+
+    expect(queueJobPublicationChanged([previous], [current])).toBe(true);
+  });
 });
 
 describe('original archive status labels', () => {

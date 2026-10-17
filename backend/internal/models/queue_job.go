@@ -14,7 +14,7 @@ type QueueJob struct {
 	MediaPath                   string     `json:"mediaPath" gorm:"not null"`
 	SourceAssetRecordID         *uint      `json:"sourceAssetRecordId,omitempty" gorm:"index"`
 	PublishMode                 string     `json:"publishMode" gorm:"not null;default:standard"`
-	LibraryID                   uint       `json:"libraryId" gorm:"not null"`
+	LibraryID                   uint       `json:"libraryId" gorm:"not null;index"`
 	ProfileID                   uint       `json:"profileId" gorm:"not null"`
 	ProfileVersion              int        `json:"profileVersion" gorm:"not null;default:1"`
 	ProfileSnapshot             JSONMap    `json:"profileSnapshot" gorm:"type:json"`
@@ -48,13 +48,13 @@ type QueueJob struct {
 	ValidationOutcome           string     `json:"validationOutcome,omitempty" gorm:"index"`
 	ValidationOverride          bool       `json:"validationOverridePresent" gorm:"not null;default:false"`
 	ValidationActionable        bool       `json:"validationHasActionableWarnings" gorm:"not null;default:false"`
-	PublishedPath               string     `json:"publishedPath"`
+	PublishedPath               string     `json:"publishedPath" gorm:"index"`
 	PublishedFingerprint        string     `json:"publishedFingerprint" gorm:"index"`
 	PublishedSizeBytes          int64      `json:"publishedSizeBytes"`
 	PublishedAt                 *time.Time `json:"publishedAt"`
 	PublicationRetiredAt        *time.Time `json:"publicationRetiredAt" gorm:"index"`
 	ReplacementTargetPath       string     `json:"replacementTargetPath"`
-	OriginalArchivedPath        string     `json:"originalArchivedPath"`
+	OriginalArchivedPath        string     `json:"originalArchivedPath" gorm:"index"`
 	OriginalArchiveStatus       string     `json:"originalArchiveStatus,omitempty" gorm:"index"`
 	PublicationID               string     `json:"publicationId,omitempty" gorm:"index"`
 	PublicationState            string     `json:"publicationState,omitempty" gorm:"index"`
