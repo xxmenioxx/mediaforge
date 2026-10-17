@@ -42,6 +42,29 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             for key in ("MVFORGE_DB_PATH", "MVFORGE_OCR_LIFECYCLE_ROOT", "MVFORGE_OCR_PERSISTENT_ROOT", "XDG_CACHE_HOME", "TMPDIR"):
                 self.assertTrue(any(value.startswith(key + "=/media/") for value in env), key)
 
+    def test_pipeline_automation_allows_worker_and_keeps_followup_steps_controlled(self) -> None:
+        settings = pipeline_smoke.PIPELINE_AUTOMATION_SETTINGS
+        self.assertEqual(settings["reviewMode"], "automatic")
+        self.assertTrue(settings["autoExecutionEnabled"])
+        self.assertFalse(settings["autoAnalysisEnabled"])
+        self.assertFalse(settings["autoValidationEnabled"])
+        self.assertFalse(settings["autoPublisherEnabled"])
+        self.assertFalse(settings["publisherOverwriteEnabled"])
+        self.assertFalse(settings["publishedJobReconciliationEnabled"])
+
+    def test_plan_summary_preserves_blocking_state_and_decision_evidence(self) -> None:
+        summary = pipeline_smoke.extract_plan_summary([{
+            "id": 7,
+            "status": "waiting",
+            "waitingState": "WAITING_REVIEW",
+            "approvalMode": "conditional",
+            "approvalStatus": "pending",
+            "decisionReasons": ["Waiting for review"],
+            "warnings": ["synthetic warning"],
+        }])
+        self.assertEqual(summary["plans"][0]["waitingState"], "WAITING_REVIEW")
+        self.assertEqual(summary["plans"][0]["decisionReasons"], ["Waiting for review"])
+
     def test_inspect_rejects_unexpected_network_or_host_mount(self) -> None:
         valid = {
             "Config": {"User": pipeline_smoke.host_user()},

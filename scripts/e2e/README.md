@@ -24,6 +24,13 @@ or production media mount. A fresh SQLite database starts only the smoke job;
 the real backend worker, FFmpeg, Validation, and Publisher operate on its
 synthetic fixture.
 
+The run writes an explicit `pipelineAutomation` setting into that temporary
+SQLite database: review and worker execution are enabled, while auto-analysis,
+auto-validation, and auto-publishing are disabled. The harness invokes
+Validation and Publisher itself after verifying each prior stage. If QueueJob
+does not finish, the bounded evidence includes its persisted ExecutionPlan and
+review decision so a waiting policy is visible in CI.
+
 On success, the run container and temporary root are removed. On failure, the
 container and sandbox are removed while bounded JSON summaries and logs remain
 under the printed `evidence/` path. CI uploads only that directory on failure,

@@ -26,6 +26,16 @@ MAX_JSON_BYTES = 128 * 1024
 MAX_LOG_BYTES = 256 * 1024
 SUPPORTED_SCENARIOS = {"happy-path"}
 FORBIDDEN_HOST_ROOTS = (Path("/volume1"), Path("/volume2"))
+PIPELINE_AUTOMATION_SETTINGS = {
+    "autoAnalysisEnabled": False,
+    "reviewMode": "automatic",
+    "autoExecutionEnabled": True,
+    "autoValidationEnabled": False,
+    "autoPublisherEnabled": False,
+    "publisherOverwriteEnabled": False,
+    "publishedJobReconciliationEnabled": False,
+    "forceFreshSnapshotBeforeExecution": False,
+}
 
 
 class SmokeFailure(RuntimeError):
@@ -319,7 +329,8 @@ def extract_plan_summary(plans: Any) -> dict[str, Any]:
             for key in (
                 "id", "jobId", "version", "status", "profileVersion", "codecFamily",
                 "selectedEncoder", "bitDepth", "pixelFormat", "qualityMode", "qualityValue",
-                "runtimeProfile", "workspaceMode", "waitingState", "approvalStatus", "outputPath",
+                "runtimeProfile", "workspaceMode", "waitingState", "approvalMode", "approvalStatus",
+                "decisionReasons", "warnings", "outputPath",
             )
         })
     if not summary:
@@ -480,6 +491,11 @@ def run_smoke(args: argparse.Namespace) -> int:
                 },
             },
         )
+        api.request(
+            "POST", "/api/settings/pipelineAutomation", expected=(200,),
+            evidence_name="pipeline-automation-setting.json",
+            payload={"value": PIPELINE_AUTOMATION_SETTINGS},
+        )
 
         log("phase=queue-and-wait-for-real-worker")
         queued = api.request(
@@ -510,7 +526,20 @@ def run_smoke(args: argparse.Namespace) -> int:
                     break
             time.sleep(2)
         else:
-            raise SmokeFailure(f"QueueJob {job_id} did not finish within {args.timeout} seconds")
+            plan_detail = "unavailable"
+            try:
+                plans = api.request(
+                    "GET", f"/api/queue/jobs/{job_id}/execution-plans",
+                    evidence_name="execution-plans-at-timeout.json",
+                )
+                plan_summary = extract_plan_summary(plans)
+                plan_detail = json.dumps(plan_summary, sort_keys=True)[:3000]
+            except Exception as plan_error:
+                evidence.json("execution-plans-at-timeout-error.json", {"error": str(plan_error)[:2000]})
+                plan_detail = f"plan query failed: {type(plan_error).__name__}: {plan_error}"
+            raise SmokeFailure(
+                f"QueueJob {job_id} did not finish within {args.timeout} seconds; execution plans: {plan_detail}"
+            )
         if job.get("status") != "completed":
             raise SmokeFailure(f"QueueJob {job_id} ended as {job.get('status')}: {job.get('errorMessage', '')}")
 
