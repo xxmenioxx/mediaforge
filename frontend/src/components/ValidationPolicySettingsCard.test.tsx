@@ -35,7 +35,7 @@ describe('ValidationPolicySettingsCard', () => {
     expect(screen.getByText(/recommended balance between safety, compatibility, fidelity, and false positives/i)).toBeTruthy();
     expect(screen.getByText(/PASS only.*missing or empty setting defaults to PASS only/i)).toBeTruthy();
     expect(screen.getByText(/Auto Publisher is disabled/i)).toBeTruthy();
-    expect(screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement' }).checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement' }) as HTMLInputElement).checked).toBe(false);
     expect(screen.getByRole('button', { name: 'Advanced rule editor' })).toBeTruthy();
   });
 
@@ -48,10 +48,10 @@ describe('ValidationPolicySettingsCard', () => {
     await user.click(screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement' }));
     expect(await screen.findByRole('dialog', { name: 'Confirm automatic warning advancement' })).toBeTruthy();
     expect(screen.getByText(/jobs already at ready_to_publish with PASS_WITH_WARNINGS.*as well as future jobs/i)).toBeTruthy();
-    expect(screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement' }).checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement', hidden: true }) as HTMLInputElement).checked).toBe(false);
 
     await user.click(screen.getByRole('button', { name: 'Confirm warning opt-in' }));
-    expect(screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement' }).checked).toBe(true);
+    await waitFor(() => expect((screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement' }) as HTMLInputElement).checked).toBe(true));
     await user.click(screen.getByRole('button', { name: 'Save Validation settings' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       autoAdvanceOutcomes: ['PASS', 'PASS_WITH_WARNINGS'],
@@ -69,10 +69,10 @@ describe('ValidationPolicySettingsCard', () => {
     view.rerender(<ValidationPolicySettingsCard value={{ ...legacy, autoAdvanceOutcomes: ['PASS', 'PASS_WITH_WARNINGS'] } as unknown as Record<string, unknown>} saving={false} onSave={onSave} />);
 
     await waitFor(() => expect(screen.getByText(/PASS and PASS_WITH_WARNINGS/i)).toBeTruthy());
-    expect(screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement' }).checked).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement' }) as HTMLInputElement).checked).toBe(true);
     expect(screen.getAllByRole('checkbox')).toHaveLength(1);
     await user.click(screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement' }));
-    expect(screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement' }).checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: 'Allow PASS_WITH_WARNINGS for automatic advancement' }) as HTMLInputElement).checked).toBe(false);
   });
 
   it('shows Pixel semantics for the canonical pixelFormat policy field', async () => {

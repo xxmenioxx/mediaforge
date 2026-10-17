@@ -10,5 +10,5 @@
 
 ## 3. Validation
 
-- [ ] 3.1 Run focused frontend tests and strict OpenSpec validation.
-- [ ] 3.2 Run `./scripts/verify.sh --auto` through the serialized dupla lock and record the result.
+- [x] 3.1 Run focused frontend tests and strict OpenSpec validation.
+- [x] 3.2 Run `./scripts/verify.sh --auto` through the serialized dupla lock and record the result.
