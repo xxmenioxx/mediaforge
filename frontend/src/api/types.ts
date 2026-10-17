@@ -1633,6 +1633,7 @@ export type ValidationFinding = {
   key: string;
   expected: unknown;
   actual: unknown;
+  details?: unknown;
   severity: 'critical' | 'error' | 'warning' | 'info';
   disposition: 'blocking' | 'advisory';
   state: 'PASS' | 'FAIL' | 'WARNING' | 'REVIEW_REQUIRED' | 'UNVERIFIED' | 'NOT_APPLICABLE';

@@ -28,6 +28,9 @@ import { useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
+import { ValidationFindingsTable } from '../components/validation/ValidationFindingsTable';
+import { ValidationRunSummary } from '../components/validation/ValidationRunSummary';
+import { ValidationTechnicalEvidence } from '../components/validation/ValidationTechnicalEvidence';
 import type { ValidationFinding, ValidationOverride, ValidationSummary, ValidationRun } from '../api/types';
 
 type ValidationView = 'exceptions' | 'pending' | 'all';
@@ -113,7 +116,7 @@ export function ValidationPage() {
   );
 }
 
-function ValidationRunDetails({ job }: { job: Pick<ValidationSummary, 'id' | 'validationRunId'> }) {
+function ValidationRunDetails({ job }: { job: ValidationSummary }) {
   const queryClient = useQueryClient();
   const detail = useQuery({
     queryKey: ['validationRun', job.id, job.validationRunId],
@@ -122,6 +125,7 @@ function ValidationRunDetails({ job }: { job: Pick<ValidationSummary, 'id' | 'va
   });
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [overrideScope, setOverrideScope] = useState<'rule' | 'all_overrideable'>('rule');
+  const [detailsTab, setDetailsTab] = useState<'diagnostics' | 'technical'>('diagnostics');
   const [reason, setReason] = useState('');
   const [selectedRules, setSelectedRules] = useState<string[]>([]);
   const override = useMutation({
@@ -157,36 +161,32 @@ function ValidationRunDetails({ job }: { job: Pick<ValidationSummary, 'id' | 'va
     setReason('');
     setOverrideOpen(true);
   };
+  const matchingOverrides = (detail.data?.overrides ?? []).filter((event) => run && overrideEventMatchesRun(event, run));
   return (
     <Stack spacing={2} sx={{ pt: 1 }}>
       {detail.isError ? <Alert severity="warning">{errorMessage(detail.error)}</Alert> : null}
       {detail.isLoading ? <Typography color="text.secondary">Loading immutable findings…</Typography> : null}
+      {!detail.isLoading && !detail.isError && !run ? <Alert severity="info">No Validation run data was returned.</Alert> : null}
       {run ? <>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Chip label={run.outcome} color={outcomeColor(run.outcome)} />
-          <Chip label={`Display score ${run.score}/100`} variant="outlined" />
-          <Chip label={`Run ${run.runId}`} variant="outlined" />
-          <Chip label={`${run.actorId} · ${new Date(run.createdAt).toLocaleString()}`} variant="outlined" />
-          <Chip label={`Effective handoff: ${detail.data?.effectiveHandoff ?? 'Loading'}`} color={detail.data?.effectiveHandoff === 'ALLOWED_BY_OVERRIDE' ? 'success' : detail.data?.effectiveHandoff === 'BLOCKED' ? 'error' : 'default'} />
-        </Stack>
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
-          <Alert severity="info" sx={{ flex: 1 }}><b>Policy used by this run:</b> {run.policySnapshot ? `${presetName(run.policyPreset)} · ${run.policyFingerprint}` : 'No frozen policy snapshot is available for this historical run.'}</Alert>
-          <Alert severity={detail.data?.policyCurrent ? 'success' : 'warning'} sx={{ flex: 1 }}><b>Current Validation Settings:</b> {policySummary(detail.data?.currentPolicy as unknown as Record<string, unknown>)}{!detail.data?.policyCurrent ? ' · different from this run' : ''}</Alert>
-        </Stack>
-        {(detail.data?.overrides ?? []).filter((event) => overrideEventMatchesRun(event, run)).map((event) => <Alert key={event.eventId} severity="warning">
-          Skipped by {event.actorId} · {new Date(event.createdAt).toLocaleString()} · {event.reason ? `Reason: ${event.reason}` : 'No reason provided'} · {event.ruleKeys.join(', ')}
-        </Alert>)}
-        <Table size="small"><TableHead><TableRow><TableCell>Rule</TableCell><TableCell>Canonical result</TableCell><TableCell>Field evidence</TableCell><TableCell>Expected</TableCell><TableCell>Actual</TableCell><TableCell>Finding</TableCell><TableCell>Action</TableCell></TableRow></TableHead>
-          <TableBody>{run.findings.map((finding) => <TableRow key={finding.key}>
-            <TableCell>{finding.key}</TableCell><TableCell><Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap><Chip size="small" label={finding.state} color={finding.state === 'FAIL' ? 'error' : finding.state === 'PASS' ? 'success' : 'warning'} />{skippedByKey.has(finding.key) ? <Chip size="small" label="SKIPPED" color="info" /> : null}</Stack></TableCell>
-            <TableCell sx={{ minWidth: 210, verticalAlign: 'top' }}><ValidationFieldEvidence finding={finding} /></TableCell>
-            <TableCell sx={{ maxWidth: 210, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{displayValue(finding.expected)}</TableCell>
-            <TableCell sx={{ maxWidth: 210, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{displayValue(finding.actual)}</TableCell>
-            <TableCell>{finding.explanation}<Typography variant="caption" display="block" color="text.secondary">{finding.evidenceReferences.join(' · ')}</Typography></TableCell>
-            <TableCell>{finding.overrideable && unresolved(finding) && !skippedByKey.has(finding.key) ? <Button size="small" variant="outlined" onClick={() => openRuleSkip(finding)}>Skip</Button> : '—'}</TableCell>
-          </TableRow>)}</TableBody>
-        </Table>
-        {remainingOverrideable.length > 0 ? <Stack direction="row" justifyContent="flex-end"><Button variant="outlined" onClick={openSkipAll}>Skip all overrideable findings</Button></Stack> : null}
+        <ValidationRunSummary job={job} run={run} effectiveHandoff={detail.data?.effectiveHandoff ?? 'UNAVAILABLE'} />
+        <Tabs value={detailsTab} onChange={(_, value: 'diagnostics' | 'technical') => setDetailsTab(value)} aria-label="Validation run detail views">
+          <Tab label="Diagnostics" value="diagnostics" />
+          <Tab label="Technical Evidence" value="technical" />
+        </Tabs>
+        {detailsTab === 'diagnostics' ? <Stack spacing={2}>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+            <Alert severity="info" sx={{ flex: 1 }}><b>Policy used by this run:</b> {run.policySnapshot ? `${presetName(run.policyPreset)} · ${run.policyFingerprint}` : 'No frozen policy snapshot is available for this historical run.'}</Alert>
+            <Alert severity={detail.data?.policyCurrent ? 'success' : 'warning'} sx={{ flex: 1 }}><b>Current Validation Settings:</b> {policySummary(detail.data?.currentPolicy as unknown as Record<string, unknown>)}{!detail.data?.policyCurrent ? ' · different from this run' : ''}</Alert>
+          </Stack>
+          <ValidationFindingsTable findings={run.findings} overridesByKey={skippedByKey} onSkip={openRuleSkip} />
+          {remainingOverrideable.length > 0 ? <Stack direction="row" justifyContent="flex-end"><Button variant="outlined" onClick={openSkipAll}>Skip all overrideable findings</Button></Stack> : null}
+          {matchingOverrides.length > 0 ? <Stack spacing={0.5}>
+            <Typography variant="subtitle2">Override audit history</Typography>
+            {matchingOverrides.map((event) => <Alert key={event.eventId} severity="info">
+              Manual SKIPPED event by {event.actorId} · {new Date(event.createdAt).toLocaleString()} · {event.reason ? `Reason: ${event.reason}` : 'No reason provided'} · {event.ruleKeys.join(', ')}. Canonical findings remain unchanged.
+            </Alert>)}
+          </Stack> : null}
+        </Stack> : <ValidationTechnicalEvidence run={run} />}
         <OverrideDialog scope={overrideScope} open={overrideOpen} onClose={() => setOverrideOpen(false)} findings={run.findings.filter((finding) => selectedRules.includes(finding.key))} reason={reason} setReason={setReason} pending={override.isPending} error={override.isError ? errorMessage(override.error) : ''} onSave={() => override.mutate()} />
       </> : null}
     </Stack>
@@ -198,42 +198,6 @@ function overrideEventMatchesRun(event: ValidationOverride, run: ValidationRun):
     event.resultGenerationToken === run.resultGenerationToken && event.resultGenerationVersion === run.resultGenerationVersion &&
     event.resultOutputRevision === run.resultOutputRevision && event.policySchemaVersion === run.policySchemaVersion && event.policyVersion === run.policyVersion &&
     event.policyFingerprint === run.policyFingerprint && Boolean(event.actorSource && event.actorId && event.createdAt && event.ruleKeys.length > 0);
-}
-
-function ValidationFieldEvidence({ finding }: { finding: ValidationFinding }) {
-  const fields = validationPropertyFields(finding);
-  if (fields.length === 0) return '—';
-  return <Stack spacing={0.65}>
-    {fields.map(([name, field]) => {
-      const status = String(field.status ?? 'unverified').toLowerCase();
-      const reason = String(field.reason ?? '').trim();
-      const statusLabel: Record<string, string> = {
-        passed: 'PASS', mismatch: 'FAIL', unverified: 'UNVERIFIED', not_applicable: 'N/A', review_required: 'REVIEW',
-      };
-      const statusColor = status === 'passed' ? 'success' : status === 'mismatch' ? 'error' : status === 'not_applicable' ? 'default' : 'warning';
-      return <Stack key={name} spacing={0.15}>
-        <Stack direction="row" spacing={0.7} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Typography variant="caption" fontWeight={700}>{name}</Typography>
-          <Chip size="small" label={statusLabel[status] ?? status.toUpperCase()} color={statusColor} />
-        </Stack>
-        {['mismatch', 'unverified', 'review_required'].includes(status) && reason ? <Typography variant="caption" color="text.secondary">{reason}</Typography> : null}
-      </Stack>;
-    })}
-  </Stack>;
-}
-
-function validationPropertyFields(finding: ValidationFinding): Array<[string, Record<string, unknown>]> {
-  if (finding.key !== 'video.properties' || !isObjectRecord(finding.actual)) return [];
-  const fields = finding.actual.fields;
-  if (!isObjectRecord(fields)) return [];
-  return Object.entries(fields).reduce<Array<[string, Record<string, unknown>]>>((rows, [name, value]) => {
-    if (isObjectRecord(value)) rows.push([name, value]);
-    return rows;
-  }, []);
-}
-
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function OverrideDialog({ scope, open, onClose, findings, reason, setReason, pending, error, onSave }: {
@@ -271,7 +235,6 @@ function emptyMessage(view: ValidationView) {
 }
 
 function fileNameFromPath(path: string) { return path.split('/').filter(Boolean).pop() ?? path; }
-function displayValue(value: unknown) { return value === undefined ? '—' : typeof value === 'string' ? value : JSON.stringify(value, null, 2); }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : 'The request could not be completed.'; }
 
 function presetName(value: string): string {
