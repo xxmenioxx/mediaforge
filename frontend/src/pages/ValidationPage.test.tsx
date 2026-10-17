@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiRequestError, api } from '../api/client';
-import type { ValidationFinding, ValidationRun, ValidationRunDetail, ValidationSummary } from '../api/types';
+import type { ValidationFinding, ValidationRunDetail, ValidationSummary } from '../api/types';
 import { ValidationPage } from './ValidationPage';
 
 afterEach(() => {
@@ -128,6 +128,9 @@ describe('ValidationPage request errors', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Details' }));
     const detailDialog = await screen.findByRole('dialog');
+    expect(detailDialog.textContent).toContain('Canonical Validation: FAIL');
+    expect(detailDialog.textContent).toContain('Effective Publisher handoff');
+    expect(detailDialog.textContent).toContain('Backend result: BLOCKED');
     await waitFor(() => expect(detailDialog.textContent).toContain('Policy used by this run: Default · sha256:run-policy'));
     expect(detailDialog.textContent).toContain('Current Validation Settings: Strict · different from this run');
     await user.click(within(detailDialog).getByRole('button', { name: 'Skip' }));
@@ -135,14 +138,20 @@ describe('ValidationPage request errors', () => {
     expect(overrideDialog.textContent).toContain('Canonical result: FAIL');
     expect(within(overrideDialog).getByRole('textbox', { name: 'Reason (optional)' })).toBeTruthy();
     await user.click(within(overrideDialog).getByRole('button', { name: 'Skip rule' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Skip validation rule' })).toBeNull());
 
     await waitFor(() => expect(createOverride).toHaveBeenCalledWith({
       jobId: 165, scope: 'rule', reason: '', ruleKeys: ['duration.timeline'], requestedHandoff: 'publisher',
     }));
-    expect(await screen.findByText('Effective handoff: ALLOWED_BY_OVERRIDE')).toBeTruthy();
+    expect(await screen.findByText('ALLOWED BY OVERRIDE')).toBeTruthy();
+    expect(await screen.findByText('Backend result: ALLOWED_BY_OVERRIDE')).toBeTruthy();
     expect(screen.getAllByText('FAIL').length).toBeGreaterThan(0);
     expect(await screen.findByText('SKIPPED')).toBeTruthy();
-    expect(await screen.findByText(/Skipped by local_operator ·/)).toBeTruthy();
+    expect(await screen.findByText(/Manual SKIPPED event by local_operator ·/)).toBeTruthy();
+    await user.click(within(detailDialog).getByRole('tab', { name: 'Technical Evidence' }));
+    const technicalJson = await within(detailDialog).findByLabelText('Validation run JSON');
+    expect(technicalJson.textContent).toContain('"findings"');
+    expect(technicalJson.textContent).toContain('validation-run:test');
   });
 
   it('confirms Skip all with the exact unresolved overrideable rule keys', async () => {
@@ -177,7 +186,7 @@ describe('ValidationPage request errors', () => {
     await waitFor(() => expect(createOverride).toHaveBeenCalledWith({
       jobId: 165, scope: 'all_overrideable', reason: '', ruleKeys: ['duration.timeline', 'video.properties'], requestedHandoff: 'publisher',
     }));
-    expect(await screen.findByText('Effective handoff: ALLOWED_BY_OVERRIDE')).toBeTruthy();
+    expect(await screen.findByText('ALLOWED BY OVERRIDE')).toBeTruthy();
     expect(screen.getAllByText('FAIL').length).toBeGreaterThan(0);
   });
 });
