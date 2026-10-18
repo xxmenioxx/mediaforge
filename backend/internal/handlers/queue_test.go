@@ -1049,7 +1049,7 @@ func TestQueueProfileSnapshotFreezesInterlacedMPEG2FPSForHEVCAutoLevel(t *testin
 	}
 }
 
-func TestQueueProfileSnapshotClearsStaleHEVCForAmbiguousIVTC(t *testing.T) {
+func TestQueueProfileSnapshotClearsStaleHEVCForJob2191IVTC(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:queue-ambiguous-ivtc-hevc-freeze?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -1071,7 +1071,26 @@ func TestQueueProfileSnapshotClearsStaleHEVCForAmbiguousIVTC(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := "/media/raw/ambiguous-ivtc.mkv"
-	scan := ambiguousIVTCScanResult(t, path)
+	scan := job2191AmbiguousIVTCScanResult(t, path)
+	if scan.VideoCodec != "h264" || scan.Width != 1920 || scan.Height != 1080 || len(scan.VideoStreams) != 1 {
+		t.Fatalf("Job #2191 synthetic source metadata changed: %#v", scan)
+	}
+	stream := unknownRecord(scan.VideoStreams[0])
+	if workerStringValue(stream["profile"]) != "High" || workerStringValue(stream["avgFrameRate"]) != "30000/1001" {
+		t.Fatalf("Job #2191 synthetic H.264 stream metadata changed: %#v", stream)
+	}
+	interlaceEvidence, ok := decodeInterlaceAnalysis(scan.InterlaceAnalysis)
+	if !ok || interlaceEvidence.IVTCValidation == nil || interlaceEvidence.IVTCValidation.ValidatedWindows != 1 || len(interlaceEvidence.IVTCValidation.Windows) != 3 || interlaceEvidence.IVTCValidation.SelectedOrder != "" {
+		t.Fatalf("Job #2191 synthetic IVTC evidence must have one validated window and no global selected order: %#v", interlaceEvidence)
+	}
+	cadenceEvidence, ok := decodeCadenceAnalysis(scan.CadenceAnalysis)
+	if !ok || cadenceEvidence.Type != "hard_telecine" || cadenceEvidence.DeclaredFrameRate != "30000/1001" || cadenceEvidence.EffectivePictureRate != "24000/1001" {
+		t.Fatalf("Job #2191 synthetic cadence evidence changed: %#v", cadenceEvidence)
+	}
+	recommendation, ok := decodeCadenceRecommendation(scan.CadenceRecommendation)
+	if !ok || recommendation.Operation != "inverse_telecine" || recommendation.OutputFrameRate != "24000/1001" {
+		t.Fatalf("Job #2191 synthetic cadence recommendation changed: %#v", recommendation)
+	}
 	if err := db.Create(&scan).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -1103,11 +1122,11 @@ func TestQueueProfileSnapshotClearsStaleHEVCForAmbiguousIVTC(t *testing.T) {
 	}
 }
 
-func ambiguousIVTCScanResult(t *testing.T, path string) models.ScanResult {
+func job2191AmbiguousIVTCScanResult(t *testing.T, path string) models.ScanResult {
 	t.Helper()
 	interlace := InterlaceAnalysis{
-		Version: interlaceAnalysisVersion, Codec: "mpeg2video",
-		AverageFrameRate: "30000/1001", RealFrameRate: "60000/1001",
+		Version: interlaceAnalysisVersion, Codec: "h264",
+		AverageFrameRate: "30000/1001", RealFrameRate: "30000/1001",
 		Status: "telecine", FieldOrder: "tt", ContainerFieldOrder: "tt", DetectedFieldOrder: "tff", Confidence: .9,
 		IVTCValidation: &IVTCValidation{
 			TFFProgressive: 1, TFFClassified: 1, TFFProgressiveRatio: 1, ValidatedWindows: 1,
@@ -1118,13 +1137,14 @@ func ambiguousIVTCScanResult(t *testing.T, path string) models.ScanResult {
 		},
 	}
 	cadence := CadenceAnalysis{
-		Version: cadenceAnalysisVersion, Type: "soft_telecine", Pattern: "3:2",
-		DeclaredFrameRate: "30000/1001", EffectivePictureRate: "24000/1001", FrameRateMismatch: true,
-		RepeatPictDetected: true, Confidence: .95, SampleCount: 3, DecisionReason: "soft telecine pattern",
+		Version: cadenceAnalysisVersion, Type: "hard_telecine", Pattern: "3:2",
+		DeclaredFrameRate: "30000/1001", DeclaredFPS: 30000.0 / 1001.0,
+		EffectivePictureRate: "24000/1001", EffectiveFPS: 24000.0 / 1001.0, FrameRateMismatch: true,
+		Confidence: .95, SampleCount: 3, DecisionReason: "hard telecine cadence",
 	}
 	recommendation := CadenceRecommendation{
 		Version: 1, Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .95,
-		Reason: "validated soft-telecine recommendation",
+		Reason: "hard-telecine recommendation; field-order validation remains incomplete",
 	}
 	toMap := func(value any) models.JSONMap {
 		encoded, err := json.Marshal(value)
@@ -1138,10 +1158,10 @@ func ambiguousIVTCScanResult(t *testing.T, path string) models.ScanResult {
 		return result
 	}
 	return models.ScanResult{
-		Path: path, FileName: filepath.Base(path), VideoCodec: "mpeg2video", Width: 1920, Height: 1080, Duration: 90,
+		Path: path, FileName: filepath.Base(path), VideoCodec: "h264", Width: 1920, Height: 1080, Duration: 90,
 		VideoStreams: models.JSONList{models.JSONMap{
-			"index": 0, "codec": "mpeg2video", "width": 1920, "height": 1080,
-			"avgFrameRate": "30000/1001", "realFrameRate": "60000/1001", "fieldOrder": "tt",
+			"index": 0, "codec": "h264", "profile": "High", "width": 1920, "height": 1080,
+			"avgFrameRate": "30000/1001", "realFrameRate": "30000/1001", "fieldOrder": "tt",
 		}},
 		InterlaceAnalysis: toMap(interlace), CadenceAnalysis: toMap(cadence), CadenceRecommendation: toMap(recommendation),
 	}

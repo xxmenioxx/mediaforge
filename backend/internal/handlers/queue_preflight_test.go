@@ -671,7 +671,7 @@ func TestBatchPreflightAllowsReadyOnlyAndRetainsBlockedAssets(t *testing.T) {
 	}
 }
 
-func TestBatchPreflightBlocksUnresolvedHEVCWithActionableCadenceReason(t *testing.T) {
+func TestBatchPreflightBlocksJob2191IVTCWithActionableCadenceReason(t *testing.T) {
 	fixture := newQueuePreflightFixture(t, 1)
 	profile := fixture.profile
 	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
@@ -690,7 +690,7 @@ func TestBatchPreflightBlocksUnresolvedHEVCWithActionableCadenceReason(t *testin
 	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
 		t.Fatal(err)
 	}
-	ambiguous := ambiguousIVTCScanResult(t, fixture.paths[0])
+	ambiguous := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
 	ambiguous.ID = scan.ID
 	if err := fixture.db.Save(&ambiguous).Error; err != nil {
 		t.Fatal(err)
@@ -726,7 +726,7 @@ func TestBatchPreflightBlocksUnresolvedHEVCWithActionableCadenceReason(t *testin
 	}
 }
 
-func TestClaimPreparationBlocksUnresolvedHEVCBeforeExecutionPlanDispatch(t *testing.T) {
+func TestClaimPreparationBlocksJob2191IVTCBeforeExecutionPlanDispatch(t *testing.T) {
 	fixture := newQueuePreflightFixture(t, 1)
 	profile := fixture.profile
 	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
@@ -741,7 +741,7 @@ func TestClaimPreparationBlocksUnresolvedHEVCBeforeExecutionPlanDispatch(t *test
 	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
 		t.Fatal(err)
 	}
-	ambiguous := ambiguousIVTCScanResult(t, fixture.paths[0])
+	ambiguous := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
 	ambiguous.ID = scan.ID
 	if err := fixture.db.Save(&ambiguous).Error; err != nil {
 		t.Fatal(err)
