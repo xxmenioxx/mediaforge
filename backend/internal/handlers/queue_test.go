@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1045,6 +1046,104 @@ func TestQueueProfileSnapshotFreezesInterlacedMPEG2FPSForHEVCAutoLevel(t *testin
 	decision := effectiveVideoDecision(restored)
 	if workerStringValue(decision["effectiveFrameRate"]) != "30000/1001" || workerStringValue(restored.WorkerConfig["hevcLevelEffective"]) != workerStringValue(prepared.WorkerConfig["hevcLevelEffective"]) {
 		t.Fatalf("frozen Queue profile lost cadence or HEVC Auto Level decisions: %#v", restored.WorkerConfig)
+	}
+}
+
+func TestQueueProfileSnapshotClearsStaleHEVCForAmbiguousIVTC(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:queue-ambiguous-ivtc-hevc-freeze?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.Profile{}, &models.QueueJob{}, &models.ScanResult{}, &models.SchedulerReservation{}); err != nil {
+		t.Fatal(err)
+	}
+	profile := authoritativeTestProfile()
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["hevcLevelMode"] = "auto"
+	profile.WorkerConfig["hevcLevelEffective"] = "4.0"
+	profile.WorkerConfig["hevcLevelTier"] = "main"
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionResolved
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = "historical-fingerprint"
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/media/raw/ambiguous-ivtc.mkv"
+	scan := ambiguousIVTCScanResult(t, path)
+	if err := db.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job := models.QueueJob{MediaPath: path, Status: JobStatusQueued}
+	if err := NewQueueHandler(db).captureProfile(&job, profile.ID, "queue_create"); err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := frozen.WorkerConfig
+	if !profileWorkerBool(frozen, "effectiveOutputFrameRateUnknown", false) || workerStringValue(config["effectiveOutputFrameRate"]) != "" {
+		t.Fatalf("ambiguous IVTC did not remain FPS-unknown in Queue snapshot: %#v", config)
+	}
+	if workerStringValue(config["hevcLevelEffective"]) != "" || workerStringValue(config["hevcLevelTier"]) != "" || workerStringValue(config["hevcLevelResolutionState"]) != hevcLevelResolutionUnresolved {
+		t.Fatalf("Queue snapshot retained a stale resolved HEVC decision: %#v", config)
+	}
+	if _, ok := config["hevcLevelInputFingerprint"]; ok {
+		t.Fatalf("Queue snapshot retained a stale HEVC fingerprint: %#v", config)
+	}
+	if filters := workerStringValue(config["videoFilters"]); strings.Contains(filters, "fieldmatch=") || strings.Contains(filters, "decimate") {
+		t.Fatalf("ambiguous IVTC unexpectedly froze an IVTC filter chain: %q", filters)
+	}
+	warning := workerStringValue(config["hevcLevelResolutionWarning"])
+	if !strings.Contains(warning, "effective output FPS is unknown") || !strings.Contains(warning, "explicit or validated field order") {
+		t.Fatalf("Queue snapshot omitted the actionable HEVC/cadence cause: %q", warning)
+	}
+}
+
+func ambiguousIVTCScanResult(t *testing.T, path string) models.ScanResult {
+	t.Helper()
+	interlace := InterlaceAnalysis{
+		Version: interlaceAnalysisVersion, Codec: "mpeg2video",
+		AverageFrameRate: "30000/1001", RealFrameRate: "60000/1001",
+		Status: "telecine", FieldOrder: "tt", ContainerFieldOrder: "tt", DetectedFieldOrder: "tff", Confidence: .9,
+		IVTCValidation: &IVTCValidation{
+			TFFProgressive: 1, TFFClassified: 1, TFFProgressiveRatio: 1, ValidatedWindows: 1,
+			Windows: []IVTCWindowValidation{
+				{Start: 0, TFFProgressiveRatio: 1, SelectedOrder: "tff", Confidence: .9},
+				{Start: 30}, {Start: 60},
+			},
+		},
+	}
+	cadence := CadenceAnalysis{
+		Version: cadenceAnalysisVersion, Type: "soft_telecine", Pattern: "3:2",
+		DeclaredFrameRate: "30000/1001", EffectivePictureRate: "24000/1001", FrameRateMismatch: true,
+		RepeatPictDetected: true, Confidence: .95, SampleCount: 3, DecisionReason: "soft telecine pattern",
+	}
+	recommendation := CadenceRecommendation{
+		Version: 1, Operation: "inverse_telecine", OutputFrameRate: "24000/1001", Confidence: .95,
+		Reason: "validated soft-telecine recommendation",
+	}
+	toMap := func(value any) models.JSONMap {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result models.JSONMap
+		if err := json.Unmarshal(encoded, &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	return models.ScanResult{
+		Path: path, FileName: filepath.Base(path), VideoCodec: "mpeg2video", Width: 1920, Height: 1080, Duration: 90,
+		VideoStreams: models.JSONList{models.JSONMap{
+			"index": 0, "codec": "mpeg2video", "width": 1920, "height": 1080,
+			"avgFrameRate": "30000/1001", "realFrameRate": "60000/1001", "fieldOrder": "tt",
+		}},
+		InterlaceAnalysis: toMap(interlace), CadenceAnalysis: toMap(cadence), CadenceRecommendation: toMap(recommendation),
 	}
 }
 
@@ -2482,7 +2581,14 @@ func TestQueueSelectedAssetsCommitPreservesPartialSuccessIntentAndNaturalOrder(t
 		t.Fatal(err)
 	}
 	for _, record := range records[:2] {
-		if err := db.Create(&models.ScanResult{Path: record.Path, VideoStreams: models.JSONList{map[string]any{"index": 0}}, AudioStreams: models.JSONList{map[string]any{"index": 1, "default": true}}}).Error; err != nil {
+		if err := db.Create(&models.ScanResult{
+			Path: record.Path, VideoCodec: "h264", Width: 1920, Height: 1080,
+			VideoStreams:          models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 1920, "height": 1080, "avgFrameRate": "24/1", "fieldOrder": "progressive"}},
+			AudioStreams:          models.JSONList{map[string]any{"index": 1, "default": true}},
+			InterlaceAnalysis:     models.JSONMap{"version": float64(interlaceAnalysisVersion), "status": "progressive"},
+			CadenceAnalysis:       models.JSONMap{"version": float64(cadenceAnalysisVersion), "type": "native"},
+			CadenceRecommendation: models.JSONMap{"version": 1.0, "operation": "preserve"},
+		}).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2676,7 +2782,14 @@ func TestAcceptedSelectedQueueJobFreezesReviewedConfigurationOnce(t *testing.T) 
 	if err := db.Create(&models.AssetScopeConfiguration{ScopeType: assetScopeLogicalGroup, ScopeKey: sourceDir, DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.ScanResult{Path: mediaPath, VideoCodec: "h264", Width: 720, Height: 480, VideoStreams: models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 720, "height": 480}}, SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "eng", "title": "Full"}}}).Error; err != nil {
+	if err := db.Create(&models.ScanResult{
+		Path: mediaPath, VideoCodec: "h264", Width: 720, Height: 480,
+		VideoStreams:          models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 720, "height": 480, "avgFrameRate": "24/1", "fieldOrder": "progressive"}},
+		InterlaceAnalysis:     models.JSONMap{"version": float64(interlaceAnalysisVersion), "status": "progressive"},
+		CadenceAnalysis:       models.JSONMap{"version": float64(cadenceAnalysisVersion), "type": "native"},
+		CadenceRecommendation: models.JSONMap{"version": 1.0, "operation": "preserve"},
+		SubtitleStreams:       models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "eng", "title": "Full"}},
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.AppSetting{Key: "trackProfiles", Value: models.JSONMap{"profiles": models.JSONList{models.JSONMap{
@@ -2962,6 +3075,31 @@ func queueSelectedAssetsPreflightRequest(t *testing.T, db *gorm.DB, method, path
 
 func createQueueSelectedAssetsPreflight(t *testing.T, db *gorm.DB, assetIDs []uint) QueueBatchPreflightResponse {
 	t.Helper()
+	for _, assetID := range assetIDs {
+		var record models.AssetRecord
+		if err := db.First(&record, assetID).Error; err != nil {
+			t.Fatal(err)
+		}
+		var scan models.ScanResult
+		if err := db.Where("path = ?", record.Path).First(&scan).Error; err == nil {
+			continue
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatal(err)
+		}
+		scan = models.ScanResult{
+			Path: record.Path, FileName: filepath.Base(record.Path), VideoCodec: "h264", Width: 1920, Height: 1080,
+			VideoStreams: models.JSONList{models.JSONMap{
+				"index": 0, "codec": "h264", "width": 1920, "height": 1080,
+				"avgFrameRate": "24/1", "realFrameRate": "24/1", "fieldOrder": "progressive",
+			}},
+			InterlaceAnalysis:     models.JSONMap{"version": float64(interlaceAnalysisVersion), "status": "progressive"},
+			CadenceAnalysis:       models.JSONMap{"version": float64(cadenceAnalysisVersion), "type": "native"},
+			CadenceRecommendation: models.JSONMap{"version": 1.0, "operation": "preserve"},
+		}
+		if err := db.Create(&scan).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	response := queueSelectedAssetsPreflightRequest(t, db, http.MethodPost, "/api/queue/preflights/selected-assets", map[string]any{"assetIds": assetIDs})
 	if response.Code != http.StatusCreated {
 		t.Fatalf("preflight status=%d body=%s", response.Code, response.Body.String())

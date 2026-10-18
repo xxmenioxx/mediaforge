@@ -58,9 +58,18 @@ func resolveQueuePreflightEffectiveProfile(profile models.Profile, selectedEncod
 	if mediaProcessingMode(profile) != ProcessingModeFullEncode {
 		return resolveEffectiveVideoEncodingProfile(profile, streams, path)
 	}
-	interlace, _ := decodeInterlaceAnalysis(profile.WorkerConfig[interlaceAnalysisSnapshotKey])
-	cadence, _ := decodeCadenceAnalysis(profile.WorkerConfig[cadenceAnalysisSnapshotKey])
-	recommendation, ok := decodeCadenceRecommendation(profile.WorkerConfig[cadenceRecommendationSnapshotKey])
+	interlace, ok := decodeInterlaceAnalysis(scan.InterlaceAnalysis)
+	if !ok {
+		interlace, _ = decodeInterlaceAnalysis(profile.WorkerConfig[interlaceAnalysisSnapshotKey])
+	}
+	cadence, ok := decodeCadenceAnalysis(scan.CadenceAnalysis)
+	if !ok {
+		cadence, _ = decodeCadenceAnalysis(profile.WorkerConfig[cadenceAnalysisSnapshotKey])
+	}
+	recommendation, ok := decodeCadenceRecommendation(scan.CadenceRecommendation)
+	if !ok {
+		recommendation, ok = decodeCadenceRecommendation(profile.WorkerConfig[cadenceRecommendationSnapshotKey])
+	}
 	if !ok {
 		recommendation = recommendCadence(cadence)
 	}
@@ -907,6 +916,13 @@ func (h QueueHandler) resolveQueueBatchPreflight(input QueueBatchPreflightInput,
 						item.Warnings = append(item.Warnings, assessment.Explanation)
 					}
 				}
+			}
+		}
+		if normalizeQueueProcessingMode(job.ProcessingMode) == ProcessingModeFullEncode {
+			if err := hevcLevelPlanningError(profile); err != nil {
+				item.Blockers = append(item.Blockers, err.Error())
+				state.Assets = append(state.Assets, item)
+				continue
 			}
 		}
 		var library models.Library

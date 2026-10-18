@@ -179,6 +179,35 @@ func TestHEVCLevelUnknownCustomFPSDoesNotFallbackToSource(t *testing.T) {
 	}
 }
 
+func TestHEVCLevelUnknownEffectiveFPSClearsStaleDecisionAndFingerprint(t *testing.T) {
+	profile := models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+		"videoEncoder": "hevc_qsv", "hevcLevelMode": "auto",
+		"hevcLevelEffective": "4.0", "hevcLevelTier": "main",
+		"hevcLevelResolutionState":  hevcLevelResolutionResolved,
+		"hevcLevelInputFingerprint": "stale-fingerprint",
+		"hevcLevelRecommendation":   HEVCLevelRecommendation{RecommendedLevel: "4.0", Fingerprint: "stale-fingerprint", FPS: 29.97},
+		"effectiveOutputFrameRate":  "24000/1001", "effectiveOutputFrameRateUnknown": true,
+		"cadenceResolutionWarning": "inverse telecine is unresolved because an explicit or validated field order is required; review required",
+	}}
+	resolved := resolveHEVCLevel(profile, MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "30000/1001"}}})
+	warning := workerStringValue(resolved.WorkerConfig["hevcLevelResolutionWarning"])
+	if workerStringValue(resolved.WorkerConfig["hevcLevelEffective"]) != "" || workerStringValue(resolved.WorkerConfig["hevcLevelTier"]) != "" || workerStringValue(resolved.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionUnresolved {
+		t.Fatalf("unknown effective FPS retained a resolved HEVC decision: %#v", resolved.WorkerConfig)
+	}
+	if _, ok := resolved.WorkerConfig["hevcLevelInputFingerprint"]; ok {
+		t.Fatalf("unknown effective FPS retained an HEVC input fingerprint: %#v", resolved.WorkerConfig)
+	}
+	if _, ok := resolved.WorkerConfig["hevcLevelRecommendation"]; ok {
+		t.Fatalf("unknown effective FPS retained a stale Level recommendation: %#v", resolved.WorkerConfig)
+	}
+	if !strings.Contains(warning, "effective output FPS is unknown") || strings.Contains(warning, "geometry") || !strings.Contains(warning, "explicit or validated field order") {
+		t.Fatalf("unknown FPS diagnostic did not identify its cause: %q", warning)
+	}
+	if err := hevcLevelPlanningError(resolved); err == nil || !strings.Contains(err.Error(), "effective output FPS is unknown") {
+		t.Fatalf("unresolved HEVC decision did not block planning actionably: %v", err)
+	}
+}
+
 func TestHEVCLevelGeometryClassificationIsConservative(t *testing.T) {
 	streams := MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "24000/1001"}}}
 	for _, test := range []struct {
@@ -226,7 +255,8 @@ func TestHEVCLevelResolutionClearsDerivedStateBetweenPasses(t *testing.T) {
 		profile.WorkerConfig = cloneWorkerConfig(base.WorkerConfig)
 		profile.WorkerConfig["videoFilters"] = "zscale=w=1280:h=720"
 		profile = resolveHEVCLevel(profile, streams)
-		if !profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) || workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]) == "" {
+		warning := workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"])
+		if !profileWorkerBool(profile, "effectiveOutputGeometryUnknown", false) || !strings.Contains(warning, "effective output geometry is unknown") || strings.Contains(warning, "effective output FPS") {
 			t.Fatalf("first pass did not remain unresolved: %#v", profile.WorkerConfig)
 		}
 		profile.WorkerConfig["videoFilters"] = "scale=1280:720"

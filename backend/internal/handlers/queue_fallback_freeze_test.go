@@ -543,8 +543,11 @@ func queueCreationFreezeFixture(t *testing.T, fallback bool) (*gorm.DB, string, 
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.ScanResult{Path: path, VideoCodec: "h264", Width: 720, Height: 480,
-		VideoStreams:    models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 720, "height": 480}},
-		SubtitleStreams: models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "eng", "title": "Full"}},
+		VideoStreams:          models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 720, "height": 480, "avgFrameRate": "24/1", "fieldOrder": "progressive"}},
+		InterlaceAnalysis:     models.JSONMap{"version": float64(interlaceAnalysisVersion), "status": "progressive"},
+		CadenceAnalysis:       models.JSONMap{"version": float64(cadenceAnalysisVersion), "type": "native"},
+		CadenceRecommendation: models.JSONMap{"version": 1.0, "operation": "preserve"},
+		SubtitleStreams:       models.JSONList{map[string]any{"index": 4, "codec": "ass", "language": "eng", "title": "Full"}},
 	}).Error; err != nil {
 		t.Fatal(err)
 	}

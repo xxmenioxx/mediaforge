@@ -644,6 +644,15 @@ func (h WorkerHandler) prepareClaimedQueueJob(job models.QueueJob) (models.Queue
 	if !queueJobFreezeComplete(prepared) {
 		return job, fmt.Errorf("claim-time queue freeze is incomplete")
 	}
+	if normalizeQueueProcessingMode(prepared.ProcessingMode) == ProcessingModeFullEncode {
+		frozenProfile, err := scheduler.RestoreProfileSnapshot(prepared.ProfileSnapshot)
+		if err != nil {
+			return job, fmt.Errorf("restore claim-time frozen video profile: %w", err)
+		}
+		if err := hevcLevelPlanningError(frozenProfile); err != nil {
+			return job, fmt.Errorf("claim-time Queue HEVC preflight: %w", err)
+		}
+	}
 
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		var current models.QueueJob
