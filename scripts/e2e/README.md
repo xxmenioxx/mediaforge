@@ -31,6 +31,11 @@ Validation and Publisher itself after verifying each prior stage. If QueueJob
 does not finish, the bounded evidence includes its persisted ExecutionPlan and
 review decision so a waiting policy is visible in CI.
 
+The temporary runtime policy uses `desktop_safe` with zero minimum disk
+reserves and permits direct workspace fallback. This keeps a synthetic run
+independent of NAS detection and CI runner free-space reserves; all paths still
+resolve below the one `/media` sandbox mount.
+
 On success, the run container and temporary root are removed. On failure, the
 container and sandbox are removed while bounded JSON summaries and logs remain
 under the printed `evidence/` path. CI uploads only that directory on failure,

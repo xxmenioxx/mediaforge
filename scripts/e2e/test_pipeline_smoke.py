@@ -52,6 +52,19 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
         self.assertFalse(settings["publisherOverwriteEnabled"])
         self.assertFalse(settings["publishedJobReconciliationEnabled"])
 
+    def test_runtime_and_workspace_policy_are_portable_for_synthetic_storage(self) -> None:
+        runtime = pipeline_smoke.SYNTHETIC_RUNTIME_POLICY
+        self.assertEqual(runtime["mode"], "manual")
+        self.assertEqual(runtime["preferredProfile"], "desktop_safe")
+        limits = runtime["overrides"]["desktop_safe"]
+        self.assertEqual(limits["minFreeWorkGb"], 0)
+        self.assertEqual(limits["minFreeLibraryGb"], 0)
+        self.assertTrue(limits["allowDirectMode"])
+        workspace = pipeline_smoke.SYNTHETIC_WORKSPACE_SETTINGS
+        self.assertEqual(workspace["preferredMode"], "copy_to_work_disk")
+        self.assertEqual(workspace["fallbackMode"], "direct")
+        self.assertTrue(workspace["allowDirectMode"])
+
     def test_plan_summary_preserves_blocking_state_and_decision_evidence(self) -> None:
         summary = pipeline_smoke.extract_plan_summary([{
             "id": 7,

@@ -36,6 +36,25 @@ PIPELINE_AUTOMATION_SETTINGS = {
     "publishedJobReconciliationEnabled": False,
     "forceFreshSnapshotBeforeExecution": False,
 }
+SYNTHETIC_RUNTIME_POLICY = {
+    "schemaVersion": 2,
+    "mode": "manual",
+    "preferredProfile": "desktop_safe",
+    "fallbackProfile": "desktop_safe",
+    "overrides": {
+        "desktop_safe": {
+            "minFreeWorkGb": 0,
+            "minFreeLibraryGb": 0,
+            "allowDirectMode": True,
+        },
+    },
+}
+SYNTHETIC_WORKSPACE_SETTINGS = {
+    "preferredMode": "copy_to_work_disk",
+    "fallbackMode": "direct",
+    "allowDirectMode": True,
+    "estimateRequiredSpace": True,
+}
 
 
 class SmokeFailure(RuntimeError):
@@ -495,6 +514,16 @@ def run_smoke(args: argparse.Namespace) -> int:
             "POST", "/api/settings/pipelineAutomation", expected=(200,),
             evidence_name="pipeline-automation-setting.json",
             payload={"value": PIPELINE_AUTOMATION_SETTINGS},
+        )
+        api.request(
+            "POST", "/api/settings/runtimePolicy", expected=(200,),
+            evidence_name="runtime-policy-setting.json",
+            payload={"value": SYNTHETIC_RUNTIME_POLICY},
+        )
+        api.request(
+            "POST", "/api/settings/workspace", expected=(200,),
+            evidence_name="workspace-setting.json",
+            payload={"value": SYNTHETIC_WORKSPACE_SETTINGS},
         )
 
         log("phase=queue-and-wait-for-real-worker")
