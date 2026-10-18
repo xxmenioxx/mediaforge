@@ -391,19 +391,38 @@ func resolveHEVCLevel(profile models.Profile, streams MediaStreamInventory) mode
 			delete(profile.WorkerConfig, "effectiveOutputHeight")
 			profile.WorkerConfig["effectiveOutputGeometryUnknown"] = true
 		}
+	} else {
+		profile.WorkerConfig["effectiveOutputGeometryUnknown"] = true
 	}
 	constraint := freezeHEVCRateConstraint(&profile)
 	fps := parseFrameRateValue(workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]))
-	if fps <= 0 && !profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) {
+	fpsUnknown := profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false)
+	if fps <= 0 && !fpsUnknown {
 		fps = parseFrameRateValue(source.FrameRate)
 	}
-	inputsSufficient := len(streams.Video) > 0 && geometryKnown && fps > 0 && !profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false)
+	fpsKnown := fps > 0 && !fpsUnknown
+	inputsSufficient := len(streams.Video) > 0 && geometryKnown && fpsKnown
 	fingerprint := hevcLevelFingerprint(width, height, fps, profile, constraint)
-	profile.WorkerConfig["hevcLevelInputFingerprint"] = fingerprint
 	if !inputsSufficient {
-		profile.WorkerConfig["hevcLevelResolutionWarning"] = "HEVC Level/Tier is unresolved because current effective output geometry or FPS is unavailable."
+		unknownInputs := make([]string, 0, 2)
+		if !geometryKnown {
+			unknownInputs = append(unknownInputs, "effective output geometry is unknown")
+		}
+		if !fpsKnown {
+			unknownInputs = append(unknownInputs, "effective output FPS is unknown")
+		}
+		warning := "HEVC Level/Tier is unresolved because " + strings.Join(unknownInputs, " and ") + "."
+		if !fpsKnown {
+			if cadenceWarning := strings.TrimSpace(workerStringValue(profile.WorkerConfig["cadenceResolutionWarning"])); cadenceWarning != "" {
+				warning += " Cadence resolution: " + strings.TrimSuffix(cadenceWarning, ".") + "."
+			}
+		}
+		delete(profile.WorkerConfig, "hevcLevelInputFingerprint")
+		delete(profile.WorkerConfig, "hevcLevelRecommendation")
+		profile.WorkerConfig["hevcLevelResolutionWarning"] = warning
 		return profile
 	}
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = fingerprint
 	if mode == "custom" && encoder == "libx265" && !constraint.ExplicitVBVPair {
 		profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionIncompatible
 		profile.WorkerConfig["hevcLevelResolutionWarning"] = "Explicit x265 HEVC Level requires explicit vbv-maxrate and vbv-bufsize for deterministic Level enforcement; command planning is blocked."

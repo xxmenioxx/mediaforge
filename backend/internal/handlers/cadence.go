@@ -374,7 +374,7 @@ func profileWithCadenceOutputDecision(profile models.Profile, analysis CadenceAn
 		} else {
 			delete(profile.WorkerConfig, "effectiveOutputFrameRate")
 			profile.WorkerConfig["effectiveOutputFrameRateUnknown"] = true
-			profile.WorkerConfig["cadenceResolutionWarning"] = "inverse telecine requires an explicit or validated field order; review required"
+			profile.WorkerConfig["cadenceResolutionWarning"] = "inverse telecine is unresolved because an explicit or validated field order is required; review required"
 			delete(profile.WorkerConfig, "effectiveCadenceOperation")
 			profile.WorkerConfig["effectiveResidualCombingFallback"] = "none"
 			delete(profile.WorkerConfig, "effectiveCadenceFieldOrder")

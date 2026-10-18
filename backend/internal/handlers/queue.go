@@ -2285,6 +2285,7 @@ func (h QueueHandler) freezeResolvedRestorationSnapshot(snapshot models.JSONMap,
 	} else {
 		profile = resolveRestorationPlan(profile, nil)
 	}
+	profile = resolveHEVCLevel(profile, streams)
 	snapshot["workerConfig"] = cloneWorkerConfig(profile.WorkerConfig)
 	return nil
 }

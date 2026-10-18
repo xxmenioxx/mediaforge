@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -52,6 +53,19 @@ func newQueuePreflightFixtureWithDB(t *testing.T, sourceCount int, db *gorm.DB) 
 		}
 		record := models.AssetRecord{Path: path, RootPath: sourceRoot, GroupPath: filepath.Base(sourceRoot), FileName: filepath.Base(path), Status: "unprocessed"}
 		if err := db.Create(&record).Error; err != nil {
+			t.Fatal(err)
+		}
+		scan := models.ScanResult{
+			Path: path, FileName: filepath.Base(path), VideoCodec: "h264", Width: 1920, Height: 1080,
+			VideoStreams: models.JSONList{models.JSONMap{
+				"index": 0, "codec": "h264", "width": 1920, "height": 1080,
+				"avgFrameRate": "24/1", "realFrameRate": "24/1", "fieldOrder": "progressive",
+			}},
+			InterlaceAnalysis:     models.JSONMap{"version": float64(interlaceAnalysisVersion), "status": "progressive"},
+			CadenceAnalysis:       models.JSONMap{"version": float64(cadenceAnalysisVersion), "type": "native"},
+			CadenceRecommendation: models.JSONMap{"version": 1.0, "operation": "preserve"},
+		}
+		if err := db.Create(&scan).Error; err != nil {
 			t.Fatal(err)
 		}
 		paths = append(paths, path)
@@ -521,7 +535,20 @@ func addQueuePreflightBitrateScan(t *testing.T, db *gorm.DB, path string, bitrat
 		}}, AudioStreams: models.JSONList{}, RawProbe: models.JSONMap{},
 	}
 	stampSnapshotCacheMetadata(&scan, path, info)
-	if err := db.Create(&scan).Error; err != nil {
+	var existing models.ScanResult
+	if err := db.Where("path = ?", path).First(&existing).Error; err == nil {
+		scan.ID = existing.ID
+		scan.InterlaceAnalysis = existing.InterlaceAnalysis
+		scan.CadenceAnalysis = existing.CadenceAnalysis
+		scan.CadenceRecommendation = existing.CadenceRecommendation
+		if err := db.Save(&scan).Error; err != nil {
+			t.Fatal(err)
+		}
+	} else if errors.Is(err, gorm.ErrRecordNotFound) {
+		if err := db.Create(&scan).Error; err != nil {
+			t.Fatal(err)
+		}
+	} else {
 		t.Fatal(err)
 	}
 }
@@ -641,6 +668,109 @@ func TestBatchPreflightAllowsReadyOnlyAndRetainsBlockedAssets(t *testing.T) {
 	}
 	if partial.Status != models.QueueBatchPreflightStatusActive || queued != 1 || blocked != 1 {
 		t.Fatalf("partial acceptance did not retain unresolved batch context: %#v", partial.Assets)
+	}
+}
+
+func TestBatchPreflightBlocksJob2191IVTCWithActionableCadenceReason(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	profile := fixture.profile
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["hevcLevelMode"] = "auto"
+	profile.WorkerConfig["hevcLevelEffective"] = "4.0"
+	profile.WorkerConfig["hevcLevelTier"] = "main"
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionResolved
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = "historical-fingerprint"
+	if err := fixture.db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var scan models.ScanResult
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
+	ambiguous.ID = scan.ID
+	if err := fixture.db.Save(&ambiguous).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	input := queuePreflightInput(fixture, "Unresolved HEVC")
+	created := queuePreflightRequest(t, queuePreflightRouter(fixture.db), http.MethodPost, "/preflights", input)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightBlocked {
+		if len(candidate.Assets) != 1 {
+			t.Fatalf("preflight returned %d assets, want one", len(candidate.Assets))
+		}
+		asset := candidate.Assets[0]
+		var config models.JSONMap
+		if asset.Plan != nil {
+			config = unknownRecord(asset.Plan.ProfileSnapshot["workerConfig"])
+		}
+		t.Fatalf("unresolved HEVC plan was marked %q: blockers=%v state=%q fpsUnknown=%v warning=%q", asset.Status, asset.Blockers, workerStringValue(config["hevcLevelResolutionState"]), profileWorkerBool(models.Profile{WorkerConfig: config}, "effectiveOutputFrameRateUnknown", false), workerStringValue(config["hevcLevelResolutionWarning"]))
+	}
+	blocker := strings.Join(candidate.Assets[0].Blockers, " ")
+	if !strings.Contains(blocker, "HEVC Level/Tier decision is unresolved") || !strings.Contains(blocker, "effective output FPS is unknown") || !strings.Contains(blocker, "explicit or validated field order") {
+		t.Fatalf("preflight blocker omitted the actionable IVTC cause: %q", blocker)
+	}
+	var jobs int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&jobs).Error; err != nil || jobs != 0 {
+		t.Fatalf("blocked preflight created Queue jobs: count=%d err=%v", jobs, err)
+	}
+}
+
+func TestClaimPreparationBlocksJob2191IVTCBeforeExecutionPlanDispatch(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	profile := fixture.profile
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["hevcLevelMode"] = "auto"
+	if err := fixture.db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var scan models.ScanResult
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
+	ambiguous.ID = scan.ID
+	if err := fixture.db.Save(&ambiguous).Error; err != nil {
+		t.Fatal(err)
+	}
+	var record models.AssetRecord
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	recordID := record.ID
+	job := models.QueueJob{
+		MediaPath: fixture.paths[0], SourceAssetRecordID: &recordID, LibraryID: fixture.library.ID,
+		ProfileID: profile.ID, ProcessingMode: ProcessingModeFullEncode, Status: JobStatusRunning, Stage: JobStageClaimed,
+	}
+	if err := fixture.db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewWorkerHandler(fixture.db).prepareClaimedQueueJob(job); err == nil || !strings.Contains(err.Error(), "explicit or validated field order") {
+		t.Fatalf("claim preparation did not reject unresolved HEVC before plan creation: %v", err)
+	}
+	var plans int64
+	if err := fixture.db.Model(&models.ExecutionPlan{}).Where("job_id = ?", job.ID).Count(&plans).Error; err != nil || plans != 0 {
+		t.Fatalf("unresolved Queue job created an execution plan: count=%d err=%v", plans, err)
+	}
+	var stored models.QueueJob
+	if err := fixture.db.First(&stored, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if queueJobFreezeComplete(stored) || stored.ActiveExecutionPlanID != nil {
+		t.Fatalf("unresolved Queue job persisted a dispatched freeze: %#v", stored)
 	}
 }
 

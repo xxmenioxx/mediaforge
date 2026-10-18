@@ -435,6 +435,8 @@ func TestExplicitInverseTelecineRequiresValidatedFieldOrderAndRenderedChain(t *t
 		{name: "explicit tff wins over validated bff", fieldOrder: "tff", analysis: InterlaceAnalysis{Status: "telecine", IVTCValidation: &IVTCValidation{SelectedOrder: "bff"}}, wantOrder: "tff", wantEffectiveRate: "24000/1001", wantProgressive: true, wantFilter: true},
 		{name: "explicit bff", fieldOrder: "bff", wantOrder: "bff", wantEffectiveRate: "24000/1001", wantProgressive: true, wantFilter: true},
 		{name: "validated ivtc detection", fieldOrder: "auto", analysis: InterlaceAnalysis{Status: "telecine", IVTCValidation: &IVTCValidation{SelectedOrder: "bff"}}, wantOrder: "bff", wantEffectiveRate: "24000/1001", wantProgressive: true, wantFilter: true},
+		{name: "three validated windows select order", fieldOrder: "auto", analysis: InterlaceAnalysis{Status: "telecine", IVTCValidation: &IVTCValidation{ValidatedWindows: 3, SelectedOrder: "tff", Windows: []IVTCWindowValidation{{SelectedOrder: "tff"}, {SelectedOrder: "tff"}, {SelectedOrder: "tff"}}}}, wantOrder: "tff", wantEffectiveRate: "24000/1001", wantProgressive: true, wantFilter: true},
+		{name: "one of three windows cannot select order", fieldOrder: "auto", analysis: InterlaceAnalysis{Status: "telecine", FieldOrder: "tt", ContainerFieldOrder: "tt", DetectedFieldOrder: "tff", IVTCValidation: &IVTCValidation{ValidatedWindows: 1, Windows: []IVTCWindowValidation{{SelectedOrder: "tff"}, {}, {}}}}, wantOrder: "", wantEffectiveRate: "", wantProgressive: false, wantFilter: false},
 		{name: "generic interlace detection is insufficient", fieldOrder: "auto", analysis: InterlaceAnalysis{DetectedFieldOrder: "tff"}, wantOrder: "", wantEffectiveRate: "", wantProgressive: false, wantFilter: false},
 	}
 	for _, test := range tests {
@@ -461,8 +463,8 @@ func TestExplicitInverseTelecineRequiresValidatedFieldOrderAndRenderedChain(t *t
 			if got := workerStringValue(resolved.WorkerConfig["effectiveResidualCombingFallback"]); got != wantFallback {
 				t.Fatalf("residual fallback=%q want %q", got, wantFallback)
 			}
-			if test.wantOrder == "" && workerStringValue(resolved.WorkerConfig["cadenceResolutionWarning"]) == "" {
-				t.Fatalf("missing review warning: %#v", resolved.WorkerConfig)
+			if test.wantOrder == "" && !strings.Contains(workerStringValue(resolved.WorkerConfig["cadenceResolutionWarning"]), "explicit or validated field order") {
+				t.Fatalf("missing actionable field-order warning: %#v", resolved.WorkerConfig)
 			}
 		})
 	}
