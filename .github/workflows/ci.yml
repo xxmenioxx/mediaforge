@@ -4,13 +4,48 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 # Keep every job on this fixed Ubuntu image for comparable CI results.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  select:
+    name: Select CI checks
+    runs-on: ubuntu-24.04
+    outputs:
+      full: ${{ steps.routes.outputs.full }}
+      backend: ${{ steps.routes.outputs.backend }}
+      frontend: ${{ steps.routes.outputs.frontend }}
+      containers: ${{ steps.routes.outputs.containers }}
+      compliance: ${{ steps.routes.outputs.compliance }}
+      ci_backend_image: ${{ steps.routes.outputs.ci_backend_image }}
+      web_image: ${{ steps.routes.outputs.web_image }}
+      smoke: ${{ steps.routes.outputs.smoke }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Test CI path selection
+        run: python3 scripts/ci/test_select_ci_jobs.py
+      - name: Select checks from changed paths
+        id: routes
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+        run: python3 scripts/ci/select_ci_jobs.py
+
   compliance:
+    needs: select
+    if: ${{ !cancelled() && (needs.select.result != 'success' || needs.select.outputs.compliance == 'true') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -30,6 +65,8 @@ jobs:
         run: ./scripts/verify-compliance.sh
 
   backend:
+    needs: select
+    if: ${{ !cancelled() && (needs.select.result != 'success' || needs.select.outputs.backend == 'true') }}
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -45,6 +82,8 @@ jobs:
       - run: go vet ./...
 
   frontend:
+    needs: select
+    if: ${{ !cancelled() && (needs.select.result != 'success' || needs.select.outputs.frontend == 'true') }}
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -63,20 +102,25 @@ jobs:
       - run: npm run build
 
   containers:
+    needs: select
+    if: ${{ !cancelled() && (needs.select.result != 'success' || needs.select.outputs.containers == 'true') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Record starting runner storage
         run: ./scripts/ci/runner-disk-capacity.sh report "after checkout"
       - name: Reclaim unused GitHub-hosted toolchains
-        if: ${{ runner.environment == 'github-hosted' }}
+        if: ${{ runner.environment == 'github-hosted' && (needs.select.result != 'success' || needs.select.outputs.ci_backend_image == 'true' || needs.select.outputs.web_image == 'true') }}
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: ./scripts/ci/runner-disk-capacity.sh reclaim
       - uses: docker/setup-buildx-action@v4.4.1
+        if: ${{ needs.select.result != 'success' || needs.select.outputs.ci_backend_image == 'true' || needs.select.outputs.web_image == 'true' }}
       - name: Check storage before backend image build
+        if: ${{ needs.select.result != 'success' || needs.select.outputs.ci_backend_image == 'true' }}
         run: ./scripts/ci/runner-disk-capacity.sh check "before backend build" --buildkit
       - name: Build backend image
+        if: ${{ needs.select.result != 'success' || needs.select.outputs.ci_backend_image == 'true' }}
         uses: docker/build-push-action@v7.4.0
         with:
           context: ./backend
@@ -85,15 +129,18 @@ jobs:
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
       - name: Record storage after backend image build
-        if: ${{ always() }}
+        if: ${{ always() && (needs.select.result != 'success' || needs.select.outputs.ci_backend_image == 'true') }}
         run: ./scripts/ci/runner-disk-capacity.sh report "after backend build" --buildkit
-      - name: Release this job's backend BuildKit cache
+      - name: Release backend BuildKit cache before the web image build
+        if: ${{ needs.select.result != 'success' || (needs.select.outputs.ci_backend_image == 'true' && needs.select.outputs.web_image == 'true') }}
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: ./scripts/ci/runner-disk-capacity.sh prune-buildkit
       - name: Record storage before web image build
-        run: ./scripts/ci/runner-disk-capacity.sh report "after backend cache cleanup" --buildkit
+        if: ${{ needs.select.result != 'success' || needs.select.outputs.web_image == 'true' }}
+        run: ./scripts/ci/runner-disk-capacity.sh report "before web build" --buildkit
       - name: Build web image
+        if: ${{ needs.select.result != 'success' || needs.select.outputs.web_image == 'true' }}
         uses: docker/build-push-action@v7.4.0
         with:
           context: ./frontend
@@ -103,7 +150,7 @@ jobs:
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
       - name: Record storage after web image build
-        if: ${{ always() }}
+        if: ${{ always() && (needs.select.result != 'success' || needs.select.outputs.web_image == 'true') }}
         run: ./scripts/ci/runner-disk-capacity.sh report "after web build" --buildkit
       - name: Validate NAS Compose
         env:
@@ -115,5 +162,8 @@ jobs:
           REPORTS_PATH: /tmp/mvforge/reports
         run: docker compose -f deploy/nas/compose.yml config --quiet
       - name: Record final runner storage
-        if: ${{ always() }}
+        if: ${{ always() && (needs.select.result != 'success' || needs.select.outputs.ci_backend_image == 'true' || needs.select.outputs.web_image == 'true') }}
         run: ./scripts/ci/runner-disk-capacity.sh report "after NAS Compose validation" --buildkit
+      - name: Record final runner storage (Compose-only)
+        if: ${{ always() && needs.select.result == 'success' && needs.select.outputs.ci_backend_image != 'true' && needs.select.outputs.web_image != 'true' }}
+        run: ./scripts/ci/runner-disk-capacity.sh report "after NAS Compose validation"
