@@ -56,7 +56,23 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: python3 scripts/e2e/test_pipeline_smoke.py
+      - name: Require GitHub-hosted runner for disk management
+        if: ${{ runner.environment != 'github-hosted' }}
+        run: |
+          echo "Pipeline Smoke disk recovery requires a GitHub-hosted runner." >&2
+          exit 1
+      - name: Record starting runner storage
+        if: ${{ runner.environment == 'github-hosted' }}
+        run: ./scripts/ci/runner-disk-capacity.sh report "before Pipeline Smoke backend build"
+      - name: Reclaim unused GitHub-hosted toolchains
+        if: ${{ runner.environment == 'github-hosted' }}
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: ./scripts/ci/runner-disk-capacity.sh reclaim
       - uses: docker/setup-buildx-action@v4.4.1
+      - name: Check storage before Pipeline Smoke image build
+        if: ${{ runner.environment == 'github-hosted' }}
+        run: ./scripts/ci/runner-disk-capacity.sh check "before Pipeline Smoke backend build" --buildkit
       - name: Build isolated backend runtime image
         uses: docker/build-push-action@v7.4.0
         with:
@@ -66,6 +82,9 @@ jobs:
           tags: mvforge-backend:pipeline-smoke
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
+      - name: Record storage after Pipeline Smoke image build
+        if: ${{ always() && !cancelled() && runner.environment == 'github-hosted' }}
+        run: ./scripts/ci/runner-disk-capacity.sh report "after Pipeline Smoke backend build" --buildkit
       - name: Run synthetic pipeline smoke
         id: smoke
         run: ./scripts/e2e/run-pipeline-smoke.sh --scenario "${{ inputs.scenario || 'happy-path' }}" --image mvforge-backend:pipeline-smoke --run-id "$E2E_RUN_ID" --no-build
