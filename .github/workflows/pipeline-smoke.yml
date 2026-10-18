@@ -53,6 +53,8 @@ jobs:
       # One runner builds the backend once; future scenarios should execute
       # sequentially here and reuse this image instead of multiplying builds.
       - name: Test isolated Pipeline Smoke harness
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: python3 scripts/e2e/test_pipeline_smoke.py
       - uses: docker/setup-buildx-action@v4.4.1
       - name: Build isolated backend runtime image
