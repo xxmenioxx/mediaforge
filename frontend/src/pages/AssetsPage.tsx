@@ -9240,15 +9240,6 @@ function streamIndexesForType(scan: ScanResult, type: MediaStreamInfo['type']) {
   return normalizeNumberList(safeArray(streams).map((stream) => stream.index));
 }
 
-function selectedOrUndefined(selected: number[], allIndexes: number[]) {
-  const normalizedSelected = normalizeNumberList(selected);
-  const normalizedAll = normalizeNumberList(allIndexes);
-  if (normalizedSelected.length === normalizedAll.length && normalizedSelected.every((value, index) => value === normalizedAll[index])) {
-    return undefined;
-  }
-  return normalizedSelected;
-}
-
 function normalizeNumberList(values?: number[] | null) {
   return Array.from(new Set(safeArray(values).filter((value) => Number.isInteger(value) && value >= 0))).sort((left, right) => left - right);
 }
