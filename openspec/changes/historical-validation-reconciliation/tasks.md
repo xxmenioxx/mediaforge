@@ -6,9 +6,9 @@
 
 ## 2. Read-only local preview
 
-- [ ] 2.1 Implement a deterministic pure expected-contract resolver that rejects output-derived guesses and contaminated execution-time input.
-- [ ] 2.2 Expose a bounded, read-only per-job reconciliation preview with SAFE / BLOCKED / NEEDS_EVIDENCE and per-rule expected/actual diff, guarded by canonical Result/ExecutionPlan identity.
-- [ ] 2.3 Add synthetic fixtures for crossed snapshots, absent independent intent, replaced output/revision, stale sidecars and normal unaffected jobs.
+- [x] 2.1 Implement a deterministic pure expected-contract resolver that rejects output-derived guesses and contaminated execution-time input.
+- [x] 2.2 Expose a bounded, read-only per-job reconciliation preview with SAFE / BLOCKED / NEEDS_EVIDENCE and per-rule expected/actual diff, guarded by canonical Result/ExecutionPlan identity.
+- [x] 2.3 Add synthetic fixtures for crossed snapshots, absent independent intent, replaced output/revision, stale sidecars and normal unaffected jobs.
 
 ## 3. Authorized persistence and Validation
 
