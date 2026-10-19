@@ -171,8 +171,8 @@ func TestQueueCapturesResolvedPathAndAssetProfileIntent(t *testing.T) {
 	if err := db.Create(&models.AssetRecord{Path: assetPath, RootPath: "/media/raw/anime", GroupPath: "Show", FileName: "episode-02.mkv"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.ScanResult{Path: assetPath,
-		VideoStreams: models.JSONList{map[string]any{"index": 0}},
+	if err := db.Create(&models.ScanResult{Path: assetPath, VideoCodec: "h264", Width: 1920, Height: 1080,
+		VideoStreams: models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 1920, "height": 1080, "avgFrameRate": "24/1", "fieldOrder": "progressive"}},
 		AudioStreams: models.JSONList{map[string]any{"index": 1, "language": "jpn", "default": true}},
 	}).Error; err != nil {
 		t.Fatal(err)
@@ -257,6 +257,13 @@ func TestQueueCapturesDifferentSourceAndLogicalGroupProfileIntentPerAsset(t *tes
 		{Path: "/media/raw/movies/Perfect Blue/Perfect Blue.mkv", RootPath: "/media/raw", RelativePath: "movies/Perfect Blue/Perfect Blue.mkv", GroupPath: "movies/Perfect Blue", FileName: "Perfect Blue.mkv", Status: "unprocessed", SourceGroupID: sourceGroup.ID, LogicalGroupPath: "/media/raw/movies/Perfect Blue", SourcePath: "/media/raw/movies/Perfect Blue/Perfect Blue.mkv"},
 	}
 	if err := db.Create(&assets).Error; err != nil {
+		t.Fatal(err)
+	}
+	scanResults := []models.ScanResult{
+		{Path: assets[0].Path, VideoCodec: "h264", Width: 1920, Height: 1080, VideoStreams: models.JSONList{models.JSONMap{"index": 0, "codec": "h264", "width": 1920, "height": 1080, "avgFrameRate": "24/1", "fieldOrder": "progressive"}}},
+		{Path: assets[1].Path, VideoCodec: "h264", Width: 1920, Height: 1080, VideoStreams: models.JSONList{models.JSONMap{"index": 0, "codec": "h264", "width": 1920, "height": 1080, "avgFrameRate": "24/1", "fieldOrder": "progressive"}}},
+	}
+	if err := db.Create(&scanResults).Error; err != nil {
 		t.Fatal(err)
 	}
 	assignments := []models.ProfileAssignment{

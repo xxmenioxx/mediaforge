@@ -17,10 +17,11 @@ type Props = {
   onDeinterlaceFieldOrderChange?: (value: DeinterlaceFieldOrder) => void;
   scan?: ScanResult;
   allowProfileDefault?: boolean;
+  allowAutomaticIVTCFieldOrder?: boolean;
   disabled?: boolean;
 };
 
-export function FrameCadenceControls({ fieldStructureMode, cadenceMode, cadenceFieldOrder = 'auto', deinterlaceFieldOrder = 'auto', onFieldStructureChange, onCadenceChange, onCadenceFieldOrderChange, onDeinterlaceFieldOrderChange, scan, allowProfileDefault = false, disabled = false }: Props) {
+export function FrameCadenceControls({ fieldStructureMode, cadenceMode, cadenceFieldOrder = 'auto', deinterlaceFieldOrder = 'auto', onFieldStructureChange, onCadenceChange, onCadenceFieldOrderChange, onDeinterlaceFieldOrderChange, scan, allowProfileDefault = false, allowAutomaticIVTCFieldOrder = false, disabled = false }: Props) {
   const fieldOptions = [
     ...(allowProfileDefault ? [{ value: '', label: 'Profile default' }] : []),
     { value: 'preserve', label: 'Preserve' },
@@ -36,6 +37,8 @@ export function FrameCadenceControls({ fieldStructureMode, cadenceMode, cadenceF
   ];
   const cadence = scan?.cadenceAnalysis;
   const recommendation = scan?.cadenceRecommendation;
+  const showIVTCFieldOrder = cadenceMode === 'inverse_telecine' ||
+    (allowAutomaticIVTCFieldOrder && cadenceMode === 'auto' && recommendation?.operation === 'inverse_telecine');
   return <>
     <Grid size={{ xs: 12, md: 6 }}>
       <TextField select fullWidth size="small" label="Frame Structure" value={fieldStructureMode} disabled={disabled} onChange={(event) => onFieldStructureChange(event.target.value as FieldStructureMode)} helperText={scan ? `Detected: ${fieldStructureLabel(scan)}` : 'Controls preservation or deinterlacing; field order is resolved from Analysis.'}>
@@ -50,8 +53,8 @@ export function FrameCadenceControls({ fieldStructureMode, cadenceMode, cadenceF
         {cadence?.type === 'mixed' && cadenceMode === 'auto' ? <Typography variant="caption" color="warning.main">Mixed cadence detected. Automatic correction is disabled; review representative previews in LAB.</Typography> : null}
       </Stack>
     </Grid>
-    {cadenceMode === 'inverse_telecine' && onCadenceFieldOrderChange ? <Grid size={{ xs: 12, md: 6 }}>
-      <TextField select fullWidth size="small" label="Inverse telecine field order" value={cadenceFieldOrder || 'auto'} disabled={disabled} onChange={(event) => onCadenceFieldOrderChange(event.target.value as CadenceFieldOrder)} helperText="Advanced override. Auto uses the measured field order when available.">
+    {showIVTCFieldOrder && onCadenceFieldOrderChange ? <Grid size={{ xs: 12, md: 6 }}>
+      <TextField select fullWidth size="small" label="Inverse telecine field order" value={cadenceFieldOrder || 'auto'} disabled={disabled} onChange={(event) => onCadenceFieldOrderChange(event.target.value as CadenceFieldOrder)} helperText={cadenceMode === 'auto' ? 'Asset-scoped choice. Auto uses only a validated SelectedOrder; stream metadata alone does not select TFF/BFF.' : 'Advanced override. Auto uses the validated field order when available.'}>
         <MenuItem value="auto">Auto</MenuItem><MenuItem value="tff">TFF</MenuItem><MenuItem value="bff">BFF</MenuItem>
       </TextField>
     </Grid> : null}

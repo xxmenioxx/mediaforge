@@ -37,6 +37,14 @@ function planSummary(asset: QueueBatchPreflightAsset) {
   if (!plan) return null;
   const profile = plan.profile as unknown as Record<string, unknown>;
   const workerConfig = (profile.workerConfig && typeof profile.workerConfig === 'object' ? profile.workerConfig : {}) as Record<string, unknown>;
+  const cadenceSnapshot = (plan.profileSnapshot.cadenceAnalysisSnapshot && typeof plan.profileSnapshot.cadenceAnalysisSnapshot === 'object' ? plan.profileSnapshot.cadenceAnalysisSnapshot : {}) as Record<string, unknown>;
+  const cadenceMode = recordText(workerConfig, 'cadenceMode');
+  const effectiveCadenceOperation = recordText(workerConfig, 'effectiveCadenceOperation') || cadenceMode;
+  const outputFrameRate = workerConfig.effectiveOutputFrameRateUnknown === true
+    ? 'Unknown'
+    : recordText(workerConfig, 'effectiveOutputFrameRate') || (cadenceMode === 'preserve' && recordText(cadenceSnapshot, 'declaredFrameRate')
+      ? `${recordText(cadenceSnapshot, 'declaredFrameRate')} · source cadence preserved`
+      : 'from frozen plan');
   const destination = plan.destination;
   const provenance = Object.entries(plan.profileResolution).flatMap(([domain, decision]) => {
     if (!decision || typeof decision !== 'object') return [];
@@ -50,6 +58,9 @@ function planSummary(asset: QueueBatchPreflightAsset) {
     ['Encoder / codec', `${plan.selectedEncoder} / ${recordText(profile, 'videoCodec') || recordText(workerConfig, 'videoCodec') || 'configured codec'}`],
     ['Quality', [recordText(profile, 'qualityMode'), recordText(profile, 'qualityValue') || recordText(workerConfig, 'qualityValue')].filter(Boolean).join(' ') || 'from frozen profile'],
     ['Frame structure', [recordText(profile, 'frameRate'), recordText(profile, 'gopSize') || recordText(workerConfig, 'gopSize')].filter(Boolean).join(' · ') || 'preserved/resolved in snapshot'],
+    ['Effective cadence', [effectiveCadenceOperation, recordText(workerConfig, 'effectiveCadenceFieldOrder')].filter(Boolean).join(' · ') || 'preserved/resolved in snapshot'],
+    ['Effective output FPS', outputFrameRate],
+    ['HEVC Level/Tier', [recordText(workerConfig, 'hevcLevelResolutionState'), [recordText(workerConfig, 'hevcLevelEffective'), recordText(workerConfig, 'hevcLevelTier')].filter(Boolean).join(' ')].filter(Boolean).join(' · ') || 'not applicable'],
     ['Geometry', `${recordText(profile, 'width') || recordText(workerConfig, 'width') || 'source'} × ${recordText(profile, 'height') || recordText(workerConfig, 'height') || 'source'}`],
     ['Crop / scale', [recordText(workerConfig, 'crop'), recordText(workerConfig, 'videoFilters')].filter(Boolean).join(' · ') || 'preserved/resolved in snapshot'],
     ['SAR / DAR', `${recordText(profile, 'sampleAspectRatio') || 'source'} / ${recordText(profile, 'displayAspectRatio') || 'resolved'}`],
@@ -337,6 +348,31 @@ export function BatchPreflightDialog({
         {editing ? <>
           <TextField label="Batch name" value={batchName} onChange={(event) => setBatchName(event.target.value)} fullWidth size="small" />
           {jobs.map((job, index) => <Box key={`${job.mediaPath}-${index}`} sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
+            {(() => {
+              const asset = candidate.assets.find((item) => item.mediaPath === job.mediaPath && item.status !== 'queued');
+              const needsCadenceReview = asset?.status === 'requires_review' && (asset.reviewCode === 'ivtc_field_order_required' || asset.reviewCode === 'cadence_output_fps_unknown');
+              if (!needsCadenceReview && !job.cadenceFieldOrder && !job.cadenceModeOverride) return null;
+              const cadenceMode = job.cadenceModeOverride ?? 'auto';
+              return <Grid container spacing={1} sx={{ mb: 1 }}>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <TextField select label="Cadence decision for this asset" size="small" fullWidth value={cadenceMode} onChange={(event) => {
+                    const mode = event.target.value as QueueJobInput['cadenceModeOverride'];
+                    updateJob(index, { cadenceModeOverride: mode, cadenceFieldOrder: mode === 'preserve' ? 'auto' : (job.cadenceFieldOrder ?? 'auto') });
+                  }} helperText="This decision applies only to this candidate asset. Preserve cadence is re-resolved against source FPS and HEVC constraints.">
+                    <MenuItem value="auto">Auto (validated analysis only)</MenuItem>
+                    <MenuItem value="preserve">Preserve cadence</MenuItem>
+                    <MenuItem value="inverse_telecine">Inverse telecine</MenuItem>
+                  </TextField>
+                </Grid>
+                {cadenceMode !== 'preserve' ? <Grid size={{ xs: 12, md: 6 }}>
+                  <TextField select label="IVTC field order for this asset" size="small" fullWidth value={job.cadenceFieldOrder ?? 'auto'} onChange={(event) => updateJob(index, { cadenceModeOverride: cadenceMode, cadenceFieldOrder: event.target.value as QueueJobInput['cadenceFieldOrder'] })} helperText="Only an explicit choice or validated SelectedOrder resolves IVTC. Stream metadata alone does not select TFF/BFF.">
+                    <MenuItem value="auto">Auto (validated analysis only)</MenuItem>
+                    <MenuItem value="tff">TFF</MenuItem>
+                    <MenuItem value="bff">BFF</MenuItem>
+                  </TextField>
+                </Grid> : null}
+              </Grid>;
+            })()}
             <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'center' }} gap={1} sx={{ mb: 1 }}>
               <Typography variant="subtitle2" sx={{ overflowWrap: 'anywhere' }}>{job.mediaPath}</Typography>
               <Button size="small" color="error" disabled={busy || !candidate.assets.some((asset) => asset.mediaPath === job.mediaPath && asset.status !== 'queued')} onClick={() => {
@@ -361,9 +397,29 @@ export function BatchPreflightDialog({
               </Stack>
                 <Chip size="small" label={asset.status} color={asset.status === 'ready' || asset.status === 'queued' ? 'success' : asset.status === 'review' || asset.status === 'requires_review' ? 'warning' : 'error'} />
             </Stack>
-            {asset.blockers.map((blocker) => <Alert key={blocker} severity="error" variant="outlined">{blocker}</Alert>)}
+            {asset.status === 'requires_review' && asset.reviewCode === 'ivtc_field_order_required' ? <Alert severity="warning">
+              Automatic IVTC has no explicit or validated field order. Stream metadata alone does not select TFF/BFF. Use Edit to choose an order for this asset, resolve Preflight again, then review the resulting plan.
+            </Alert> : null}
+            {asset.status === 'requires_review' && asset.cadenceReview ? <Alert severity="warning" data-testid="preflight-cadence-review">
+              <Stack spacing={0.5}>
+                <Typography variant="subtitle2">Cadence review required before Queue</Typography>
+                <Typography variant="body2">
+                  Detected {asset.cadenceReview.cadenceType || 'unknown cadence'} at {asset.cadenceReview.declaredFrameRate || 'unknown source FPS'}; recommended {asset.cadenceReview.recommendedOperation || 'review'}{asset.cadenceReview.recommendedFrameRate ? ` to ${asset.cadenceReview.recommendedFrameRate}` : ''}.
+                </Typography>
+                <Typography variant="body2">
+                  Reported stream field order: {asset.cadenceReview.reportedFieldOrder || 'unknown'} (metadata only). Validated SelectedOrder: {asset.cadenceReview.validatedSelectedOrder || 'none'}; IVTC windows: {asset.cadenceReview.validatedWindows}/{asset.cadenceReview.observedWindows || 'unknown'} validated.
+                </Typography>
+                <Typography variant="body2">
+                  Effective output FPS: {asset.cadenceReview.effectiveOutputFrameRateUnknown ? 'Unknown' : asset.cadenceReview.effectiveOutputFrameRate || 'unavailable'} · HEVC Level/Tier: {asset.cadenceReview.hevcLevelResolutionState || 'unresolved'}{asset.cadenceReview.hevcLevelResolutionWarning ? ` — ${asset.cadenceReview.hevcLevelResolutionWarning}` : ''}
+                </Typography>
+              </Stack>
+            </Alert> : null}
+            {asset.blockers.map((blocker) => <Alert key={blocker} severity={asset.status === 'requires_review' ? 'warning' : 'error'} variant="outlined">{blocker}</Alert>)}
             {asset.warnings.map((warning) => <Alert key={warning} severity="warning" variant="outlined">{warning}</Alert>)}
             {planSummary(asset)}
+            {asset.plan && recordText(asset.plan.profile.workerConfig as Record<string, unknown>, 'effectiveCadenceOperation') === 'inverse_telecine' ? <Alert severity="info">
+              An explicit field order makes this plan resolvable, but does not prove visual fidelity. Review for combing, duplicate frames, and judder using Preview, Test Encode, or LAB before acceptance.
+            </Alert> : null}
             <Divider />
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               <Button size="small" disabled={busy || !asset.plan} onClick={() => void runPreview(asset)}>Preview exact plan</Button>

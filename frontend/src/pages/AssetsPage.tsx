@@ -80,7 +80,7 @@ import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDial
 import { SubtitleOCRReviewDialog } from '../components/SubtitleOCRReviewDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
 import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
-import { invalidateQueueBatchPreflightReference, getSavedQueueBatchPreflightCandidateID, openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_OPEN_EVENT } from '../utils/queueBatchPreflightEvents';
+import { createSingleQueueBatchID, invalidateQueueBatchPreflightReference, getSavedQueueBatchPreflightCandidateID, openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_OPEN_EVENT } from '../utils/queueBatchPreflightEvents';
 import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AssetTracksUpdateInput, AudioEnhancementProfile, CanonicalOCRReviewTarget, EffectiveAssetConfiguration, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
@@ -4053,7 +4053,7 @@ function AssetRow({
   });
   const resetAssetEdit = saveAssetEdit.reset;
   const createJob = useMutation({
-    mutationFn: async (input: Parameters<typeof api.createQueueJob>[0]) => {
+    mutationFn: async (input: QueueJobInput) => {
       if (selectedTrackProfile) {
         const result = validateTrackProfile(selectedTrackProfile, await api.scan({ path: asset.path, force: false }));
         if (!result.applies && selectedTrackProfile.validationMode === 'review' && !assetReviewApproved(asset)) {
@@ -4067,10 +4067,16 @@ function AssetRow({
           input = { ...input, notes: `${input.notes ?? ''}\nTrack profile ${selectedTrackProfile.key} did not apply: ${result.reasons.join('; ')}`.trim() };
         }
       }
-      return api.createQueueJob(input);
+      const batchId = createSingleQueueBatchID();
+      const batchName = `Single asset: ${asset.fileName}`;
+      return api.createQueueBatchPreflight({
+        batchId,
+        batchName,
+        jobs: [{ ...input, batchId, batchName, batchPosition: 1 }],
+      });
     },
-    onSuccess: async () => {
-	  await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+    onSuccess: async (candidate) => {
+	  openQueueBatchPreflight(candidate);
     },
   });
   const updateReview = useMutation({
@@ -5656,7 +5662,7 @@ async function generateExternalSubtitle(
         >
           {assetEditQueueMessage || (createJob.isError
             ? createJob.error instanceof Error ? createJob.error.message : 'Could not queue this asset.'
-            : 'Asset queued individually.')}
+            : 'Single-asset Queue Preflight is ready for review.')}
         </Alert>
       </Snackbar>
       <Menu anchorEl={assetMenuAnchor} open={Boolean(assetMenuAnchor)} onClose={() => setAssetMenuAnchor(null)}>
@@ -7592,8 +7598,9 @@ function AssetConversionOverridePanel({
           <FrameCadenceControls
             disabled={readOnly}
             {...assetMotionModes}
-            scan={scan}
-            allowProfileDefault
+          scan={scan}
+          allowProfileDefault
+          allowAutomaticIVTCFieldOrder
             onFieldStructureChange={(value) => onChange('fieldStructureMode', value || undefined)}
             onCadenceChange={(value) => onChange('cadenceMode', value || undefined)}
             onCadenceFieldOrderChange={(value) => onChange('cadenceFieldOrder', value || undefined)}

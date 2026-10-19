@@ -1840,6 +1840,8 @@ export type QueueJobInput = {
   profileId: number;
   audioProfileKey?: string;
   trackProfileKey?: string;
+  cadenceModeOverride?: 'auto' | 'preserve' | 'remove_soft_telecine' | 'inverse_telecine';
+  cadenceFieldOrder?: 'auto' | 'tff' | 'bff';
   processingMode?: 'full_encode' | 'audio_only';
   priority: number;
   notes?: string;
@@ -1903,6 +1905,23 @@ export type QueueBatchPreflightAsset = {
   batchName: string;
   input: QueueJobInput;
   status: 'ready' | 'review' | 'requires_review' | 'blocked' | 'queued';
+  reviewCode?: 'ivtc_field_order_required' | string;
+  cadenceReview?: {
+    cadenceType?: string;
+    declaredFrameRate?: string;
+    recommendedOperation?: string;
+    recommendedFrameRate?: string;
+    reportedFieldOrder?: string;
+    validatedSelectedOrder?: string;
+    validatedWindows: number;
+    observedWindows: number;
+    effectiveOutputFrameRate?: string;
+    effectiveOutputFrameRateUnknown: boolean;
+    hevcLevelResolutionState?: string;
+    hevcLevelResolutionWarning?: string;
+    hevcLevelEffective?: string;
+    hevcLevelTier?: string;
+  };
   blockers: string[];
   warnings: string[];
   queuedJobId?: number;

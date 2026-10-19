@@ -36,6 +36,8 @@ type QueueJobInput struct {
 	ProfileID                    uint           `json:"profileId"`
 	AudioProfileKey              string         `json:"audioProfileKey"`
 	TrackProfileKey              string         `json:"trackProfileKey"`
+	CadenceModeOverride          string         `json:"cadenceModeOverride,omitempty"`
+	CadenceFieldOrder            string         `json:"cadenceFieldOrder,omitempty"`
 	ProcessingMode               string         `json:"processingMode"`
 	Priority                     int            `json:"priority"`
 	Notes                        string         `json:"notes"`
@@ -704,7 +706,6 @@ func (h QueueHandler) prepareBatchQueueJob(
 				)
 		}
 	}
-
 	priority := input.Priority
 	if priority == 0 {
 		priority = 5
@@ -750,6 +751,27 @@ func (h QueueHandler) prepareBatchQueueJob(
 	}
 	if input.preservedTrackSnapshot != nil {
 		job.TrackProfileSnapshot = queuePreflightCloneMap(input.preservedTrackSnapshot)
+	}
+	if strings.TrimSpace(input.CadenceModeOverride) != "" || strings.TrimSpace(input.CadenceFieldOrder) != "" {
+		mode := strings.ToLower(strings.TrimSpace(input.CadenceModeOverride))
+		if mode != "" && normalizedCadenceMode(mode) == "" {
+			return models.QueueJob{}, http.StatusBadRequest, fmt.Errorf("cadence mode override must be auto, preserve, remove_soft_telecine, or inverse_telecine")
+		}
+		order := strings.ToLower(strings.TrimSpace(input.CadenceFieldOrder))
+		if order != "" && normalizedCadenceFieldOrder(order) == "" {
+			return models.QueueJob{}, http.StatusBadRequest, fmt.Errorf("cadence field order must be auto, tff, or bff")
+		}
+		override := currentConversionOverrideForJob(job, assetConversionOverrides(h.db))
+		if input.preservedConversionOverride != nil {
+			override = *input.preservedConversionOverride
+		}
+		if mode != "" {
+			override.CadenceMode = mode
+		}
+		if order != "" {
+			override.CadenceFieldOrder = order
+		}
+		input.preservedConversionOverride = &override
 	}
 
 	if input.preservedProfileSnapshot != nil {
@@ -1199,6 +1221,9 @@ func (h QueueHandler) Create(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "resolve profile assignments: " + err.Error()})
 			return
 		}
+		input.resolvedProfileResolution = profileResolution
+		input.ProfileResolution = profileResolution
+		input.skipProfileAssignmentResolve = true
 	}
 	publishMode := input.PublishMode
 	if publishMode == "" {
@@ -1233,6 +1258,54 @@ func (h QueueHandler) Create(c *gin.Context) {
 				"jobId":         existing.ID,
 			})
 			return
+		}
+	}
+	if processingMode != ProcessingModeAudioOnly {
+		if mode := strings.TrimSpace(input.CadenceModeOverride); mode != "" {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":   "single_queue_preflight_required",
+				"status": "PREFLIGHT_REQUIRED",
+				"error":  "An explicit cadence decision must be reviewed in the single-asset Queue Preflight candidate before acceptance.",
+			})
+			return
+		}
+		if order := strings.ToLower(strings.TrimSpace(input.CadenceFieldOrder)); order == "tff" || order == "bff" {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":   "single_queue_preflight_required",
+				"status": "PREFLIGHT_REQUIRED",
+				"error":  "An explicit IVTC field order must be reviewed in the single-asset Queue Preflight candidate before acceptance.",
+			})
+			return
+		}
+		prepared, _, prepareErr := h.prepareBatchQueueJob(input)
+		if prepareErr != nil {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":  "queue_preflight_blocked",
+				"error": "Queue planning could not resolve a safe effective plan: " + prepareErr.Error(),
+			})
+			return
+		}
+		profile, restoreErr := scheduler.RestoreProfileSnapshot(prepared.ProfileSnapshot)
+		if restoreErr != nil {
+			c.JSON(http.StatusConflict, gin.H{"code": "queue_preflight_blocked", "error": "Restore prepared Queue profile: " + restoreErr.Error()})
+			return
+		}
+		if cadenceFieldOrderReviewRequired(profile) {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":            "cadence_review_required",
+				"status":          "REVIEW_REQUIRED",
+				"reasonCode":      "ivtc_field_order_required",
+				"error":           "Automatic IVTC is unresolved because an explicit or validated field order is missing.",
+				"missingEvidence": []string{"explicit or validated IVTC field order"},
+				"suggestions":     []string{"Choose TFF or BFF for this asset, resolve Queue Preflight again, and review the effective plan before acceptance."},
+			})
+			return
+		}
+		if processingMode == ProcessingModeFullEncode {
+			if err := hevcLevelPlanningError(profile); err != nil {
+				c.JSON(http.StatusConflict, gin.H{"code": "hevc_level_preflight_blocked", "error": "Queue HEVC preflight: " + err.Error()})
+				return
+			}
 		}
 	}
 

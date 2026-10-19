@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	cadenceAnalysisVersion           = 1
-	cadenceAnalysisSnapshotKey       = "cadenceAnalysisSnapshot"
-	cadenceRecommendationSnapshotKey = "cadenceRecommendationSnapshot"
+	cadenceAnalysisVersion             = 1
+	cadenceAnalysisSnapshotKey         = "cadenceAnalysisSnapshot"
+	cadenceRecommendationSnapshotKey   = "cadenceRecommendationSnapshot"
+	cadenceIVTCFieldOrderReviewWarning = "inverse telecine is unresolved because an explicit or validated field order is required; review required"
 )
 
 type CadenceAnalysis struct {
@@ -374,7 +375,7 @@ func profileWithCadenceOutputDecision(profile models.Profile, analysis CadenceAn
 		} else {
 			delete(profile.WorkerConfig, "effectiveOutputFrameRate")
 			profile.WorkerConfig["effectiveOutputFrameRateUnknown"] = true
-			profile.WorkerConfig["cadenceResolutionWarning"] = "inverse telecine is unresolved because an explicit or validated field order is required; review required"
+			profile.WorkerConfig["cadenceResolutionWarning"] = cadenceIVTCFieldOrderReviewWarning
 			delete(profile.WorkerConfig, "effectiveCadenceOperation")
 			profile.WorkerConfig["effectiveResidualCombingFallback"] = "none"
 			delete(profile.WorkerConfig, "effectiveCadenceFieldOrder")
@@ -395,6 +396,11 @@ func profileWithCadenceOutputDecision(profile models.Profile, analysis CadenceAn
 		}
 	}
 	return profile
+}
+
+func cadenceFieldOrderReviewRequired(profile models.Profile) bool {
+	return profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) &&
+		strings.TrimSpace(workerStringValue(profile.WorkerConfig["cadenceResolutionWarning"])) == cadenceIVTCFieldOrderReviewWarning
 }
 
 func automaticCadencePreserveFrameRate(analysis CadenceAnalysis, recommendation CadenceRecommendation) string {

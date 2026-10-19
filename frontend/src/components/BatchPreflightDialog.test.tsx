@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { QueueBatchPreflightResponse } from '../api/types';
+import type { QueueBatchPreflightInput, QueueBatchPreflightResponse } from '../api/types';
 import { BatchPreflightDialog } from './BatchPreflightDialog';
 
 const mocks = vi.hoisted(() => ({
@@ -150,6 +151,83 @@ describe('BatchPreflightDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /Accept & Queue/ }));
     await waitFor(() => expect(mocks.accept).toHaveBeenCalledWith('candidate-1', 3, ['asset-1']));
     expect(onAccepted).toHaveBeenCalledWith(expect.objectContaining({ revision: 4 }));
+  });
+
+  it('keeps ambiguous auto IVTC out of Queue until a candidate-scoped TFF/BFF plan is resolved', async () => {
+    const base = candidate().assets[0];
+    const reviewAsset = {
+      ...base,
+      status: 'requires_review' as const,
+      reviewCode: 'ivtc_field_order_required',
+      cadenceReview: {
+        cadenceType: 'hard_telecine', declaredFrameRate: '30000/1001', recommendedOperation: 'inverse_telecine', recommendedFrameRate: '24000/1001',
+        reportedFieldOrder: 'tt', validatedSelectedOrder: '', validatedWindows: 1, observedWindows: 3,
+        effectiveOutputFrameRateUnknown: true, hevcLevelResolutionState: 'unresolved', hevcLevelResolutionWarning: 'effective output FPS is unknown',
+      },
+      plan: undefined,
+      blockers: ['Automatic IVTC requires an explicit or validated field order; choose TFF or BFF for this asset.'],
+    };
+    const review = candidate({ assets: [reviewAsset] });
+    mocks.edit.mockResolvedValue({ ...review, revision: 2, resolved: false });
+    mocks.update.mockImplementation(async (_id: string, input: QueueBatchPreflightInput) => candidate({
+      revision: (input.revision ?? 1) + 1,
+      assets: [{ ...base, input: { ...base.input, cadenceModeOverride: input.jobs[0]?.cadenceModeOverride, cadenceFieldOrder: input.jobs[0]?.cadenceFieldOrder }, plan: { ...base.plan!, profile: { ...profile, workerConfig: { ...profile.workerConfig, effectiveCadenceOperation: 'inverse_telecine', effectiveCadenceFieldOrder: 'tff', effectiveOutputFrameRate: '24000/1001', hevcLevelResolutionState: 'resolved', hevcLevelEffective: '4.1', hevcLevelTier: 'main' } } as never } }],
+    }));
+    render(<BatchPreflightDialog candidate={review} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    expect(await screen.findByText(/no explicit or validated field order/i)).toBeTruthy();
+    expect(screen.getByText(/Detected hard_telecine at 30000\/1001/)).toBeTruthy();
+    expect(screen.getByText(/reported stream field order: tt \(metadata only\)/i)).toBeTruthy();
+    expect(screen.getByText(/IVTC windows: 1\/3 validated/i)).toBeTruthy();
+    const acceptButton = screen.getByRole('button', { name: /Accept & Queue/ });
+    expect(acceptButton.getAttribute('disabled')).not.toBeNull();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    const order = await screen.findByRole('combobox', { name: 'IVTC field order for this asset' });
+    await user.click(order);
+    await user.click(await screen.findByRole('option', { name: 'TFF' }));
+    await user.click(screen.getByRole('button', { name: 'Resolve Preflight again' }));
+
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith('candidate-1', expect.objectContaining({
+      revision: 2,
+      jobs: [expect.objectContaining({ cadenceModeOverride: 'auto', cadenceFieldOrder: 'tff' })],
+    })));
+    expect(await screen.findAllByText(/Effective output FPS/)).not.toHaveLength(0);
+    expect(screen.getByText('24000/1001')).toBeTruthy();
+    expect(screen.getByText(/4\.1 main/)).toBeTruthy();
+  });
+
+  it('offers preserve cadence as an asset-scoped alternative and re-resolves its output FPS', async () => {
+    const base = candidate().assets[0];
+    const review = candidate({ assets: [{
+      ...base,
+      status: 'requires_review',
+      reviewCode: 'ivtc_field_order_required',
+      plan: undefined,
+      cadenceReview: {
+        cadenceType: 'hard_telecine', declaredFrameRate: '30000/1001', recommendedOperation: 'inverse_telecine', recommendedFrameRate: '24000/1001',
+        reportedFieldOrder: 'tt', validatedWindows: 1, observedWindows: 3, effectiveOutputFrameRateUnknown: true, hevcLevelResolutionState: 'unresolved',
+      },
+      blockers: ['Automatic IVTC requires an explicit or validated field order; choose TFF or BFF for this asset.'],
+    }] });
+    mocks.edit.mockResolvedValue({ ...review, revision: 2, resolved: false });
+    mocks.update.mockImplementation(async (_id: string, input: QueueBatchPreflightInput) => candidate({
+      revision: (input.revision ?? 1) + 1,
+      assets: [{ ...base, input: { ...base.input, cadenceModeOverride: input.jobs[0]?.cadenceModeOverride, cadenceFieldOrder: input.jobs[0]?.cadenceFieldOrder }, plan: { ...base.plan!, profileSnapshot: { ...base.plan!.profileSnapshot, cadenceAnalysisSnapshot: { declaredFrameRate: '30000/1001' } }, profile: { ...profile, workerConfig: { ...profile.workerConfig, cadenceMode: 'preserve', effectiveCadenceOperation: 'preserve', hevcLevelResolutionState: 'resolved', hevcLevelEffective: '4.0', hevcLevelTier: 'main' } } as never } }],
+    }));
+    render(<BatchPreflightDialog candidate={review} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Edit' }));
+    const decision = await screen.findByRole('combobox', { name: 'Cadence decision for this asset' });
+    await user.click(decision);
+    await user.click(await screen.findByRole('option', { name: 'Preserve cadence' }));
+    await user.click(screen.getByRole('button', { name: 'Resolve Preflight again' }));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith('candidate-1', expect.objectContaining({
+      jobs: [expect.objectContaining({ cadenceModeOverride: 'preserve', cadenceFieldOrder: 'auto' })],
+    })));
+    expect(await screen.findByText(/30000\/1001 · source cadence preserved/)).toBeTruthy();
+    expect(screen.getByText(/4\.0 main/)).toBeTruthy();
   });
 
   it('passes the exact candidate plan to Preview and Test Encode and opens LAB with its identity', async () => {

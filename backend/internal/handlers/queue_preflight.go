@@ -29,6 +29,34 @@ const (
 
 var errQueueBatchPreflightConflict = errors.New("Queue Preflight candidate revision changed or candidate is terminal")
 
+func queuePreflightCadenceReview(profile models.Profile, snapshot models.JSONMap) *QueueBatchPreflightCadenceReview {
+	interlace, _ := decodeInterlaceAnalysis(snapshot[interlaceAnalysisSnapshotKey])
+	cadence, _ := decodeCadenceAnalysis(snapshot[cadenceAnalysisSnapshotKey])
+	recommendation, _ := decodeCadenceRecommendation(snapshot[cadenceRecommendationSnapshotKey])
+	review := &QueueBatchPreflightCadenceReview{
+		CadenceType:                     cadence.Type,
+		DeclaredFrameRate:               cadence.DeclaredFrameRate,
+		RecommendedOperation:            recommendation.Operation,
+		RecommendedFrameRate:            recommendation.OutputFrameRate,
+		ReportedFieldOrder:              interlace.FieldOrder,
+		EffectiveOutputFrameRate:        workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]),
+		EffectiveOutputFrameRateUnknown: profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false),
+		HEVCLevelResolutionState:        workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"]),
+		HEVCLevelResolutionWarning:      workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]),
+		HEVCLevelEffective:              workerStringValue(profile.WorkerConfig["hevcLevelEffective"]),
+		HEVCLevelTier:                   workerStringValue(profile.WorkerConfig["hevcLevelTier"]),
+	}
+	if interlace.IVTCValidation != nil {
+		review.ValidatedSelectedOrder = strings.ToLower(strings.TrimSpace(interlace.IVTCValidation.SelectedOrder))
+		review.ValidatedWindows = interlace.IVTCValidation.ValidatedWindows
+		review.ObservedWindows = len(interlace.IVTCValidation.Windows)
+	}
+	if review.CadenceType == "" && review.RecommendedOperation == "" && review.ReportedFieldOrder == "" {
+		return nil
+	}
+	return review
+}
+
 func writeQueueBatchPreflightMutationError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
@@ -109,23 +137,42 @@ type queueBatchPreflightState struct {
 }
 
 type queueBatchPreflightAsset struct {
-	ID              string           `json:"id"`
-	MediaPath       string           `json:"mediaPath"`
-	AssetRecordID   *uint            `json:"assetRecordId,omitempty"`
-	SourceRevision  string           `json:"sourceRevision,omitempty"`
-	BatchID         string           `json:"batchId"`
-	BatchName       string           `json:"batchName"`
-	BatchPosition   int              `json:"batchPosition"`
-	Input           QueueJobInput    `json:"input"`
-	Status          string           `json:"status"`
-	Blockers        []string         `json:"blockers"`
-	Warnings        []string         `json:"warnings"`
-	ResolvedJob     *models.QueueJob `json:"resolvedJob,omitempty"`
-	Constraints     models.JSONMap   `json:"constraints,omitempty"`
-	QualityEvidence models.JSONMap   `json:"qualityEvidence,omitempty"`
-	SelectedEncoder string           `json:"selectedEncoder,omitempty"`
-	RuntimeProfile  string           `json:"runtimeProfile,omitempty"`
-	QueuedJobID     uint             `json:"queuedJobId,omitempty"`
+	ID              string                            `json:"id"`
+	MediaPath       string                            `json:"mediaPath"`
+	AssetRecordID   *uint                             `json:"assetRecordId,omitempty"`
+	SourceRevision  string                            `json:"sourceRevision,omitempty"`
+	BatchID         string                            `json:"batchId"`
+	BatchName       string                            `json:"batchName"`
+	BatchPosition   int                               `json:"batchPosition"`
+	Input           QueueJobInput                     `json:"input"`
+	Status          string                            `json:"status"`
+	ReviewCode      string                            `json:"reviewCode,omitempty"`
+	CadenceReview   *QueueBatchPreflightCadenceReview `json:"cadenceReview,omitempty"`
+	Blockers        []string                          `json:"blockers"`
+	Warnings        []string                          `json:"warnings"`
+	ResolvedJob     *models.QueueJob                  `json:"resolvedJob,omitempty"`
+	Constraints     models.JSONMap                    `json:"constraints,omitempty"`
+	QualityEvidence models.JSONMap                    `json:"qualityEvidence,omitempty"`
+	SelectedEncoder string                            `json:"selectedEncoder,omitempty"`
+	RuntimeProfile  string                            `json:"runtimeProfile,omitempty"`
+	QueuedJobID     uint                              `json:"queuedJobId,omitempty"`
+}
+
+type QueueBatchPreflightCadenceReview struct {
+	CadenceType                     string `json:"cadenceType,omitempty"`
+	DeclaredFrameRate               string `json:"declaredFrameRate,omitempty"`
+	RecommendedOperation            string `json:"recommendedOperation,omitempty"`
+	RecommendedFrameRate            string `json:"recommendedFrameRate,omitempty"`
+	ReportedFieldOrder              string `json:"reportedFieldOrder,omitempty"`
+	ValidatedSelectedOrder          string `json:"validatedSelectedOrder,omitempty"`
+	ValidatedWindows                int    `json:"validatedWindows"`
+	ObservedWindows                 int    `json:"observedWindows"`
+	EffectiveOutputFrameRate        string `json:"effectiveOutputFrameRate,omitempty"`
+	EffectiveOutputFrameRateUnknown bool   `json:"effectiveOutputFrameRateUnknown"`
+	HEVCLevelResolutionState        string `json:"hevcLevelResolutionState,omitempty"`
+	HEVCLevelResolutionWarning      string `json:"hevcLevelResolutionWarning,omitempty"`
+	HEVCLevelEffective              string `json:"hevcLevelEffective,omitempty"`
+	HEVCLevelTier                   string `json:"hevcLevelTier,omitempty"`
 }
 
 type QueueBatchPreflightPlan struct {
@@ -147,17 +194,19 @@ type QueueBatchPreflightPlan struct {
 }
 
 type QueueBatchPreflightAssetResponse struct {
-	ID            string                   `json:"id"`
-	MediaPath     string                   `json:"mediaPath"`
-	AssetRecordID *uint                    `json:"assetRecordId,omitempty"`
-	BatchID       string                   `json:"batchId"`
-	BatchName     string                   `json:"batchName"`
-	Input         QueueJobInput            `json:"input"`
-	Status        string                   `json:"status"`
-	Blockers      []string                 `json:"blockers"`
-	Warnings      []string                 `json:"warnings"`
-	QueuedJobID   uint                     `json:"queuedJobId,omitempty"`
-	Plan          *QueueBatchPreflightPlan `json:"plan,omitempty"`
+	ID            string                            `json:"id"`
+	MediaPath     string                            `json:"mediaPath"`
+	AssetRecordID *uint                             `json:"assetRecordId,omitempty"`
+	BatchID       string                            `json:"batchId"`
+	BatchName     string                            `json:"batchName"`
+	Input         QueueJobInput                     `json:"input"`
+	Status        string                            `json:"status"`
+	ReviewCode    string                            `json:"reviewCode,omitempty"`
+	CadenceReview *QueueBatchPreflightCadenceReview `json:"cadenceReview,omitempty"`
+	Blockers      []string                          `json:"blockers"`
+	Warnings      []string                          `json:"warnings"`
+	QueuedJobID   uint                              `json:"queuedJobId,omitempty"`
+	Plan          *QueueBatchPreflightPlan          `json:"plan,omitempty"`
 }
 
 type QueueBatchPreflightResponse struct {
@@ -222,10 +271,14 @@ func queuePreflightResponse(record models.QueueBatchPreflight, state queueBatchP
 		Assets: make([]QueueBatchPreflightAssetResponse, 0, len(state.Assets)), Jobs: state.QueuedJobs,
 	}
 	for _, asset := range state.Assets {
+		reviewCode, cadenceReview := asset.ReviewCode, asset.CadenceReview
+		if asset.Status != queuePreflightRequiresReview {
+			reviewCode, cadenceReview = "", nil
+		}
 		item := QueueBatchPreflightAssetResponse{
 			ID: asset.ID, MediaPath: asset.MediaPath, AssetRecordID: asset.AssetRecordID,
 			BatchID: asset.BatchID, BatchName: asset.BatchName, Input: asset.Input,
-			Status: asset.Status, Blockers: asset.Blockers, Warnings: asset.Warnings, QueuedJobID: asset.QueuedJobID,
+			Status: asset.Status, ReviewCode: reviewCode, CadenceReview: cadenceReview, Blockers: asset.Blockers, Warnings: asset.Warnings, QueuedJobID: asset.QueuedJobID,
 		}
 		if asset.ResolvedJob != nil {
 			job := asset.ResolvedJob
@@ -538,7 +591,7 @@ func (h QueueHandler) UpdateBatchPreflight(c *gin.Context) {
 				input.Jobs[index].TrackProfileKey = previousJob.TrackProfileKey
 				input.Jobs[index].preservedTrackSnapshot = queuePreflightCloneMap(previousJob.TrackProfileSnapshot)
 			}
-			if previousAsset.Input.ProfileID == submitted.ProfileID && previousAsset.Input.AudioProfileKey == submitted.AudioProfileKey && previousAsset.Input.TrackProfileKey == submitted.TrackProfileKey {
+			if previousAsset.Input.ProfileID == submitted.ProfileID && previousAsset.Input.AudioProfileKey == submitted.AudioProfileKey && previousAsset.Input.TrackProfileKey == submitted.TrackProfileKey && previousAsset.Input.CadenceModeOverride == submitted.CadenceModeOverride && previousAsset.Input.CadenceFieldOrder == submitted.CadenceFieldOrder {
 				input.Jobs[index].preservedProfileSnapshot = queuePreflightCloneMap(previousJob.ProfileSnapshot)
 				input.Jobs[index].preservedProfileVersion = previousJob.ProfileVersion
 				input.Jobs[index].preservedProfileCapturedAt = previousJob.ProfileCapturedAt
@@ -852,6 +905,16 @@ func (h QueueHandler) resolveQueueBatchPreflight(input QueueBatchPreflightInput,
 			state.Assets = append(state.Assets, item)
 			continue
 		}
+		if normalizeQueueProcessingMode(job.ProcessingMode) == ProcessingModeFullEncode && cadenceFieldOrderReviewRequired(profile) {
+			item.Status = queuePreflightRequiresReview
+			item.ReviewCode = "ivtc_field_order_required"
+			item.CadenceReview = queuePreflightCadenceReview(profile, job.ProfileSnapshot)
+			item.Blockers = append(item.Blockers, "Automatic IVTC requires an explicit or validated field order; choose TFF or BFF for this asset.")
+			item.Warnings = append(item.Warnings, "Resolve Preflight again to review the effective IVTC filters, output FPS, and HEVC Level/Tier before acceptance.")
+			item.ResolvedJob = nil
+			state.Assets = append(state.Assets, item)
+			continue
+		}
 		constraints, err := scheduler.ResolveExecutionConstraints(profile)
 		if err != nil {
 			item.Blockers = append(item.Blockers, "Resolve execution constraints: "+err.Error())
@@ -921,6 +984,13 @@ func (h QueueHandler) resolveQueueBatchPreflight(input QueueBatchPreflightInput,
 		if normalizeQueueProcessingMode(job.ProcessingMode) == ProcessingModeFullEncode {
 			if err := hevcLevelPlanningError(profile); err != nil {
 				item.Blockers = append(item.Blockers, err.Error())
+				if strings.EqualFold(strings.TrimSpace(input.CadenceModeOverride), "preserve") && profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) {
+					item.Status = queuePreflightRequiresReview
+					item.ReviewCode = "cadence_output_fps_unknown"
+					item.CadenceReview = queuePreflightCadenceReview(profile, job.ProfileSnapshot)
+					item.Warnings = append(item.Warnings, "Preserve cadence remains unresolved. Choose a resolvable cadence decision and review the effective FPS and HEVC Level/Tier before acceptance.")
+					item.ResolvedJob = nil
+				}
 				state.Assets = append(state.Assets, item)
 				continue
 			}
@@ -974,6 +1044,7 @@ func (h QueueHandler) resolveQueueBatchPreflight(input QueueBatchPreflightInput,
 			continue
 		}
 		item.Status, item.ResolvedJob = queuePreflightReady, &job
+		item.ReviewCode, item.CadenceReview = "", nil
 		item.RuntimeProfile = runtime.SelectedProfile
 		state.Assets = append(state.Assets, item)
 	}
