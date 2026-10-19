@@ -6,9 +6,9 @@
 
 ## 2. Read-only local preview
 
-- [x] 2.1 Implement a deterministic pure expected-contract resolver that rejects output-derived guesses and contaminated execution-time input.
-- [x] 2.2 Expose a bounded, read-only per-job reconciliation preview with SAFE / BLOCKED / NEEDS_EVIDENCE and per-rule expected/actual diff, guarded by canonical Result/ExecutionPlan identity.
-- [x] 2.3 Add synthetic fixtures for crossed snapshots, absent independent intent, replaced output/revision, stale sidecars and normal unaffected jobs.
+- [x] 2.1 Implement a deterministic pure evidence gate: reject output-derived guesses and contaminated Queue snapshots; return no proposed track contract when independent intent is unavailable. With current models this gate cannot produce SAFE.
+- [x] 2.2 Expose a bounded, read-only per-job preview with Queue/asset, active ExecutionPlan, Result and ValidationRun identity; include per-rule historical expected/actual diffs and block stale record revisions. SAFE remains unreachable until an independent immutable intent source is modeled.
+- [x] 2.3 Add synthetic fixtures for crossed snapshots, the audio/subtitle/manifest failure patterns, missing/replaced sidecar IDs, stale Result-to-ValidationRun revisions, mismatched plan binding and unaffected jobs. The preview reports that live output bytes are not re-hashed and sidecar content revisions are not modeled.
 
 ## 3. Authorized persistence and Validation
 
@@ -25,6 +25,6 @@
 
 ## 5. Validation and rollout boundaries
 
-- [x] 5.1 Run scoped Go, frontend and synthetic E2E tests, git diff --check and ./scripts/verify.sh --auto; open a separate implementation Draft PR and require CI/Pipeline Smoke.
+- [x] 5.1 Run focused Go preview regressions, git diff --check through ./scripts/verify.sh --auto, and the path-selected CI/Pipeline Smoke for implementation Draft PR #371. Local focused tests and auto verification passed; CI/Pipeline Smoke passed on #371. Backend-only routing skips frontend and compliance checks.
 - [ ] 5.2 Produce a written bounded NAS read-only dry-run plan and obtain explicit approval before any remote discovery.
 - [ ] 5.3 Require separate user authorization for deployment, for each production reconciliation/new ValidationRun and again for any Publisher action. Do not rewrite historical snapshots, media or ResultArtifacts.
