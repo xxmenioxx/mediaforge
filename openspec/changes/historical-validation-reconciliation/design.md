@@ -4,6 +4,27 @@ The current backend has one canonical Result artifact with generation and output
 
 The prior read-only incident report identified three historical blocked outputs. Do not commit their private titles, full paths, IDs, media content, raw logs, or fingerprints to this public repository. Input evidence remains unverified for recovery until a separately approved, bounded production preview.
 
+## Task 1.3: modeled authority and evidence gaps
+
+The current schemas bind a historical execution and its output, but they do not independently preserve the original per-asset track intent needed to repair a crossed `TrackProfileSnapshot`:
+
+| Record/field | What it can establish | Authority for corrected track expectations |
+| --- | --- | --- |
+| `QueueJob.TrackProfileSnapshot` | Frozen resolved track actions, `resolvedForAsset`, and track-plan data consumed by normal Validation/Publisher | Not independent when `resolvedForAsset` identifies another source; this is the contaminated input under review. |
+| `QueueJob.ProfileResolution.tracks` | Selection source/key and embedded `profileData` | Not sufficient for the affected pre-fix selected-assets path: `resolveProfileAssignmentsFromEffective` retained a shared mutable `ProfileData` map, and track resolution mutates maps in place before Queue persistence. The frozen Queue fingerprint proves which bytes were persisted, not that they represent this asset's original intent. `TrackProfileKey` alone also has no immutable profile revision. |
+| `QueueJob.SubtitleArtifacts` | Planned/observed sidecar artifact IDs, paths and lifecycle status | Can verify artifact presence/readiness, but the plan is downstream of the track snapshot and is not an independent source of the original expected actions. |
+| `QueueJob.ProfileSnapshot` | Frozen video profile and source-analysis inputs | Does not encode audio/subtitle/attachment actions. |
+| `ExecutionPlan.Constraints`, `DecisionSources`, `Evaluation` | Versioned plan identity/fingerprint and execution/encoder constraints | `ExecutionPlan` has no track-action contract. Its fingerprint binds that plan; it cannot independently recover track intent absent a track contract in the plan. |
+| `ResultArtifact.ResultIdentity` / `ExecutionBinding` | Exact artifact generation, output revision, Queue fingerprint and ExecutionPlan fingerprint | Authoritative for identity and stale-output checks, not for expected tracks. |
+| `ResultArtifact.OutputProbe`, `Artifacts`, `StreamPlan`, `AssetConversion` | Observed output streams, manifest and execution diagnostics | Output/manifest evidence proves what was produced. `StreamPlan` and track decision report are derived from the same Queue snapshot/As-Is plan; none proves what should have been produced. |
+| `ValidationRun` | Immutable result, rule outcomes and exact identity bindings | Its expected track values were produced by the normal evaluator from `QueueJob.TrackProfileSnapshot`; it preserves the old finding but is not an independent corrected expectation. |
+
+Consequently, the three previously identified patterns (audio count mismatch; audio/subtitle actions plus sidecar/manifest mismatch; subtitle/sidecar mismatch with an additional video FPS `UNVERIFIED`) are all `NEEDS_EVIDENCE` from currently modeled execution records. The first two patterns cannot be declared recovered from matching output counts or sidecars. The third also retains its independent video FPS `UNVERIFIED`; track evidence cannot resolve it. Current Asset Defaults, current profile definitions, current scans, and output-derived guesses remain non-authoritative. An independently archived per-asset request/profile revision could change this classification only after its identity, revision, and relationship to the exact Queue execution are verified; no such record is established by these schemas.
+
+### Minimal future append-only audit record (Phase B only)
+
+If independent evidence is later supplied, the minimal persisted `ValidationReconciliation` record must contain: schema version; QueueJob ID and execution number; ExecutionPlan ID/version/fingerprint; ResultArtifact ID, generation token/version, and output revision; prior ValidationRun ID; canonical reconciled expectation contract and fingerprint; per-field evidence references containing source kind, immutable source ID/version/fingerprint and asset identity; server-assigned actor, required reason, creation time, and idempotency key. The record stores the proof and expected contract, not a mutation of the original Queue/Plan/Result/Validation rows. Missing per-field proof prevents commit. Phase A preview creates no such row and adds no migration.
+
 ## Goals / Non-goals
 
 **Goals:** independent plan-based reconstruction; no media mutation; append-only correction evidence; identity-bound new ValidationRun; consistent effective expectations across Validation and manual Publisher; fail-closed incomplete evidence; opt-in operator approval; bounded NAS I/O.

@@ -2,7 +2,7 @@
 
 - [x] 1.1 Inspect current ValidationRun, evaluateValidationRules, Publisher handoff and historical frozen binding boundaries; document why a Validation-only fix is insufficient.
 - [x] 1.2 Write proposal, design and observable scenarios covering independent original intent, append-only history, stale revisions, Publisher consistency, manual authorization and immutable media.
-- [ ] 1.3 Review the OpenSpec with Codex, identify the exact independent authoritative per-asset fields in existing Queue/ExecutionPlan/Result schemas, and list any historical evidence gaps. Decide a concrete minimal audit schema; do not implement before this contract is proven.
+- [x] 1.3 Review the OpenSpec with Codex, identify the exact independent authoritative per-asset fields in existing Queue/ExecutionPlan/Result schemas, and list any historical evidence gaps. Decide a concrete minimal audit schema; do not implement before this contract is proven.
 
 ## 2. Read-only local preview
 
