@@ -171,8 +171,8 @@ func TestQueueCapturesResolvedPathAndAssetProfileIntent(t *testing.T) {
 	if err := db.Create(&models.AssetRecord{Path: assetPath, RootPath: "/media/raw/anime", GroupPath: "Show", FileName: "episode-02.mkv"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.ScanResult{Path: assetPath,
-		VideoStreams: models.JSONList{map[string]any{"index": 0}},
+	if err := db.Create(&models.ScanResult{Path: assetPath, VideoCodec: "h264", Width: 1920, Height: 1080,
+		VideoStreams: models.JSONList{map[string]any{"index": 0, "codec": "h264", "width": 1920, "height": 1080, "avgFrameRate": "24/1", "fieldOrder": "progressive"}},
 		AudioStreams: models.JSONList{map[string]any{"index": 1, "language": "jpn", "default": true}},
 	}).Error; err != nil {
 		t.Fatal(err)
@@ -259,6 +259,12 @@ func TestQueueCapturesDifferentSourceAndLogicalGroupProfileIntentPerAsset(t *tes
 	if err := db.Create(&assets).Error; err != nil {
 		t.Fatal(err)
 	}
+	trackSettings := models.AppSetting{Key: "trackProfiles", Value: models.JSONMap{"profiles": models.JSONList{
+		models.JSONMap{"key": "queue-intent-tracks", "scope": "asset", "videoMode": "first", "audioMode": "default", "subtitleMode": "none"},
+	}}}
+	if err := db.Create(&trackSettings).Error; err != nil {
+		t.Fatal(err)
+	}
 	assignments := []models.ProfileAssignment{
 		{TargetType: assetScopeSourceGroup, TargetPath: sourceGroup.SourcePath, MediaType: "video", Selection: "profile", VideoProfileID: sourceProfile.ID},
 		{TargetType: assetScopeLogicalGroup, TargetPath: assets[1].LogicalGroupPath, MediaType: "video", Selection: "profile", VideoProfileID: logicalProfile.ID},
@@ -271,7 +277,7 @@ func TestQueueCapturesDifferentSourceAndLogicalGroupProfileIntentPerAsset(t *tes
 	router := gin.New()
 	router.POST("/api/queue/jobs", NewQueueHandler(db).Create)
 	for index, asset := range assets {
-		body := `{"mediaPath":"` + asset.Path + `","libraryId":1,"profileId":` + strconv.FormatUint(uint64(sourceProfile.ID), 10) + `,"resolveProfileAssignments":true}`
+		body := `{"mediaPath":"` + asset.Path + `","libraryId":1,"profileId":` + strconv.FormatUint(uint64(sourceProfile.ID), 10) + `,"trackProfileKey":"queue-intent-tracks","resolveProfileAssignments":true}`
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
@@ -289,7 +295,7 @@ func TestQueueCapturesDifferentSourceAndLogicalGroupProfileIntentPerAsset(t *tes
 			wantProfileID = logicalProfile.ID
 			wantSource = assetScopeLogicalGroup
 		}
-		if job.ProfileID != wantProfileID || len(job.ProfileSnapshot) != 0 || job.ActiveExecutionPlanID != nil {
+		if job.ProfileID != wantProfileID || job.TrackProfileKey != "queue-intent-tracks" || len(job.ProfileSnapshot) != 0 || job.ActiveExecutionPlanID != nil {
 			t.Fatalf("asset %d queued intent was frozen before claim: %#v", index, job)
 		}
 		video, ok := job.ProfileResolution["video"].(map[string]any)

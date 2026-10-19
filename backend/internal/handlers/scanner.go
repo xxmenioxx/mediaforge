@@ -32,11 +32,13 @@ type ScanRequest struct {
 	Path            string `json:"path" binding:"required"`
 	Force           bool   `json:"force"`
 	AnalysisSeconds int    `json:"analysisSeconds"`
+	DeepCadence     bool   `json:"deepCadence"`
 }
 
 type SnapshotOperation struct {
 	ID                  string             `json:"id"`
 	AssetPath           string             `json:"assetPath"`
+	DeepCadence         bool               `json:"deepCadence,omitempty"`
 	Status              string             `json:"status"`
 	Phase               string             `json:"phase"`
 	Progress            float64            `json:"progress"`
@@ -62,7 +64,10 @@ var snapshotOperations = struct {
 	cancels map[string]context.CancelFunc
 }{items: map[string]*SnapshotOperation{}, cancels: map[string]context.CancelFunc{}}
 
-const snapshotOperationTimeout = 15 * time.Minute
+const (
+	snapshotOperationTimeout   = 15 * time.Minute
+	snapshotDeepCadenceTimeout = 5 * time.Minute
+)
 
 const (
 	snapshotOperationRetention  = 24 * time.Hour
@@ -260,6 +265,11 @@ func (h ScannerHandler) Scan(c *gin.Context) {
 	if err := c.ShouldBindJSON(&request); err != nil {
 		assetMutationMu.Unlock()
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if request.DeepCadence {
+		assetMutationMu.Unlock()
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Deep Cadence Analysis must use the asynchronous scan operation"})
 		return
 	}
 
@@ -670,6 +680,12 @@ func incrementalRefreshSupported(staleComponents []string) bool {
 }
 
 func (h ScannerHandler) scanResolvedFileContext(ctx context.Context, path string, info os.FileInfo, request ScanRequest, progress func(string, float64, string)) (models.ScanResult, bool, error) {
+	if request.DeepCadence {
+		if request.Force {
+			return models.ScanResult{}, false, fmt.Errorf("Deep Cadence Analysis cannot force a full snapshot refresh")
+		}
+		return h.deepCadenceSnapshotContext(ctx, path, info, request.AnalysisSeconds, progress)
+	}
 	report := func(phase string, value float64, message string) {
 		if progress != nil {
 			progress(phase, value, message)
@@ -777,6 +793,262 @@ func incrementalFallbackReason(err error) string {
 	default:
 		return "cached_dependency_invalid"
 	}
+}
+
+func (h ScannerHandler) deepCadenceSnapshotContext(ctx context.Context, path string, capturedInfo os.FileInfo, analysisSeconds int, progress func(string, float64, string)) (models.ScanResult, bool, error) {
+	report := func(phase string, value float64, message string) {
+		if progress != nil {
+			progress(phase, value, message)
+		}
+	}
+	if h.db == nil || !h.db.Migrator().HasTable(&models.ScanResult{}) {
+		return models.ScanResult{}, false, fmt.Errorf("Deep Cadence Analysis requires a current saved asset snapshot")
+	}
+	path = filepath.Clean(path)
+	currentInfo, err := os.Stat(path)
+	if err != nil || !samePhysicalFileRevision(capturedInfo, currentInfo) {
+		return models.ScanResult{}, false, fmt.Errorf("source identity or revision changed before Deep Cadence Analysis")
+	}
+	policy := analysisPolicy(h.db)
+	analysisSeconds = normalizedAnalysisSeconds(analysisSeconds)
+	var scan models.ScanResult
+	if err := h.db.Where("path = ?", path).Order("updated_at desc, id desc").First(&scan).Error; err != nil {
+		return models.ScanResult{}, false, fmt.Errorf("load current asset snapshot for Deep Cadence Analysis: %w", err)
+	}
+	fingerprintMatches, legacy, staleComponents := snapshotCacheStateWithEvidence(scan, path, currentInfo, policy, analysisSeconds)
+	if legacy || !fingerprintMatches || slices.Contains(staleComponents, "interlace") || slices.Contains(staleComponents, "cadence") {
+		return models.ScanResult{}, false, fmt.Errorf("asset snapshot is stale; refresh the snapshot before Deep Cadence Analysis")
+	}
+	var interlace InterlaceAnalysis
+	if !decodeJSONValue(scan.InterlaceAnalysis, &interlace) || interlace.IVTCValidation == nil {
+		return models.ScanResult{}, false, fmt.Errorf("current snapshot has no reusable IVTC validation windows")
+	}
+	if interlace.IVTCValidation.DeepAnalysisVersion != 0 && interlace.IVTCValidation.DeepAnalysisVersion != ivtcDeepEvidenceVersion {
+		return models.ScanResult{}, false, fmt.Errorf("stored Deep Cadence Analysis version is unsupported; refresh the full snapshot before retrying")
+	}
+	if interlace.IVTCValidation.DeepAnalysisVersion == ivtcDeepEvidenceVersion {
+		evidenceCurrent := deepCadenceIdentityCurrent(h.db, scan, path, currentInfo, interlace.IVTCValidation.SourceIdentity) &&
+			interlace.IVTCValidation.EvidenceSnapshotUpdatedAt == scan.UpdatedAt.UTC().Format(time.RFC3339Nano)
+		if evidenceCurrent {
+			return models.ScanResult{}, false, fmt.Errorf("current snapshot already has Deep Cadence Analysis evidence")
+		}
+		if !resetStaleDeepIVTCEvidence(&interlace) {
+			return models.ScanResult{}, false, fmt.Errorf("stale deep evidence cannot be safely refreshed from the initial three windows; refresh the full snapshot first")
+		}
+	}
+	var cadence CadenceAnalysis
+	if !decodeJSONValue(scan.CadenceAnalysis, &cadence) {
+		return models.ScanResult{}, false, fmt.Errorf("current snapshot has no reusable cadence analysis")
+	}
+	recommendation := recommendCadence(cadence)
+	if recommendation.Operation != "inverse_telecine" || strings.TrimSpace(interlace.IVTCValidation.SelectedOrder) != "" {
+		return models.ScanResult{}, false, fmt.Errorf("Deep Cadence Analysis is only available while automatic IVTC remains ambiguous")
+	}
+	identity, err := ivtcSourceIdentityForSnapshot(h.db, scan, path, currentInfo)
+	if err != nil {
+		return models.ScanResult{}, false, err
+	}
+	var probe FFProbeResult
+	encodedRaw, err := json.Marshal(scan.RawProbe)
+	if err != nil || json.Unmarshal(encodedRaw, &probe) != nil {
+		return models.ScanResult{}, false, fmt.Errorf("current snapshot metadata cannot be decoded")
+	}
+	video := firstStream(probe.Streams, "video")
+	if video.CodecType == "" {
+		return models.ScanResult{}, false, fmt.Errorf("current snapshot has no video stream")
+	}
+	declaredRate := firstReliableFrameRate(video.AverageFrameRate, video.RealBaseFrameRate)
+	var frameAnalysis QSVFrameStructureAnalysis
+	_ = decodeJSONValue(scan.FrameStructureAnalysis, &frameAnalysis)
+	policyForFrames := frameStructureSamplingPolicy(h.db)
+	plan, _ := samplingPlanFromPersistedScan(scan, path, compatiblePreviewSourceRevision{
+		Size: currentInfo.Size(), ModifiedAtNS: currentInfo.ModTime().UnixNano(), Mode: uint32(currentInfo.Mode()),
+	}, scan.Duration, policyForFrames, nil, samplingPlanPolicyVersion)
+	if plan.AssetDurationSeconds <= 0 {
+		plan = canonicalSamplingPlan(scan.Duration, policyForFrames)
+	}
+	report("deep_cadence", 20, "Reusing the existing three IVTC windows")
+	if err := extendIVTCValidationContext(ctx, path, &interlace, plan, identity, runIDETContext, func(completed, total int) {
+		progress := 20 + 60*float64(completed)/float64(max(1, total))
+		report("deep_cadence", progress, fmt.Sprintf("Analyzed additional IVTC window %d of %d with TFF/BFF comparison", completed, total))
+	}); err != nil {
+		return models.ScanResult{}, false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return models.ScanResult{}, false, err
+	}
+	interlace.Codec = video.CodecName
+	interlace.AverageFrameRate = video.AverageFrameRate
+	interlace.RealFrameRate = video.RealBaseFrameRate
+	interlace.Version = interlaceAnalysisVersion
+	updatedCadence := analyzeCadence(video.CodecName, declaredRate, interlace, frameAnalysis)
+	updatedRecommendation := recommendCadence(updatedCadence)
+	if interlace.IVTCValidation != nil {
+		interlace.IVTCValidation.SourceFrameRate = declaredRate
+		interlace.IVTCValidation.ExpectedOutputFrameRate = updatedRecommendation.OutputFrameRate
+	}
+	scan.InterlaceAnalysis = structToJSONMap(interlace)
+	scan.CadenceAnalysis = structToJSONMap(updatedCadence)
+	scan.CadenceRecommendation = structToJSONMap(updatedRecommendation)
+	if scan.RawProbe == nil {
+		scan.RawProbe = models.JSONMap{}
+	}
+	scan.RawProbe["interlaceAnalysis"] = interlace
+	scan.RawProbe["cadenceAnalysis"] = updatedCadence
+	scan.RawProbe["cadenceRecommendation"] = updatedRecommendation
+	refreshed := []string{"interlace", "cadence"}
+	reused := componentDifference(snapshotComponentNames, refreshed)
+	stampSnapshotCacheMetadataWithRefreshReasonAndEvidence(&scan, path, currentInfo, "incremental", reused, refreshed, "", policy, analysisSeconds)
+	report("deep_cadence_persist", 90, "Revalidating source identity and saving versioned IVTC evidence")
+	if err := persistDeepCadenceSnapshot(h.db, &scan, identity, capturedInfo); err != nil {
+		return models.ScanResult{}, false, err
+	}
+	report("completed", 100, "Deep Cadence Analysis evidence saved")
+	return scan, false, nil
+}
+
+func ivtcSourceIdentityForSnapshot(db *gorm.DB, scan models.ScanResult, path string, info os.FileInfo) (*IVTCSourceIdentity, error) {
+	device, inode, stable := filesystemDeviceInode(info)
+	if !stable || scan.ID == 0 || scan.UpdatedAt.IsZero() {
+		return nil, fmt.Errorf("stable physical source and snapshot identity are required for Deep Cadence Analysis")
+	}
+	identity := &IVTCSourceIdentity{
+		Path: filepath.Clean(path), SnapshotID: scan.ID, SnapshotUpdatedAt: scan.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		SizeBytes: info.Size(), ModifiedAt: info.ModTime().UTC().Format(time.RFC3339Nano), Mode: uint32(info.Mode()),
+		Device: strconv.FormatUint(device, 10), Inode: strconv.FormatUint(inode, 10),
+	}
+	if db != nil && db.Migrator().HasTable(&models.AssetRecord{}) {
+		var asset models.AssetRecord
+		if db.Where("path = ?", filepath.Clean(path)).First(&asset).Error == nil {
+			identity.AssetRecordID = asset.ID
+		}
+	}
+	return identity, nil
+}
+
+func ivtcSourceIdentityMatchesInfo(identity *IVTCSourceIdentity, path string, info os.FileInfo, snapshotID uint) bool {
+	if identity == nil || info == nil || identity.SnapshotID != snapshotID || filepath.Clean(identity.Path) != filepath.Clean(path) ||
+		identity.SizeBytes != info.Size() || identity.ModifiedAt != info.ModTime().UTC().Format(time.RFC3339Nano) || identity.Mode != uint32(info.Mode()) {
+		return false
+	}
+	device, inode, stable := filesystemDeviceInode(info)
+	return stable && identity.Device == strconv.FormatUint(device, 10) && identity.Inode == strconv.FormatUint(inode, 10)
+}
+
+func samePhysicalFileRevision(before, after os.FileInfo) bool {
+	if before == nil || after == nil || !os.SameFile(before, after) || before.Size() != after.Size() ||
+		!before.ModTime().Equal(after.ModTime()) || before.Mode() != after.Mode() {
+		return false
+	}
+	beforeDevice, beforeInode, beforeStable := filesystemDeviceInode(before)
+	afterDevice, afterInode, afterStable := filesystemDeviceInode(after)
+	return beforeStable && afterStable && beforeDevice == afterDevice && beforeInode == afterInode
+}
+
+func persistDeepCadenceSnapshot(db *gorm.DB, scan *models.ScanResult, identity *IVTCSourceIdentity, capturedInfo os.FileInfo) error {
+	if db == nil || scan == nil || identity == nil || capturedInfo == nil || scan.ID == 0 {
+		return fmt.Errorf("Deep Cadence Analysis persistence requires a snapshot and source identity")
+	}
+	currentInfo, err := os.Stat(scan.Path)
+	if err != nil || !samePhysicalFileRevision(capturedInfo, currentInfo) || !ivtcSourceIdentityMatchesInfo(identity, scan.Path, currentInfo, scan.ID) {
+		return fmt.Errorf("source identity or revision changed during Deep Cadence Analysis")
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		var latest models.ScanResult
+		if err := tx.Where("path = ?", filepath.Clean(scan.Path)).Order("updated_at desc, id desc").First(&latest).Error; err != nil {
+			return fmt.Errorf("revalidate current snapshot before saving deep cadence evidence: %w", err)
+		}
+		if latest.ID != identity.SnapshotID || latest.UpdatedAt.UTC().Format(time.RFC3339Nano) != identity.SnapshotUpdatedAt {
+			return fmt.Errorf("asset snapshot changed during Deep Cadence Analysis")
+		}
+		if identity.AssetRecordID > 0 {
+			if !tx.Migrator().HasTable(&models.AssetRecord{}) {
+				return fmt.Errorf("source asset identity became unavailable during Deep Cadence Analysis")
+			}
+			var asset models.AssetRecord
+			if err := tx.Where("path = ?", filepath.Clean(scan.Path)).First(&asset).Error; err != nil || asset.ID != identity.AssetRecordID {
+				return fmt.Errorf("source asset identity changed during Deep Cadence Analysis")
+			}
+		}
+		currentInfo, err := os.Stat(scan.Path)
+		if err != nil || !samePhysicalFileRevision(capturedInfo, currentInfo) || !ivtcSourceIdentityMatchesInfo(identity, scan.Path, currentInfo, latest.ID) {
+			return fmt.Errorf("source identity or revision changed before saving Deep Cadence Analysis")
+		}
+		scan.UpdatedAt = time.Now().UTC()
+		var interlace InterlaceAnalysis
+		if !decodeJSONValue(scan.InterlaceAnalysis, &interlace) || interlace.IVTCValidation == nil {
+			return fmt.Errorf("deep cadence evidence disappeared before persistence")
+		}
+		interlace.IVTCValidation.EvidenceSnapshotUpdatedAt = scan.UpdatedAt.UTC().Format(time.RFC3339Nano)
+		scan.InterlaceAnalysis = structToJSONMap(interlace)
+		if scan.RawProbe != nil {
+			scan.RawProbe["interlaceAnalysis"] = interlace
+		}
+		return tx.Model(&models.ScanResult{}).Where("id = ? AND path = ?", scan.ID, filepath.Clean(scan.Path)).Updates(map[string]any{
+			"interlace_analysis":     scan.InterlaceAnalysis,
+			"cadence_analysis":       scan.CadenceAnalysis,
+			"cadence_recommendation": scan.CadenceRecommendation,
+			"raw_probe":              scan.RawProbe,
+			"updated_at":             scan.UpdatedAt,
+		}).Error
+	})
+}
+
+func deepCadenceIdentityCurrent(db *gorm.DB, scan models.ScanResult, path string, info os.FileInfo, identity *IVTCSourceIdentity) bool {
+	if !ivtcSourceIdentityMatchesInfo(identity, path, info, scan.ID) {
+		return false
+	}
+	if identity.AssetRecordID == 0 {
+		return true
+	}
+	if db == nil || !db.Migrator().HasTable(&models.AssetRecord{}) {
+		return false
+	}
+	var asset models.AssetRecord
+	return db.Where("path = ?", filepath.Clean(path)).First(&asset).Error == nil && asset.ID == identity.AssetRecordID
+}
+
+func staleDeepCadenceEvidenceForQueue(db *gorm.DB, scan models.ScanResult, path string, info os.FileInfo) models.ScanResult {
+	var interlace InterlaceAnalysis
+	if !decodeJSONValue(scan.InterlaceAnalysis, &interlace) || interlace.IVTCValidation == nil || interlace.IVTCValidation.DeepAnalysisVersion == 0 {
+		return scan
+	}
+	if interlace.IVTCValidation.DeepAnalysisVersion == ivtcDeepEvidenceVersion &&
+		deepCadenceIdentityCurrent(db, scan, path, info, interlace.IVTCValidation.SourceIdentity) &&
+		interlace.IVTCValidation.EvidenceSnapshotUpdatedAt == scan.UpdatedAt.UTC().Format(time.RFC3339Nano) {
+		return scan
+	}
+	interlace.IVTCValidation.DeepAnalysisStatus = "stale"
+	interlace.IVTCValidation.SelectedOrder = ""
+	interlace.Status = "telecine_suspected"
+	interlace.DetectedFieldOrder = ""
+	interlace.FieldOrderMismatch = false
+	interlace.RecommendedMode = ""
+	interlace.RecommendedAction = "review"
+	interlace.RecommendedFieldMetadataMode = ""
+	interlace.RecommendedFilter = ""
+	interlace.AutomaticFilter = ""
+	interlace.DecisionReason = "deep IVTC evidence is stale for this physical source"
+	scan.InterlaceAnalysis = structToJSONMap(interlace)
+	if scan.RawProbe != nil {
+		scan.RawProbe["interlaceAnalysis"] = interlace
+	}
+	var probe FFProbeResult
+	encoded, err := json.Marshal(scan.RawProbe)
+	if err == nil && json.Unmarshal(encoded, &probe) == nil {
+		if video := firstStream(probe.Streams, "video"); video.CodecType != "" {
+			var frameAnalysis QSVFrameStructureAnalysis
+			_ = decodeJSONValue(scan.FrameStructureAnalysis, &frameAnalysis)
+			cadence := analyzeCadence(video.CodecName, firstReliableFrameRate(video.AverageFrameRate, video.RealBaseFrameRate), interlace, frameAnalysis)
+			scan.CadenceAnalysis = structToJSONMap(cadence)
+			scan.CadenceRecommendation = structToJSONMap(recommendCadence(cadence))
+			if scan.RawProbe != nil {
+				scan.RawProbe["cadenceAnalysis"] = cadence
+				scan.RawProbe["cadenceRecommendation"] = recommendCadence(cadence)
+			}
+		}
+	}
+	return scan
 }
 
 func (h ScannerHandler) refreshSnapshotComponentsContext(ctx context.Context, existing models.ScanResult, path string, info os.FileInfo, analysisSeconds int, staleComponents []string, report func(string, float64, string)) (models.ScanResult, error) {
@@ -987,6 +1259,10 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if request.DeepCadence && request.Force {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Deep Cadence Analysis cannot force a full snapshot refresh"})
+		return
+	}
 	path := resolveMediaPath(h.db, strings.TrimSpace(request.Path))
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
@@ -1012,6 +1288,10 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 		if operation.AssetPath == path && operation.Status == "running" {
 			copy := snapshotOperationCopy(operation)
 			snapshotOperations.RUnlock()
+			if copy.DeepCadence != request.DeepCadence {
+				c.JSON(http.StatusConflict, gin.H{"error": "a different snapshot operation is already running for this asset"})
+				return
+			}
 			c.JSON(http.StatusAccepted, copy)
 			return
 		}
@@ -1034,7 +1314,11 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 	now := time.Now()
 	id := fmt.Sprintf("snapshot-%d", now.UnixNano())
 	ctx, cancel := context.WithCancel(context.Background())
-	operation := &SnapshotOperation{ID: id, AssetPath: path, Status: "running", Phase: "preparing", Progress: 1, Message: "Preparing this asset snapshot", StageTimingsMs: map[string]int64{}, CreatedAt: now, UpdatedAt: now, phaseStartedAt: now}
+	message := "Preparing this asset snapshot"
+	if request.DeepCadence {
+		message = "Preparing Deep Cadence Analysis"
+	}
+	operation := &SnapshotOperation{ID: id, AssetPath: path, DeepCadence: request.DeepCadence, Status: "running", Phase: "preparing", Progress: 1, Message: message, StageTimingsMs: map[string]int64{}, CreatedAt: now, UpdatedAt: now, phaseStartedAt: now}
 	snapshotOperations.Lock()
 	snapshotOperations.items[id] = operation
 	snapshotOperations.cancels[id] = cancel
@@ -1069,13 +1353,22 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 		}()
 
 		var outcome scanOutcome
+		operationTimeout := snapshotOperationTimeout
+		if request.DeepCadence {
+			operationTimeout = snapshotDeepCadenceTimeout
+		}
 		select {
 		case outcome = <-outcomes:
-		case <-time.After(snapshotOperationTimeout):
+		case <-time.After(operationTimeout):
 			cancel()
 			transitioned := finishRunningSnapshotOperation(id, func(item *SnapshotOperation) {
 				finishSnapshotOperationTiming(item, time.Now())
-				item.Status, item.Phase, item.Error, item.Message = "error", "timeout", "snapshot analysis exceeded 15 minutes", "Asset snapshot timed out; retry after checking FFmpeg and the NAS mount"
+				failure := "snapshot analysis exceeded 15 minutes"
+				message := "Asset snapshot timed out; retry after checking FFmpeg and the source file"
+				if request.DeepCadence {
+					failure, message = "Deep Cadence Analysis exceeded its 5 minute resource budget", "Deep Cadence Analysis timed out; retry after checking FFmpeg and the source file"
+				}
+				item.Status, item.Phase, item.Error, item.Message = "error", "timeout", failure, message
 			})
 			if transitioned {
 				h.logSnapshotOperation(id, "snapshot_analysis_timeout", context.DeadlineExceeded)
@@ -1099,7 +1392,11 @@ func (h ScannerHandler) StartSnapshotOperation(c *gin.Context) {
 			item.CacheHit = outcome.cached
 			item.ReusedComponents, item.RefreshedComponents, item.ComponentStatuses = snapshotRefreshDetails(outcome.result, outcome.cached)
 			item.FallbackReason = snapshotFallbackReason(outcome.result)
-			item.Status, item.Phase, item.Progress, item.Message, item.Result = "completed", "completed", 100, "Asset snapshot completed", &outcome.result
+			completedMessage := "Asset snapshot completed"
+			if request.DeepCadence {
+				completedMessage = "Deep Cadence Analysis completed"
+			}
+			item.Status, item.Phase, item.Progress, item.Message, item.Result = "completed", "completed", 100, completedMessage, &outcome.result
 		})
 		if transitioned {
 			h.logSnapshotOperation(id, "snapshot_analysis_completed", nil)

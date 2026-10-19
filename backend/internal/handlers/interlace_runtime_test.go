@@ -126,6 +126,43 @@ func TestSelectiveIVTCFallbackRepairsSyntheticResidualCombing(t *testing.T) {
 	}
 }
 
+func TestCanonicalIVTCDiagnosticsRetainResidualsAndMeasureOutputTiming(t *testing.T) {
+	clean := runSyntheticCanonicalIVTCChain(t,
+		"testsrc2=size=160x120:rate=24000/1001:duration=1,telecine=pattern=23", "tff")
+	if clean.CanonicalOutputFrames != 24 || clean.CanonicalOutputProgressive != clean.CanonicalOutputFrames ||
+		clean.CanonicalTimestampAnomalies != 0 || !nearFPS(clean.CanonicalOutputFrameRate, 24000.0/1001.0, .02) {
+		t.Fatalf("canonical probe did not preserve clean 23.976 output timing: %#v", clean)
+	}
+
+	combed := runSyntheticCanonicalIVTCChain(t,
+		"nullsrc=size=160x120:rate=60000/1001:duration=1,geq=random(1)*255:128:128,tinterlace=mode=interleave_top", "tff")
+	if combed.ResidualInterlacedFrames == 0 {
+		t.Fatalf("pre-bwdif fieldmatch probe hid synthetic residual combing: %#v", combed)
+	}
+	if combed.CanonicalOutputProgressive != combed.CanonicalOutputFrames || combed.CanonicalTimestampAnomalies != 0 ||
+		!nearFPS(combed.CanonicalOutputFrameRate, 24000.0/1001.0, .02) {
+		t.Fatalf("selective fallback chain did not expose progressive output timing separately from its residual count: %#v", combed)
+	}
+}
+
+func runSyntheticCanonicalIVTCChain(t *testing.T, source, order string) InterlaceAnalysis {
+	t.Helper()
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg is required for the synthetic canonical IVTC probe")
+	}
+	command := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "info", "-f", "lavfi", "-i", source,
+		"-vf", canonicalIVTCDiagnosticFilter(order), "-an", "-sn", "-f", "null", "-")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("synthetic canonical IVTC probe failed: %v\n%s", err, output)
+	}
+	analysis, ok := parseIDETOutput(string(output))
+	if !ok {
+		t.Fatalf("synthetic canonical IVTC probe emitted no idet evidence: %s", output)
+	}
+	return analysis
+}
+
 func assertIVTCOutputTiming(t *testing.T, observation ffmpegFrameObservation) {
 	t.Helper()
 	if observation.duration < .99 || observation.duration > 1.01 {

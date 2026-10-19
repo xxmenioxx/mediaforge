@@ -85,6 +85,7 @@ func queuePreflightRouter(db *gorm.DB) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	handler := NewQueueHandler(db)
+	router.POST("/queue/jobs", handler.Create)
 	router.POST("/preflights", handler.CreateBatchPreflight)
 	router.POST("/preflights/selected-assets", handler.PreflightSelectedAssets)
 	router.GET("/preflights/:id", handler.GetBatchPreflight)
@@ -671,7 +672,7 @@ func TestBatchPreflightAllowsReadyOnlyAndRetainsBlockedAssets(t *testing.T) {
 	}
 }
 
-func TestBatchPreflightBlocksJob2191IVTCWithActionableCadenceReason(t *testing.T) {
+func TestBatchPreflightRequiresReviewForJob2191AmbiguousIVTC(t *testing.T) {
 	fixture := newQueuePreflightFixture(t, 1)
 	profile := fixture.profile
 	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
@@ -705,24 +706,704 @@ func TestBatchPreflightBlocksJob2191IVTCWithActionableCadenceReason(t *testing.T
 	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
 		t.Fatal(err)
 	}
-	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightBlocked {
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightRequiresReview || candidate.Assets[0].ReviewCode != "ivtc_field_order_required" {
 		if len(candidate.Assets) != 1 {
 			t.Fatalf("preflight returned %d assets, want one", len(candidate.Assets))
 		}
 		asset := candidate.Assets[0]
-		var config models.JSONMap
-		if asset.Plan != nil {
-			config = unknownRecord(asset.Plan.ProfileSnapshot["workerConfig"])
-		}
-		t.Fatalf("unresolved HEVC plan was marked %q: blockers=%v state=%q fpsUnknown=%v warning=%q", asset.Status, asset.Blockers, workerStringValue(config["hevcLevelResolutionState"]), profileWorkerBool(models.Profile{WorkerConfig: config}, "effectiveOutputFrameRateUnknown", false), workerStringValue(config["hevcLevelResolutionWarning"]))
+		t.Fatalf("ambiguous IVTC should require review before Queue acceptance: status=%q reviewCode=%q blockers=%v", asset.Status, asset.ReviewCode, asset.Blockers)
 	}
 	blocker := strings.Join(candidate.Assets[0].Blockers, " ")
-	if !strings.Contains(blocker, "HEVC Level/Tier decision is unresolved") || !strings.Contains(blocker, "effective output FPS is unknown") || !strings.Contains(blocker, "explicit or validated field order") {
+	warning := strings.Join(candidate.Assets[0].Warnings, " ")
+	if !strings.Contains(blocker, "explicit or validated field order") || !strings.Contains(warning, "effective IVTC filters") || !strings.Contains(warning, "output FPS") || !strings.Contains(warning, "HEVC Level/Tier") {
 		t.Fatalf("preflight blocker omitted the actionable IVTC cause: %q", blocker)
 	}
-	var jobs int64
-	if err := fixture.db.Model(&models.QueueJob{}).Count(&jobs).Error; err != nil || jobs != 0 {
-		t.Fatalf("blocked preflight created Queue jobs: count=%d err=%v", jobs, err)
+	if candidate.Assets[0].Plan != nil {
+		t.Fatalf("review-required candidate retained a queueable plan: %#v", candidate.Assets[0].Plan)
+	}
+	review := candidate.Assets[0].CadenceReview
+	if review == nil || review.CadenceType != "hard_telecine" || review.DeclaredFrameRate != "30000/1001" || review.RecommendedOperation != "inverse_telecine" || review.RecommendedFrameRate != "24000/1001" || review.ReportedFieldOrder != "tt" || review.ValidatedSelectedOrder != "" || review.ValidatedWindows != 1 || review.ObservedWindows != 3 || !review.EffectiveOutputFrameRateUnknown || review.HEVCLevelResolutionState != hevcLevelResolutionUnresolved || review.HEVCLevelEffective != "" || review.HEVCLevelTier != "" {
+		t.Fatalf("review details do not describe #2191 without treating reported field order as validated: %#v", review)
+	}
+	var jobs, plans, reservations int64
+	for name, query := range map[string]func() *gorm.DB{
+		"jobs":         func() *gorm.DB { return fixture.db.Model(&models.QueueJob{}) },
+		"plans":        func() *gorm.DB { return fixture.db.Model(&models.ExecutionPlan{}) },
+		"reservations": func() *gorm.DB { return fixture.db.Model(&models.SchedulerReservation{}) },
+	} {
+		var count int64
+		if err := query().Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		switch name {
+		case "jobs":
+			jobs = count
+		case "plans":
+			plans = count
+		case "reservations":
+			reservations = count
+		}
+	}
+	if jobs != 0 || plans != 0 || reservations != 0 {
+		t.Fatalf("review-required Preflight persisted Queue state: jobs=%d plans=%d reservations=%d", jobs, plans, reservations)
+	}
+}
+
+func TestSingleQueueCreateRequiresReviewForJob2191AmbiguousIVTC(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	profile := fixture.profile
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["hevcLevelMode"] = "auto"
+	profile.WorkerConfig["hevcLevelEffective"] = "4.0"
+	profile.WorkerConfig["hevcLevelTier"] = "main"
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionResolved
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = "historical-fingerprint"
+	if err := fixture.db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var scan models.ScanResult
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
+	ambiguous.ID = scan.ID
+	if err := fixture.db.Save(&ambiguous).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := queuePreflightRequest(t, queuePreflightRouter(fixture.db), http.MethodPost, "/queue/jobs", QueueJobInput{
+		MediaPath: fixture.paths[0], LibraryID: fixture.library.ID, ProfileID: fixture.profile.ID,
+		ProcessingMode: ProcessingModeFullEncode, Priority: 5,
+	})
+	if response.Code != http.StatusConflict {
+		t.Fatalf("single Queue Create status=%d want conflict; body=%s", response.Code, response.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["status"] != "REVIEW_REQUIRED" || body["reasonCode"] != "ivtc_field_order_required" || !strings.Contains(stringFromUnknown(body["error"]), "explicit or validated field order") {
+		t.Fatalf("single Queue Create omitted actionable REVIEW_REQUIRED response: %#v", body)
+	}
+	missingEvidence, _ := body["missingEvidence"].([]any)
+	if len(missingEvidence) != 1 || missingEvidence[0] != "explicit or validated IVTC field order" {
+		t.Fatalf("single Queue Create missingEvidence=%#v", body["missingEvidence"])
+	}
+	var jobs, plans, reservations int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.ExecutionPlan{}).Count(&plans).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.SchedulerReservation{}).Count(&reservations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 || plans != 0 || reservations != 0 {
+		t.Fatalf("REVIEW_REQUIRED request persisted Queue state: jobs=%d plans=%d reservations=%d", jobs, plans, reservations)
+	}
+
+	input := QueueJobInput{
+		MediaPath: fixture.paths[0], LibraryID: fixture.library.ID, ProfileID: fixture.profile.ID,
+		ProcessingMode: ProcessingModeFullEncode, Priority: 5, CadenceFieldOrder: "tff",
+	}
+	explicit := queuePreflightRequest(t, queuePreflightRouter(fixture.db), http.MethodPost, "/queue/jobs", input)
+	var explicitBody map[string]any
+	if err := json.Unmarshal(explicit.Body.Bytes(), &explicitBody); err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Code != http.StatusConflict || explicitBody["status"] != "PREFLIGHT_REQUIRED" || explicitBody["code"] != "single_queue_preflight_required" {
+		t.Fatalf("explicit order bypassed reviewed Queue Preflight: status=%d body=%s", explicit.Code, explicit.Body.String())
+	}
+}
+
+func TestSingleQueuePreflightReviewsExplicitJob2191IVTCPlanBeforeAccept(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	profile := fixture.profile
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["hevcLevelMode"] = "auto"
+	profile.WorkerConfig["hevcLevelEffective"] = "4.0"
+	profile.WorkerConfig["hevcLevelTier"] = "main"
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionResolved
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = "historical-fingerprint"
+	if err := fixture.db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var scan models.ScanResult
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
+	ambiguous.ID = scan.ID
+	if err := fixture.db.Save(&ambiguous).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := queuePreflightRouter(fixture.db)
+	input := queuePreflightInput(fixture, "Sin Limite single asset")
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", input)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightRequiresReview {
+		t.Fatalf("ambiguous candidate status=%#v", candidate.Assets)
+	}
+	input.Jobs[0].CadenceFieldOrder = "tff"
+	updated := queuePreflightRequest(t, router, http.MethodPut, "/preflights/"+candidate.ID, QueueBatchPreflightInput{
+		BatchID: candidate.BatchID, BatchName: candidate.BatchName, Revision: candidate.Revision, Jobs: input.Jobs,
+	})
+	if updated.Code != http.StatusOK {
+		t.Fatalf("explicit TFF resolution status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	if err := json.Unmarshal(updated.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightReady || candidate.Assets[0].Plan == nil || candidate.Assets[0].Input.CadenceFieldOrder != "tff" {
+		t.Fatalf("explicit TFF candidate did not resolve to a reviewable ready plan: %#v", candidate.Assets)
+	}
+	reviewedSnapshot := queuePreflightCloneMap(candidate.Assets[0].Plan.ProfileSnapshot)
+	frozenProfile, err := scheduler.RestoreProfileSnapshot(reviewedSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workerStringValue(frozenProfile.WorkerConfig["effectiveCadenceFieldOrder"]); got != "tff" {
+		t.Fatalf("frozen effective field order=%q want tff", got)
+	}
+	if got := workerStringValue(frozenProfile.WorkerConfig["effectiveOutputFrameRate"]); got != "24000/1001" || profileWorkerBool(frozenProfile, "effectiveOutputFrameRateUnknown", false) {
+		t.Fatalf("frozen cadence output rate=%q unknown=%v", got, frozenProfile.WorkerConfig["effectiveOutputFrameRateUnknown"])
+	}
+	filters := workerStringValue(frozenProfile.WorkerConfig["videoFilters"])
+	if !strings.Contains(filters, "fieldmatch=order=tff") || !strings.Contains(filters, "decimate") {
+		t.Fatalf("reviewed filters do not show the selected TFF IVTC: %q", filters)
+	}
+	if got := workerStringValue(frozenProfile.WorkerConfig["hevcLevelResolutionState"]); got != hevcLevelResolutionResolved {
+		t.Fatalf("HEVC decision was not recalculated after cadence selection: state=%q config=%#v", got, frozenProfile.WorkerConfig)
+	}
+	if got := workerStringValue(frozenProfile.WorkerConfig["hevcLevelInputFingerprint"]); got == "" || got == "historical-fingerprint" {
+		t.Fatalf("stale HEVC fingerprint survived candidate resolution: %q", got)
+	}
+	if err := fixture.db.First(&profile, fixture.profile.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := workerStringValue(profile.WorkerConfig["cadenceFieldOrder"]); got != "auto" {
+		t.Fatalf("candidate order leaked into the saved profile: %q", got)
+	}
+
+	accepted := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{
+		"revision": candidate.Revision, "assetIds": []string{candidate.Assets[0].ID},
+	})
+	if accepted.Code != http.StatusCreated {
+		t.Fatalf("accept status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	var acceptedCandidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(accepted.Body.Bytes(), &acceptedCandidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(acceptedCandidate.Jobs) != 1 || acceptedCandidate.Jobs[0].ActiveExecutionPlanID == nil {
+		t.Fatalf("accepted candidate did not bind Queue job to an ExecutionPlan: %#v", acceptedCandidate.Jobs)
+	}
+	job := acceptedCandidate.Jobs[0]
+	if !reflect.DeepEqual(job.ProfileSnapshot, reviewedSnapshot) {
+		t.Fatal("accepted Queue snapshot differs from the reviewed TFF plan")
+	}
+	var executionPlan models.ExecutionPlan
+	if err := fixture.db.First(&executionPlan, *job.ActiveExecutionPlanID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if executionPlan.JobID != job.ID || executionPlan.ProfileVersion != job.ProfileVersion {
+		t.Fatalf("ExecutionPlan binding differs from accepted Queue job: plan=%#v job=%#v", executionPlan, job)
+	}
+	if len(executionPlan.Constraints) == 0 {
+		t.Fatal("ExecutionPlan omitted constraints resolved from the frozen candidate")
+	}
+}
+
+func TestSingleQueuePreflightKeepsJob2191DeepRatiosReviewRequiredWithoutQueueState(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	profile := fixture.profile
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["hevcLevelMode"] = "auto"
+	profile.WorkerConfig["hevcLevelEffective"] = "4.0"
+	profile.WorkerConfig["hevcLevelTier"] = "main"
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionResolved
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = "job-2191-historical-level"
+	if err := fixture.db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var scan models.ScanResult
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	job2191 := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
+	job2191.ID = scan.ID
+	info, err := os.Stat(fixture.paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := ivtcSourceIdentityForSnapshot(fixture.db, scan, fixture.paths[0], info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interlace InterlaceAnalysis
+	if !decodeJSONValue(job2191.InterlaceAnalysis, &interlace) || interlace.IVTCValidation == nil {
+		t.Fatal("could not decode the synthetic Job #2191 evidence")
+	}
+	validation := interlace.IVTCValidation
+	validation.DeepAnalysisVersion = ivtcDeepEvidenceVersion
+	validation.DeepAnalysisStatus = "review_required"
+	validation.SourceIdentity = identity
+	validation.SourceFrameRate = "30000/1001"
+	validation.ExpectedOutputFrameRate = "24000/1001"
+	validation.DurationSeconds = 6287.072
+	validation.WindowSeconds = 5
+	validation.BaselineWindowCount = 3
+	validation.AttemptedWindows = 5
+	validation.InconclusiveWindows = 4
+	validation.ContradictoryWindows = 0
+	validation.ValidatedWindows = 1
+	validation.ValidWindows = 1
+	validation.SelectedOrder = ""
+	validation.Windows = append(validation.Windows,
+		IVTCWindowValidation{Start: 1687.509, TFFProgressive: 49, TFFClassified: 123, TFFResidualInterlaced: 74,
+			BFFProgressive: 5, BFFClassified: 123, BFFResidualInterlaced: 118,
+			TFFProgressiveRatio: 49.0 / 123, BFFProgressiveRatio: 5.0 / 123, Outcome: ivtcWindowOutcomeInconclusive},
+		IVTCWindowValidation{Start: 4579.563, TFFProgressive: 18, TFFClassified: 122, TFFResidualInterlaced: 104,
+			BFFProgressive: 4, BFFClassified: 122, BFFResidualInterlaced: 118,
+			TFFProgressiveRatio: 18.0 / 122, BFFProgressiveRatio: 4.0 / 122, Outcome: ivtcWindowOutcomeInconclusive},
+	)
+	updatedAt := time.Now().UTC()
+	validation.EvidenceSnapshotUpdatedAt = updatedAt.Format(time.RFC3339Nano)
+	validation.SourceIdentity.SnapshotUpdatedAt = validation.EvidenceSnapshotUpdatedAt
+	interlace.Status = "telecine_suspected"
+	interlace.DetectedFieldOrder = ""
+	interlace.FieldOrderMismatch = false
+	interlace.RecommendedMode = ""
+	interlace.RecommendedAction = "review"
+	interlace.RecommendedFilter = ""
+	interlace.AutomaticFilter = ""
+	interlace.DecisionReason = "deep IVTC evidence remained insufficient"
+	encoded, err := json.Marshal(interlace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interlaceValue models.JSONMap
+	if err := json.Unmarshal(encoded, &interlaceValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.ScanResult{}).Where("id = ?", scan.ID).Updates(map[string]any{
+		"interlace_analysis":     interlaceValue,
+		"cadence_analysis":       job2191.CadenceAnalysis,
+		"cadence_recommendation": job2191.CadenceRecommendation,
+		"updated_at":             updatedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var current models.ScanResult
+	if err := fixture.db.First(&current, scan.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !deepCadenceIdentityCurrent(fixture.db, current, fixture.paths[0], info, identity) {
+		t.Fatal("synthetic five-window evidence is not current for the local fixture")
+	}
+
+	router := queuePreflightRouter(fixture.db)
+	input := queuePreflightInput(fixture, "Sin Limite #2191 cadence evidence")
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", input)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightRequiresReview || candidate.Assets[0].Plan != nil {
+		t.Fatalf("historical ratios must stay REVIEW_REQUIRED without a plan: %#v", candidate.Assets)
+	}
+	if review := candidate.Assets[0].CadenceReview; review == nil || review.ValidatedSelectedOrder != "" || review.ValidWindows != 1 || review.InconclusiveWindows != 4 {
+		t.Fatalf("historical window outcomes were not retained in Queue review: %#v", review)
+	}
+	accepted := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{
+		"revision": candidate.Revision, "assetIds": []string{candidate.Assets[0].ID},
+	})
+	if accepted.Code == http.StatusCreated {
+		t.Fatalf("review-required evidence unexpectedly accepted: %s", accepted.Body.String())
+	}
+	var jobs, plans, reservations int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.ExecutionPlan{}).Count(&plans).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.SchedulerReservation{}).Count(&reservations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 || plans != 0 || reservations != 0 {
+		t.Fatalf("unvalidated historical cadence created Queue state: jobs=%d plans=%d reservations=%d", jobs, plans, reservations)
+	}
+}
+
+func TestSingleQueuePreflightAcceptsValidatedJob2191IVTCOrder(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	profile := fixture.profile
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["hevcLevelMode"] = "auto"
+	profile.WorkerConfig["hevcLevelEffective"] = "5.1"
+	profile.WorkerConfig["hevcLevelTier"] = "high"
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionResolved
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = "historical-unresolved-rate"
+	if err := fixture.db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var scan models.ScanResult
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	validated := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
+	validated.ID = scan.ID
+	info, err := os.Stat(fixture.paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := ivtcSourceIdentityForSnapshot(fixture.db, scan, fixture.paths[0], info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interlace InterlaceAnalysis
+	encoded, err := json.Marshal(validated.InterlaceAnalysis)
+	if err != nil || json.Unmarshal(encoded, &interlace) != nil {
+		t.Fatalf("decode synthetic IVTC evidence: %v", err)
+	}
+	interlace.Status = "telecine"
+	interlace.FieldOrder = "tff"
+	interlace.DetectedFieldOrder = "tff"
+	interlace.RecommendedMode = "ivtc_tff"
+	interlace.RecommendedAction = "ivtc"
+	interlace.IVTCValidation.DeepAnalysisVersion = ivtcDeepEvidenceVersion
+	interlace.IVTCValidation.DeepAnalysisStatus = "resolved"
+	interlace.IVTCValidation.SourceIdentity = identity
+	evidenceUpdatedAt := time.Now().UTC()
+	interlace.IVTCValidation.EvidenceSnapshotUpdatedAt = evidenceUpdatedAt.Format(time.RFC3339Nano)
+	interlace.IVTCValidation.SourceFrameRate = "30000/1001"
+	interlace.IVTCValidation.ExpectedOutputFrameRate = "24000/1001"
+	interlace.IVTCValidation.DurationSeconds = 90
+	interlace.IVTCValidation.WindowSeconds = 5
+	interlace.IVTCValidation.BaselineWindowCount = 3
+	interlace.IVTCValidation.AttemptedWindows = 5
+	interlace.IVTCValidation.InconclusiveWindows = 2
+	interlace.IVTCValidation.ValidatedWindows = 3
+	interlace.IVTCValidation.ValidWindows = 3
+	interlace.IVTCValidation.SelectedOrder = "tff"
+	interlace.IVTCValidation.Windows[0].SelectedOrder = "tff"
+	interlace.IVTCValidation.Windows[0].Outcome = ivtcWindowOutcomeValid
+	interlace.IVTCValidation.Windows[0].Confidence = .96
+	interlace.IVTCValidation.Windows[1].Outcome = ivtcWindowOutcomeInconclusive
+	interlace.IVTCValidation.Windows[2].Outcome = ivtcWindowOutcomeInconclusive
+	interlace.IVTCValidation.Windows = append(interlace.IVTCValidation.Windows,
+		IVTCWindowValidation{Start: 15, SelectedOrder: "tff", Outcome: ivtcWindowOutcomeValid, Confidence: .96},
+		IVTCWindowValidation{Start: 45, SelectedOrder: "tff", Outcome: ivtcWindowOutcomeValid, Confidence: .96},
+	)
+	for index := range interlace.IVTCValidation.Windows {
+		window := &interlace.IVTCValidation.Windows[index]
+		window.DiagnosticsAvailable = true
+		window.TFFCanonicalOutputFrames, window.TFFCanonicalOutputProgressive = 120, 120
+		window.TFFCanonicalOutputFrameRate = 24000.0 / 1001.0
+		window.TFFCanonicalIDETClassified = 120
+		window.BFFCanonicalOutputFrames, window.BFFCanonicalOutputProgressive = 120, 120
+		window.BFFCanonicalOutputFrameRate = 24000.0 / 1001.0
+		window.BFFCanonicalIDETClassified = 120
+		if window.Outcome == ivtcWindowOutcomeValid {
+			window.TFFCanonicalIDETInterlaced = 3
+			window.BFFCanonicalIDETInterlaced = 80
+		}
+	}
+	for _, window := range interlace.IVTCValidation.Windows {
+		if window.Outcome == ivtcWindowOutcomeValid && window.SelectedOrder != "tff" {
+			t.Fatalf("deep fixture has conflicting IVTC evidence: %#v", window)
+		}
+	}
+	interlaceBytes, err := json.Marshal(interlace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(interlaceBytes, &validated.InterlaceAnalysis); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.ScanResult{}).Where("id = ?", validated.ID).Updates(map[string]any{
+		"interlace_analysis":     validated.InterlaceAnalysis,
+		"cadence_analysis":       validated.CadenceAnalysis,
+		"cadence_recommendation": validated.CadenceRecommendation,
+		"updated_at":             evidenceUpdatedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var persistedDeep models.ScanResult
+	if err := fixture.db.Where("id = ?", validated.ID).First(&persistedDeep).Error; err != nil {
+		t.Fatal(err)
+	}
+	var persistedInterlace InterlaceAnalysis
+	if !decodeJSONValue(persistedDeep.InterlaceAnalysis, &persistedInterlace) || !deepCadenceIdentityCurrent(fixture.db, persistedDeep, fixture.paths[0], info, persistedInterlace.IVTCValidation.SourceIdentity) || persistedInterlace.IVTCValidation.EvidenceSnapshotUpdatedAt != persistedDeep.UpdatedAt.UTC().Format(time.RFC3339Nano) {
+		device, inode, stable := filesystemDeviceInode(info)
+		identityCurrent := deepCadenceIdentityCurrent(fixture.db, persistedDeep, fixture.paths[0], info, persistedInterlace.IVTCValidation.SourceIdentity)
+		identityInfoMatches := ivtcSourceIdentityMatchesInfo(persistedInterlace.IVTCValidation.SourceIdentity, fixture.paths[0], info, persistedDeep.ID)
+		var asset models.AssetRecord
+		assetErr := fixture.db.Where("path = ?", filepath.Clean(fixture.paths[0])).First(&asset).Error
+		t.Fatalf("synthetic deep evidence identity fence is invalid: identityCurrent=%v infoMatches=%v table=%v assetErr=%v evidenceUpdatedAt=%q snapshotUpdatedAt=%q scanId=%d identity=%#v stat=(%d,%d,%v,size=%d,mode=%d) assetId=%d", identityCurrent, identityInfoMatches, fixture.db.Migrator().HasTable(&models.AssetRecord{}), assetErr, persistedInterlace.IVTCValidation.EvidenceSnapshotUpdatedAt, persistedDeep.UpdatedAt.UTC().Format(time.RFC3339Nano), persistedDeep.ID, persistedInterlace.IVTCValidation.SourceIdentity, device, inode, stable, info.Size(), uint32(info.Mode()), asset.ID)
+	}
+	created := queuePreflightRequest(t, queuePreflightRouter(fixture.db), http.MethodPost, "/preflights", queuePreflightInput(fixture, "validated IVTC"))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightReady || candidate.Assets[0].Plan == nil {
+		t.Fatalf("validated IVTC order should resolve without manual review: assets=%#v cadenceReview=%#v", candidate.Assets, candidate.Assets[0].CadenceReview)
+	}
+	if review := candidate.Assets[0].CadenceReview; review == nil || review.DeepAnalysisVersion != ivtcDeepEvidenceVersion || review.DeepAnalysisStatus != "resolved" || review.SourceFrameRate != "30000/1001" || review.ExpectedOutputFrameRate != "24000/1001" || review.ValidatedWindows != 3 || review.AttemptedWindows != 5 {
+		t.Fatalf("resolved cadence evidence was not exposed for review: %#v", review)
+	}
+	if review := candidate.Assets[0].CadenceReview; review == nil || len(review.Windows) != 5 || !review.Windows[0].DiagnosticsAvailable || review.Windows[0].TFFCanonicalIDETInterlaced != 3 || review.Windows[0].TFFCanonicalIDETClassified != 120 || review.Windows[0].TFFCanonicalOutputFrames != 120 {
+		t.Fatalf("canonical residual and timeline diagnostics were omitted from the Queue review contract: %#v", review)
+	}
+	profile, err = scheduler.RestoreProfileSnapshot(candidate.Assets[0].Plan.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workerStringValue(profile.WorkerConfig["effectiveCadenceFieldOrder"]); got != "tff" {
+		t.Fatalf("validated order was not frozen: %q", got)
+	}
+	if got := workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]); got != "24000/1001" || profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) {
+		t.Fatalf("deep IVTC did not resolve the canonical output FPS: rate=%q unknown=%v", got, profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false))
+	}
+	if got := workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"]); got != hevcLevelResolutionResolved {
+		t.Fatalf("HEVC Level/Tier remained unresolved after deep cadence resolution: %q", got)
+	}
+	if got := workerStringValue(profile.WorkerConfig["hevcLevelInputFingerprint"]); got == "historical-unresolved-rate" || got == "" {
+		t.Fatalf("HEVC Level/Tier reused a stale input fingerprint after FPS resolution: %q", got)
+	}
+	accepted := queuePreflightRequest(t, queuePreflightRouter(fixture.db), http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{
+		"revision": candidate.Revision, "assetIds": []string{candidate.Assets[0].ID},
+	})
+	if accepted.Code != http.StatusCreated {
+		t.Fatalf("accept current deep cadence evidence status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	var queued int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&queued).Error; err != nil || queued != 1 {
+		t.Fatalf("deep cadence acceptance did not create exactly one Queue intent: count=%d err=%v", queued, err)
+	}
+}
+
+func TestSingleQueuePreflightRejectsSourceChangeBeforeAccept(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	profile := fixture.profile
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	if err := fixture.db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var scan models.ScanResult
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
+	ambiguous.ID = scan.ID
+	if err := fixture.db.Save(&ambiguous).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := queuePreflightRouter(fixture.db)
+	input := queuePreflightInput(fixture, "stale single asset")
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", input)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	input.Jobs[0].CadenceFieldOrder = "tff"
+	updated := queuePreflightRequest(t, router, http.MethodPut, "/preflights/"+candidate.ID, QueueBatchPreflightInput{
+		BatchID: candidate.BatchID, BatchName: candidate.BatchName, Revision: candidate.Revision, Jobs: input.Jobs,
+	})
+	if updated.Code != http.StatusOK {
+		t.Fatalf("explicit TFF resolution status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	if err := json.Unmarshal(updated.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Assets[0].Status != queuePreflightReady {
+		t.Fatalf("expected ready candidate before source mutation: %#v", candidate.Assets[0])
+	}
+	if err := os.WriteFile(fixture.paths[0], []byte("changed source identity after review"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	accepted := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{
+		"revision": candidate.Revision, "assetIds": []string{candidate.Assets[0].ID},
+	})
+	if accepted.Code != http.StatusConflict {
+		t.Fatalf("candidate accepted after source revision changed: status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	var jobs, plans, reservations int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.ExecutionPlan{}).Count(&plans).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.SchedulerReservation{}).Count(&reservations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 || plans != 0 || reservations != 0 {
+		t.Fatalf("stale candidate acceptance persisted Queue state: jobs=%d plans=%d reservations=%d", jobs, plans, reservations)
+	}
+}
+
+func TestSingleQueuePreflightPreserveCadenceUsesKnownSourceRateAndResolvesHEVC(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	profile := fixture.profile
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["hevcLevelMode"] = "auto"
+	profile.WorkerConfig["hevcLevelEffective"] = "4.0"
+	profile.WorkerConfig["hevcLevelTier"] = "main"
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionResolved
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = "historical-fingerprint"
+	if err := fixture.db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var scan models.ScanResult
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
+	ambiguous.ID = scan.ID
+	if err := fixture.db.Save(&ambiguous).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := queuePreflightRouter(fixture.db)
+	input := queuePreflightInput(fixture, "Preserve cadence review")
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", input)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	input.Jobs[0].CadenceModeOverride = "preserve"
+	input.Jobs[0].CadenceFieldOrder = "auto"
+	updated := queuePreflightRequest(t, router, http.MethodPut, "/preflights/"+candidate.ID, QueueBatchPreflightInput{
+		BatchID: candidate.BatchID, BatchName: candidate.BatchName, Revision: candidate.Revision, Jobs: input.Jobs,
+	})
+	if updated.Code != http.StatusOK {
+		t.Fatalf("preserve cadence resolution status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	if err := json.Unmarshal(updated.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightReady || candidate.Assets[0].Plan == nil {
+		t.Fatalf("preserve cadence with known source rate should resolve a reviewable plan: %#v", candidate.Assets)
+	}
+	resolved, err := scheduler.RestoreProfileSnapshot(candidate.Assets[0].Plan.ProfileSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workerStringValue(resolved.WorkerConfig["cadenceMode"]) != "preserve" || workerStringValue(resolved.WorkerConfig["hevcLevelResolutionState"]) != hevcLevelResolutionResolved || profileWorkerBool(resolved, "effectiveOutputFrameRateUnknown", false) {
+		t.Fatalf("known source cadence did not resolve to a safe preserve/HEVC plan: %#v", resolved.WorkerConfig)
+	}
+	if strings.Contains(workerStringValue(resolved.WorkerConfig["videoFilters"]), "fieldmatch=") || strings.Contains(workerStringValue(resolved.WorkerConfig["videoFilters"]), "decimate") {
+		t.Fatalf("preserve cadence unexpectedly planned IVTC filters: %q", resolved.WorkerConfig["videoFilters"])
+	}
+	if got := workerStringValue(resolved.WorkerConfig["hevcLevelInputFingerprint"]); got == "" || got == "historical-fingerprint" {
+		t.Fatalf("stale HEVC fingerprint survived preserve resolution: %q", got)
+	}
+}
+
+func TestSingleQueuePreflightPreserveCadenceWithUnknownFPSRemainsReviewRequired(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	profile := fixture.profile
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["videoFilters"] = "fps=fps*2"
+	profile.WorkerConfig["hevcLevelMode"] = "auto"
+	profile.WorkerConfig["hevcLevelEffective"] = "4.0"
+	profile.WorkerConfig["hevcLevelTier"] = "main"
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionResolved
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = "historical-fingerprint"
+	if err := fixture.db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var scan models.ScanResult
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
+	ambiguous.ID = scan.ID
+	if err := fixture.db.Save(&ambiguous).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := queuePreflightRouter(fixture.db)
+	input := queuePreflightInput(fixture, "Preserve cadence unknown FPS")
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", input)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	input.Jobs[0].CadenceModeOverride = "preserve"
+	input.Jobs[0].CadenceFieldOrder = "auto"
+	updated := queuePreflightRequest(t, router, http.MethodPut, "/preflights/"+candidate.ID, QueueBatchPreflightInput{
+		BatchID: candidate.BatchID, BatchName: candidate.BatchName, Revision: candidate.Revision, Jobs: input.Jobs,
+	})
+	if updated.Code != http.StatusOK {
+		t.Fatalf("preserve cadence resolution status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	if err := json.Unmarshal(updated.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightRequiresReview || candidate.Assets[0].ReviewCode != "cadence_output_fps_unknown" || candidate.Assets[0].Plan != nil {
+		t.Fatalf("unknown preserve cadence did not remain review-required: %#v", candidate.Assets)
+	}
+	blockers := strings.Join(candidate.Assets[0].Blockers, " ")
+	if !strings.Contains(blockers, "effective output FPS is unknown") {
+		t.Fatalf("preserve cadence blocker omitted its unresolved FPS cause: %q", blockers)
+	}
+	var jobs, plans, reservations int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.ExecutionPlan{}).Count(&plans).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.SchedulerReservation{}).Count(&reservations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 || plans != 0 || reservations != 0 {
+		t.Fatalf("unresolved preserve candidate persisted Queue state: jobs=%d plans=%d reservations=%d", jobs, plans, reservations)
 	}
 }
 

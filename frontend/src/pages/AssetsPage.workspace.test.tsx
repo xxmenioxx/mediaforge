@@ -263,7 +263,7 @@ describe('Library Assets workspace', () => {
     vi.mocked(api.jellyfinOutcomes).mockResolvedValue([]);
     vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => effectiveConfigurationsForIds(assetIds) as never);
     vi.mocked(api.createQueueJob).mockResolvedValue({ id: 99 } as never);
-    vi.mocked(api.createQueueBatchPreflight).mockResolvedValue({ id: 'candidate-1' } as never);
+    vi.mocked(api.createQueueBatchPreflight).mockResolvedValue({ id: 'candidate-1', revision: 1, resolved: true, status: 'active', batchId: 'batch-1', batchName: 'Single asset Queue review', assets: [] } as never);
   });
 
   it('creates no row thumbnail requests and only one image request per selected asset', async () => {
@@ -866,7 +866,7 @@ describe('RAW Assets workspace', () => {
     vi.mocked(api.jellyfinOutcomes).mockResolvedValue([]);
     vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => effectiveConfigurationsForIds(assetIds) as never);
     vi.mocked(api.createQueueJob).mockResolvedValue({ id: 99 } as never);
-    vi.mocked(api.createQueueBatchPreflight).mockResolvedValue({ id: 'candidate-1' } as never);
+    vi.mocked(api.createQueueBatchPreflight).mockResolvedValue({ id: 'candidate-1', revision: 1, resolved: true, status: 'active', batchId: 'batch-1', batchName: 'Single asset Queue review', assets: [] } as never);
   });
 
   it('loads artwork for the one selected RAW identity and keeps every RAW row image-free', async () => {
@@ -1114,7 +1114,7 @@ describe('RAW Assets workspace', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await user.click(within(screen.getByTestId('selected-asset-detail')).getByRole('button', { name: 'More actions for S01E01.mkv' }));
     await user.click(screen.getByRole('menuitem', { name: 'Queue asset' }));
-    await waitFor(() => expect(api.createQueueJob).toHaveBeenCalledWith(expect.objectContaining({ profileId: 8, resolveProfileAssignments: true, libraryId: 1 })));
+    await waitFor(() => expect(api.createQueueBatchPreflight).toHaveBeenCalledWith(expect.objectContaining({ jobs: [expect.objectContaining({ profileId: 8, resolveProfileAssignments: true, libraryId: 1 })] })));
     discardDraft.mockRestore();
     suggest.mockRestore(); assign.mockRestore(); createTest.mockRestore();
   });
@@ -1122,7 +1122,7 @@ describe('RAW Assets workspace', () => {
   it('shows compact individual Queue failure feedback outside Asset Info', async () => {
     const user = userEvent.setup();
     let rejectQueue!: (reason: Error) => void;
-    vi.mocked(api.createQueueJob).mockImplementation(() => new Promise((_, reject) => { rejectQueue = reject; }));
+    vi.mocked(api.createQueueBatchPreflight).mockImplementation(() => new Promise((_, reject) => { rejectQueue = reject; }));
     renderRawPage('/assets?location=raw&sourceGroup=7&logicalGroup=%2Fmedia%2Fraw%2Fanime%2FAttack%20on%20Titan');
     const details = await screen.findByTestId('selected-asset-detail');
     await user.click(within(details).getByRole('button', { name: 'More actions for S01E01.mkv' }));
@@ -1207,6 +1207,14 @@ describe('RAW Assets workspace', () => {
 
   it('submits a backend-resolved Custom Queue from a compact RAW row', async () => {
     const user = userEvent.setup();
+    vi.mocked(api.createQueueBatchPreflight).mockResolvedValue({
+      id: 'candidate-single-1', revision: 1, resolved: true, status: 'active', batchId: 'single-1', batchName: 'Single asset: S01E01.mkv',
+      assets: [{
+        id: 'asset-single-1', mediaPath: '/media/raw/anime/Attack on Titan/S01E01.mkv', batchId: 'single-1', batchName: 'Single asset: S01E01.mkv',
+        input: { mediaPath: '/media/raw/anime/Attack on Titan/S01E01.mkv', libraryId: 1, profileId: 0, processingMode: 'full_encode', priority: 5 },
+        status: 'ready', blockers: [], warnings: [],
+      }],
+    } as never);
     vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => ({
       configurations: Object.fromEntries(assetIds.map((id) => [String(id), {
         assetPath: `/media/raw/anime/Attack on Titan/S01E01.mkv`,
@@ -1224,13 +1232,17 @@ describe('RAW Assets workspace', () => {
     const row = within(table).getByText('S01E01.mkv').closest('tr')!;
     await user.click(within(row).getByRole('button', { name: 'More actions for S01E01.mkv' }));
     await user.click(screen.getByRole('menuitem', { name: 'Queue asset' }));
-    await waitFor(() => expect(api.createQueueJob).toHaveBeenCalledOnce());
-    expect(await screen.findByText('Asset queued individually.')).toBeTruthy();
-    expect(api.createQueueJob).toHaveBeenCalledWith(expect.objectContaining({
-      mediaPath: '/media/raw/anime/Attack on Titan/S01E01.mkv',
-      libraryId: 1,
-      profileId: 0,
-      resolveProfileAssignments: true,
+    await waitFor(() => expect(api.createQueueBatchPreflight).toHaveBeenCalledOnce());
+    expect(await screen.findByRole('button', { name: /Accept & Queue/ })).toBeTruthy();
+    expect(api.createQueueBatchPreflight).toHaveBeenCalledWith(expect.objectContaining({
+      batchName: 'Single asset: S01E01.mkv',
+      jobs: [expect.objectContaining({
+        mediaPath: '/media/raw/anime/Attack on Titan/S01E01.mkv',
+        libraryId: 1,
+        profileId: 0,
+        resolveProfileAssignments: true,
+        batchPosition: 1,
+      })],
     }));
   });
 

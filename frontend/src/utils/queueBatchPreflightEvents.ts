@@ -3,6 +3,10 @@ import type { QueueBatchPreflightResponse } from '../api/types';
 export const QUEUE_BATCH_PREFLIGHT_OPEN_EVENT = 'mediaforge:queue-batch-preflight-open';
 export const QUEUE_BATCH_PREFLIGHT_STORAGE_KEY = 'mvforge.queueBatchPreflightCandidateId';
 
+export function createSingleQueueBatchID() {
+  return `single-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 const discardedCandidateIDs = new Set<string>();
 const maxRememberedDiscardedCandidates = 128;
 
