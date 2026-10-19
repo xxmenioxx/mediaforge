@@ -15,4 +15,4 @@
 
 - [x] 3.1 Add a hard-telecine fixture generator to the #284 sandbox/image and regression-test its isolation; keep full output-fidelity smoke in #285 and add no Docker build/workflow.
 - [x] 3.2 Run focused backend/frontend tests, `git diff --check`, `openspec validate adaptive-deep-cadence-analysis`, and `./scripts/verify.sh --auto`; require `ALL CHECKS PASSED`.
-- [ ] 3.3 Update the existing Draft PR #365 with `Closes #364`, validation, CI, and smoke results; do not merge or deploy.
+- [x] 3.3 Update the existing Draft PR #365 with `Closes #364`, validation, CI, and smoke results; do not merge or deploy.
