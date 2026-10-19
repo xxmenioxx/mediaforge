@@ -245,6 +245,7 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/workers/jobs/:id/execute", workers.Execute)
 		api.POST("/workers/jobs/:id/status", workers.UpdateJobStatus)
 		api.POST("/validation/jobs/:id", validation.ValidateJob)
+		api.GET("/validation/jobs/:id/reconciliation-preview", validation.PreviewHistoricalTrackReconciliation)
 		api.GET("/validation/review", validation.ReviewList)
 		api.GET("/validation/history", validation.HistoryList)
 		api.GET("/validation/jobs/:id/runs/:runId", validation.RunDetail)
