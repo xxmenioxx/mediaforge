@@ -19,4 +19,4 @@
 - [x] 3.2 Run focused backend/frontend tests, `git diff --check`, `openspec validate adaptive-deep-cadence-analysis`, and `./scripts/verify.sh --auto`; require `ALL CHECKS PASSED`.
 - [x] 3.3 Update the existing Draft PR #365 with `Closes #364`, validation, CI, and smoke results; do not merge or deploy.
 - [x] 3.4 Add synthetic diagnostic regressions for residual interlace/repeated-field evidence, preserved #308/#310 interlaced fallback, and truly conclusive distributed resolution.
-- [ ] 3.5 Run focused checks and `./scripts/verify.sh --auto`, complete CI, and update Draft PR #365 without merge or deploy.
+- [x] 3.5 Run focused checks and `./scripts/verify.sh --auto`, complete CI, and update Draft PR #365 without merge or deploy.
