@@ -62,3 +62,16 @@ uploaded.
 `generate-fixtures.sh` exposes the same guarded fixture generator for a known
 run sandbox. New scenarios can be registered in `SUPPORTED_SCENARIOS` and added
 to the workflow dispatch choice/matrix as their issues are implemented.
+
+Issue #364 also adds a cadence-analysis fixture command for a multistream H.264
+hard-telecine source. It uses the same image and temporary sandbox, with no
+additional Docker build or separate Pipeline Smoke workflow:
+
+```bash
+python3 scripts/e2e/pipeline_smoke.py generate-cadence --sandbox "$MVFORGE_SMOKE_RUN_ROOT/sandbox"
+```
+
+The unit/integration regressions exercise its shared backend authorities using
+synthetic scan evidence. #285 can consume this fixture in the existing smoke
+sequence when it adds full output-fidelity checks; do not create another image
+build for cadence scenarios.

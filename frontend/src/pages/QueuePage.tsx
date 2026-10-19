@@ -39,11 +39,13 @@ import { canRemoveQueueBatch } from '../utils/queueBatch';
 import { hasNonTerminalQueueLifecycle, originalArchiveStatusLabel } from '../utils/queueLifecycle';
 import { hasDeterminateQueueProgress, queueStagePresentation, queueStatusColor, queueStatusLabel } from '../utils/queuePresentation';
 import { CompactActionGroup } from '../components/CompactActionGroup';
+import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
 import { JobDetailsDialog } from '../components/JobDetailsDialog';
 import { PageContent, PageHeader } from '../components/PageHeader';
 import { WorkspaceFeedback } from '../components/WorkspaceFeedback';
 import { getMVForgeTokens } from '../theme/theme';
-import type { AppSetting, Asset, AssetInventory, AudioEnhancementProfile, Library, Profile, QueueJob, QueueJobInput } from '../api/types';
+import { createSingleQueueBatchID } from '../utils/queueBatchPreflightEvents';
+import type { AppSetting, Asset, AssetInventory, AudioEnhancementProfile, Library, Profile, QueueBatchPreflightResponse, QueueJob, QueueJobInput } from '../api/types';
 import { emptyTrackProfile, getTrackProfiles, trackProfileOverride, type TrackProfile } from '../trackProfiles';
 
 const initialJob: QueueJobInput = {
@@ -78,6 +80,7 @@ export function QueuePage() {
   const [isJobDialogOpen, setIsJobDialogOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<QueueJob | null>(null);
   const [selectedTrackProfileKey, setSelectedTrackProfileKey] = useState('');
+  const [singleQueueCandidate, setSingleQueueCandidate] = useState<QueueBatchPreflightResponse | null>(null);
   const [jobSearch, setJobSearch] = useState('');
   const [jobsPerPage, setJobsPerPage] = useState(25);
   const [jobPage, setJobPage] = useState(1);
@@ -144,17 +147,20 @@ export function QueuePage() {
   const createJob = useMutation({
     mutationFn: async (input: QueueJobInput) => {
       await applyQueueSelections(input);
-      return api.createQueueJob(input);
+      const batchId = createSingleQueueBatchID();
+      return api.createQueueBatchPreflight({
+        batchId,
+        batchName: 'Single asset Queue review',
+        jobs: [{ ...input, batchId, batchName: 'Single asset Queue review', batchPosition: 1 }],
+      });
     },
-    onSuccess: async () => {
+    onSuccess: async (candidate) => {
       setForm(initialJob);
       setEditingJob(null);
       setSelectedTrackProfileKey('');
       setIsJobDialogOpen(false);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
-        queryClient.invalidateQueries({ queryKey: ['assets'] }),
-      ]);
+      setSingleQueueCandidate(candidate);
+      await queryClient.invalidateQueries({ queryKey: ['assets'] });
     },
   });
   const editJob = useMutation({
@@ -454,6 +460,16 @@ export function QueuePage() {
           nextParams.delete('job');
           setSearchParams(nextParams);
         }}
+      />
+      <BatchPreflightDialog
+        candidate={singleQueueCandidate}
+        onClose={() => setSingleQueueCandidate(null)}
+        onAccepted={(candidate) => {
+          setSingleQueueCandidate(candidate);
+          void queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+          void queryClient.invalidateQueries({ queryKey: ['assets'] });
+        }}
+        onDiscarded={() => setSingleQueueCandidate(null)}
       />
     </>
   );

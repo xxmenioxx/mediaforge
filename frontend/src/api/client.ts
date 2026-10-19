@@ -874,10 +874,10 @@ export const api = {
       staleComponents: string[];
       analysisEvidence?: import('./types').AssetAnalysisEvidence;
     }>(`/api/scan?path=${encodeURIComponent(path)}`),
-  startSnapshotOperation: ({ path, force = false, analysisSeconds = 20 }: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) =>
+  startSnapshotOperation: ({ path, force = false, analysisSeconds = 20, deepCadence = false }: { path: string; force?: boolean; analysisSeconds?: 10 | 20; deepCadence?: boolean }) =>
     request<SnapshotOperation>('/api/scan/operations', {
       method: 'POST',
-      body: JSON.stringify({ path, force, analysisSeconds }),
+      body: JSON.stringify({ path, force, analysisSeconds, deepCadence }),
     }),
   snapshotOperation: (operationId: string) =>
     request<SnapshotOperation>(`/api/scan/operations/${encodeURIComponent(operationId)}`),

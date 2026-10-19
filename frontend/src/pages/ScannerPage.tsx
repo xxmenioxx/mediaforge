@@ -18,9 +18,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useState } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
+import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
-import type { Asset, Library, Profile, QueueJobInput } from '../api/types';
+import { createSingleQueueBatchID } from '../utils/queueBatchPreflightEvents';
+import type { Asset, Library, Profile, QueueBatchPreflightResponse, QueueJobInput } from '../api/types';
 
 export function ScannerPage() {
   const queryClient = useQueryClient();
@@ -30,6 +32,7 @@ export function ScannerPage() {
     profileId: 0,
     priority: 5,
   });
+  const [singleQueueCandidate, setSingleQueueCandidate] = useState<QueueBatchPreflightResponse | null>(null);
   const suggestion = useMutation({ mutationFn: api.suggestProfile });
   const scan = useMutation({ mutationFn: api.scan, onSuccess: (result) => suggestion.mutate(result.path) });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
@@ -38,10 +41,15 @@ export function ScannerPage() {
   const availableAssets = (assets.data?.unprocessed ?? []).filter((asset) => !asset.missing);
   const resolvedPath = availableAssets.find((asset) => asset.path === path || asset.relativePath === path)?.path ?? path;
   const createJob = useMutation({
-    mutationFn: api.createQueueJob,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+    mutationFn: async (input: QueueJobInput) => {
+      const batchId = createSingleQueueBatchID();
+      return api.createQueueBatchPreflight({
+        batchId,
+        batchName: 'Single asset Queue review',
+        jobs: [{ ...input, batchId, batchName: 'Single asset Queue review', batchPosition: 1 }],
+      });
     },
+    onSuccess: (candidate) => setSingleQueueCandidate(candidate),
   });
 
   function submitJob(event: FormEvent<HTMLFormElement>) {
@@ -146,7 +154,7 @@ export function ScannerPage() {
                       >
                         Queue Conversion
                       </Button>
-                      {createJob.isSuccess ? <Alert severity="success">Job queued for manual processing.</Alert> : null}
+                      {createJob.isSuccess ? <Alert severity="info">Queue Preflight is ready for review. No Queue job is created until acceptance.</Alert> : null}
                       {createJob.isError ? <Alert severity="warning">Could not queue conversion.</Alert> : null}
                     </Stack>
                   </Box>
@@ -156,6 +164,16 @@ export function ScannerPage() {
           </Grid>
         ) : null}
       </Box>
+      <BatchPreflightDialog
+        candidate={singleQueueCandidate}
+        onClose={() => setSingleQueueCandidate(null)}
+        onAccepted={(candidate) => {
+          setSingleQueueCandidate(candidate);
+          void queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+          void queryClient.invalidateQueries({ queryKey: ['assets'] });
+        }}
+        onDiscarded={() => setSingleQueueCandidate(null)}
+      />
     </>
   );
 }

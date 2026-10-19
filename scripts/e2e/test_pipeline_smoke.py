@@ -67,6 +67,25 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             self.assertIn("TIMEBASE=1/1000", chapters)
             self.assertEqual(chapters, chapters.replace("\r\n", "\n"))
 
+    def test_issue_364_cadence_fixture_reuses_the_existing_isolated_image_and_harness(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_base:
+            root = pipeline_smoke.create_run_root(temp_base, "issue-364-cadence")
+            sandbox = root / "sandbox"
+            pipeline_smoke.prepare_sandbox(sandbox)
+            args = pipeline_smoke.parse_args(["generate-cadence", "--sandbox", str(sandbox)])
+            with patch.object(pipeline_smoke, "run_command") as run_command:
+                pipeline_smoke.generate_cadence_fixture_only(args)
+
+            command = run_command.call_args.args[0]
+            self.assertEqual(command[command.index("--network") + 1], "none")
+            self.assertIn("--read-only", command)
+            self.assertEqual(command.count("--mount"), 1)
+            self.assertIn("testsrc2=size=320x180:rate=24000/1001:duration=8", command)
+            self.assertEqual(command[command.index("-vf") + 1], "telecine=first_field=top")
+            self.assertEqual(command[command.index("-flags") + 1], "+ilme+ildct")
+            self.assertEqual(command[command.index("-top") + 1], "1")
+            self.assertEqual(command[-1], "/media/raw/synthetic-smoke.mkv")
+
     def test_ffprobe_contract_requires_exact_streams_progressive_rate_and_chapters(self) -> None:
         scenario = pipeline_smoke.scenario_for("happy-path")
         probe = {
