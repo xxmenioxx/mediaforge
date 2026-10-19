@@ -1277,34 +1277,49 @@ func (h QueueHandler) Create(c *gin.Context) {
 			})
 			return
 		}
-		prepared, _, prepareErr := h.prepareBatchQueueJob(input)
-		if prepareErr != nil {
-			c.JSON(http.StatusConflict, gin.H{
-				"code":  "queue_preflight_blocked",
-				"error": "Queue planning could not resolve a safe effective plan: " + prepareErr.Error(),
-			})
-			return
-		}
-		profile, restoreErr := scheduler.RestoreProfileSnapshot(prepared.ProfileSnapshot)
-		if restoreErr != nil {
-			c.JSON(http.StatusConflict, gin.H{"code": "queue_preflight_blocked", "error": "Restore prepared Queue profile: " + restoreErr.Error()})
-			return
-		}
-		if cadenceFieldOrderReviewRequired(profile) {
-			c.JSON(http.StatusConflict, gin.H{
-				"code":            "cadence_review_required",
-				"status":          "REVIEW_REQUIRED",
-				"reasonCode":      "ivtc_field_order_required",
-				"error":           "Automatic IVTC is unresolved because an explicit or validated field order is missing.",
-				"missingEvidence": []string{"explicit or validated IVTC field order"},
-				"suggestions":     []string{"Choose TFF or BFF for this asset, resolve Queue Preflight again, and review the effective plan before acceptance."},
-			})
-			return
-		}
-		if processingMode == ProcessingModeFullEncode {
-			if err := hevcLevelPlanningError(profile); err != nil {
-				c.JSON(http.StatusConflict, gin.H{"code": "hevc_level_preflight_blocked", "error": "Queue HEVC preflight: " + err.Error()})
+		if h.db.Migrator().HasTable(&models.ScanResult{}) {
+			var scan models.ScanResult
+			scanErr := h.db.Where("path = ?", filepath.Clean(input.MediaPath)).Order("updated_at desc, id desc").First(&scan).Error
+			if scanErr != nil && !errors.Is(scanErr, gorm.ErrRecordNotFound) {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "load source snapshot for Queue preflight: " + scanErr.Error()})
 				return
+			}
+			if scanErr == nil {
+				// A scanned source has cadence/HEVC evidence that can be checked before
+				// Queue intent is persisted. Keep unrelated track selection out of this
+				// video-only guard; Batch Preflight freezes tracks for acceptance.
+				preflightInput := input
+				preflightInput.TrackProfileKey = ""
+				prepared, _, prepareErr := h.prepareBatchQueueJob(preflightInput)
+				if prepareErr != nil {
+					c.JSON(http.StatusConflict, gin.H{
+						"code":  "queue_preflight_blocked",
+						"error": "Queue planning could not resolve a safe effective plan: " + prepareErr.Error(),
+					})
+					return
+				}
+				profile, restoreErr := scheduler.RestoreProfileSnapshot(prepared.ProfileSnapshot)
+				if restoreErr != nil {
+					c.JSON(http.StatusConflict, gin.H{"code": "queue_preflight_blocked", "error": "Restore prepared Queue profile: " + restoreErr.Error()})
+					return
+				}
+				if cadenceFieldOrderReviewRequired(profile) {
+					c.JSON(http.StatusConflict, gin.H{
+						"code":            "cadence_review_required",
+						"status":          "REVIEW_REQUIRED",
+						"reasonCode":      "ivtc_field_order_required",
+						"error":           "Automatic IVTC is unresolved because an explicit or validated field order is missing.",
+						"missingEvidence": []string{"explicit or validated IVTC field order"},
+						"suggestions":     []string{"Choose TFF or BFF for this asset, resolve Queue Preflight again, and review the effective plan before acceptance."},
+					})
+					return
+				}
+				if processingMode == ProcessingModeFullEncode {
+					if err := hevcLevelPlanningError(profile); err != nil {
+						c.JSON(http.StatusConflict, gin.H{"code": "hevc_level_preflight_blocked", "error": "Queue HEVC preflight: " + err.Error()})
+						return
+					}
+				}
 			}
 		}
 	}

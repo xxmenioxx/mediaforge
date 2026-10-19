@@ -13,6 +13,11 @@ The system SHALL resolve an individual Queue request through the canonical caden
 - **WHEN** a single Queue request uses `hard_telecine` at 30000/1001, cadence mode `auto`, field order `auto`, stream metadata reports `tt`, and IVTC validation has only 1 of 3 windows with no validated `SelectedOrder`
 - **THEN** Queue returns `REVIEW_REQUIRED` before job creation, reports that an explicit or validated field order is missing, and suggests choosing TFF or BFF for the asset
 
+#### Scenario: Queue intent has no persisted source scan
+
+- **WHEN** a direct Queue request has no saved scan or cadence evidence
+- **THEN** Queue may persist its lightweight intent without inventing cadence or HEVC evidence, and claim remains responsible for canonical preparation and blocking an unresolved plan before ExecutionPlan dispatch
+
 #### Scenario: Automatic IVTC has a validated selected order
 
 - **WHEN** the canonical cadence analysis recommends IVTC and provides a validated `SelectedOrder`

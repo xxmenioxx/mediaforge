@@ -4,6 +4,7 @@
 - [x] 1.2 Apply candidate-scoped TFF/BFF or Preserve choices through the existing conversion override and canonical freeze; verify IVTC filters/FPS/HEVC and fail closed when Preserve has unknown FPS without changing stored profile configuration.
 - [x] 1.3 Gate direct single Queue Create before persistence on unresolved IVTC and require reviewed Preflight for explicit cadence edits; verify zero QueueJobs, ExecutionPlans, and reservations for ambiguous evidence.
 - [x] 1.4 Verify candidate acceptance revalidates source identity/revision and keeps the accepted profile snapshot and ExecutionPlan aligned.
+- [x] 1.5 Preserve lightweight Queue intent when no scan exists, avoid track snapshot coupling in the cadence/HEVC guard, and retain claim-time fail-closed preparation.
 
 ## 2. Frontend review flow
 
