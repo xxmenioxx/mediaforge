@@ -117,6 +117,10 @@ func buildHistoricalReconciliationPreview(db *gorm.DB, job models.QueueJob) (his
 		preview.Reasons = append(preview.Reasons, "The canonical kind=result artifact or its report directory is missing or unreadable; verify that the original Result evidence is available.")
 		return preview, nil
 	}
+	if stringFromUnknown(artifact["kind"]) != "result" {
+		preview.Reasons = append(preview.Reasons, "The selected artifact is not a canonical kind=result artifact.")
+		return preview, nil
+	}
 	identity, identityOK := resultIdentityFromArtifact(artifact)
 	binding, bindingOK := resultBindingFromArtifact(artifact)
 	if !identityOK || identity.GenerationVersion < 1 || !bindingOK || !frozenBindingMatches(db, job, binding) {
@@ -145,7 +149,14 @@ func buildHistoricalReconciliationPreview(db *gorm.DB, job models.QueueJob) (his
 		return preview, nil
 	}
 	artifactJob := unknownRecord(artifact["job"])
-	if artifactJob == nil || !historicalReconciliationJSONValuesEqual(artifactJob["subtitleArtifacts"], job.SubtitleArtifacts) {
+	if artifactJob == nil ||
+		filepath.Clean(stringFromUnknown(artifactJob["outputPath"])) != filepath.Clean(job.OutputPath) ||
+		filepath.Clean(plan.OutputPath) != filepath.Clean(job.OutputPath) ||
+		uintFromUnknown(artifactJob["executionNumber"]) != binding.ExecutionNumber {
+		preview.Reasons = append(preview.Reasons, "The Result artifact, Queue output path, ExecutionPlan output path, or execution number disagree.")
+		return preview, nil
+	}
+	if !historicalReconciliationJSONValuesEqual(artifactJob["subtitleArtifacts"], job.SubtitleArtifacts) {
 		preview.Reasons = append(preview.Reasons, "Queue sidecar identity evidence differs from the Queue snapshot captured in the canonical Result artifact.")
 		return preview, nil
 	}

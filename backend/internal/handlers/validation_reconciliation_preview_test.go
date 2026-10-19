@@ -221,7 +221,7 @@ func newReconciliationPreviewFixture(t *testing.T, outcome string) reconciliatio
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
-	plan := models.ExecutionPlan{JobID: job.ID, Version: 2, Status: "frozen", Constraints: models.JSONMap{"mode": "synthetic"}}
+	plan := models.ExecutionPlan{JobID: job.ID, Version: 2, Status: "frozen", OutputPath: output, Constraints: models.JSONMap{"mode": "synthetic"}}
 	if err := db.Create(&plan).Error; err != nil {
 		t.Fatal(err)
 	}
