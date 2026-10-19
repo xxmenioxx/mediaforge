@@ -1330,7 +1330,10 @@ func resolveProfileAssignmentsFromEffective(input *QueueJobInput, effective Effe
 			"overrideOnly":   value.Selection == VideoAssignmentOverrideOnly,
 		}
 		if len(value.ProfileData) > 0 {
-			resolution[mediaType].(models.JSONMap)["profileData"] = value.ProfileData
+			// Effective configuration may originate from one shared Asset Defaults
+			// map while resolving a batch. Queue snapshot capture adds per-asset
+			// fields to ProfileData, so each candidate must own its nested values.
+			resolution[mediaType].(models.JSONMap)["profileData"] = queuePreflightCloneMap(value.ProfileData)
 		}
 		switch mediaType {
 
