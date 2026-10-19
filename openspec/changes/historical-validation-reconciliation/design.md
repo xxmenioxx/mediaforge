@@ -45,6 +45,8 @@ Keep the normal validation of video properties, timestamps, source/Result integr
 
 Phase A: a read-only preview/prepare operation for one job and exact Result revision. It MUST have no DB writes, no Queue/Publisher mutation and no new media work. It returns SAFE only when independently versioned per-asset intent and exact source/plan/Result identity are proven; otherwise it returns BLOCKED or NEEDS_EVIDENCE with original vs proposed per-asset expectations, identity metadata, blocking reasons, per-rule impact, and additional evidence required. The currently modeled historical records contain no independent track-intent source, so the three known patterns cannot currently produce SAFE. The preview is advisory and MUST NOT grant any durable authority. Bounded SELECT and existing compact Result artifacts are preferred. A detailed preview remains local/operator-visible and not published as a GitHub log.
 
+The first Phase A implementation is backend-only; frontend behavior remains scoped to task 4.2. Accordingly, the implementation Draft PR's path-based CI selection skipped frontend checks while running backend tests/race/vet, containers, and Pipeline Smoke.
+
 Phase B: a commit request names the exact previously previewed immutable identities/revisions and requires an operator-provided nonempty reason. The server assigns the actor, e.g., local_operator in V1; client-provided actors are ignored. Under the existing asset/Validation locking and DB transaction boundaries, re-read and verify:
 - active execution, original frozen Queue fingerprint and ExecutionPlan fingerprint
 - canonical Result artifact generation, output revision and output file identity

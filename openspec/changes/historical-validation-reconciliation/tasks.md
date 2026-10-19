@@ -25,6 +25,6 @@
 
 ## 5. Validation and rollout boundaries
 
-- [ ] 5.1 Run scoped Go, frontend and synthetic E2E tests, git diff --check and ./scripts/verify.sh --auto; open a separate implementation Draft PR and require CI/Pipeline Smoke.
+- [x] 5.1 Run scoped Go, frontend and synthetic E2E tests, git diff --check and ./scripts/verify.sh --auto; open a separate implementation Draft PR and require CI/Pipeline Smoke.
 - [ ] 5.2 Produce a written bounded NAS read-only dry-run plan and obtain explicit approval before any remote discovery.
 - [ ] 5.3 Require separate user authorization for deployment, for each production reconciliation/new ValidationRun and again for any Publisher action. Do not rewrite historical snapshots, media or ResultArtifacts.
