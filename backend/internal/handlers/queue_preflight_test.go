@@ -927,6 +927,134 @@ func TestSingleQueuePreflightReviewsExplicitJob2191IVTCPlanBeforeAccept(t *testi
 	}
 }
 
+func TestSingleQueuePreflightKeepsJob2191DeepRatiosReviewRequiredWithoutQueueState(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	profile := fixture.profile
+	profile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+	profile.WorkerConfig["cadenceMode"] = "auto"
+	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
+	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["hevcLevelMode"] = "auto"
+	profile.WorkerConfig["hevcLevelEffective"] = "4.0"
+	profile.WorkerConfig["hevcLevelTier"] = "main"
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionResolved
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = "job-2191-historical-level"
+	if err := fixture.db.Save(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var scan models.ScanResult
+	if err := fixture.db.Where("path = ?", fixture.paths[0]).First(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	job2191 := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
+	job2191.ID = scan.ID
+	info, err := os.Stat(fixture.paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := ivtcSourceIdentityForSnapshot(fixture.db, scan, fixture.paths[0], info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interlace InterlaceAnalysis
+	if !decodeJSONValue(job2191.InterlaceAnalysis, &interlace) || interlace.IVTCValidation == nil {
+		t.Fatal("could not decode the synthetic Job #2191 evidence")
+	}
+	validation := interlace.IVTCValidation
+	validation.DeepAnalysisVersion = ivtcDeepEvidenceVersion
+	validation.DeepAnalysisStatus = "review_required"
+	validation.SourceIdentity = identity
+	validation.SourceFrameRate = "30000/1001"
+	validation.ExpectedOutputFrameRate = "24000/1001"
+	validation.DurationSeconds = 6287.072
+	validation.WindowSeconds = 5
+	validation.BaselineWindowCount = 3
+	validation.AttemptedWindows = 5
+	validation.InconclusiveWindows = 4
+	validation.ContradictoryWindows = 0
+	validation.ValidatedWindows = 1
+	validation.ValidWindows = 1
+	validation.SelectedOrder = ""
+	validation.Windows = append(validation.Windows,
+		IVTCWindowValidation{Start: 1687.509, TFFProgressive: 49, TFFClassified: 123, TFFResidualInterlaced: 74,
+			BFFProgressive: 5, BFFClassified: 123, BFFResidualInterlaced: 118,
+			TFFProgressiveRatio: 49.0 / 123, BFFProgressiveRatio: 5.0 / 123, Outcome: ivtcWindowOutcomeInconclusive},
+		IVTCWindowValidation{Start: 4579.563, TFFProgressive: 18, TFFClassified: 122, TFFResidualInterlaced: 104,
+			BFFProgressive: 4, BFFClassified: 122, BFFResidualInterlaced: 118,
+			TFFProgressiveRatio: 18.0 / 122, BFFProgressiveRatio: 4.0 / 122, Outcome: ivtcWindowOutcomeInconclusive},
+	)
+	updatedAt := time.Now().UTC()
+	validation.EvidenceSnapshotUpdatedAt = updatedAt.Format(time.RFC3339Nano)
+	validation.SourceIdentity.SnapshotUpdatedAt = validation.EvidenceSnapshotUpdatedAt
+	interlace.Status = "telecine_suspected"
+	interlace.DetectedFieldOrder = ""
+	interlace.FieldOrderMismatch = false
+	interlace.RecommendedMode = ""
+	interlace.RecommendedAction = "review"
+	interlace.RecommendedFilter = ""
+	interlace.AutomaticFilter = ""
+	interlace.DecisionReason = "deep IVTC evidence remained insufficient"
+	encoded, err := json.Marshal(interlace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interlaceValue models.JSONMap
+	if err := json.Unmarshal(encoded, &interlaceValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.ScanResult{}).Where("id = ?", scan.ID).Updates(map[string]any{
+		"interlace_analysis":     interlaceValue,
+		"cadence_analysis":       job2191.CadenceAnalysis,
+		"cadence_recommendation": job2191.CadenceRecommendation,
+		"updated_at":             updatedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var current models.ScanResult
+	if err := fixture.db.First(&current, scan.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !deepCadenceIdentityCurrent(fixture.db, current, fixture.paths[0], info, identity) {
+		t.Fatal("synthetic five-window evidence is not current for the local fixture")
+	}
+
+	router := queuePreflightRouter(fixture.db)
+	input := queuePreflightInput(fixture, "Sin Limite #2191 cadence evidence")
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", input)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightRequiresReview || candidate.Assets[0].Plan != nil {
+		t.Fatalf("historical ratios must stay REVIEW_REQUIRED without a plan: %#v", candidate.Assets)
+	}
+	if review := candidate.Assets[0].CadenceReview; review == nil || review.ValidatedSelectedOrder != "" || review.ValidWindows != 1 || review.InconclusiveWindows != 4 {
+		t.Fatalf("historical window outcomes were not retained in Queue review: %#v", review)
+	}
+	accepted := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{
+		"revision": candidate.Revision, "assetIds": []string{candidate.Assets[0].ID},
+	})
+	if accepted.Code == http.StatusCreated {
+		t.Fatalf("review-required evidence unexpectedly accepted: %s", accepted.Body.String())
+	}
+	var jobs, plans, reservations int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.ExecutionPlan{}).Count(&plans).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.SchedulerReservation{}).Count(&reservations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 || plans != 0 || reservations != 0 {
+		t.Fatalf("unvalidated historical cadence created Queue state: jobs=%d plans=%d reservations=%d", jobs, plans, reservations)
+	}
+}
+
 func TestSingleQueuePreflightAcceptsValidatedJob2191IVTCOrder(t *testing.T) {
 	fixture := newQueuePreflightFixture(t, 1)
 	profile := fixture.profile
@@ -990,6 +1118,20 @@ func TestSingleQueuePreflightAcceptsValidatedJob2191IVTCOrder(t *testing.T) {
 		IVTCWindowValidation{Start: 15, SelectedOrder: "tff", Outcome: ivtcWindowOutcomeValid, Confidence: .96},
 		IVTCWindowValidation{Start: 45, SelectedOrder: "tff", Outcome: ivtcWindowOutcomeValid, Confidence: .96},
 	)
+	for index := range interlace.IVTCValidation.Windows {
+		window := &interlace.IVTCValidation.Windows[index]
+		window.DiagnosticsAvailable = true
+		window.TFFCanonicalOutputFrames, window.TFFCanonicalOutputProgressive = 120, 120
+		window.TFFCanonicalOutputFrameRate = 24000.0 / 1001.0
+		window.TFFCanonicalIDETClassified = 120
+		window.BFFCanonicalOutputFrames, window.BFFCanonicalOutputProgressive = 120, 120
+		window.BFFCanonicalOutputFrameRate = 24000.0 / 1001.0
+		window.BFFCanonicalIDETClassified = 120
+		if window.Outcome == ivtcWindowOutcomeValid {
+			window.TFFCanonicalIDETInterlaced = 3
+			window.BFFCanonicalIDETInterlaced = 80
+		}
+	}
 	for _, window := range interlace.IVTCValidation.Windows {
 		if window.Outcome == ivtcWindowOutcomeValid && window.SelectedOrder != "tff" {
 			t.Fatalf("deep fixture has conflicting IVTC evidence: %#v", window)
@@ -1036,6 +1178,9 @@ func TestSingleQueuePreflightAcceptsValidatedJob2191IVTCOrder(t *testing.T) {
 	}
 	if review := candidate.Assets[0].CadenceReview; review == nil || review.DeepAnalysisVersion != ivtcDeepEvidenceVersion || review.DeepAnalysisStatus != "resolved" || review.SourceFrameRate != "30000/1001" || review.ExpectedOutputFrameRate != "24000/1001" || review.ValidatedWindows != 3 || review.AttemptedWindows != 5 {
 		t.Fatalf("resolved cadence evidence was not exposed for review: %#v", review)
+	}
+	if review := candidate.Assets[0].CadenceReview; review == nil || len(review.Windows) != 5 || !review.Windows[0].DiagnosticsAvailable || review.Windows[0].TFFCanonicalIDETInterlaced != 3 || review.Windows[0].TFFCanonicalIDETClassified != 120 || review.Windows[0].TFFCanonicalOutputFrames != 120 {
+		t.Fatalf("canonical residual and timeline diagnostics were omitted from the Queue review contract: %#v", review)
 	}
 	profile, err = scheduler.RestoreProfileSnapshot(candidate.Assets[0].Plan.ProfileSnapshot)
 	if err != nil {

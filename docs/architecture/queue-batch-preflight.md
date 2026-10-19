@@ -22,6 +22,14 @@ from dialog visibility. Closing preserves the candidate but never opens it on
 navigation or reload; an explicit Resume action fetches the latest active
 revision.
 
+For an individual scanned asset, Queue uses the same prepared-plan resolver and
+review contract. Automatic IVTC with no explicit or validated order returns
+`REVIEW_REQUIRED` before it creates a QueueJob, ExecutionPlan, or reservation.
+The review carries the source/recommended output rates, validated order state,
+HEVC resolution state, and bounded per-window IVTC diagnostics. An asset-scoped
+TFF/BFF choice must be resolved into a fresh candidate and its effective plan
+reviewed before acceptance; it does not edit the reusable profile.
+
 ## Candidate lifecycle
 
 Each candidate has a persisted `active`, `completed`, or `discarded` status.

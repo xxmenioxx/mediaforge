@@ -1113,6 +1113,9 @@ func TestQueueProfileSnapshotClearsStaleHEVCForJob2191IVTC(t *testing.T) {
 	if _, ok := config["hevcLevelInputFingerprint"]; ok {
 		t.Fatalf("Queue snapshot retained a stale HEVC fingerprint: %#v", config)
 	}
+	if err := hevcLevelPlanningError(frozen); err == nil || !strings.Contains(err.Error(), "effective output FPS is unknown") {
+		t.Fatalf("frozen historical Level/Tier evidence was accepted despite unknown effective FPS: %v", err)
+	}
 	if filters := workerStringValue(config["videoFilters"]); strings.Contains(filters, "fieldmatch=") || strings.Contains(filters, "decimate") {
 		t.Fatalf("ambiguous IVTC unexpectedly froze an IVTC filter chain: %q", filters)
 	}
@@ -1127,12 +1130,13 @@ func job2191AmbiguousIVTCScanResult(t *testing.T, path string) models.ScanResult
 	interlace := InterlaceAnalysis{
 		Version: interlaceAnalysisVersion, Codec: "h264",
 		AverageFrameRate: "30000/1001", RealFrameRate: "30000/1001",
-		Status: "telecine", FieldOrder: "tt", ContainerFieldOrder: "tt", DetectedFieldOrder: "tff", Confidence: .9,
+		Status: "telecine_suspected", FieldOrder: "tt", ContainerFieldOrder: "tt", Confidence: .8757763975155279,
 		IVTCValidation: &IVTCValidation{
-			TFFProgressive: 1, TFFClassified: 1, TFFProgressiveRatio: 1, ValidatedWindows: 1,
+			AttemptedWindows: 3, ValidatedWindows: 1, ValidWindows: 1, InconclusiveWindows: 2,
 			Windows: []IVTCWindowValidation{
-				{Start: 0, TFFProgressiveRatio: 1, SelectedOrder: "tff", Confidence: .9},
-				{Start: 30}, {Start: 60},
+				{Start: 492.96576, TFFProgressiveRatio: .18633540372670807, BFFProgressiveRatio: .010351966873706004, Confidence: .18633540372670807, Outcome: ivtcWindowOutcomeInconclusive},
+				{Start: 3133.536, TFFProgressiveRatio: .8757763975155279, BFFProgressiveRatio: 0, SelectedOrder: "tff", Confidence: .8757763975155279, Outcome: ivtcWindowOutcomeValid},
+				{Start: 5774.10624, TFFProgressiveRatio: .44190871369294604, BFFProgressiveRatio: 0, Confidence: .44190871369294604, Outcome: ivtcWindowOutcomeInconclusive},
 			},
 		},
 	}

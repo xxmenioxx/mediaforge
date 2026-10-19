@@ -111,7 +111,16 @@ func queuePreflightCadenceReview(profile models.Profile, snapshot models.JSONMap
 			review.Windows = append(review.Windows, QueueBatchPreflightCadenceWindow{
 				Start: window.Start, Outcome: outcome, Reason: window.Reason,
 				SelectionBasis: window.SelectionBasis, SelectedOrder: window.SelectedOrder,
-				TFFProgressiveRatio: window.TFFProgressiveRatio, BFFProgressiveRatio: window.BFFProgressiveRatio,
+				DiagnosticsAvailable: window.DiagnosticsAvailable,
+				TFFProgressiveRatio:  window.TFFProgressiveRatio, BFFProgressiveRatio: window.BFFProgressiveRatio,
+				TFFResidualInterlaced: window.TFFResidualInterlaced, TFFRepeatedTop: window.TFFRepeatedTop, TFFRepeatedBottom: window.TFFRepeatedBottom,
+				TFFCanonicalOutputFrames: window.TFFCanonicalOutputFrames, TFFCanonicalOutputProgressive: window.TFFCanonicalOutputProgressive,
+				TFFCanonicalOutputFrameRate: window.TFFCanonicalOutputFrameRate, TFFCanonicalTimestampAnomalies: window.TFFCanonicalTimestampAnomalies,
+				TFFCanonicalIDETInterlaced: window.TFFCanonicalIDETInterlaced, TFFCanonicalIDETClassified: window.TFFCanonicalIDETClassified,
+				BFFResidualInterlaced: window.BFFResidualInterlaced, BFFRepeatedTop: window.BFFRepeatedTop, BFFRepeatedBottom: window.BFFRepeatedBottom,
+				BFFCanonicalOutputFrames: window.BFFCanonicalOutputFrames, BFFCanonicalOutputProgressive: window.BFFCanonicalOutputProgressive,
+				BFFCanonicalOutputFrameRate: window.BFFCanonicalOutputFrameRate, BFFCanonicalTimestampAnomalies: window.BFFCanonicalTimestampAnomalies,
+				BFFCanonicalIDETInterlaced: window.BFFCanonicalIDETInterlaced, BFFCanonicalIDETClassified: window.BFFCanonicalIDETClassified,
 				Confidence: window.Confidence,
 			})
 			if interlace.IVTCValidation.InconclusiveWindows == 0 && outcome == ivtcWindowOutcomeInconclusive {
@@ -262,14 +271,33 @@ type QueueBatchPreflightCadenceReview struct {
 }
 
 type QueueBatchPreflightCadenceWindow struct {
-	Start               float64 `json:"start"`
-	Outcome             string  `json:"outcome,omitempty"`
-	Reason              string  `json:"reason,omitempty"`
-	SelectionBasis      string  `json:"selectionBasis,omitempty"`
-	SelectedOrder       string  `json:"selectedOrder,omitempty"`
-	TFFProgressiveRatio float64 `json:"tffProgressiveRatio"`
-	BFFProgressiveRatio float64 `json:"bffProgressiveRatio"`
-	Confidence          float64 `json:"confidence"`
+	Start                          float64 `json:"start"`
+	Outcome                        string  `json:"outcome,omitempty"`
+	Reason                         string  `json:"reason,omitempty"`
+	SelectionBasis                 string  `json:"selectionBasis,omitempty"`
+	SelectedOrder                  string  `json:"selectedOrder,omitempty"`
+	DiagnosticsAvailable           bool    `json:"diagnosticsAvailable,omitempty"`
+	TFFProgressiveRatio            float64 `json:"tffProgressiveRatio"`
+	BFFProgressiveRatio            float64 `json:"bffProgressiveRatio"`
+	TFFResidualInterlaced          int     `json:"tffResidualInterlaced,omitempty"`
+	TFFRepeatedTop                 int     `json:"tffRepeatedTop,omitempty"`
+	TFFRepeatedBottom              int     `json:"tffRepeatedBottom,omitempty"`
+	TFFCanonicalOutputFrames       int     `json:"tffCanonicalOutputFrames,omitempty"`
+	TFFCanonicalOutputProgressive  int     `json:"tffCanonicalOutputProgressiveFrames,omitempty"`
+	TFFCanonicalOutputFrameRate    float64 `json:"tffCanonicalOutputFrameRate,omitempty"`
+	TFFCanonicalTimestampAnomalies int     `json:"tffCanonicalTimestampAnomalies,omitempty"`
+	TFFCanonicalIDETInterlaced     int     `json:"tffCanonicalIdetInterlacedFrames,omitempty"`
+	TFFCanonicalIDETClassified     int     `json:"tffCanonicalIdetClassifiedFrames,omitempty"`
+	BFFResidualInterlaced          int     `json:"bffResidualInterlaced,omitempty"`
+	BFFRepeatedTop                 int     `json:"bffRepeatedTop,omitempty"`
+	BFFRepeatedBottom              int     `json:"bffRepeatedBottom,omitempty"`
+	BFFCanonicalOutputFrames       int     `json:"bffCanonicalOutputFrames,omitempty"`
+	BFFCanonicalOutputProgressive  int     `json:"bffCanonicalOutputProgressiveFrames,omitempty"`
+	BFFCanonicalOutputFrameRate    float64 `json:"bffCanonicalOutputFrameRate,omitempty"`
+	BFFCanonicalTimestampAnomalies int     `json:"bffCanonicalTimestampAnomalies,omitempty"`
+	BFFCanonicalIDETInterlaced     int     `json:"bffCanonicalIdetInterlacedFrames,omitempty"`
+	BFFCanonicalIDETClassified     int     `json:"bffCanonicalIdetClassifiedFrames,omitempty"`
+	Confidence                     float64 `json:"confidence"`
 }
 
 type QueueBatchPreflightPlan struct {

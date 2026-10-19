@@ -215,19 +215,23 @@ describe('BatchPreflightDialog', () => {
         reportedFieldOrder: 'tt', validatedSelectedOrder: '', validatedWindows: 1, observedWindows: 3,
         effectiveOutputFrameRateUnknown: true, hevcLevelResolutionState: 'unresolved', deepAnalysisAvailable: true,
         attemptedWindows: 3, inconclusiveWindows: 2, contradictoryWindows: 0,
-        windows: [{ start: 0, outcome: 'valid', selectionBasis: 'initial analysis', selectedOrder: 'tff', tffProgressiveRatio: 0.96, bffProgressiveRatio: 0.5, confidence: 0.96 }],
+        windows: [{ start: 0, outcome: 'valid', selectionBasis: 'initial analysis', selectedOrder: 'tff', diagnosticsAvailable: true, tffProgressiveRatio: 0.96, bffProgressiveRatio: 0.5, tffResidualInterlaced: 4, tffRepeatedTop: 2, tffRepeatedBottom: 1, tffCanonicalOutputFrames: 120, tffCanonicalOutputProgressiveFrames: 120, tffCanonicalOutputFrameRate: 24000 / 1001, tffCanonicalTimestampAnomalies: 0, tffCanonicalIdetInterlacedFrames: 12, tffCanonicalIdetClassifiedFrames: 120, bffResidualInterlaced: 9, bffRepeatedTop: 5, bffRepeatedBottom: 4, bffCanonicalOutputFrames: 120, bffCanonicalOutputProgressiveFrames: 120, bffCanonicalOutputFrameRate: 24000 / 1001, bffCanonicalTimestampAnomalies: 0, bffCanonicalIdetInterlacedFrames: 64, bffCanonicalIdetClassifiedFrames: 120, confidence: 0.96 }],
       },
       plan: undefined,
       blockers: ['Automatic IVTC requires an explicit or validated field order.'],
     };
     const review = candidate({ assets: [reviewAsset] });
-    const resolved = candidate({ revision: 2, assets: [{ ...base, status: 'ready', cadenceReview: { ...reviewAsset.cadenceReview, deepAnalysisVersion: 1, deepAnalysisStatus: 'resolved', validatedSelectedOrder: 'tff', validatedWindows: 3, attemptedWindows: 5 } }] });
+    const resolved = candidate({ revision: 2, assets: [{ ...base, status: 'ready', cadenceReview: { ...reviewAsset.cadenceReview, deepAnalysisVersion: 2, deepAnalysisStatus: 'resolved', validatedSelectedOrder: 'tff', validatedWindows: 3, attemptedWindows: 5 } }] });
     mocks.startSnapshotOperation.mockResolvedValue({ id: 'deep-1', assetPath: base.mediaPath, status: 'completed', phase: 'completed', progress: 100, message: 'Deep Cadence Analysis evidence saved', durationMs: 80, cacheHit: false, incrementalRefresh: true, deepCadence: true, createdAt: '', updatedAt: '' });
     mocks.update.mockResolvedValue(resolved);
     render(<BatchPreflightDialog candidate={review} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
 
     expect(screen.getByText(/attempted 3, valid 1, inconclusive 2, contradictory 0/i)).toBeTruthy();
     expect(screen.getByTestId('ivtc-window-evidence').textContent).toContain('initial analysis');
+    expect(screen.getByTestId('ivtc-window-evidence').textContent).toContain('combmatch residual before fallback TFF/BFF 4/9');
+    expect(screen.getByTestId('ivtc-window-evidence').textContent).toContain('pre-fallback idet interlaced/classified TFF 12/120, BFF 64/120');
+    expect(screen.getByTestId('ivtc-window-evidence').textContent).toContain('repeated fields TFF top/bottom 2/1, BFF top/bottom 5/4');
+    expect(screen.getByTestId('ivtc-window-evidence').textContent).toContain('canonical FPS TFF/BFF 23.976/23.976 · timestamp anomalies 0/0');
     await userEvent.setup().click(screen.getByRole('button', { name: 'Run Deep Cadence Analysis' }));
 
     await waitFor(() => expect(mocks.startSnapshotOperation).toHaveBeenCalledWith({ path: base.mediaPath, deepCadence: true }));

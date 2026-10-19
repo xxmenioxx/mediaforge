@@ -52,6 +52,10 @@ func TestDeepIVTCEvidenceJSONRoundTripPreservesSourceRevision(t *testing.T) {
 			Inode:             "87",
 			AssetRecordID:     23,
 		},
+		Windows: []IVTCWindowValidation{{
+			TFFResidualInterlaced: 4, TFFRepeatedTop: 2, TFFRepeatedBottom: 1,
+			BFFResidualInterlaced: 7, BFFRepeatedTop: 3, BFFRepeatedBottom: 2,
+		}},
 	}}
 	encoded, err := json.Marshal(want)
 	if err != nil {
@@ -236,6 +240,68 @@ func TestIVTCRequiresDistributedWindowAgreement(t *testing.T) {
 	}
 }
 
+func TestFinalizeIVTCValidationWeightsByClassifiedFramesAndStillRequiresWindowAgreement(t *testing.T) {
+	validation := &IVTCValidation{
+		TFFProgressive: 1801, TFFClassified: 2100,
+		BFFProgressive: 210, BFFClassified: 2100,
+		Windows: []IVTCWindowValidation{
+			{Start: 0, TFFProgressive: 1800, TFFClassified: 2000, BFFProgressive: 200, BFFClassified: 2000, SelectedOrder: "tff"},
+			{Start: 40, TFFProgressive: 1, TFFClassified: 100, BFFProgressive: 10, BFFClassified: 100},
+		},
+	}
+	analysis := InterlaceAnalysis{}
+	finalizeIVTCValidation(&analysis, validation)
+
+	if validation.TFFProgressiveRatio != 1801.0/2100 || validation.BFFProgressiveRatio != 210.0/2100 {
+		t.Fatalf("aggregate ratios did not use classified-frame denominators: %#v", validation)
+	}
+	if selected, _ := validatedIVTCOrder(validation.TFFProgressiveRatio, validation.BFFProgressiveRatio); selected != "tff" {
+		t.Fatalf("weighted aggregate fixture should cross the unchanged threshold: %q", selected)
+	}
+	if validation.SelectedOrder != "" || ivtcWindowsAgree(validation, "tff") {
+		t.Fatalf("one favorable window must not override incomplete window agreement: %#v", validation)
+	}
+}
+
+func TestIVTCWindowValidationCapturesResidualInterlaceBeforeFallback(t *testing.T) {
+	var filters []string
+	runner := func(_ context.Context, _ string, _ float64, _ int, filter string) (InterlaceAnalysis, bool) {
+		filters = append(filters, filter)
+		if strings.Contains(filter, "showinfo") {
+			if strings.Contains(filter, "order=tff") {
+				return syntheticCanonicalIVTCOutput(10), true
+			}
+			return InterlaceAnalysis{Progressive: 118, BFF: 2, RepeatedTop: 1, RepeatedBottom: 2, CanonicalOutputFrames: 120, CanonicalOutputProgressive: 120, CanonicalOutputFrameRate: 24000.0 / 1001.0}, true
+		}
+		if strings.Contains(filter, "order=tff") {
+			return InterlaceAnalysis{Progressive: 90, TFF: 6, BFF: 4, RepeatedTop: 7, RepeatedBottom: 3}, true
+		}
+		return InterlaceAnalysis{Progressive: 40, TFF: 50, BFF: 10, RepeatedTop: 1, RepeatedBottom: 2}, true
+	}
+	window, err := compareIVTCWindow(context.Background(), "/synthetic/telecine.mkv", 12, 5, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalStringSlices(filters, []string{
+		"fieldmatch=order=tff,decimate,idet",
+		"fieldmatch=order=bff,decimate,idet",
+		canonicalIVTCDiagnosticFilter("tff"),
+		canonicalIVTCDiagnosticFilter("bff"),
+	}) {
+		t.Fatalf("order scoring must preserve the existing authority and diagnostics must mirror the canonical pre/post-fallback chain: %v", filters)
+	}
+	if window.Outcome != ivtcWindowOutcomeValid || window.SelectedOrder != "tff" {
+		t.Fatalf("conclusive TFF comparison was not retained: %#v", window)
+	}
+	if !window.DiagnosticsAvailable || window.TFFResidualInterlaced != 10 || window.TFFRepeatedTop != 1 || window.TFFRepeatedBottom != 2 ||
+		window.BFFResidualInterlaced != 0 || window.BFFRepeatedTop != 1 || window.BFFRepeatedBottom != 2 ||
+		window.TFFCanonicalOutputFrames != 120 || window.TFFCanonicalOutputFrameRate != 24000.0/1001.0 ||
+		window.TFFCanonicalIDETInterlaced != 10 || window.TFFCanonicalIDETClassified != 120 ||
+		window.BFFCanonicalIDETInterlaced != 2 || window.BFFCanonicalIDETClassified != 120 {
+		t.Fatalf("pre-fallback combing and canonical timing evidence was not retained per order: %#v", window)
+	}
+}
+
 func ambiguousDeepIVTCFixture() (InterlaceAnalysis, SamplingPlan) {
 	analysis := InterlaceAnalysis{WindowSeconds: 5, ContainerFieldOrder: "tt"}
 	analysis.IVTCValidation = &IVTCValidation{
@@ -257,10 +323,26 @@ func ambiguousDeepIVTCFixture() (InterlaceAnalysis, SamplingPlan) {
 	return analysis, plan
 }
 
+func syntheticCanonicalIVTCOutput(residualInterlaced int) InterlaceAnalysis {
+	return InterlaceAnalysis{
+		ResidualInterlacedFrames:   residualInterlaced,
+		TFF:                        10,
+		Progressive:                110,
+		RepeatedTop:                1,
+		RepeatedBottom:             2,
+		CanonicalOutputFrames:      120,
+		CanonicalOutputProgressive: 120,
+		CanonicalOutputFrameRate:   24000.0 / 1001.0,
+	}
+}
+
 func TestDeepIVTCAnalysisResolvesFromTwoAdditionalDistributedWindows(t *testing.T) {
 	analysis, plan := ambiguousDeepIVTCFixture()
 	identity := &IVTCSourceIdentity{Path: "/synthetic/telecine.mkv", SnapshotID: 7}
 	runner := func(_ context.Context, _ string, _ float64, _ int, filter string) (InterlaceAnalysis, bool) {
+		if strings.Contains(filter, "showinfo") {
+			return syntheticCanonicalIVTCOutput(0), true
+		}
 		if strings.Contains(filter, "order=tff") {
 			return InterlaceAnalysis{Progressive: 95, TFF: 3, BFF: 2}, true
 		}
@@ -309,6 +391,57 @@ func TestDeepIVTCSelectorSkipsReusedWindowsAndCapsAdditionalWork(t *testing.T) {
 	}
 }
 
+func TestDeepIVTCSelectorDeduplicatesCandidatesUsingHighestPriority(t *testing.T) {
+	analysis := InterlaceAnalysis{
+		IVTCValidation: &IVTCValidation{WindowSeconds: 5, Windows: []IVTCWindowValidation{{Start: 0}, {Start: 40}, {Start: 80}}},
+		Windows: []InterlaceWindow{{
+			Start: 10, Seconds: 5,
+			FrameSignals: FrameSignalSummary{Cadence: "hard_telecine", RepeatPictFrames: 1, InterlacedFrames: 1},
+		}},
+	}
+	plan := SamplingPlan{AssetDurationSeconds: 100, SelectedWindows: []SamplingWindow{
+		{StartSeconds: 10, DurationSeconds: 5},
+		{StartSeconds: 95, DurationSeconds: 5, Roles: []string{SamplingRoleHighComplexity}},
+	}}
+	selected := selectDeepIVTCAdditionalWindows(analysis, plan, 1)
+	if len(selected) != 1 || selected[0].Start != 10 || selected[0].SelectionBasis != "existing_temporal_cadence_evidence" {
+		t.Fatalf("deduplicated candidate did not retain its stronger cadence-evidence priority: %#v", selected)
+	}
+}
+
+func TestJob2191HistoricalRatiosRemainReviewRequiredWithTwoInconclusiveWindows(t *testing.T) {
+	scan := job2191AmbiguousIVTCScanResult(t, "/synthetic/Sin Limite_t00.mkv")
+	analysis, ok := decodeInterlaceAnalysis(scan.InterlaceAnalysis)
+	if !ok || analysis.IVTCValidation == nil {
+		t.Fatal("could not decode the historical Job #2191 fixture")
+	}
+	validation := analysis.IVTCValidation
+	validation.DeepAnalysisVersion = ivtcDeepEvidenceVersion
+	validation.DeepAnalysisStatus = "review_required"
+	validation.BaselineWindowCount = 3
+	validation.AttemptedWindows = 5
+	validation.Windows = append(validation.Windows,
+		IVTCWindowValidation{Start: 1687.509, TFFProgressive: 49, TFFClassified: 123, TFFResidualInterlaced: 74,
+			BFFProgressive: 5, BFFClassified: 123, BFFResidualInterlaced: 118,
+			TFFProgressiveRatio: 49.0 / 123, BFFProgressiveRatio: 5.0 / 123, Outcome: ivtcWindowOutcomeInconclusive},
+		IVTCWindowValidation{Start: 4579.563, TFFProgressive: 18, TFFClassified: 122, TFFResidualInterlaced: 104,
+			BFFProgressive: 4, BFFClassified: 122, BFFResidualInterlaced: 118,
+			TFFProgressiveRatio: 18.0 / 122, BFFProgressiveRatio: 4.0 / 122, Outcome: ivtcWindowOutcomeInconclusive},
+	)
+	analysis.Status = "telecine_suspected"
+	applyIVTCValidation(&analysis, validation)
+
+	if validation.SelectedOrder != "" || validation.ValidWindows != 1 || validation.InconclusiveWindows != 4 || validation.ContradictoryWindows != 0 {
+		t.Fatalf("Job #2191's one valid of five windows must remain unresolved: %#v", validation)
+	}
+	if ivtcWindowsAgree(validation, "tff") || deepIVTCWindowsSufficient(validation, "tff") {
+		t.Fatalf("one validated historical window plus two inconclusive probes passed distribution gates: %#v", validation)
+	}
+	if analysis.Status != "telecine_suspected" || analysis.RecommendedFilter != "" || !strings.Contains(analysis.DecisionReason, "insufficient") {
+		t.Fatalf("historical ratios did not produce an actionable insufficient-evidence review: %#v", analysis)
+	}
+}
+
 func TestDeepIVTCAnalysisRemainsReviewRequiredWhenEvidenceIsInsufficient(t *testing.T) {
 	analysis, plan := ambiguousDeepIVTCFixture()
 	runner := func(_ context.Context, _ string, _ float64, _ int, _ string) (InterlaceAnalysis, bool) {
@@ -320,7 +453,7 @@ func TestDeepIVTCAnalysisRemainsReviewRequiredWhenEvidenceIsInsufficient(t *test
 	if analysis.IVTCValidation.DeepAnalysisStatus != "review_required" || analysis.IVTCValidation.SelectedOrder != "" || analysis.RecommendedFilter != "" {
 		t.Fatalf("insufficient evidence should remain fail-closed: analysis=%#v validation=%#v", analysis, analysis.IVTCValidation)
 	}
-	if analysis.IVTCValidation.AttemptedWindows != 5 || analysis.IVTCValidation.InconclusiveWindows != 4 {
+	if analysis.IVTCValidation.AttemptedWindows != 5 || analysis.IVTCValidation.InconclusiveWindows != 5 {
 		t.Fatalf("inconclusive windows were not preserved: %#v", analysis.IVTCValidation)
 	}
 }
@@ -328,6 +461,9 @@ func TestDeepIVTCAnalysisRemainsReviewRequiredWhenEvidenceIsInsufficient(t *test
 func TestDeepIVTCAnalysisRejectsContradictoryWindowOrders(t *testing.T) {
 	analysis, plan := ambiguousDeepIVTCFixture()
 	runner := func(_ context.Context, _ string, start float64, _ int, filter string) (InterlaceAnalysis, bool) {
+		if strings.Contains(filter, "showinfo") {
+			return syntheticCanonicalIVTCOutput(0), true
+		}
 		if start == 60 {
 			if strings.Contains(filter, "order=tff") {
 				return InterlaceAnalysis{Progressive: 50, TFF: 25, BFF: 25}, true
@@ -344,6 +480,9 @@ func TestDeepIVTCAnalysisRejectsContradictoryWindowOrders(t *testing.T) {
 	}
 	if analysis.IVTCValidation.DeepAnalysisStatus != "review_required" || analysis.IVTCValidation.SelectedOrder != "" || analysis.IVTCValidation.ValidWindows != 0 || analysis.IVTCValidation.ContradictoryWindows == 0 {
 		t.Fatalf("conflicting order evidence should remain review-required: %#v", analysis.IVTCValidation)
+	}
+	if !strings.Contains(analysis.DecisionReason, "mixed") {
+		t.Fatalf("conflicting windows were not distinguished from insufficient evidence: %q", analysis.DecisionReason)
 	}
 }
 
@@ -369,6 +508,9 @@ func TestDeepIVTCAnalysisCancellationDoesNotPersistPartialEvidence(t *testing.T)
 func TestStaleDeepIVTCEvidenceResetsToTheReusableBaseline(t *testing.T) {
 	analysis, plan := ambiguousDeepIVTCFixture()
 	runner := func(_ context.Context, _ string, _ float64, _ int, filter string) (InterlaceAnalysis, bool) {
+		if strings.Contains(filter, "showinfo") {
+			return syntheticCanonicalIVTCOutput(0), true
+		}
 		if strings.Contains(filter, "order=tff") {
 			return InterlaceAnalysis{Progressive: 95, TFF: 3, BFF: 2}, true
 		}
@@ -398,17 +540,42 @@ func TestIVTCComparisonMeasuresResidualCombingWithIDETForBothOrders(t *testing.T
 	var filters []string
 	runner := func(_ context.Context, _ string, _ float64, _ int, filter string) (InterlaceAnalysis, bool) {
 		filters = append(filters, filter)
+		if strings.Contains(filter, "showinfo") {
+			return syntheticCanonicalIVTCOutput(4), true
+		}
 		return InterlaceAnalysis{Progressive: 96, TFF: 2, BFF: 2}, true
 	}
 	window, err := compareIVTCWindow(context.Background(), "/synthetic/telecine.mkv", 20, 5, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(filters) != 2 || filters[0] != "fieldmatch=order=tff,decimate,idet" || filters[1] != "fieldmatch=order=bff,decimate,idet" {
-		t.Fatalf("TFF/BFF comparison must preserve the existing residual-combing idet authority: %#v", filters)
+	if !equalStringSlices(filters, []string{
+		"fieldmatch=order=tff,decimate,idet", "fieldmatch=order=bff,decimate,idet",
+		canonicalIVTCDiagnosticFilter("tff"), canonicalIVTCDiagnosticFilter("bff"),
+	}) {
+		t.Fatalf("TFF/BFF comparison must retain legacy order scores and also measure the canonical chain: %#v", filters)
 	}
-	if window.TFFClassified != 100 || window.BFFClassified != 100 || window.TFFProgressiveRatio != .96 || window.BFFProgressiveRatio != .96 {
-		t.Fatalf("window evidence omitted post-filter idet residual counts: %#v", window)
+	if window.TFFClassified != 100 || window.BFFClassified != 100 || window.TFFProgressiveRatio != .96 || window.BFFProgressiveRatio != .96 || window.TFFResidualInterlaced != 4 || window.BFFResidualInterlaced != 4 || !window.DiagnosticsAvailable {
+		t.Fatalf("window evidence omitted canonical pre-fallback residual counts or output timing: %#v", window)
+	}
+}
+
+func TestParseIDETOutputCapturesPreFallbackResidualsAndTimestampGaps(t *testing.T) {
+	output := `[Parsed_fieldmatch_0 @ 0x1] Frame #2 at 0.0667333 is still interlaced
+[Parsed_idet_1 @ 0x2] Repeated Fields: Neither: 7 Top: 2 Bottom: 1
+[Parsed_idet_1 @ 0x2] Multi frame detection: TFF: 1 BFF: 0 Progressive: 7 Undetermined: 0
+[Parsed_showinfo_4 @ 0x3] n: 0 pts: 0 pts_time:0 duration: 1 duration_time:0.0417083 fmt:yuv420p cl:unspecified sar:1/1 s:160x120 i:P
+[Parsed_showinfo_4 @ 0x3] n: 1 pts: 1 pts_time:0.0417083 duration: 1 duration_time:0.0417083 fmt:yuv420p cl:unspecified sar:1/1 s:160x120 i:P
+[Parsed_showinfo_4 @ 0x3] n: 2 pts: 3 pts_time:0.125125 duration: 1 duration_time:0.0417083 fmt:yuv420p cl:unspecified sar:1/1 s:160x120 i:P`
+	analysis, ok := parseIDETOutput(output)
+	if !ok {
+		t.Fatal("expected the FFmpeg idet report to parse")
+	}
+	if analysis.ResidualInterlacedFrames != 1 || analysis.RepeatedTop != 2 || analysis.RepeatedBottom != 1 {
+		t.Fatalf("pre-fallback combing/cadence metrics were lost: %#v", analysis)
+	}
+	if analysis.CanonicalOutputFrames != 3 || analysis.CanonicalOutputProgressive != 3 || analysis.CanonicalTimestampAnomalies != 1 || analysis.CanonicalOutputFrameRate <= 0 {
+		t.Fatalf("canonical output timing metrics did not flag the irregular PTS gap: %#v", analysis)
 	}
 }
 

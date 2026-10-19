@@ -6,7 +6,7 @@ Gather a bounded amount of additional IVTC evidence for an ambiguous source and 
 
 ### Requirement: Deep cadence analysis is bounded, asynchronous, and cancellable
 
-When an operator requests Deep Cadence Analysis for an asset with ambiguous IVTC evidence, the system MUST reuse the existing validation windows and MAY analyze no more than two additional windows. It MUST evaluate TFF and BFF with the existing cadence comparison and preserve the existing per-window confidence thresholds. Additional windows MUST prefer available movement-relevant sampling evidence and MUST be temporally distributed. The system MUST NOT infer field order from container metadata such as `tt`.
+When an operator requests Deep Cadence Analysis for an asset with ambiguous IVTC evidence, the system MUST reuse the existing validation windows and MAY analyze no more than two additional windows. It MUST evaluate TFF and BFF with the existing cadence comparison and preserve the existing per-window confidence thresholds. Additional windows MUST prefer available movement-relevant sampling evidence and MUST be temporally distributed. The comparison MUST use the canonical `fieldmatch` comb-match mode and record residual interlaced classifications and repeated-field counts before selective deinterlacing or decimation. It MUST record output frame count, measured frame rate, progressive flags before the terminal `setfield=prog` metadata marker, and timestamp-gap anomalies after selective deinterlacing and decimation. These metrics MUST remain visible per window and MUST NOT be used to relax the existing order thresholds. Missing diagnostics or timestamp anomalies MUST keep the deep result review-required. The system MUST NOT infer field order from container metadata such as `tt`.
 
 #### Scenario: Additional windows resolve a distributed order
 - **WHEN** initial evidence is ambiguous and the additional windows provide at least three valid, distributed, non-contradictory windows for the same order under existing thresholds
@@ -15,6 +15,14 @@ When an operator requests Deep Cadence Analysis for an asset with ambiguous IVTC
 #### Scenario: Additional evidence is insufficient or contradictory
 - **WHEN** fewer than three distributed windows are valid, or confident windows contradict one another
 - **THEN** the order remains unresolved, the effective output FPS remains unknown where required, and Queue review remains `REVIEW_REQUIRED`
+
+#### Scenario: Per-window evidence exposes residual combing and cadence signals
+- **WHEN** `fieldmatch` leaves frames classified as interlaced or `idet` observes repeated fields in a candidate window
+- **THEN** the pre-deinterlace counts are persisted with that window and remain review evidence; a later `bwdif` stage MUST NOT erase those measurements
+
+#### Scenario: Conflicting windows are distinguished from insufficient windows
+- **WHEN** valid windows confidently select different orders
+- **THEN** the analysis reports a contradictory/mixed-cadence review reason and retains every window; when no order meets the existing thresholds, the reason reports insufficient evidence instead
 
 #### Scenario: A window cannot be evaluated
 - **WHEN** an additional FFmpeg/idet window cannot produce comparable evidence
