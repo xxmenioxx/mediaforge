@@ -70,6 +70,14 @@ func probeAVTiming(path string, intervalStart float64) (avTimingEvidence, error)
 			StreamIndex int    `json:"stream_index"`
 			Presented   string `json:"best_effort_timestamp_time"`
 		} `json:"frames"`
+		PacketsAndFrames []struct {
+			Type        string `json:"type"`
+			MediaType   string `json:"media_type"`
+			StreamIndex int    `json:"stream_index"`
+			PTS         string `json:"pts_time"`
+			DTS         string `json:"dts_time"`
+			Presented   string `json:"best_effort_timestamp_time"`
+		} `json:"packets_and_frames"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
 		return avTimingEvidence{}, fmt.Errorf("parse A/V timing probe: %w", err)
@@ -104,6 +112,22 @@ func probeAVTiming(path string, intervalStart float64) (avTimingEvidence, error)
 			if presented := optionalSeconds(frame.Presented); presented != nil {
 				timing.FirstPresentedSeconds = presented
 				timing.FirstPresentedSource = "frame.best_effort_timestamp_time"
+			}
+		}
+	}
+	for _, item := range response.PacketsAndFrames {
+		timing := byIndex[item.StreamIndex]
+		switch item.Type {
+		case "packet":
+			if timing != nil {
+				captureFirstPacketTimes(timing, item.PTS, item.DTS)
+			}
+		case "frame":
+			if (item.MediaType == "video" || item.MediaType == "audio") && timing != nil && timing.FirstPresentedSeconds == nil {
+				if presented := optionalSeconds(item.Presented); presented != nil {
+					timing.FirstPresentedSeconds = presented
+					timing.FirstPresentedSource = "frame.best_effort_timestamp_time"
+				}
 			}
 		}
 	}
@@ -316,7 +340,10 @@ func mergeAVTimingPresentationEvidence(target *avTimingEvidence, measured avTimi
 	if target.Video == nil && measured.Video != nil {
 		video := *measured.Video
 		target.Video = &video
-	} else if target.Video != nil && measured.Video != nil && target.Video.Index == measured.Video.Index {
+	} else if target.Video != nil && measured.Video != nil && (target.Video.Index < 0 || target.Video.Index == measured.Video.Index) {
+		// Both probes retain only their first video stream. If the stored probe
+		// omitted its index, the bounded fallback still identifies that same
+		// first stream without guessing among multiple candidates.
 		mergeAVStreamPresentationEvidence(target.Video, *measured.Video)
 	}
 	for index := range target.Audio {

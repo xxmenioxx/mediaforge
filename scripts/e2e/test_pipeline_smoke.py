@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pipeline_smoke
@@ -18,6 +19,170 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             self.assertEqual(first.parent, Path(temp_base).resolve())
             self.assertEqual(second.parent, Path(temp_base).resolve())
             self.assertTrue(first.name.startswith(pipeline_smoke.RUN_PREFIX))
+
+    def test_each_scenario_run_gets_an_independent_database_and_filesystem(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_base:
+            roots = []
+            for run_id in ("issue-284-happy-path", "issue-285-future-scenario"):
+                root = pipeline_smoke.create_run_root(temp_base, run_id)
+                sandbox = root / "sandbox"
+                pipeline_smoke.prepare_sandbox(sandbox)
+                roots.append(sandbox)
+            first_db = roots[0] / "config" / "mvforge.db"
+            second_db = roots[1] / "config" / "mvforge.db"
+            self.assertNotEqual(first_db, second_db)
+            self.assertNotEqual(roots[0] / "raw", roots[1] / "raw")
+            self.assertEqual(pipeline_smoke.SUPPORTED_SCENARIOS, frozenset({"happy-path"}))
+
+    def test_happy_path_generates_deterministic_multistream_mkv_inputs_in_sandbox(self) -> None:
+        scenario = pipeline_smoke.scenario_for("happy-path")
+        with tempfile.TemporaryDirectory() as temp_base:
+            root = pipeline_smoke.create_run_root(temp_base, "issue-284-fixture")
+            sandbox = root / "sandbox"
+            pipeline_smoke.prepare_sandbox(sandbox)
+            with patch.object(pipeline_smoke, "run_command") as run_command:
+                pipeline_smoke.generate_fixture(pipeline_smoke.DEFAULT_IMAGE, sandbox, scenario)
+
+            command = run_command.call_args.args[0]
+            self.assertEqual(run_command.call_args.kwargs["timeout"], 90)
+            self.assertEqual(command[command.index("--network") + 1], "none")
+            self.assertIn("--read-only", command)
+            self.assertEqual(command.count("--mount"), 1)
+            self.assertIn(
+                "testsrc2=size=320x180:rate=24000/1001:duration=8",
+                command,
+            )
+            self.assertIn("sine=frequency=440:sample_rate=48000:duration=8", command)
+            self.assertIn("sine=frequency=880:sample_rate=48000:duration=8", command)
+            self.assertIn("-map", command)
+            for stream in ("0:v:0", "1:a:0", "2:a:0", "3:s:0"):
+                self.assertIn(stream, command)
+            self.assertEqual(command[command.index("-map_chapters") + 1], "4")
+            self.assertEqual(command[-1], "/media/raw/synthetic-smoke.mkv")
+
+            subtitle = (sandbox / "fixtures" / "synthetic-smoke.srt").read_text(encoding="utf-8")
+            chapters = (sandbox / "fixtures" / "synthetic-smoke.ffmeta").read_text(encoding="utf-8")
+            self.assertIn("MVForge synthetic pipeline subtitle", subtitle)
+            self.assertEqual(chapters.count("[CHAPTER]"), 3)
+            self.assertIn("TIMEBASE=1/1000", chapters)
+            self.assertEqual(chapters, chapters.replace("\r\n", "\n"))
+
+    def test_ffprobe_contract_requires_exact_streams_progressive_rate_and_chapters(self) -> None:
+        scenario = pipeline_smoke.scenario_for("happy-path")
+        probe = {
+            "format": {"duration": "8.008"},
+            "streams": [
+                {"index": 0, "codec_type": "video", "codec_name": "h264", "width": 320, "height": 180,
+                 "avg_frame_rate": "24000/1001", "r_frame_rate": "24000/1001", "field_order": "progressive"},
+                {"index": 1, "codec_type": "audio", "codec_name": "aac"},
+                {"index": 2, "codec_type": "audio", "codec_name": "aac"},
+                {"index": 3, "codec_type": "subtitle", "codec_name": "subrip"},
+            ],
+            "chapters": [{}, {}, {}],
+        }
+        summary = pipeline_smoke.assert_media_probe(
+            probe, scenario, "fixture", expected_video_codec="h264",
+        )
+        self.assertEqual(summary["streamCounts"], {"video": 1, "audio": 2, "subtitle": 1})
+        self.assertEqual(summary["chapterCount"], 3)
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_media_probe({**probe, "streams": probe["streams"][:-1]}, scenario, "missing subtitle")
+        interlaced = {**probe, "streams": [{**probe["streams"][0], "field_order": "tt"}, *probe["streams"][1:]]}
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_media_probe(interlaced, scenario, "interlaced")
+        missing_chapter = {**probe, "chapters": probe["chapters"][:2]}
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_media_probe(missing_chapter, scenario, "missing chapter")
+
+    def test_required_validation_findings_have_only_canonical_expected_states(self) -> None:
+        findings = [
+            {"key": key, "state": state}
+            for key, state in pipeline_smoke.REQUIRED_FINDING_STATES.items()
+        ]
+        states = pipeline_smoke.assert_required_findings(findings)
+        self.assertEqual(states, pipeline_smoke.REQUIRED_FINDING_STATES)
+        invalid = [
+            {**finding, "state": "WARNING"} if finding["key"] == "publication.readiness" else finding
+            for finding in findings
+        ]
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_required_findings(invalid)
+        duplicate = findings + [{"key": "artifact.integrity", "state": "PASS"}]
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_required_findings(duplicate)
+
+    def test_validation_response_and_run_compare_stable_finding_states(self) -> None:
+        response = [{
+            "key": "artifact.identity",
+            "state": "PASS",
+            "actual": {"filesystem": {"modifiedAtUnixNano": 1_792_370_267_621_097_456}},
+        }]
+        persisted = [{
+            "key": "artifact.identity",
+            "state": "PASS",
+            "actual": {"filesystem": {"modifiedAtUnixNano": 1_792_370_267_621_097_500}},
+        }]
+        response_signature = pipeline_smoke.validation_finding_state_signature(response)
+        self.assertEqual(response_signature, pipeline_smoke.validation_finding_state_signature(persisted))
+        self.assertNotEqual(
+            response_signature,
+            pipeline_smoke.validation_finding_state_signature([{"key": "artifact.identity", "state": "FAIL"}]),
+        )
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.validation_finding_state_signature(response + response)
+
+    def test_result_validation_and_publisher_bind_to_the_same_frozen_generation(self) -> None:
+        job = {"id": 41, "executionNumber": 3, "activeExecutionPlanId": 7}
+        plan = {"id": 7, "jobId": 41, "version": 2}
+        result = {
+            "resultIdentity": {
+                "artifactId": "job-result:41:execution:3",
+                "generationToken": "generation-3",
+                "generationVersion": 1,
+                "outputRevision": "revision-3",
+            },
+            "executionBinding": {
+                "executionNumber": 3,
+                "executionPlanId": 7,
+                "executionPlanVersion": 2,
+                "executionPlanFingerprint": "plan-fingerprint",
+                "frozenQueueFingerprint": "queue-fingerprint",
+            },
+        }
+        validation_run = {
+            "resultArtifactId": "job-result:41:execution:3",
+            "resultGenerationToken": "generation-3",
+            "resultGenerationVersion": 1,
+            "resultOutputRevision": "revision-3",
+            "executionNumber": 3,
+            "executionPlanId": 7,
+            "executionPlanVersion": 2,
+            "executionPlanFingerprint": "plan-fingerprint",
+        }
+        summary = pipeline_smoke.assert_result_validation_binding(job, plan, result, validation_run)
+        self.assertEqual(summary["resultIdentity"]["resultOutputRevision"], "revision-3")
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_result_validation_binding(job, {**plan, "version": 1}, result, validation_run)
+
+        publication = {
+            "publication": {
+                "publicationId": "publication-41",
+                "queueJobId": 41,
+                "executionNumber": 3,
+                "resultArtifactId": "job-result:41:execution:3",
+                "validationRunId": "validation-41",
+                "state": "PUBLISHED",
+                "destinationPath": "/media/library/published/output.mkv",
+            },
+        }
+        published = pipeline_smoke.assert_publisher_binding(
+            {"items": [publication]}, 41, 3, "job-result:41:execution:3", "validation-41",
+        )
+        self.assertEqual(published["state"], "PUBLISHED")
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_publisher_binding(
+                {"items": [publication]}, 41, 3, "job-result:41:execution:3", "stale-validation",
+            )
 
     def test_run_root_refuses_repository_and_nas_paths(self) -> None:
         for path in (pipeline_smoke.REPO_ROOT, Path("/volume1"), Path("/volume2")):

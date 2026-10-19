@@ -3,6 +3,8 @@ package handlers
 import (
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -281,6 +283,31 @@ func TestAVTimingFromProbeParsesFFprobeStringTimestamps(t *testing.T) {
 	}
 }
 
+func TestProbeAVTimingParsesCombinedPacketsAndFrames(t *testing.T) {
+	binDir := t.TempDir()
+	ffprobe := filepath.Join(binDir, "ffprobe")
+	output := `{"streams":[{"index":0,"codec_type":"video","start_time":"0.000000","time_base":"1/1000","avg_frame_rate":"24000/1001"},{"index":1,"codec_type":"audio","start_time":"0.000000","time_base":"1/1000","avg_frame_rate":"0/0"}],"packets_and_frames":[{"type":"packet","stream_index":1,"pts_time":"-0.021000","dts_time":"-0.021000"},{"type":"frame","media_type":"video","stream_index":0,"best_effort_timestamp_time":"0.000000"},{"type":"frame","media_type":"audio","stream_index":1,"best_effort_timestamp_time":"0.000000"}]}`
+	script := "#!/bin/sh\nprintf '%s\\n' '" + output + "'\n"
+	if err := os.WriteFile(ffprobe, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake ffprobe: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	evidence, err := probeAVTiming("synthetic.mkv", 0)
+	if err != nil {
+		t.Fatalf("probe AV timing: %v", err)
+	}
+	if evidence.Video == nil || evidence.Video.FirstPresentedSeconds == nil || *evidence.Video.FirstPresentedSeconds != 0 {
+		t.Fatalf("combined frame records must preserve the presented video timestamp: %#v", evidence.Video)
+	}
+	if len(evidence.Audio) != 1 || evidence.Audio[0].FirstPacketPTSSeconds == nil || *evidence.Audio[0].FirstPacketPTSSeconds != -.021 {
+		t.Fatalf("combined packet records must preserve the first audio packet timestamp: %#v", evidence.Audio)
+	}
+	if evidence.Audio[0].FirstPresentedSeconds == nil || *evidence.Audio[0].FirstPresentedSeconds != 0 {
+		t.Fatalf("combined audio frame records must preserve the presented timestamp: %#v", evidence.Audio[0])
+	}
+}
+
 func TestAVTimingReadIntervalIsBoundedToTwoSeconds(t *testing.T) {
 	if got := avTimingReadInterval(0); got != "%+2" {
 		t.Fatalf("initial timing probe interval=%q want a two-second bound", got)
@@ -314,6 +341,21 @@ func TestAVTimingFallbackProbesOnlyMissingSideOnce(t *testing.T) {
 	}
 	if measuredSource.PresentationProbeStatus != "" || measuredOutput.PresentationProbeStatus != "completed" || measuredOutput.Video.FirstPresentedSeconds == nil || *measuredOutput.Video.FirstPresentedSeconds != .042 || measuredOutput.Video.FirstPresentedOrigin != "bounded_ffprobe_fallback" {
 		t.Fatalf("fallback evidence was not merged with provenance: source=%#v output=%#v", measuredSource, measuredOutput)
+	}
+}
+
+func TestAVTimingFallbackMergesFirstVideoWhenStoredIndexIsUnknown(t *testing.T) {
+	target := timingEvidence(0, 0)
+	target.Video.Index = -1
+	target.Video.FirstPresentedSeconds = nil
+	measured := timingEvidence(.042, 0)
+	measured.Video.Index = 0
+	measured.Video.FirstPresentedOrigin = "bounded_ffprobe_fallback"
+
+	mergeAVTimingPresentationEvidence(&target, measured)
+
+	if target.Video.Index != -1 || target.Video.FirstPresentedSeconds == nil || *target.Video.FirstPresentedSeconds != .042 {
+		t.Fatalf("single first-video fallback evidence should merge while preserving unknown stored index: %#v", target.Video)
 	}
 }
 
