@@ -3038,6 +3038,170 @@ func TestQueueSelectedAssetsPreflightFreezesInheritedAudioOnlySnapshot(t *testin
 	}
 }
 
+func TestQueueSelectedAssetsPreflightIsolatesTrackSnapshotsPerAsset(t *testing.T) {
+	db := queueSelectedAssetsTestDB(t)
+	sourceDir := t.TempDir()
+	logicalPath := filepath.Join(sourceDir, "Selected")
+	if err := os.MkdirAll(logicalPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	firstPath := filepath.Join(logicalPath, "Episode 1.mkv")
+	secondPath := filepath.Join(logicalPath, "Episode 2.mkv")
+	for _, path := range []string{firstPath, secondPath} {
+		if err := os.WriteFile(path, []byte("synthetic source"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fallback := authoritativeTestProfile()
+	if err := db.Create(&fallback).Error; err != nil {
+		t.Fatal(err)
+	}
+	first := models.AssetRecord{Path: firstPath, LogicalGroupPath: logicalPath, SourcePath: firstPath, FileName: filepath.Base(firstPath), Status: "unprocessed"}
+	second := models.AssetRecord{Path: secondPath, LogicalGroupPath: logicalPath, SourcePath: secondPath, FileName: filepath.Base(secondPath), Status: "unprocessed"}
+	records := []models.AssetRecord{first, second}
+	if err := db.Create(&records).Error; err != nil {
+		t.Fatal(err)
+	}
+	first, second = records[0], records[1]
+	library := models.Library{Name: "Selected assets destination", SourcePath: sourceDir, DestinationPath: t.TempDir(), Type: "anime"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetScopeConfiguration{
+		ScopeType: assetScopeLogicalGroup, ScopeKey: logicalPath,
+		DestinationSelection: configSelectionValue, DestinationLibraryID: library.ID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	defaults := defaultAssetDefaultsValue()
+	defaults["tracks"].(models.JSONMap)["custom"] = models.JSONMap{
+		"trackDispositionVersion": canonicalTrackDispositionVersion,
+		"audioMode":               "all", "subtitleMode": "all", "subtitleDisposition": "extract",
+		"subtitleSidecarFormats": models.JSONList{"srt"}, "attachmentPolicy": "auto",
+		"fontAttachmentExportPolicy": "none", "chapterPolicy": "keep", "ocrMode": "clean",
+	}
+	if err := db.Create(&models.AppSetting{Key: assetDefaultsSettingKey, Value: defaults}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, scan := range []models.ScanResult{
+		{
+			Path: firstPath, FileName: filepath.Base(firstPath), VideoCodec: "h264", Width: 1920, Height: 1080,
+			VideoStreams:    models.JSONList{models.JSONMap{"index": 0, "codec": "h264", "width": 1920, "height": 1080}},
+			AudioStreams:    models.JSONList{models.JSONMap{"index": 1, "codec": "aac", "language": "eng"}},
+			SubtitleStreams: models.JSONList{models.JSONMap{"index": 3, "codec": "subrip", "language": "eng"}},
+		},
+		{
+			Path: secondPath, FileName: filepath.Base(secondPath), VideoCodec: "h264", Width: 1920, Height: 1080,
+			VideoStreams: models.JSONList{models.JSONMap{"index": 0, "codec": "h264", "width": 1920, "height": 1080}},
+			AudioStreams: models.JSONList{
+				models.JSONMap{"index": 1, "codec": "aac", "language": "eng"},
+				models.JSONMap{"index": 2, "codec": "ac3", "language": "jpn"},
+			},
+			SubtitleStreams: models.JSONList{
+				models.JSONMap{"index": 4, "codec": "subrip", "language": "eng"},
+				models.JSONMap{"index": 5, "codec": "subrip", "language": "spa"},
+			},
+		},
+	} {
+		if err := db.Create(&scan).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedQueueSelectedPreflightRuntime(t, db)
+
+	candidate := createQueueSelectedAssetsPreflight(t, db, []uint{first.ID, second.ID})
+	if len(candidate.Assets) != 2 || candidate.Assets[0].Status != queuePreflightReady || candidate.Assets[1].Status != queuePreflightReady {
+		t.Fatalf("selected assets did not both resolve in Preflight: %#v", candidate.Assets)
+	}
+	accepted := acceptQueueSelectedAssetsPreflight(t, db, candidate, []string{candidate.Assets[0].ID, candidate.Assets[1].ID})
+	if len(accepted.Jobs) != 2 {
+		t.Fatalf("selected assets did not both queue: %#v", accepted)
+	}
+	wantAudio := map[string][]int{firstPath: {1}, secondPath: {1, 2}}
+	wantSubtitles := map[string][]int{firstPath: {3}, secondPath: {4, 5}}
+	for _, job := range accepted.Jobs {
+		if got := workerStringValue(job.TrackProfileSnapshot["resolvedForAsset"]); filepath.Clean(got) != filepath.Clean(job.MediaPath) {
+			t.Errorf("job %d track snapshot resolved for %q, want its own asset %q", job.ID, got, job.MediaPath)
+		}
+		plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
+		if !ok {
+			t.Errorf("job %d has no frozen track plan", job.ID)
+			continue
+		}
+		for _, check := range []struct {
+			name string
+			got  []ResolvedTrackStream
+			want []int
+		}{{"audio", plan.AudioStreams, wantAudio[job.MediaPath]}, {"subtitles", nil, wantSubtitles[job.MediaPath]}} {
+			if check.name == "subtitles" {
+				if len(plan.SubtitleStreams) != len(check.want) {
+					t.Errorf("job %d frozen subtitle count=%d, want %d", job.ID, len(plan.SubtitleStreams), len(check.want))
+					continue
+				}
+				for index, want := range check.want {
+					if got := plan.SubtitleStreams[index].StreamIndex; got != want {
+						t.Errorf("job %d frozen subtitle index[%d]=%d, want %d", job.ID, index, got, want)
+					}
+				}
+				continue
+			}
+			if len(check.got) != len(check.want) {
+				t.Errorf("job %d frozen audio count=%d, want %d", job.ID, len(check.got), len(check.want))
+				continue
+			}
+			for index, want := range check.want {
+				if got := check.got[index].StreamIndex; got != want {
+					t.Errorf("job %d frozen audio index[%d]=%d, want %d", job.ID, index, got, want)
+				}
+			}
+		}
+
+		probeStreams := []any{map[string]any{"codec_type": "video"}}
+		for range plan.AudioStreams {
+			probeStreams = append(probeStreams, map[string]any{"codec_type": "audio"})
+		}
+		validationFindings := map[string]validationFinding{}
+		addFinding := func(key string, expected, actual any, severity, disposition, state string, actionable, overrideable bool, explanation string, refs ...string) {
+			validationFindings[key] = validationFinding{Key: key, Expected: expected, Actual: actual, Severity: severity, Disposition: disposition, State: state, Actionable: actionable, Overrideable: overrideable, Explanation: explanation, EvidenceReferences: refs}
+		}
+		addTrackFindings(addFinding, job, models.JSONMap{"streams": probeStreams})
+		for _, key := range []string{"audio.tracks_actions", "subtitles.streams_actions"} {
+			if finding := validationFindings[key]; finding.State != "PASS" {
+				t.Errorf("job %d synthetic Result failed Validation finding %s: %#v", job.ID, key, finding)
+			}
+		}
+
+		job.OutputPath = filepath.Join(library.DestinationPath, filepath.Base(job.MediaPath))
+		plannedSidecars := plannedSubtitleArtifacts(job)
+		actualSidecars := models.JSONList{}
+		for index := range plannedSidecars {
+			plannedSidecars[index].Status = "ready"
+			plannedSidecars[index].StagedPath = filepath.Join(t.TempDir(), plannedSidecars[index].DisplayName)
+			if err := os.WriteFile(plannedSidecars[index].StagedPath, []byte("1\n00:00:00,000 --> 00:00:01,000\nSynthetic subtitle\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			actualSidecars = append(actualSidecars, models.JSONMap{"artifactId": plannedSidecars[index].ArtifactID, "status": "ready"})
+		}
+		job.SubtitleArtifacts = sidecarArtifactsJSON(plannedSidecars, nil)
+		sidecarChecks, _, _ := validateRequiredSubtitleArtifacts(job)
+		if len(sidecarChecks) != len(plannedSidecars) {
+			t.Errorf("job %d Validation checked %d sidecars, want %d", job.ID, len(sidecarChecks), len(plannedSidecars))
+		}
+		for _, check := range sidecarChecks {
+			if check.Status != "passed" {
+				t.Errorf("job %d synthetic Result failed Validation sidecar check %s: %s", job.ID, check.Key, check.Message)
+			}
+		}
+		_, _, _, manifestMatches := resultManifestEvidence(job, map[string]any{"artifacts": models.JSONMap{
+			"primary":  models.JSONMap{"type": "primary_media", "path": job.OutputPath, "status": "ready"},
+			"sidecars": actualSidecars,
+		}})
+		if !manifestMatches {
+			t.Errorf("job %d synthetic Result manifest does not match its frozen track plan", job.ID)
+		}
+	}
+}
+
 func queueSelectedAssetsTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := "file:" + strings.NewReplacer("/", "-", " ", "-").Replace(t.Name()) + "?mode=memory&cache=shared"
