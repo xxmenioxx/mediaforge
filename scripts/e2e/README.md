@@ -7,10 +7,26 @@ Run one isolated scenario locally:
 ```
 
 The runner uses `mvforge-backend:pipeline-smoke` when it is already present;
-otherwise it builds that image from `backend/Dockerfile`. It generates a short
-lavfi video fixture at runtime. The baseline is silent so it does not invent an
-A/V timestamp relationship; it explicitly freezes the known progressive
-cadence and track dispositions. No binary media fixture is checked in.
+otherwise it builds that image from `backend/Dockerfile`. The `happy-path`
+scenario generates a short MKV at runtime: progressive 24000/1001 H.264 video,
+two deterministic AAC sine tracks, one SRT subtitle, and three chapters. Its
+frozen Profile and Track snapshots explicitly keep both audio tracks, the
+subtitle, and chapters. No binary media fixture is checked in.
+
+The smoke verifies the exact stream and chapter counts at fixture, Result, and
+published-package stages. It requires PASS for the artifact identity, manifest,
+integrity, execution binding, duration, video properties, audio actions,
+subtitle actions, and chapter actions Validation findings. The canonical
+`publication.readiness` finding is NOT_APPLICABLE in the immutable ValidationRun
+because Publisher performs readiness and destination checks afterward; the
+smoke then requires an ALLOWED Validation handoff and a published Publisher
+record bound to the same Result artifact and ValidationRun. It also compares
+the Result and published file hashes.
+
+Each scenario invocation gets a unique temporary root, SQLite database, and
+filesystem. Add future scenarios to the scenario registry with their own
+fixture expectations; keep them sequential in the existing smoke job so the
+backend Docker image is built once and reused.
 
 Each run creates a unique directory directly under the operating system temp
 directory (`RUNNER_TEMP` in GitHub Actions). The backend container has no
@@ -37,10 +53,11 @@ independent of NAS detection and CI runner free-space reserves; all paths still
 resolve below the one `/media` sandbox mount.
 
 On success, the run container and temporary root are removed. On failure, the
-container and sandbox are removed while bounded JSON summaries and logs remain
-under the printed `evidence/` path. CI uploads only that directory on failure,
-then invokes `cleanup-run-root.py` for its exact generated run ID. Media files
-are never uploaded.
+container and sandbox are removed while bounded Result, ValidationRun,
+ExecutionPlan, ffprobe, and log evidence remain under the printed `evidence/`
+path. CI uploads only that directory on failure, then invokes
+`cleanup-run-root.py` for its exact generated run ID. Media files are never
+uploaded.
 
 `generate-fixtures.sh` exposes the same guarded fixture generator for a known
 run sandbox. New scenarios can be registered in `SUPPORTED_SCENARIOS` and added
