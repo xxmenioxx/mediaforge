@@ -323,7 +323,14 @@ def ensure_image(image: str, build_if_missing: bool) -> None:
         raise SmokeFailure(f"docker build failed with exit code {result.returncode}")
 
 
-def generate_fixture(image: str, sandbox: Path, scenario: SyntheticScenario) -> None:
+def generate_fixture(
+    image: str,
+    sandbox: Path,
+    scenario: SyntheticScenario,
+    *,
+    video_filter: str | None = None,
+    interlaced: bool = False,
+) -> None:
     fixture_directory = sandbox / "fixtures"
     fixture_directory.mkdir(parents=True, exist_ok=True)
     (fixture_directory / "synthetic-smoke.srt").write_text(
@@ -375,13 +382,19 @@ def generate_fixture(image: str, sandbox: Path, scenario: SyntheticScenario) -> 
         "-map", f"{subtitle_input_index}:s:0",
         "-map_chapters", str(chapter_input_index),
         "-map_metadata", "-1",
-        "-c:v", "libx264", "-preset", "ultrafast",
+    ))
+    if video_filter:
+        args.extend(("-vf", video_filter))
+    args.extend((
+        "-c:v", "libx264", "-profile:v", "high", "-preset", "ultrafast",
         "-threads", "1", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "64k", "-c:s", "srt",
         "-fflags", "+bitexact",
         "-metadata", "title=MVForge synthetic pipeline smoke",
         "-metadata", "creation_time=2000-01-01T00:00:00Z",
     ))
+    if interlaced:
+        args.extend(("-flags", "+ilme+ildct", "-top", "1"))
     for index, track in enumerate(scenario.audio_tracks):
         args.extend((
             f"-metadata:s:a:{index}", f"language={track.language}",
@@ -1271,6 +1284,23 @@ def generate_only(args: argparse.Namespace) -> int:
     return 0
 
 
+def generate_cadence_fixture_only(args: argparse.Namespace) -> int:
+    sandbox = Path(args.sandbox).expanduser().resolve(strict=True)
+    run_root = sandbox.parent
+    base = validate_temp_base(run_root.parent)
+    if run_root.parent != base or not run_root.name.startswith(RUN_PREFIX) or sandbox.name != "sandbox" or not sandbox.is_dir():
+        raise SmokeFailure("fixture generation requires the sandbox directory under a run root")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", args.image):
+        raise SmokeFailure("image must be a simple Docker image reference")
+    docker_mount(sandbox)
+    generate_fixture(
+        args.image, sandbox, HAPPY_PATH_SCENARIO,
+        video_filter="telecine=first_field=top", interlaced=True,
+    )
+    print(f"Generated deterministic hard-telecine analysis fixture in {sandbox}")
+    return 0
+
+
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1287,6 +1317,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     generate.add_argument("--scenario", default="happy-path")
     generate.add_argument("--image", default=DEFAULT_IMAGE)
     generate.add_argument("--sandbox", required=True)
+
+    cadence = commands.add_parser("generate-cadence", help="generate the multistream hard-telecine analysis fixture only")
+    cadence.add_argument("--image", default=DEFAULT_IMAGE)
+    cadence.add_argument("--sandbox", required=True)
     return parser.parse_args(argv)
 
 
@@ -1295,6 +1329,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "run":
             return run_smoke(args)
+        if args.command == "generate-cadence":
+            return generate_cadence_fixture_only(args)
         return generate_only(args)
     except Exception as exc:
         print(f"pipeline smoke error: {exc}", file=sys.stderr, flush=True)

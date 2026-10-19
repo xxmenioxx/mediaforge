@@ -2384,3 +2384,109 @@ func TestSnapshotDoesNotRequireFrameStructureRefreshWithRealFrameRate(t *testing
 		t.Fatal("snapshot with a valid realFrameRate must remain cacheable")
 	}
 }
+
+func TestQueueIgnoresDeepCadenceEvidenceForDifferentPhysicalSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source.mkv")
+	if err := os.WriteFile(path, []byte("synthetic source revision"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interlace := InterlaceAnalysis{
+		Version: interlaceAnalysisVersion, Status: "telecine", FieldOrder: "tff", DetectedFieldOrder: "tff",
+		RecommendedMode: "ivtc_tff", RecommendedAction: "ivtc", RecommendedFilter: "fieldmatch=order=tff,decimate",
+		IVTCValidation: &IVTCValidation{
+			DeepAnalysisVersion: ivtcDeepEvidenceVersion, DeepAnalysisStatus: "resolved", SelectedOrder: "tff",
+			SourceIdentity: &IVTCSourceIdentity{Path: "/previous/physical/source.mkv", SnapshotID: 11},
+		},
+	}
+	scan := models.ScanResult{ID: 11, Path: path, InterlaceAnalysis: structToJSONMap(interlace)}
+	queueSnapshot := staleDeepCadenceEvidenceForQueue(nil, scan, path, info)
+	queued, ok := decodeInterlaceAnalysis(queueSnapshot.InterlaceAnalysis)
+	if !ok || queued.IVTCValidation == nil || queued.IVTCValidation.DeepAnalysisStatus != "stale" || queued.IVTCValidation.SelectedOrder != "" {
+		t.Fatalf("Queue reused deep evidence for another physical identity: %#v", queued.IVTCValidation)
+	}
+	if queued.RecommendedFilter != "" || queued.AutomaticFilter != "" || queued.RecommendedAction != "review" {
+		t.Fatalf("stale deep evidence kept executable automatic filters: %#v", queued)
+	}
+}
+
+func TestQueueRejectsUnsupportedDeepCadenceEvidenceVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source.mkv")
+	if err := os.WriteFile(path, []byte("synthetic source revision"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interlace := InterlaceAnalysis{
+		Version: interlaceAnalysisVersion, Status: "telecine", FieldOrder: "tff", DetectedFieldOrder: "tff",
+		RecommendedMode: "ivtc_tff", RecommendedAction: "ivtc", RecommendedFilter: "fieldmatch=order=tff,decimate",
+		IVTCValidation: &IVTCValidation{
+			DeepAnalysisVersion: ivtcDeepEvidenceVersion + 1, DeepAnalysisStatus: "resolved", SelectedOrder: "tff",
+		},
+	}
+	scan := models.ScanResult{ID: 12, Path: path, InterlaceAnalysis: structToJSONMap(interlace)}
+	queueSnapshot := staleDeepCadenceEvidenceForQueue(nil, scan, path, info)
+	queued, ok := decodeInterlaceAnalysis(queueSnapshot.InterlaceAnalysis)
+	if !ok || queued.IVTCValidation == nil || queued.IVTCValidation.DeepAnalysisStatus != "stale" || queued.IVTCValidation.SelectedOrder != "" || queued.RecommendedFilter != "" {
+		t.Fatalf("Queue reused unsupported deep evidence: %#v", queued)
+	}
+}
+
+func TestPersistDeepCadenceSnapshotRejectsStaleSnapshotRevision(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:deep-cadence-stale-persist?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.ScanResult{}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "source.mkv")
+	if err := os.WriteFile(path, []byte("synthetic source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := models.ScanResult{Path: path, InterlaceAnalysis: structToJSONMap(InterlaceAnalysis{
+		Version:        interlaceAnalysisVersion,
+		Status:         "telecine_suspected",
+		IVTCValidation: &IVTCValidation{Windows: []IVTCWindowValidation{{Start: 0}, {Start: 20}, {Start: 40}}},
+	})}
+	if err := db.Create(&saved).Error; err != nil {
+		t.Fatal(err)
+	}
+	identity, err := ivtcSourceIdentityForSnapshot(db, saved, path, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := saved
+	candidate.InterlaceAnalysis = structToJSONMap(InterlaceAnalysis{
+		Version: interlaceAnalysisVersion,
+		Status:  "telecine",
+		IVTCValidation: &IVTCValidation{
+			DeepAnalysisVersion: ivtcDeepEvidenceVersion, DeepAnalysisStatus: "resolved", SelectedOrder: "tff",
+			EvidenceSnapshotUpdatedAt: identity.SnapshotUpdatedAt, SourceIdentity: identity,
+			Windows: []IVTCWindowValidation{{Start: 0}, {Start: 20}, {Start: 40}, {Start: 60}, {Start: 80}},
+		},
+	})
+	if err := db.Model(&models.ScanResult{}).Where("id = ?", saved.ID).UpdateColumn("updated_at", saved.UpdatedAt.Add(time.Second)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := persistDeepCadenceSnapshot(db, &candidate, identity, info); err == nil {
+		t.Fatal("stale deep analysis overwrote a newer saved snapshot")
+	}
+	var latest models.ScanResult
+	if err := db.First(&latest, saved.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	interlace, ok := decodeInterlaceAnalysis(latest.InterlaceAnalysis)
+	if !ok || interlace.IVTCValidation == nil || interlace.IVTCValidation.DeepAnalysisVersion != 0 {
+		t.Fatalf("stale deep evidence changed the saved snapshot: %#v", latest.InterlaceAnalysis)
+	}
+}

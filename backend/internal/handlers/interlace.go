@@ -59,6 +59,15 @@ const (
 )
 
 const (
+	ivtcDeepEvidenceVersion        = 1
+	ivtcDeepMaximumExtraWindows    = 2
+	ivtcDeepMinimumValidWindows    = 3
+	ivtcWindowOutcomeValid         = "valid"
+	ivtcWindowOutcomeInconclusive  = "inconclusive"
+	ivtcWindowOutcomeContradictory = "contradictory"
+)
+
+const (
 	interlaceAnalysisVersion      = 3
 	interlaceAnalysisCacheVersion = 4
 	interlaceAnalysisSnapshotKey  = "interlaceAnalysisSnapshot"
@@ -100,20 +109,52 @@ type TimestampDeltaSummary struct {
 }
 
 type IVTCValidation struct {
-	TFFProgressive      int                    `json:"tffProgressive"`
-	TFFClassified       int                    `json:"tffClassified"`
-	TFFProgressiveRatio float64                `json:"tffProgressiveRatio"`
-	BFFProgressive      int                    `json:"bffProgressive"`
-	BFFClassified       int                    `json:"bffClassified"`
-	BFFProgressiveRatio float64                `json:"bffProgressiveRatio"`
-	SelectedOrder       string                 `json:"selectedOrder,omitempty"`
-	Confidence          float64                `json:"confidence"`
-	ValidatedWindows    int                    `json:"validatedWindows"`
-	Windows             []IVTCWindowValidation `json:"windows,omitempty"`
+	DeepAnalysisVersion       int                    `json:"deepAnalysisVersion,omitempty"`
+	DeepAnalysisStatus        string                 `json:"deepAnalysisStatus,omitempty"`
+	EvidenceSnapshotUpdatedAt string                 `json:"evidenceSnapshotUpdatedAt,omitempty"`
+	SourceFrameRate           string                 `json:"sourceFrameRate,omitempty"`
+	ExpectedOutputFrameRate   string                 `json:"expectedOutputFrameRate,omitempty"`
+	SourceIdentity            *IVTCSourceIdentity    `json:"sourceIdentity,omitempty"`
+	DurationSeconds           float64                `json:"durationSeconds,omitempty"`
+	WindowSeconds             int                    `json:"windowSeconds,omitempty"`
+	BaselineWindowCount       int                    `json:"baselineWindowCount,omitempty"`
+	AttemptedWindows          int                    `json:"attemptedWindows,omitempty"`
+	InconclusiveWindows       int                    `json:"inconclusiveWindows,omitempty"`
+	ContradictoryWindows      int                    `json:"contradictoryWindows,omitempty"`
+	TFFProgressive            int                    `json:"tffProgressive"`
+	TFFClassified             int                    `json:"tffClassified"`
+	TFFProgressiveRatio       float64                `json:"tffProgressiveRatio"`
+	BFFProgressive            int                    `json:"bffProgressive"`
+	BFFClassified             int                    `json:"bffClassified"`
+	BFFProgressiveRatio       float64                `json:"bffProgressiveRatio"`
+	SelectedOrder             string                 `json:"selectedOrder,omitempty"`
+	Confidence                float64                `json:"confidence"`
+	ValidWindows              int                    `json:"validWindows"`
+	ValidatedWindows          int                    `json:"validatedWindows"`
+	Windows                   []IVTCWindowValidation `json:"windows,omitempty"`
+}
+
+type IVTCSourceIdentity struct {
+	Path              string `json:"path"`
+	SnapshotID        uint   `json:"snapshotId"`
+	AssetRecordID     uint   `json:"assetRecordId,omitempty"`
+	SnapshotUpdatedAt string `json:"snapshotUpdatedAt"`
+	SizeBytes         int64  `json:"sizeBytes"`
+	ModifiedAt        string `json:"modifiedAt"`
+	Mode              uint32 `json:"mode"`
+	Device            string `json:"device"`
+	Inode             string `json:"inode"`
 }
 
 type IVTCWindowValidation struct {
 	Start               float64 `json:"start"`
+	Outcome             string  `json:"outcome,omitempty"`
+	Reason              string  `json:"reason,omitempty"`
+	SelectionBasis      string  `json:"selectionBasis,omitempty"`
+	TFFProgressive      int     `json:"tffProgressive,omitempty"`
+	TFFClassified       int     `json:"tffClassified,omitempty"`
+	BFFProgressive      int     `json:"bffProgressive,omitempty"`
+	BFFClassified       int     `json:"bffClassified,omitempty"`
 	TFFProgressiveRatio float64 `json:"tffProgressiveRatio"`
 	BFFProgressiveRatio float64 `json:"bffProgressiveRatio"`
 	SelectedOrder       string  `json:"selectedOrder,omitempty"`
@@ -519,41 +560,257 @@ func validateIVTC(path string, duration float64, seconds int, analysis *Interlac
 
 func validateIVTCContext(ctx context.Context, path string, duration float64, seconds int, analysis *InterlaceAnalysis) {
 	starts := validationStarts(analysis.SampledAt, duration, seconds)
-	validation := &IVTCValidation{}
+	validation := &IVTCValidation{DurationSeconds: duration, WindowSeconds: seconds}
+	_ = appendIVTCValidationWindows(ctx, path, seconds, validation, starts, runIDETContext)
+	finalizeIVTCValidation(analysis, validation)
+}
+
+type ivtcWindowRunner func(context.Context, string, float64, int, string) (InterlaceAnalysis, bool)
+
+func appendIVTCValidationWindows(ctx context.Context, path string, seconds int, validation *IVTCValidation, starts []float64, run ivtcWindowRunner) error {
 	for _, start := range starts {
-		tff, tffOK := runIDETContext(ctx, path, start, seconds, "fieldmatch=order=tff,decimate,idet")
-		bff, bffOK := runIDETContext(ctx, path, start, seconds, "fieldmatch=order=bff,decimate,idet")
-		if !tffOK || !bffOK {
-			continue
+		window, err := compareIVTCWindow(ctx, path, start, seconds, run)
+		if err != nil {
+			return err
 		}
-		tffClassified := tff.TFF + tff.BFF + tff.Progressive
-		bffClassified := bff.TFF + bff.BFF + bff.Progressive
-		window := IVTCWindowValidation{Start: start}
-		if tffClassified > 0 {
-			window.TFFProgressiveRatio = float64(tff.Progressive) / float64(tffClassified)
-		}
-		if bffClassified > 0 {
-			window.BFFProgressiveRatio = float64(bff.Progressive) / float64(bffClassified)
-		}
-		window.SelectedOrder, window.Confidence = validatedIVTCOrder(window.TFFProgressiveRatio, window.BFFProgressiveRatio)
 		validation.Windows = append(validation.Windows, window)
-		validation.TFFProgressive += tff.Progressive
-		validation.TFFClassified += tffClassified
-		validation.BFFProgressive += bff.Progressive
-		validation.BFFClassified += bffClassified
+		validation.TFFProgressive += window.TFFProgressive
+		validation.TFFClassified += window.TFFClassified
+		validation.BFFProgressive += window.BFFProgressive
+		validation.BFFClassified += window.BFFClassified
 	}
-	if validation.TFFClassified == 0 || validation.BFFClassified == 0 {
-		return
+	return nil
+}
+
+func compareIVTCWindow(ctx context.Context, path string, start float64, seconds int, run ivtcWindowRunner) (IVTCWindowValidation, error) {
+	window := IVTCWindowValidation{Start: start, Outcome: ivtcWindowOutcomeInconclusive}
+	tff, tffOK := run(ctx, path, start, seconds, "fieldmatch=order=tff,decimate,idet")
+	if err := ctx.Err(); err != nil {
+		return window, err
 	}
-	validation.TFFProgressiveRatio = float64(validation.TFFProgressive) / float64(validation.TFFClassified)
-	validation.BFFProgressiveRatio = float64(validation.BFFProgressive) / float64(validation.BFFClassified)
-	for _, window := range validation.Windows {
-		if window.SelectedOrder != "" {
-			validation.ValidatedWindows++
-		}
+	bff, bffOK := run(ctx, path, start, seconds, "fieldmatch=order=bff,decimate,idet")
+	if err := ctx.Err(); err != nil {
+		return window, err
+	}
+	if !tffOK || !bffOK {
+		window.Reason = "TFF/BFF comparison did not produce parseable idet evidence"
+		return window, nil
+	}
+	window.TFFProgressive = tff.Progressive
+	window.TFFClassified = tff.TFF + tff.BFF + tff.Progressive
+	window.BFFProgressive = bff.Progressive
+	window.BFFClassified = bff.TFF + bff.BFF + bff.Progressive
+	if window.TFFClassified == 0 || window.BFFClassified == 0 {
+		window.Reason = "TFF/BFF comparison produced no classified frames"
+		return window, nil
+	}
+	window.TFFProgressiveRatio = float64(window.TFFProgressive) / float64(window.TFFClassified)
+	window.BFFProgressiveRatio = float64(window.BFFProgressive) / float64(window.BFFClassified)
+	window.SelectedOrder, window.Confidence = validatedIVTCOrder(window.TFFProgressiveRatio, window.BFFProgressiveRatio)
+	if window.SelectedOrder == "" {
+		window.Reason = "per-window evidence did not meet the existing confidence and margin thresholds"
+		return window, nil
+	}
+	window.Outcome = ivtcWindowOutcomeValid
+	return window, nil
+}
+
+func finalizeIVTCValidation(analysis *InterlaceAnalysis, validation *IVTCValidation) {
+	validation.AttemptedWindows = len(validation.Windows)
+	if validation.TFFClassified > 0 {
+		validation.TFFProgressiveRatio = float64(validation.TFFProgressive) / float64(validation.TFFClassified)
+	}
+	if validation.BFFClassified > 0 {
+		validation.BFFProgressiveRatio = float64(validation.BFFProgressive) / float64(validation.BFFClassified)
 	}
 	applyIVTCValidation(analysis, validation)
 	analysis.IVTCValidation = validation
+}
+
+type ivtcAdditionalWindow struct {
+	Start          float64
+	Seconds        int
+	SelectionBasis string
+	priority       int
+}
+
+func selectDeepIVTCAdditionalWindows(analysis InterlaceAnalysis, plan SamplingPlan, maximum int) []ivtcAdditionalWindow {
+	maximum = min(maximum, ivtcDeepMaximumExtraWindows)
+	if maximum <= 0 || analysis.IVTCValidation == nil {
+		return nil
+	}
+	seconds := max(1, analysis.IVTCValidation.WindowSeconds)
+	if analysis.IVTCValidation.WindowSeconds <= 0 {
+		seconds = max(1, analysis.WindowSeconds)
+	}
+	used := make([]float64, 0, len(analysis.IVTCValidation.Windows))
+	for _, window := range analysis.IVTCValidation.Windows {
+		used = append(used, window.Start)
+	}
+	candidates := make([]ivtcAdditionalWindow, 0, len(plan.SelectedWindows)+len(analysis.SampledAt)+len(plan.Positions))
+	add := func(start, windowSeconds float64, basis string, priority int) {
+		if start < 0 || (plan.AssetDurationSeconds > 0 && start+windowSeconds > plan.AssetDurationSeconds) {
+			return
+		}
+		for _, existing := range used {
+			if math.Abs(existing-start) < 0.5 {
+				return
+			}
+		}
+		for _, existing := range candidates {
+			if math.Abs(existing.Start-start) < 0.5 {
+				if priority < existing.priority {
+					existing.priority = priority
+					existing.SelectionBasis = basis
+				}
+				return
+			}
+		}
+		candidates = append(candidates, ivtcAdditionalWindow{Start: start, Seconds: max(1, int(math.Round(windowSeconds))), SelectionBasis: basis, priority: priority})
+	}
+	for _, window := range plan.SelectedWindows {
+		basis, priority := "canonical_sampling_plan", 3
+		switch {
+		case containsSamplingString(window.Roles, SamplingRoleHighMotion):
+			basis, priority = "existing_high_motion_sampling_evidence", 0
+		case containsSamplingString(window.Roles, SamplingRoleHighComplexity) || containsSamplingString(window.Roles, SamplingRoleWorstPredicted) || containsSamplingString(window.Roles, SamplingRoleHighTextureOrGrain):
+			basis, priority = "existing_high_value_sampling_evidence", 2
+		}
+		add(window.StartSeconds, window.DurationSeconds, basis, priority)
+	}
+	for _, window := range analysis.Windows {
+		basis, priority := "existing_distributed_interlace_sample", 3
+		cadence := strings.ToLower(strings.TrimSpace(window.FrameSignals.Cadence))
+		if window.FrameSignals.RepeatPictFrames > 0 || strings.Contains(cadence, "telecine") || strings.Contains(cadence, "mixed") || window.FrameSignals.InterlacedFrames > 0 {
+			basis, priority = "existing_temporal_cadence_evidence", 1
+		}
+		add(window.Start, float64(max(1, window.Seconds)), basis, priority)
+	}
+	for _, start := range analysis.SampledAt {
+		add(start, float64(seconds), "existing_distributed_interlace_sample", 3)
+	}
+	for _, window := range plan.windows(float64(seconds)) {
+		add(window.StartSeconds, window.DurationSeconds, "distributed_canonical_fallback", 4)
+	}
+
+	selected := make([]ivtcAdditionalWindow, 0, maximum)
+	for len(selected) < maximum && len(candidates) > 0 {
+		best := 0
+		bestDistance := -1.0
+		for index, candidate := range candidates {
+			distance := math.MaxFloat64
+			for _, start := range used {
+				if current := math.Abs(candidate.Start - start); current < distance {
+					distance = current
+				}
+			}
+			if len(used) == 0 {
+				distance = candidate.Start
+			}
+			if candidate.priority < candidates[best].priority || (candidate.priority == candidates[best].priority && distance > bestDistance) {
+				best, bestDistance = index, distance
+			}
+		}
+		chosen := candidates[best]
+		selected = append(selected, chosen)
+		used = append(used, chosen.Start)
+		candidates = append(candidates[:best], candidates[best+1:]...)
+	}
+	sort.Slice(selected, func(i, j int) bool { return selected[i].Start < selected[j].Start })
+	return selected
+}
+
+func extendIVTCValidationContext(ctx context.Context, path string, analysis *InterlaceAnalysis, plan SamplingPlan, identity *IVTCSourceIdentity, run ivtcWindowRunner, progress ...func(completed, total int)) error {
+	if analysis == nil || analysis.IVTCValidation == nil || len(analysis.IVTCValidation.Windows) < 3 {
+		return fmt.Errorf("deep cadence analysis requires the existing three IVTC windows")
+	}
+	if analysis.IVTCValidation.DeepAnalysisVersion == ivtcDeepEvidenceVersion {
+		return fmt.Errorf("deep cadence analysis is already current for this snapshot")
+	}
+	additional := selectDeepIVTCAdditionalWindows(*analysis, plan, ivtcDeepMaximumExtraWindows)
+	if len(additional) == 0 {
+		return fmt.Errorf("deep cadence analysis has no unused sampling windows")
+	}
+	validation := *analysis.IVTCValidation
+	validation.Windows = append([]IVTCWindowValidation(nil), validation.Windows...)
+	validation.DeepAnalysisVersion = ivtcDeepEvidenceVersion
+	validation.SourceIdentity = identity
+	validation.BaselineWindowCount = len(validation.Windows)
+	if validation.DurationSeconds <= 0 {
+		validation.DurationSeconds = plan.AssetDurationSeconds
+	}
+	if validation.WindowSeconds <= 0 {
+		validation.WindowSeconds = analysis.WindowSeconds
+	}
+	for index, candidate := range additional {
+		window, err := compareIVTCWindow(ctx, path, candidate.Start, candidate.Seconds, run)
+		if err != nil {
+			return err
+		}
+		window.SelectionBasis = candidate.SelectionBasis
+		validation.Windows = append(validation.Windows, window)
+		validation.TFFProgressive += window.TFFProgressive
+		validation.TFFClassified += window.TFFClassified
+		validation.BFFProgressive += window.BFFProgressive
+		validation.BFFClassified += window.BFFClassified
+		if len(progress) > 0 && progress[0] != nil {
+			progress[0](index+1, len(additional))
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	finalizeIVTCValidation(analysis, &validation)
+	return nil
+}
+
+func resetStaleDeepIVTCEvidence(analysis *InterlaceAnalysis) bool {
+	if analysis == nil || analysis.IVTCValidation == nil {
+		return false
+	}
+	validation := analysis.IVTCValidation
+	baselineCount := validation.BaselineWindowCount
+	if validation.DeepAnalysisVersion != ivtcDeepEvidenceVersion || baselineCount < 3 || baselineCount > len(validation.Windows) {
+		return false
+	}
+	validation.Windows = append([]IVTCWindowValidation(nil), validation.Windows[:baselineCount]...)
+	validation.DeepAnalysisVersion = 0
+	validation.DeepAnalysisStatus = "stale"
+	validation.EvidenceSnapshotUpdatedAt = ""
+	validation.SourceFrameRate = ""
+	validation.ExpectedOutputFrameRate = ""
+	validation.SourceIdentity = nil
+	validation.BaselineWindowCount = 0
+	validation.TFFProgressive, validation.TFFClassified = 0, 0
+	validation.BFFProgressive, validation.BFFClassified = 0, 0
+	for _, window := range validation.Windows {
+		validation.TFFProgressive += window.TFFProgressive
+		validation.TFFClassified += window.TFFClassified
+		validation.BFFProgressive += window.BFFProgressive
+		validation.BFFClassified += window.BFFClassified
+	}
+	if validation.TFFClassified > 0 {
+		validation.TFFProgressiveRatio = float64(validation.TFFProgressive) / float64(validation.TFFClassified)
+	} else {
+		validation.TFFProgressiveRatio = 0
+	}
+	if validation.BFFClassified > 0 {
+		validation.BFFProgressiveRatio = float64(validation.BFFProgressive) / float64(validation.BFFClassified)
+	} else {
+		validation.BFFProgressiveRatio = 0
+	}
+	analysis.Status = "telecine_suspected"
+	analysis.FieldOrder = ""
+	analysis.DetectedFieldOrder = ""
+	analysis.FieldOrderMismatch = false
+	analysis.RecommendedMode = ""
+	analysis.RecommendedAction = "review"
+	analysis.RecommendedFieldMetadataMode = ""
+	analysis.RecommendedFilter = ""
+	analysis.AutomaticFilter = ""
+	analysis.DecisionReason = "deep IVTC evidence is stale for this snapshot revision"
+	finalizeIVTCValidation(analysis, validation)
+	return true
 }
 
 func validationStarts(sampled []float64, duration float64, seconds int) []float64 {
@@ -580,8 +837,12 @@ func validatedIVTCOrder(tffRatio, bffRatio float64) (string, float64) {
 func applyIVTCValidation(analysis *InterlaceAnalysis, validation *IVTCValidation) {
 	selected, best := validatedIVTCOrder(validation.TFFProgressiveRatio, validation.BFFProgressiveRatio)
 	validation.Confidence = best
-	if selected != "" && ivtcWindowsAgree(validation, selected) {
+	classifyIVTCValidationWindows(validation, selected)
+	if selected != "" && ivtcWindowsAgree(validation, selected) && (validation.DeepAnalysisVersion == 0 || deepIVTCWindowsSufficient(validation, selected)) {
 		validation.SelectedOrder = selected
+		if validation.DeepAnalysisVersion > 0 {
+			validation.DeepAnalysisStatus = "resolved"
+		}
 		analysis.Status = "telecine"
 		analysis.Confidence = best
 		analysis.DetectedFieldOrder = selected
@@ -594,7 +855,78 @@ func applyIVTCValidation(analysis *InterlaceAnalysis, validation *IVTCValidation
 		analysis.RecommendedFieldMetadataMode = "progressive"
 		analysis.RecommendedFilter = "fieldmatch=order=" + selected + ":combmatch=full,bwdif=mode=send_frame:parity=" + selected + ":deint=interlaced,decimate,setfield=prog"
 		analysis.AutomaticFilter = analysis.RecommendedFilter
+		return
 	}
+	validation.SelectedOrder = ""
+	if validation.DeepAnalysisVersion > 0 {
+		validation.DeepAnalysisStatus = "review_required"
+		analysis.Status = "telecine_suspected"
+		analysis.DetectedFieldOrder = ""
+		analysis.FieldOrderMismatch = false
+		analysis.RecommendedMode = ""
+		analysis.RecommendedAction = "review"
+		analysis.RecommendedFieldMetadataMode = ""
+		analysis.RecommendedFilter = ""
+		analysis.AutomaticFilter = ""
+		analysis.DecisionReason = "deep IVTC evidence remained insufficient or contradictory"
+	}
+}
+
+func classifyIVTCValidationWindows(validation *IVTCValidation, selected string) {
+	validation.ValidatedWindows = 0
+	validation.ValidWindows = 0
+	validation.InconclusiveWindows = 0
+	validation.ContradictoryWindows = 0
+	orders := map[string]bool{}
+	for _, window := range validation.Windows {
+		if window.SelectedOrder != "" {
+			orders[window.SelectedOrder] = true
+		}
+	}
+	for index := range validation.Windows {
+		window := &validation.Windows[index]
+		switch {
+		case window.SelectedOrder == "":
+			window.Outcome = ivtcWindowOutcomeInconclusive
+			validation.InconclusiveWindows++
+		case selected != "" && window.SelectedOrder != selected:
+			window.Outcome = ivtcWindowOutcomeContradictory
+			window.Reason = "confident per-window order contradicts the aggregate order"
+			validation.ValidatedWindows++
+			validation.ContradictoryWindows++
+		case selected == "" && len(orders) > 1:
+			window.Outcome = ivtcWindowOutcomeContradictory
+			window.Reason = "confident windows selected different field orders"
+			validation.ValidatedWindows++
+			validation.ContradictoryWindows++
+		default:
+			window.Outcome = ivtcWindowOutcomeValid
+			window.Reason = ""
+			validation.ValidWindows++
+			validation.ValidatedWindows++
+		}
+	}
+}
+
+func deepIVTCWindowsSufficient(validation *IVTCValidation, selected string) bool {
+	if validation == nil || validation.DeepAnalysisVersion != ivtcDeepEvidenceVersion || validation.ValidWindows < ivtcDeepMinimumValidWindows || validation.ContradictoryWindows > 0 {
+		return false
+	}
+	starts := make([]float64, 0, validation.ValidatedWindows)
+	for _, window := range validation.Windows {
+		if window.SelectedOrder == selected && window.Outcome == ivtcWindowOutcomeValid {
+			starts = append(starts, window.Start)
+		}
+	}
+	if len(starts) < ivtcDeepMinimumValidWindows {
+		return false
+	}
+	sort.Float64s(starts)
+	minimumSpan := float64(max(1, validation.WindowSeconds) * 2)
+	if validation.DurationSeconds > 0 && validation.DurationSeconds*0.4 > minimumSpan {
+		minimumSpan = validation.DurationSeconds * 0.4
+	}
+	return starts[len(starts)-1]-starts[0] >= minimumSpan
 }
 
 func ivtcWindowsAgree(validation *IVTCValidation, selected string) bool {

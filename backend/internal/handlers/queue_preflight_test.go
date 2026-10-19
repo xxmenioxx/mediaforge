@@ -934,6 +934,11 @@ func TestSingleQueuePreflightAcceptsValidatedJob2191IVTCOrder(t *testing.T) {
 	profile.WorkerConfig["cadenceMode"] = "auto"
 	profile.WorkerConfig["cadenceFieldOrder"] = "auto"
 	profile.WorkerConfig["fieldStructureMode"] = "preserve"
+	profile.WorkerConfig["hevcLevelMode"] = "auto"
+	profile.WorkerConfig["hevcLevelEffective"] = "5.1"
+	profile.WorkerConfig["hevcLevelTier"] = "high"
+	profile.WorkerConfig["hevcLevelResolutionState"] = hevcLevelResolutionResolved
+	profile.WorkerConfig["hevcLevelInputFingerprint"] = "historical-unresolved-rate"
 	if err := fixture.db.Save(&profile).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -943,15 +948,52 @@ func TestSingleQueuePreflightAcceptsValidatedJob2191IVTCOrder(t *testing.T) {
 	}
 	validated := job2191AmbiguousIVTCScanResult(t, fixture.paths[0])
 	validated.ID = scan.ID
+	info, err := os.Stat(fixture.paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := ivtcSourceIdentityForSnapshot(fixture.db, scan, fixture.paths[0], info)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var interlace InterlaceAnalysis
 	encoded, err := json.Marshal(validated.InterlaceAnalysis)
 	if err != nil || json.Unmarshal(encoded, &interlace) != nil {
 		t.Fatalf("decode synthetic IVTC evidence: %v", err)
 	}
+	interlace.Status = "telecine"
+	interlace.FieldOrder = "tff"
+	interlace.DetectedFieldOrder = "tff"
+	interlace.RecommendedMode = "ivtc_tff"
+	interlace.RecommendedAction = "ivtc"
+	interlace.IVTCValidation.DeepAnalysisVersion = ivtcDeepEvidenceVersion
+	interlace.IVTCValidation.DeepAnalysisStatus = "resolved"
+	interlace.IVTCValidation.SourceIdentity = identity
+	evidenceUpdatedAt := time.Now().UTC()
+	interlace.IVTCValidation.EvidenceSnapshotUpdatedAt = evidenceUpdatedAt.Format(time.RFC3339Nano)
+	interlace.IVTCValidation.SourceFrameRate = "30000/1001"
+	interlace.IVTCValidation.ExpectedOutputFrameRate = "24000/1001"
+	interlace.IVTCValidation.DurationSeconds = 90
+	interlace.IVTCValidation.WindowSeconds = 5
+	interlace.IVTCValidation.BaselineWindowCount = 3
+	interlace.IVTCValidation.AttemptedWindows = 5
+	interlace.IVTCValidation.InconclusiveWindows = 2
 	interlace.IVTCValidation.ValidatedWindows = 3
+	interlace.IVTCValidation.ValidWindows = 3
 	interlace.IVTCValidation.SelectedOrder = "tff"
-	for index := range interlace.IVTCValidation.Windows {
-		interlace.IVTCValidation.Windows[index].SelectedOrder = "tff"
+	interlace.IVTCValidation.Windows[0].SelectedOrder = "tff"
+	interlace.IVTCValidation.Windows[0].Outcome = ivtcWindowOutcomeValid
+	interlace.IVTCValidation.Windows[0].Confidence = .96
+	interlace.IVTCValidation.Windows[1].Outcome = ivtcWindowOutcomeInconclusive
+	interlace.IVTCValidation.Windows[2].Outcome = ivtcWindowOutcomeInconclusive
+	interlace.IVTCValidation.Windows = append(interlace.IVTCValidation.Windows,
+		IVTCWindowValidation{Start: 15, SelectedOrder: "tff", Outcome: ivtcWindowOutcomeValid, Confidence: .96},
+		IVTCWindowValidation{Start: 45, SelectedOrder: "tff", Outcome: ivtcWindowOutcomeValid, Confidence: .96},
+	)
+	for _, window := range interlace.IVTCValidation.Windows {
+		if window.Outcome == ivtcWindowOutcomeValid && window.SelectedOrder != "tff" {
+			t.Fatalf("deep fixture has conflicting IVTC evidence: %#v", window)
+		}
 	}
 	interlaceBytes, err := json.Marshal(interlace)
 	if err != nil {
@@ -960,8 +1002,26 @@ func TestSingleQueuePreflightAcceptsValidatedJob2191IVTCOrder(t *testing.T) {
 	if err := json.Unmarshal(interlaceBytes, &validated.InterlaceAnalysis); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.db.Save(&validated).Error; err != nil {
+	if err := fixture.db.Model(&models.ScanResult{}).Where("id = ?", validated.ID).Updates(map[string]any{
+		"interlace_analysis":     validated.InterlaceAnalysis,
+		"cadence_analysis":       validated.CadenceAnalysis,
+		"cadence_recommendation": validated.CadenceRecommendation,
+		"updated_at":             evidenceUpdatedAt,
+	}).Error; err != nil {
 		t.Fatal(err)
+	}
+	var persistedDeep models.ScanResult
+	if err := fixture.db.Where("id = ?", validated.ID).First(&persistedDeep).Error; err != nil {
+		t.Fatal(err)
+	}
+	var persistedInterlace InterlaceAnalysis
+	if !decodeJSONValue(persistedDeep.InterlaceAnalysis, &persistedInterlace) || !deepCadenceIdentityCurrent(fixture.db, persistedDeep, fixture.paths[0], info, persistedInterlace.IVTCValidation.SourceIdentity) || persistedInterlace.IVTCValidation.EvidenceSnapshotUpdatedAt != persistedDeep.UpdatedAt.UTC().Format(time.RFC3339Nano) {
+		device, inode, stable := filesystemDeviceInode(info)
+		identityCurrent := deepCadenceIdentityCurrent(fixture.db, persistedDeep, fixture.paths[0], info, persistedInterlace.IVTCValidation.SourceIdentity)
+		identityInfoMatches := ivtcSourceIdentityMatchesInfo(persistedInterlace.IVTCValidation.SourceIdentity, fixture.paths[0], info, persistedDeep.ID)
+		var asset models.AssetRecord
+		assetErr := fixture.db.Where("path = ?", filepath.Clean(fixture.paths[0])).First(&asset).Error
+		t.Fatalf("synthetic deep evidence identity fence is invalid: identityCurrent=%v infoMatches=%v table=%v assetErr=%v evidenceUpdatedAt=%q snapshotUpdatedAt=%q scanId=%d identity=%#v stat=(%d,%d,%v,size=%d,mode=%d) assetId=%d", identityCurrent, identityInfoMatches, fixture.db.Migrator().HasTable(&models.AssetRecord{}), assetErr, persistedInterlace.IVTCValidation.EvidenceSnapshotUpdatedAt, persistedDeep.UpdatedAt.UTC().Format(time.RFC3339Nano), persistedDeep.ID, persistedInterlace.IVTCValidation.SourceIdentity, device, inode, stable, info.Size(), uint32(info.Mode()), asset.ID)
 	}
 	created := queuePreflightRequest(t, queuePreflightRouter(fixture.db), http.MethodPost, "/preflights", queuePreflightInput(fixture, "validated IVTC"))
 	if created.Code != http.StatusCreated {
@@ -972,7 +1032,10 @@ func TestSingleQueuePreflightAcceptsValidatedJob2191IVTCOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(candidate.Assets) != 1 || candidate.Assets[0].Status != queuePreflightReady || candidate.Assets[0].Plan == nil {
-		t.Fatalf("validated IVTC order should resolve without manual review: %#v", candidate.Assets)
+		t.Fatalf("validated IVTC order should resolve without manual review: assets=%#v cadenceReview=%#v", candidate.Assets, candidate.Assets[0].CadenceReview)
+	}
+	if review := candidate.Assets[0].CadenceReview; review == nil || review.DeepAnalysisVersion != ivtcDeepEvidenceVersion || review.DeepAnalysisStatus != "resolved" || review.SourceFrameRate != "30000/1001" || review.ExpectedOutputFrameRate != "24000/1001" || review.ValidatedWindows != 3 || review.AttemptedWindows != 5 {
+		t.Fatalf("resolved cadence evidence was not exposed for review: %#v", review)
 	}
 	profile, err = scheduler.RestoreProfileSnapshot(candidate.Assets[0].Plan.ProfileSnapshot)
 	if err != nil {
@@ -980,6 +1043,25 @@ func TestSingleQueuePreflightAcceptsValidatedJob2191IVTCOrder(t *testing.T) {
 	}
 	if got := workerStringValue(profile.WorkerConfig["effectiveCadenceFieldOrder"]); got != "tff" {
 		t.Fatalf("validated order was not frozen: %q", got)
+	}
+	if got := workerStringValue(profile.WorkerConfig["effectiveOutputFrameRate"]); got != "24000/1001" || profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) {
+		t.Fatalf("deep IVTC did not resolve the canonical output FPS: rate=%q unknown=%v", got, profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false))
+	}
+	if got := workerStringValue(profile.WorkerConfig["hevcLevelResolutionState"]); got != hevcLevelResolutionResolved {
+		t.Fatalf("HEVC Level/Tier remained unresolved after deep cadence resolution: %q", got)
+	}
+	if got := workerStringValue(profile.WorkerConfig["hevcLevelInputFingerprint"]); got == "historical-unresolved-rate" || got == "" {
+		t.Fatalf("HEVC Level/Tier reused a stale input fingerprint after FPS resolution: %q", got)
+	}
+	accepted := queuePreflightRequest(t, queuePreflightRouter(fixture.db), http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{
+		"revision": candidate.Revision, "assetIds": []string{candidate.Assets[0].ID},
+	})
+	if accepted.Code != http.StatusCreated {
+		t.Fatalf("accept current deep cadence evidence status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	var queued int64
+	if err := fixture.db.Model(&models.QueueJob{}).Count(&queued).Error; err != nil || queued != 1 {
+		t.Fatalf("deep cadence acceptance did not create exactly one Queue intent: count=%d err=%v", queued, err)
 	}
 }
 

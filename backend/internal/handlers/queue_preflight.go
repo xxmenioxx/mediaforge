@@ -29,6 +29,38 @@ const (
 
 var errQueueBatchPreflightConflict = errors.New("Queue Preflight candidate revision changed or candidate is terminal")
 
+func revalidateAcceptedDeepCadenceEvidence(tx *gorm.DB, job models.QueueJob) error {
+	interlace, ok := decodeInterlaceAnalysis(job.ProfileSnapshot[interlaceAnalysisSnapshotKey])
+	if !ok || interlace.IVTCValidation == nil || interlace.IVTCValidation.DeepAnalysisVersion == 0 {
+		return nil
+	}
+	validation := interlace.IVTCValidation
+	identity := validation.SourceIdentity
+	if validation.DeepAnalysisStatus != "resolved" || validation.SelectedOrder == "" || identity == nil || validation.EvidenceSnapshotUpdatedAt == "" {
+		return fmt.Errorf("deep cadence evidence is unresolved; resolve Queue Preflight again")
+	}
+	info, err := os.Stat(job.MediaPath)
+	if err != nil {
+		return fmt.Errorf("deep cadence source is unavailable; resolve Queue Preflight again")
+	}
+	var latest models.ScanResult
+	if err := tx.Where("path = ?", filepath.Clean(job.MediaPath)).Order("updated_at desc, id desc").First(&latest).Error; err != nil || latest.ID != identity.SnapshotID || latest.UpdatedAt.UTC().Format(time.RFC3339Nano) != validation.EvidenceSnapshotUpdatedAt {
+		return fmt.Errorf("deep cadence snapshot changed after Queue Preflight; resolve the candidate again")
+	}
+	if !deepCadenceIdentityCurrent(tx, latest, job.MediaPath, info, identity) {
+		return fmt.Errorf("deep cadence physical source identity changed after Queue Preflight; resolve the candidate again")
+	}
+	if identity.AssetRecordID > 0 && (job.SourceAssetRecordID == nil || *job.SourceAssetRecordID != identity.AssetRecordID) {
+		return fmt.Errorf("deep cadence asset identity changed after Queue Preflight; resolve the candidate again")
+	}
+	current, ok := decodeInterlaceAnalysis(latest.InterlaceAnalysis)
+	if !ok || current.IVTCValidation == nil || current.IVTCValidation.DeepAnalysisVersion != ivtcDeepEvidenceVersion ||
+		current.IVTCValidation.SelectedOrder != validation.SelectedOrder || current.IVTCValidation.SourceIdentity == nil || *current.IVTCValidation.SourceIdentity != *identity {
+		return fmt.Errorf("deep cadence evidence changed after Queue Preflight; resolve the candidate again")
+	}
+	return nil
+}
+
 func queuePreflightCadenceReview(profile models.Profile, snapshot models.JSONMap) *QueueBatchPreflightCadenceReview {
 	interlace, _ := decodeInterlaceAnalysis(snapshot[interlaceAnalysisSnapshotKey])
 	cadence, _ := decodeCadenceAnalysis(snapshot[cadenceAnalysisSnapshotKey])
@@ -45,11 +77,55 @@ func queuePreflightCadenceReview(profile models.Profile, snapshot models.JSONMap
 		HEVCLevelResolutionWarning:      workerStringValue(profile.WorkerConfig["hevcLevelResolutionWarning"]),
 		HEVCLevelEffective:              workerStringValue(profile.WorkerConfig["hevcLevelEffective"]),
 		HEVCLevelTier:                   workerStringValue(profile.WorkerConfig["hevcLevelTier"]),
+		DeepAnalysisStatus:              "not_run",
 	}
 	if interlace.IVTCValidation != nil {
 		review.ValidatedSelectedOrder = strings.ToLower(strings.TrimSpace(interlace.IVTCValidation.SelectedOrder))
+		review.ValidWindows = interlace.IVTCValidation.ValidWindows
 		review.ValidatedWindows = interlace.IVTCValidation.ValidatedWindows
 		review.ObservedWindows = len(interlace.IVTCValidation.Windows)
+		review.AttemptedWindows = interlace.IVTCValidation.AttemptedWindows
+		if review.AttemptedWindows == 0 {
+			review.AttemptedWindows = review.ObservedWindows
+		}
+		review.InconclusiveWindows = interlace.IVTCValidation.InconclusiveWindows
+		review.ContradictoryWindows = interlace.IVTCValidation.ContradictoryWindows
+		if interlace.IVTCValidation.DeepAnalysisVersion > 0 {
+			review.DeepAnalysisVersion = interlace.IVTCValidation.DeepAnalysisVersion
+			review.DeepAnalysisStatus = interlace.IVTCValidation.DeepAnalysisStatus
+			review.SourceFrameRate = interlace.IVTCValidation.SourceFrameRate
+			review.ExpectedOutputFrameRate = interlace.IVTCValidation.ExpectedOutputFrameRate
+		}
+		for _, window := range interlace.IVTCValidation.Windows {
+			outcome := window.Outcome
+			if outcome == "" {
+				switch {
+				case window.SelectedOrder == "":
+					outcome = ivtcWindowOutcomeInconclusive
+				case review.ValidatedSelectedOrder != "" && window.SelectedOrder != review.ValidatedSelectedOrder:
+					outcome = ivtcWindowOutcomeContradictory
+				default:
+					outcome = ivtcWindowOutcomeValid
+				}
+			}
+			review.Windows = append(review.Windows, QueueBatchPreflightCadenceWindow{
+				Start: window.Start, Outcome: outcome, Reason: window.Reason,
+				SelectionBasis: window.SelectionBasis, SelectedOrder: window.SelectedOrder,
+				TFFProgressiveRatio: window.TFFProgressiveRatio, BFFProgressiveRatio: window.BFFProgressiveRatio,
+				Confidence: window.Confidence,
+			})
+			if interlace.IVTCValidation.InconclusiveWindows == 0 && outcome == ivtcWindowOutcomeInconclusive {
+				review.InconclusiveWindows++
+			}
+			if interlace.IVTCValidation.ValidWindows == 0 && outcome == ivtcWindowOutcomeValid {
+				review.ValidWindows++
+			}
+			if interlace.IVTCValidation.ContradictoryWindows == 0 && outcome == ivtcWindowOutcomeContradictory {
+				review.ContradictoryWindows++
+			}
+		}
+		review.DeepAnalysisAvailable = review.ObservedWindows >= 3 && review.ObservedWindows < 5 && interlace.IVTCValidation.DeepAnalysisVersion == 0 ||
+			interlace.IVTCValidation.DeepAnalysisVersion == ivtcDeepEvidenceVersion && interlace.IVTCValidation.DeepAnalysisStatus == "stale" && interlace.IVTCValidation.BaselineWindowCount >= 3
 	}
 	if review.CadenceType == "" && review.RecommendedOperation == "" && review.ReportedFieldOrder == "" {
 		return nil
@@ -159,20 +235,41 @@ type queueBatchPreflightAsset struct {
 }
 
 type QueueBatchPreflightCadenceReview struct {
-	CadenceType                     string `json:"cadenceType,omitempty"`
-	DeclaredFrameRate               string `json:"declaredFrameRate,omitempty"`
-	RecommendedOperation            string `json:"recommendedOperation,omitempty"`
-	RecommendedFrameRate            string `json:"recommendedFrameRate,omitempty"`
-	ReportedFieldOrder              string `json:"reportedFieldOrder,omitempty"`
-	ValidatedSelectedOrder          string `json:"validatedSelectedOrder,omitempty"`
-	ValidatedWindows                int    `json:"validatedWindows"`
-	ObservedWindows                 int    `json:"observedWindows"`
-	EffectiveOutputFrameRate        string `json:"effectiveOutputFrameRate,omitempty"`
-	EffectiveOutputFrameRateUnknown bool   `json:"effectiveOutputFrameRateUnknown"`
-	HEVCLevelResolutionState        string `json:"hevcLevelResolutionState,omitempty"`
-	HEVCLevelResolutionWarning      string `json:"hevcLevelResolutionWarning,omitempty"`
-	HEVCLevelEffective              string `json:"hevcLevelEffective,omitempty"`
-	HEVCLevelTier                   string `json:"hevcLevelTier,omitempty"`
+	CadenceType                     string                             `json:"cadenceType,omitempty"`
+	DeclaredFrameRate               string                             `json:"declaredFrameRate,omitempty"`
+	RecommendedOperation            string                             `json:"recommendedOperation,omitempty"`
+	RecommendedFrameRate            string                             `json:"recommendedFrameRate,omitempty"`
+	ReportedFieldOrder              string                             `json:"reportedFieldOrder,omitempty"`
+	ValidatedSelectedOrder          string                             `json:"validatedSelectedOrder,omitempty"`
+	ValidatedWindows                int                                `json:"validatedWindows"`
+	ValidWindows                    int                                `json:"validWindows"`
+	ObservedWindows                 int                                `json:"observedWindows"`
+	EffectiveOutputFrameRate        string                             `json:"effectiveOutputFrameRate,omitempty"`
+	EffectiveOutputFrameRateUnknown bool                               `json:"effectiveOutputFrameRateUnknown"`
+	HEVCLevelResolutionState        string                             `json:"hevcLevelResolutionState,omitempty"`
+	HEVCLevelResolutionWarning      string                             `json:"hevcLevelResolutionWarning,omitempty"`
+	HEVCLevelEffective              string                             `json:"hevcLevelEffective,omitempty"`
+	HEVCLevelTier                   string                             `json:"hevcLevelTier,omitempty"`
+	DeepAnalysisAvailable           bool                               `json:"deepAnalysisAvailable"`
+	DeepAnalysisVersion             int                                `json:"deepAnalysisVersion,omitempty"`
+	DeepAnalysisStatus              string                             `json:"deepAnalysisStatus"`
+	SourceFrameRate                 string                             `json:"sourceFrameRate,omitempty"`
+	ExpectedOutputFrameRate         string                             `json:"expectedOutputFrameRate,omitempty"`
+	AttemptedWindows                int                                `json:"attemptedWindows"`
+	InconclusiveWindows             int                                `json:"inconclusiveWindows"`
+	ContradictoryWindows            int                                `json:"contradictoryWindows"`
+	Windows                         []QueueBatchPreflightCadenceWindow `json:"windows,omitempty"`
+}
+
+type QueueBatchPreflightCadenceWindow struct {
+	Start               float64 `json:"start"`
+	Outcome             string  `json:"outcome,omitempty"`
+	Reason              string  `json:"reason,omitempty"`
+	SelectionBasis      string  `json:"selectionBasis,omitempty"`
+	SelectedOrder       string  `json:"selectedOrder,omitempty"`
+	TFFProgressiveRatio float64 `json:"tffProgressiveRatio"`
+	BFFProgressiveRatio float64 `json:"bffProgressiveRatio"`
+	Confidence          float64 `json:"confidence"`
 }
 
 type QueueBatchPreflightPlan struct {
@@ -273,7 +370,10 @@ func queuePreflightResponse(record models.QueueBatchPreflight, state queueBatchP
 	for _, asset := range state.Assets {
 		reviewCode, cadenceReview := asset.ReviewCode, asset.CadenceReview
 		if asset.Status != queuePreflightRequiresReview {
-			reviewCode, cadenceReview = "", nil
+			reviewCode = ""
+			if cadenceReview == nil || cadenceReview.DeepAnalysisVersion == 0 {
+				cadenceReview = nil
+			}
 		}
 		item := QueueBatchPreflightAssetResponse{
 			ID: asset.ID, MediaPath: asset.MediaPath, AssetRecordID: asset.AssetRecordID,
@@ -1045,6 +1145,9 @@ func (h QueueHandler) resolveQueueBatchPreflight(input QueueBatchPreflightInput,
 		}
 		item.Status, item.ResolvedJob = queuePreflightReady, &job
 		item.ReviewCode, item.CadenceReview = "", nil
+		if cadenceReview := queuePreflightCadenceReview(profile, job.ProfileSnapshot); cadenceReview != nil && cadenceReview.DeepAnalysisVersion > 0 {
+			item.CadenceReview = cadenceReview
+		}
 		item.RuntimeProfile = runtime.SelectedProfile
 		state.Assets = append(state.Assets, item)
 	}
@@ -1216,6 +1319,9 @@ func (h QueueHandler) AcceptBatchPreflight(c *gin.Context) {
 				if err := tx.First(&source, *asset.AssetRecordID).Error; err != nil || filepath.Clean(source.Path) != filepath.Clean(asset.MediaPath) {
 					return fmt.Errorf("source asset identity changed after Batch Preflight for %s", asset.MediaPath)
 				}
+			}
+			if err := revalidateAcceptedDeepCadenceEvidence(tx, *asset.ResolvedJob); err != nil {
+				return err
 			}
 			if reviewForPath(filepath.Clean(asset.MediaPath), validation.reviews).RequiresReview {
 				return fmt.Errorf("asset now requires review: %s", asset.MediaPath)

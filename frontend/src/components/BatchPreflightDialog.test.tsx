@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
   getCandidate: vi.fn(),
   preview: vi.fn(),
   testEncode: vi.fn(),
+  startSnapshotOperation: vi.fn(),
+  snapshotOperation: vi.fn(),
+  cancelSnapshotOperation: vi.fn(),
   waitPreview: vi.fn(),
   previewURL: vi.fn(),
   open: vi.fn(),
@@ -30,6 +33,9 @@ vi.mock('../api/client', () => ({
     getQueueBatchPreflight: mocks.getCandidate,
     createCompatiblePreviewRequest: mocks.preview,
     createTestEncode: mocks.testEncode,
+    startSnapshotOperation: mocks.startSnapshotOperation,
+    snapshotOperation: mocks.snapshotOperation,
+    cancelSnapshotOperation: mocks.cancelSnapshotOperation,
     compatibleAssetPreviewUrl: mocks.previewURL,
   },
   waitForCompatiblePreviewReady: mocks.waitPreview,
@@ -178,7 +184,7 @@ describe('BatchPreflightDialog', () => {
     expect(await screen.findByText(/no explicit or validated field order/i)).toBeTruthy();
     expect(screen.getByText(/Detected hard_telecine at 30000\/1001/)).toBeTruthy();
     expect(screen.getByText(/reported stream field order: tt \(metadata only\)/i)).toBeTruthy();
-    expect(screen.getByText(/IVTC windows: 1\/3 validated/i)).toBeTruthy();
+    expect(screen.getByText(/IVTC windows: 1\/3 valid/i)).toBeTruthy();
     const acceptButton = screen.getByRole('button', { name: /Accept & Queue/ });
     expect(acceptButton.getAttribute('disabled')).not.toBeNull();
 
@@ -196,6 +202,39 @@ describe('BatchPreflightDialog', () => {
     expect(await screen.findAllByText(/Effective output FPS/)).not.toHaveLength(0);
     expect(screen.getByText('24000/1001')).toBeTruthy();
     expect(screen.getByText(/4\.1 main/)).toBeTruthy();
+  });
+
+  it('runs Deep Cadence Analysis, shows its window evidence, and re-resolves the candidate', async () => {
+    const base = candidate().assets[0];
+    const reviewAsset = {
+      ...base,
+      status: 'requires_review' as const,
+      reviewCode: 'ivtc_field_order_required',
+      cadenceReview: {
+        cadenceType: 'hard_telecine', declaredFrameRate: '30000/1001', recommendedOperation: 'inverse_telecine', recommendedFrameRate: '24000/1001',
+        reportedFieldOrder: 'tt', validatedSelectedOrder: '', validatedWindows: 1, observedWindows: 3,
+        effectiveOutputFrameRateUnknown: true, hevcLevelResolutionState: 'unresolved', deepAnalysisAvailable: true,
+        attemptedWindows: 3, inconclusiveWindows: 2, contradictoryWindows: 0,
+        windows: [{ start: 0, outcome: 'valid', selectionBasis: 'initial analysis', selectedOrder: 'tff', tffProgressiveRatio: 0.96, bffProgressiveRatio: 0.5, confidence: 0.96 }],
+      },
+      plan: undefined,
+      blockers: ['Automatic IVTC requires an explicit or validated field order.'],
+    };
+    const review = candidate({ assets: [reviewAsset] });
+    const resolved = candidate({ revision: 2, assets: [{ ...base, status: 'ready', cadenceReview: { ...reviewAsset.cadenceReview, deepAnalysisVersion: 1, deepAnalysisStatus: 'resolved', validatedSelectedOrder: 'tff', validatedWindows: 3, attemptedWindows: 5 } }] });
+    mocks.startSnapshotOperation.mockResolvedValue({ id: 'deep-1', assetPath: base.mediaPath, status: 'completed', phase: 'completed', progress: 100, message: 'Deep Cadence Analysis evidence saved', durationMs: 80, cacheHit: false, incrementalRefresh: true, deepCadence: true, createdAt: '', updatedAt: '' });
+    mocks.update.mockResolvedValue(resolved);
+    render(<BatchPreflightDialog candidate={review} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    expect(screen.getByText(/attempted 3, valid 1, inconclusive 2, contradictory 0/i)).toBeTruthy();
+    expect(screen.getByTestId('ivtc-window-evidence').textContent).toContain('initial analysis');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Run Deep Cadence Analysis' }));
+
+    await waitFor(() => expect(mocks.startSnapshotOperation).toHaveBeenCalledWith({ path: base.mediaPath, deepCadence: true }));
+    expect(mocks.update).toHaveBeenCalledWith('candidate-1', expect.objectContaining({ revision: 1, jobs: [expect.objectContaining({ mediaPath: base.mediaPath })] }));
+    expect(await screen.findByText('Deep Cadence Analysis evidence saved')).toBeTruthy();
+    expect(screen.getByText('Cadence analysis evidence')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Accept & Queue/ }).getAttribute('disabled')).toBeNull();
   });
 
   it('offers preserve cadence as an asset-scoped alternative and re-resolves its output FPS', async () => {

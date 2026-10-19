@@ -24,6 +24,7 @@ import type {
   QueueBatchPreflightInput,
   QueueBatchPreflightResponse,
   QueueJobInput,
+  SnapshotOperation,
 } from '../api/types';
 
 function recordText(record: Record<string, unknown>, key: string) {
@@ -143,6 +144,8 @@ export function BatchPreflightDialog({
   const [jobs, setJobs] = useState<QueueJobInput[]>(() => initialCandidate?.assets.filter((asset) => asset.status !== 'queued').map((asset) => ({ ...asset.input })) ?? []);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [deepOperation, setDeepOperation] = useState<SnapshotOperation | null>(null);
+  const [deepOperationPath, setDeepOperationPath] = useState('');
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const [editBaseline, setEditBaseline] = useState<{ batchName: string; jobs: QueueJobInput[] } | null>(null);
 
@@ -303,6 +306,43 @@ export function BatchPreflightDialog({
     } finally { setBusy(false); }
   };
 
+  const runDeepCadence = async (asset: QueueBatchPreflightAsset) => {
+    setBusy(true); setError('');
+    setDeepOperationPath(asset.mediaPath);
+    try {
+      let operation = await api.startSnapshotOperation({ path: asset.mediaPath, deepCadence: true });
+      setDeepOperation(operation);
+      while (operation.status === 'running') {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        operation = await api.snapshotOperation(operation.id);
+        setDeepOperation(operation);
+      }
+      if (operation.status === 'cancelled') return;
+      if (operation.status !== 'completed') throw new Error(operation.error || 'Deep Cadence Analysis did not complete.');
+      const refreshed = await api.updateQueueBatchPreflight(candidate.id, {
+        revision: candidate.revision,
+        batchId: candidate.batchId,
+        batchName: candidate.batchName,
+        jobs: candidate.assets.filter((item) => item.status !== 'queued').map((item) => ({ ...item.input })),
+      });
+      setCandidate(refreshed);
+      setJobs(refreshed.assets.filter((item) => item.status !== 'queued').map((item) => ({ ...item.input })));
+      setSelected(refreshed.assets.filter((item) => item.status === 'ready').map((item) => item.id));
+      setEditing(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally { setBusy(false); }
+  };
+
+  const cancelDeepCadence = async () => {
+    if (!deepOperation || deepOperation.status !== 'running') return;
+    try {
+      setDeepOperation(await api.cancelSnapshotOperation(deepOperation.id));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
   const openLab = (asset: QueueBatchPreflightAsset) => {
     const params = new URLSearchParams({ preflightCandidateId: candidate.id, preflightRevision: String(candidate.revision), assetId: asset.id });
     window.open(`/profile-lab?${params.toString()}`, '_blank', 'noopener,noreferrer');
@@ -400,18 +440,37 @@ export function BatchPreflightDialog({
             {asset.status === 'requires_review' && asset.reviewCode === 'ivtc_field_order_required' ? <Alert severity="warning">
               Automatic IVTC has no explicit or validated field order. Stream metadata alone does not select TFF/BFF. Use Edit to choose an order for this asset, resolve Preflight again, then review the resulting plan.
             </Alert> : null}
-            {asset.status === 'requires_review' && asset.cadenceReview ? <Alert severity="warning" data-testid="preflight-cadence-review">
+            {asset.cadenceReview && (asset.status === 'requires_review' || (asset.cadenceReview.deepAnalysisVersion ?? 0) > 0) ? <Alert severity={asset.status === 'requires_review' ? 'warning' : 'info'} data-testid="preflight-cadence-review">
               <Stack spacing={0.5}>
-                <Typography variant="subtitle2">Cadence review required before Queue</Typography>
+                <Typography variant="subtitle2">{asset.status === 'requires_review' ? 'Cadence review required before Queue' : 'Cadence analysis evidence'}</Typography>
                 <Typography variant="body2">
                   Detected {asset.cadenceReview.cadenceType || 'unknown cadence'} at {asset.cadenceReview.declaredFrameRate || 'unknown source FPS'}; recommended {asset.cadenceReview.recommendedOperation || 'review'}{asset.cadenceReview.recommendedFrameRate ? ` to ${asset.cadenceReview.recommendedFrameRate}` : ''}.
                 </Typography>
                 <Typography variant="body2">
-                  Reported stream field order: {asset.cadenceReview.reportedFieldOrder || 'unknown'} (metadata only). Validated SelectedOrder: {asset.cadenceReview.validatedSelectedOrder || 'none'}; IVTC windows: {asset.cadenceReview.validatedWindows}/{asset.cadenceReview.observedWindows || 'unknown'} validated.
+                  Reported stream field order: {asset.cadenceReview.reportedFieldOrder || 'unknown'} (metadata only). Validated SelectedOrder: {asset.cadenceReview.validatedSelectedOrder || 'none'}; IVTC windows: {asset.cadenceReview.validWindows ?? asset.cadenceReview.validatedWindows}/{asset.cadenceReview.observedWindows || 'unknown'} valid.
                 </Typography>
                 <Typography variant="body2">
                   Effective output FPS: {asset.cadenceReview.effectiveOutputFrameRateUnknown ? 'Unknown' : asset.cadenceReview.effectiveOutputFrameRate || 'unavailable'} · HEVC Level/Tier: {asset.cadenceReview.hevcLevelResolutionState || 'unresolved'}{asset.cadenceReview.hevcLevelResolutionWarning ? ` — ${asset.cadenceReview.hevcLevelResolutionWarning}` : ''}
                 </Typography>
+                <Typography variant="body2">
+                  Deep analysis: {asset.cadenceReview.deepAnalysisStatus || 'not_run'} · attempted {asset.cadenceReview.attemptedWindows ?? asset.cadenceReview.observedWindows}, valid {asset.cadenceReview.validWindows ?? asset.cadenceReview.validatedWindows}, inconclusive {asset.cadenceReview.inconclusiveWindows ?? 0}, contradictory {asset.cadenceReview.contradictoryWindows ?? 0}.
+                </Typography>
+                {asset.cadenceReview.deepAnalysisVersion ? <Typography variant="body2">
+                  Source FPS {asset.cadenceReview.sourceFrameRate || asset.cadenceReview.declaredFrameRate || 'unknown'} · expected IVTC output {asset.cadenceReview.expectedOutputFrameRate || 'unknown'}; effective FPS is still resolved by the frozen Queue plan.
+                </Typography> : null}
+                {asset.cadenceReview.windows?.length ? <Box component="details" sx={{ mt: 0.5 }}>
+                  <Box component="summary" sx={{ cursor: 'pointer', typography: 'caption' }}>IVTC window evidence</Box>
+                  <Stack spacing={0.5} sx={{ mt: 0.75 }}>
+                    {asset.cadenceReview.windows.map((window, index) => <Typography key={`${window.start}-${index}`} variant="caption" data-testid="ivtc-window-evidence">
+                      {window.start.toFixed(1)}s · {window.outcome || 'unknown'} · TFF {window.tffProgressiveRatio.toFixed(2)} / BFF {window.bffProgressiveRatio.toFixed(2)} · {window.selectionBasis || 'initial analysis'}{window.reason ? ` · ${window.reason}` : ''}
+                    </Typography>)}
+                  </Stack>
+                </Box> : null}
+                {deepOperationPath === asset.mediaPath && deepOperation ? <Alert severity={deepOperation.status === 'error' ? 'error' : deepOperation.status === 'completed' ? 'success' : 'info'} data-testid="deep-cadence-operation">
+                  {deepOperation.message || deepOperation.status}{deepOperation.status === 'running' ? ` · ${Math.round(deepOperation.progress)}%` : ''}
+                </Alert> : null}
+                {asset.cadenceReview.deepAnalysisAvailable ? <Button size="small" disabled={busy} onClick={() => void runDeepCadence(asset)}>Run Deep Cadence Analysis</Button> : null}
+                {deepOperationPath === asset.mediaPath && deepOperation?.status === 'running' ? <Button size="small" disabled={false} onClick={() => void cancelDeepCadence()}>Cancel analysis</Button> : null}
               </Stack>
             </Alert> : null}
             {asset.blockers.map((blocker) => <Alert key={blocker} severity={asset.status === 'requires_review' ? 'warning' : 'error'} variant="outlined">{blocker}</Alert>)}

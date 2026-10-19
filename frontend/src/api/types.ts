@@ -1905,7 +1905,7 @@ export type QueueBatchPreflightAsset = {
   batchName: string;
   input: QueueJobInput;
   status: 'ready' | 'review' | 'requires_review' | 'blocked' | 'queued';
-  reviewCode?: 'ivtc_field_order_required' | string;
+  reviewCode?: 'ivtc_field_order_required' | 'cadence_output_fps_unknown' | string;
   cadenceReview?: {
     cadenceType?: string;
     declaredFrameRate?: string;
@@ -1914,6 +1914,7 @@ export type QueueBatchPreflightAsset = {
     reportedFieldOrder?: string;
     validatedSelectedOrder?: string;
     validatedWindows: number;
+    validWindows?: number;
     observedWindows: number;
     effectiveOutputFrameRate?: string;
     effectiveOutputFrameRateUnknown: boolean;
@@ -1921,6 +1922,24 @@ export type QueueBatchPreflightAsset = {
     hevcLevelResolutionWarning?: string;
     hevcLevelEffective?: string;
     hevcLevelTier?: string;
+    deepAnalysisAvailable?: boolean;
+    deepAnalysisVersion?: number;
+    deepAnalysisStatus?: string;
+    sourceFrameRate?: string;
+    expectedOutputFrameRate?: string;
+    attemptedWindows?: number;
+    inconclusiveWindows?: number;
+    contradictoryWindows?: number;
+    windows?: Array<{
+      start: number;
+      outcome?: string;
+      reason?: string;
+      selectionBasis?: string;
+      selectedOrder?: string;
+      tffProgressiveRatio: number;
+      bffProgressiveRatio: number;
+      confidence: number;
+    }>;
   };
   blockers: string[];
   warnings: string[];
@@ -2473,6 +2492,7 @@ export type SnapshotOperation = {
   durationMs: number;
   cacheHit: boolean;
   incrementalRefresh: boolean;
+  deepCadence?: boolean;
   reusedComponents?: string[];
   refreshedComponents?: string[];
   componentStatuses?: Record<string, string>;

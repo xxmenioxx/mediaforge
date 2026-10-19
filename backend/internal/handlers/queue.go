@@ -1214,6 +1214,7 @@ func (h QueueHandler) Create(c *gin.Context) {
 		return
 	}
 	profileResolution := models.JSONMap{}
+	var preparedPreflight *models.QueueJob
 	if input.ResolveProfileAssignments {
 		var err error
 		profileResolution, err = h.resolveProfileAssignments(&input)
@@ -1298,6 +1299,7 @@ func (h QueueHandler) Create(c *gin.Context) {
 					})
 					return
 				}
+				preparedPreflight = &prepared
 				profile, restoreErr := scheduler.RestoreProfileSnapshot(prepared.ProfileSnapshot)
 				if restoreErr != nil {
 					c.JSON(http.StatusConflict, gin.H{"code": "queue_preflight_blocked", "error": "Restore prepared Queue profile: " + restoreErr.Error()})
@@ -1353,6 +1355,11 @@ func (h QueueHandler) Create(c *gin.Context) {
 		Notes:               input.Notes,
 	}
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if preparedPreflight != nil {
+			if err := revalidateAcceptedDeepCadenceEvidence(tx, *preparedPreflight); err != nil {
+				return fmt.Errorf("queue preflight became stale before acceptance: %w", err)
+			}
+		}
 		var highest int64
 		if err := tx.Model(&models.QueueJob{}).Select("COALESCE(MAX(queue_position), 0)").Scan(&highest).Error; err != nil {
 			return err
@@ -2258,6 +2265,12 @@ func (h QueueHandler) captureInterlaceSnapshot(path string, snapshot models.JSON
 	haveScan := h.db != nil && strings.TrimSpace(path) != "" && h.db.Migrator().HasTable(&models.ScanResult{}) &&
 		h.db.Where("path = ?", path).Order("updated_at desc, id desc").First(&scan).Error == nil
 	if haveScan {
+		currentInfo, statErr := os.Stat(path)
+		if statErr != nil {
+			scan = staleDeepCadenceEvidenceForQueue(h.db, scan, path, nil)
+		} else {
+			scan = staleDeepCadenceEvidenceForQueue(h.db, scan, path, currentInfo)
+		}
 		components := make([]string, 0, 4)
 		if _, ok := decodeInterlaceAnalysis(scan.InterlaceAnalysis); ok {
 			snapshot[interlaceAnalysisSnapshotKey] = scan.InterlaceAnalysis
