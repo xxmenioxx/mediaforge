@@ -110,11 +110,21 @@ export function HistoryPage() {
                       <Typography fontWeight={700} noWrap>{fileNameFromPath(job.mediaPath)}</Typography>
                       <Typography color="text.secondary" variant="body2" noWrap>{job.mediaPath}</Typography>
                     </TableCell>
-                    <TableCell><Chip label={job.status} color={statusColor(job)} size="small" /></TableCell>
+                    <TableCell>
+                      <Stack spacing={0.5} alignItems="flex-start">
+                        <Chip label={job.status} color={statusColor(job)} size="small" />
+                        {job.dismissedAt ? <Chip label="Dismissed" size="small" variant="outlined" /> : null}
+                      </Stack>
+                    </TableCell>
                     <TableCell>
                       <Stack spacing={0.25}>
                         <Typography>{job.validationOutcome || job.validationStatus || 'pending'}{job.validationRunId ? ` · ${job.validationScore}/100` : ''}</Typography>
                         {job.validationRunId ? <Typography variant="caption" color="text.secondary">Run {job.validationRunId}{job.validationOverridePresent ? ' · override recorded' : ''}</Typography> : null}
+                        {job.dismissedAt ? <Typography variant="caption" color="text.secondary">
+                          {job.status === 'completed' && (job.validationOutcome === 'FAIL' || job.validationOutcome === 'REVIEW_REQUIRED')
+                            ? `Dismissed after Validation ${job.validationOutcome}`
+                            : 'Dismissed from Queue'} · {formatDate(job.dismissedAt)}
+                        </Typography> : null}
                       </Stack>
                     </TableCell>
                     <TableCell>

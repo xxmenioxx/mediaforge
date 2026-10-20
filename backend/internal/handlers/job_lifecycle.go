@@ -69,6 +69,9 @@ func transitionJobStage(db *gorm.DB, job *models.QueueJob, stage string) error {
 		history := append(models.JSONList(nil), current.StageHistory...)
 		history = append(history, models.JSONMap{"stage": stage, "at": now.UTC().Format(time.RFC3339)})
 		query := tx.Model(&models.QueueJob{}).Where("id = ? AND stage = ?", job.ID, current.Stage)
+		if stage == JobStagePublishing {
+			query = query.Where("dismissed_at IS NULL")
+		}
 		if current.StageUpdatedAt == nil {
 			query = query.Where("stage_updated_at IS NULL")
 		} else {

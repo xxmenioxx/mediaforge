@@ -104,6 +104,20 @@ describe('HistoryPage Publisher projection', () => {
     expect(screen.queryByText(/Publication publication:/)).toBeNull();
   });
 
+  it('keeps a dismissed Validation exception in History with its outcome and timestamp', async () => {
+    vi.mocked(api.validationHistory).mockResolvedValue(page({
+      ...baseJob,
+      validationStatus: 'failed',
+      validationOutcome: 'REVIEW_REQUIRED',
+      dismissedAt: '2026-10-18T14:30:00Z',
+    }));
+
+    renderHistory();
+
+    expect(await screen.findByText('Dismissed')).toBeTruthy();
+    expect(screen.getByText(/Dismissed after Validation REVIEW_REQUIRED ·/)).toBeTruthy();
+  });
+
   it('shows bounded Jellyfin status and retries only eligible failures', async () => {
     vi.mocked(api.validationHistory).mockResolvedValue(page({
       ...baseJob,

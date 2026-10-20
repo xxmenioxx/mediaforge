@@ -14,32 +14,37 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function job(validationStatus: ValidationSummary['validationStatus'], validationScore = 0): ValidationSummary {
+function job(validationStatus: ValidationSummary['validationStatus'], validationScore = 0, overrides: Partial<ValidationSummary> = {}): ValidationSummary {
   return {
     id: 165,
     mediaPath: '/media/raw/validation-test.mkv',
     status: 'completed',
+    stage: 'validation_review',
     outputPath: '/media/staging/validation-test.mkv',
+    publishedPath: '',
     validationStatus,
     validationScore,
     validationRunId: '',
     validationOutcome: '',
     validationOverridePresent: false,
     validationHasActionableWarnings: false,
+    originalArchivedPath: '',
+    originalArchiveStatus: '',
     createdAt: '2026-09-25T10:00:00Z',
     updatedAt: '2026-09-25T10:00:00Z',
+    ...overrides,
   };
 }
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(
+  return { ...render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <ValidationPage />
       </QueryClientProvider>
     </MemoryRouter>,
-  );
+  ), queryClient };
 }
 
 function runDetail(findings: ValidationFinding[], overrides: ValidationRunDetail['overrides'] = [], effectiveHandoff: ValidationRunDetail['effectiveHandoff'] = 'BLOCKED'): ValidationRunDetail {
@@ -188,5 +193,33 @@ describe('ValidationPage request errors', () => {
     }));
     expect(await screen.findByText('ALLOWED BY OVERRIDE')).toBeTruthy();
     expect(screen.getAllByText('FAIL').length).toBeGreaterThan(0);
+  });
+
+  it('offers Dismiss only for unpublished Validation exceptions and refreshes lifecycle views', async () => {
+    vi.spyOn(api, 'settings').mockResolvedValue([{ key: 'validation', value: { preset: 'default' } }] as never);
+    vi.spyOn(api, 'validationReview').mockResolvedValue({
+      items: [
+        job('failed', 55, { validationOutcome: 'FAIL', validationRunId: 'validation-run:fail' }),
+        job('passed', 100, { validationOutcome: 'PASS', validationRunId: 'validation-run:pass', id: 166 }),
+        job('failed', 50, { validationOutcome: 'REVIEW_REQUIRED', validationRunId: 'validation-run:published', publishedAt: '2026-10-12T10:00:00Z', id: 167 }),
+      ],
+      total: 3, limit: 25, offset: 0,
+    });
+    const dismissed = vi.spyOn(api, 'dismissQueueJob').mockResolvedValue({ ...job('failed', 55, { validationOutcome: 'FAIL', validationRunId: 'validation-run:fail' }) } as never);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+
+    const dismissButtons = await screen.findAllByRole('button', { name: 'Dismiss' });
+    expect(dismissButtons).toHaveLength(1);
+    await user.click(dismissButtons[0]);
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('source media will be preserved'));
+    await waitFor(() => expect(dismissed.mock.calls[0]?.[0]).toBe(165));
+    for (const key of ['validationReview', 'validationHistory', 'queueJobs', 'assets', 'queueBatchPreflight', 'publisherEligibility']) {
+      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: [key] });
+    }
+    expect(await screen.findByText(/remains in History and its files and evidence are preserved/)).toBeTruthy();
   });
 });

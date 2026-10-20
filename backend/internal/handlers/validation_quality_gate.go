@@ -65,6 +65,7 @@ type validationSummaryRow struct {
 	PublishedAt                 *time.Time               `json:"publishedAt,omitempty"`
 	PublicationID               string                   `json:"publicationId,omitempty"`
 	PublicationState            string                   `json:"publicationState,omitempty"`
+	PublicationRetiredAt        *time.Time               `json:"publicationRetiredAt,omitempty"`
 	PublicationSummary          string                   `json:"publicationSummary,omitempty"`
 	OriginalArchivedPath        string                   `json:"originalArchivedPath,omitempty"`
 	OriginalArchiveStatus       string                   `json:"originalArchiveStatus,omitempty"`
@@ -77,6 +78,8 @@ type validationSummaryRow struct {
 	ValidationOutcome           string                   `json:"validationOutcome,omitempty"`
 	ValidationOverridePresent   bool                     `json:"validationOverridePresent"`
 	ValidationHasActionableWarn bool                     `json:"validationHasActionableWarnings"`
+	DismissedAt                 *time.Time               `json:"dismissedAt,omitempty"`
+	Stage                       string                   `json:"stage,omitempty"`
 	Publisher                   *historyPublisherSummary `json:"publisher,omitempty"`
 }
 
@@ -996,7 +999,7 @@ func (h ValidationHandler) ReviewList(c *gin.Context) {
 	}
 	limit := boundedValidationQueryInt(c.Query("limit"), 50, 1, 100)
 	offset := boundedValidationQueryInt(c.Query("offset"), 0, 0, int(^uint(0)>>1))
-	query := h.db.Model(&models.QueueJob{}).Where("status = ? AND published_at IS NULL", JobStatusCompleted)
+	query := h.db.Model(&models.QueueJob{}).Where("status = ? AND published_at IS NULL AND dismissed_at IS NULL", JobStatusCompleted)
 	switch view {
 	case "exceptions":
 		query = query.Where("(validation_outcome IN ? OR validation_actionable = ? OR (validation_run_id = '' AND validation_status IN ?))", []string{"REVIEW_REQUIRED", "FAIL"}, true, []string{ValidationStatusPassed, ValidationStatusWarning, ValidationStatusFailed})
@@ -1009,7 +1012,7 @@ func (h ValidationHandler) ReviewList(c *gin.Context) {
 		return
 	}
 	var jobs []models.QueueJob
-	selectFields := "id, execution_number, media_path, output_path, status, finished_at, created_at, updated_at, validation_status, validation_score, validation_run_id, validation_outcome, validation_override, validation_actionable, published_at"
+	selectFields := "id, execution_number, media_path, output_path, status, stage, finished_at, created_at, updated_at, validation_status, validation_score, validation_run_id, validation_outcome, validation_override, validation_actionable, published_path, published_at, publication_id, publication_state, publication_retired_at, original_archived_path, original_archive_status"
 	if err := query.Select(selectFields).Order("updated_at desc, id desc").Limit(limit).Offset(offset).Find(&jobs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1035,7 +1038,7 @@ func (h ValidationHandler) HistoryList(c *gin.Context) {
 		direction = "asc"
 	}
 	var jobs []models.QueueJob
-	selectFields := "id, execution_number, media_path, status, published_path, published_at, original_archived_path, original_archive_status, created_at, updated_at, validation_status, validation_score, validation_run_id, validation_outcome, validation_override, validation_actionable"
+	selectFields := "id, execution_number, media_path, status, stage, published_path, published_at, dismissed_at, original_archived_path, original_archive_status, created_at, updated_at, validation_status, validation_score, validation_run_id, validation_outcome, validation_override, validation_actionable"
 	if err := query.Select(selectFields).Order("id " + direction).Limit(limit).Offset(offset).Find(&jobs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1055,11 +1058,13 @@ func validationSummaryRows(jobs []models.QueueJob) []validationSummaryRow {
 			ID: job.ID, ExecutionNumber: job.ExecutionNumber, MediaPath: job.MediaPath,
 			OutputPath: job.OutputPath, Status: job.Status, PublishedPath: job.PublishedPath,
 			PublishedAt: job.PublishedAt, PublicationID: job.PublicationID, PublicationState: job.PublicationState,
-			PublicationSummary: job.PublicationSummary, OriginalArchivedPath: job.OriginalArchivedPath,
+			PublicationRetiredAt: job.PublicationRetiredAt,
+			PublicationSummary:   job.PublicationSummary, OriginalArchivedPath: job.OriginalArchivedPath,
 			OriginalArchiveStatus: job.OriginalArchiveStatus, FinishedAt: job.FinishedAt, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
 			ValidationStatus: job.ValidationStatus, ValidationScore: job.ValidationScore,
 			ValidationRunID: job.ValidationRunID, ValidationOutcome: job.ValidationOutcome,
 			ValidationOverridePresent: job.ValidationOverride, ValidationHasActionableWarn: job.ValidationActionable,
+			DismissedAt: job.DismissedAt, Stage: job.Stage,
 		})
 	}
 	return rows

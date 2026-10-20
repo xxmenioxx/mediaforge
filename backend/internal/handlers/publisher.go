@@ -176,6 +176,9 @@ func (h PublisherHandler) legacyPublishQueueJobWithMode(job models.QueueJob, ove
 			return PublishResult{}, err
 		}
 		job = current
+		if job.DismissedAt != nil {
+			return PublishResult{}, publishError{Status: http.StatusConflict, Message: "dismissed Queue jobs cannot be published"}
+		}
 		if job.PublishedAt != nil && strings.TrimSpace(job.PublishedPath) != "" {
 			return PublishResult{
 				JobID: job.ID, Status: "already_published", SourcePath: job.OutputPath,
