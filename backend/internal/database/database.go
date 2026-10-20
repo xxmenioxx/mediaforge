@@ -76,6 +76,8 @@ func Migrate(db *gorm.DB) error {
 		&models.PublisherPublicationAttempt{},
 		&models.PublisherAttemptEvidence{},
 		&models.PublisherAuditEvent{},
+		&models.ValidationStagingCleanupPreview{},
+		&models.ValidationStagingCleanupEvidence{},
 		&models.AssetPublishedOutbox{},
 		&models.JellyfinIntegrationOutcome{},
 		&models.AIResourceAdmissionRecord{},
@@ -103,6 +105,9 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 	if err := migrateValidationAppendOnly(db); err != nil {
+		return err
+	}
+	if err := migrateValidationStagingCleanupAppendOnly(db); err != nil {
 		return err
 	}
 	if err := migrateProfileQualificationAppendOnly(db); err != nil {
@@ -416,6 +421,20 @@ func migrateValidationAppendOnly(db *gorm.DB) error {
 		`CREATE TRIGGER IF NOT EXISTS validation_runs_no_delete BEFORE DELETE ON validation_runs BEGIN SELECT RAISE(ABORT, 'validation runs are append-only'); END`,
 		`CREATE TRIGGER IF NOT EXISTS validation_overrides_no_update BEFORE UPDATE ON validation_overrides BEGIN SELECT RAISE(ABORT, 'validation overrides are immutable'); END`,
 		`CREATE TRIGGER IF NOT EXISTS validation_overrides_no_delete BEFORE DELETE ON validation_overrides BEGIN SELECT RAISE(ABORT, 'validation overrides are append-only'); END`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateValidationStagingCleanupAppendOnly(db *gorm.DB) error {
+	for _, statement := range []string{
+		`CREATE TRIGGER IF NOT EXISTS validation_staging_cleanup_evidence_no_update BEFORE UPDATE ON validation_staging_cleanup_evidences BEGIN SELECT RAISE(ABORT, 'staging cleanup evidence is immutable'); END`,
+		`CREATE TRIGGER IF NOT EXISTS validation_staging_cleanup_evidence_no_delete BEFORE DELETE ON validation_staging_cleanup_evidences BEGIN SELECT RAISE(ABORT, 'staging cleanup evidence is append-only'); END`,
+		`CREATE TRIGGER IF NOT EXISTS validation_staging_cleanup_preview_no_delete BEFORE DELETE ON validation_staging_cleanup_previews BEGIN SELECT RAISE(ABORT, 'staging cleanup previews are retained'); END`,
+		`CREATE TRIGGER IF NOT EXISTS validation_staging_cleanup_preview_identity_immutable BEFORE UPDATE ON validation_staging_cleanup_previews WHEN OLD.preview_id IS NOT NEW.preview_id OR OLD.job_id IS NOT NEW.job_id OR OLD.execution_number IS NOT NEW.execution_number OR OLD.execution_plan_id IS NOT NEW.execution_plan_id OR OLD.execution_plan_version IS NOT NEW.execution_plan_version OR OLD.execution_plan_fingerprint IS NOT NEW.execution_plan_fingerprint OR OLD.result_artifact_id IS NOT NEW.result_artifact_id OR OLD.result_generation_token IS NOT NEW.result_generation_token OR OLD.result_generation_version IS NOT NEW.result_generation_version OR OLD.result_output_revision IS NOT NEW.result_output_revision OR OLD.validation_run_id IS NOT NEW.validation_run_id OR OLD.state IS NOT NEW.state OR OLD.work_root IS NOT NEW.work_root OR OLD.workspace_path IS NOT NEW.workspace_path OR OLD.tree_identity IS NOT NEW.tree_identity OR OLD.manifest_json IS NOT NEW.manifest_json OR OLD.total_bytes IS NOT NEW.total_bytes OR OLD.expires_at IS NOT NEW.expires_at OR OLD.created_at IS NOT NEW.created_at OR OLD.consumed_at IS NOT NULL OR NEW.consumed_at IS NULL BEGIN SELECT RAISE(ABORT, 'staging cleanup preview identity is immutable'); END`,
 	} {
 		if err := db.Exec(statement).Error; err != nil {
 			return err

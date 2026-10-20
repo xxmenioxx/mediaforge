@@ -1279,6 +1279,10 @@ func housekeepingCandidateOrder(kind string) int {
 }
 
 func executeHousekeepingCandidate(db *gorm.DB, roots map[string]string, policy HousekeepingPolicy, now time.Time, bound housekeepingBoundCandidate) (HousekeepingCandidate, bool, error) {
+	return executeHousekeepingCandidateWithStaging(db, roots, policy, now, bound, nil)
+}
+
+func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]string, policy HousekeepingPolicy, now time.Time, bound housekeepingBoundCandidate, explicit *explicitValidationStagingAuthorization) (HousekeepingCandidate, bool, error) {
 	candidate := bound.Candidate
 	if candidate.CandidateID == "" || candidate.CandidateID != housekeepingCandidateID(candidate, bound.Identity) {
 		candidate.SafeToDelete = false
@@ -1349,6 +1353,35 @@ func executeHousekeepingCandidate(db *gorm.DB, roots map[string]string, policy H
 	}
 	switch candidate.Kind {
 	case housekeepingKindWorkspace:
+		if explicit != nil {
+			if candidate.JobID == 0 || candidate.Reason != "operator confirmed Validation Dismiss cleanup" {
+				candidate.SafeToDelete = false
+				candidate.BlockedReason = "explicit cleanup authorization does not match this workspace candidate"
+				return candidate, false, nil
+			}
+			if err := validateExplicitDismissedStagingIdentity(db, candidate.JobID, *explicit); err != nil {
+				candidate.SafeToDelete = false
+				candidate.BlockedReason = err.Error()
+				return candidate, false, nil
+			}
+			if explicitValidationStagingHasActiveReferences(db, candidate.JobID, candidate.Path) {
+				candidate.SafeToDelete = false
+				candidate.BlockedReason = "active Worker, Queue, Publisher, maintenance, Test Encode, artifact, or other job reference appeared before cleanup"
+				return candidate, false, nil
+			}
+			files, tree, total, manifestErr := validationStagingManifest(path)
+			if manifestErr != nil || tree != explicit.Snapshot.TreeIdentity || total != candidate.SizeBytes || !reflect.DeepEqual(files, explicit.Snapshot.Files) {
+				candidate.SafeToDelete = false
+				candidate.BlockedReason = "workspace contents changed immediately before cleanup"
+				return candidate, false, nil
+			}
+			removedPaths, recoveredBytes, removeErr := removeValidationStagingManifest(roots["work"], path, explicit.Snapshot.Files)
+			candidate.SizeBytes = recoveredBytes
+			if removeErr != nil {
+				return candidate, false, &validationStagingPartialRemovalError{paths: removedPaths, bytes: recoveredBytes, cause: removeErr}
+			}
+			return candidate, true, nil
+		}
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			candidate.SafeToDelete = false
 			candidate.BlockedReason = "workspace is no longer a real directory"

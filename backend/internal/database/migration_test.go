@@ -12,13 +12,23 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestValidationRunsAndOverridesAreAppendOnly(t *testing.T) {
+func TestValidationAndStagingCleanupRecordsAreAppendOnly(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:validation-append-only?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AppSetting{Key: "preexisting", Value: models.JSONMap{"preserved": true}}).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := Migrate(db); err != nil {
 		t.Fatalf("migrate validation quality gate: %v", err)
+	}
+	var preexisting models.AppSetting
+	if err := db.First(&preexisting, "key = ?", "preexisting").Error; err != nil || preexisting.Value["preserved"] != true {
+		t.Fatalf("existing database row was not preserved: %#v err=%v", preexisting, err)
 	}
 	run := models.ValidationRun{
 		RunID: "validation-run:test", JobID: 1, ExecutionNumber: 1, ExecutionPlanID: 1, ExecutionPlanVersion: 1,
@@ -49,6 +59,44 @@ func TestValidationRunsAndOverridesAreAppendOnly(t *testing.T) {
 	}
 	if err := db.Where("event_id = ?", event.EventID).Delete(&models.ValidationOverride{}).Error; err == nil {
 		t.Fatal("ValidationOverride delete was not rejected")
+	}
+	preview := models.ValidationStagingCleanupPreview{
+		PreviewID: "vsc-preview:append-only", JobID: 1, ExecutionNumber: 1, ExecutionPlanID: 1,
+		ExecutionPlanVersion: 1, ExecutionPlanFingerprint: "plan", ResultArtifactID: "result",
+		ResultGenerationToken: "generation", ResultGenerationVersion: 1, ResultOutputRevision: "revision",
+		ValidationRunID: run.RunID, State: "ready", WorkRoot: "/work", WorkspacePath: "/work/job-1",
+		TreeIdentity: "tree", ManifestJSON: "{}", TotalBytes: 1, ExpiresAt: time.Now().UTC().Add(time.Hour),
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := db.Create(&preview).Error; err != nil {
+		t.Fatal(err)
+	}
+	consumedAt := time.Now().UTC()
+	if err := db.Model(&preview).Update("consumed_at", consumedAt).Error; err != nil {
+		t.Fatalf("one-time preview consumption was rejected: %v", err)
+	}
+	if err := db.Model(&preview).Update("consumed_at", consumedAt.Add(time.Second)).Error; err == nil {
+		t.Fatal("consumed staging preview was mutable more than once")
+	}
+	if err := db.Delete(&preview).Error; err == nil {
+		t.Fatal("staging preview delete was not rejected")
+	}
+	evidence := models.ValidationStagingCleanupEvidence{
+		EvidenceID: "vsc-evidence:append-only", AttemptID: "vsc-attempt:append-only", JobID: 1,
+		ExecutionNumber: 1, ExecutionPlanID: 1, ExecutionPlanVersion: 1, ExecutionPlanFingerprint: "plan",
+		ResultArtifactID: "result", ResultGenerationToken: "generation", ResultGenerationVersion: 1,
+		ResultOutputRevision: "revision", ValidationRunID: run.RunID, PreviewID: preview.PreviewID,
+		TreeIdentity: "tree", Actor: "local_operator", Action: "dismiss_cleanup", Event: "completed",
+		Outcome: "cleaned", WorkspacePath: preview.WorkspacePath, RemovedPathsJSON: "[]", CreatedAt: time.Now().UTC(),
+	}
+	if err := db.Create(&evidence).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&evidence).Update("outcome", "failed").Error; err == nil {
+		t.Fatal("staging cleanup evidence update was not rejected")
+	}
+	if err := db.Delete(&evidence).Error; err == nil {
+		t.Fatal("staging cleanup evidence delete was not rejected")
 	}
 }
 

@@ -195,7 +195,7 @@ describe('ValidationPage request errors', () => {
     expect(screen.getAllByText('FAIL').length).toBeGreaterThan(0);
   });
 
-  it('offers Dismiss only for unpublished Validation exceptions and refreshes lifecycle views', async () => {
+  it('previews staging, defaults cleanup on, then dismisses before scoped cleanup', async () => {
     vi.spyOn(api, 'settings').mockResolvedValue([{ key: 'validation', value: { preset: 'default' } }] as never);
     vi.spyOn(api, 'validationReview').mockResolvedValue({
       items: [
@@ -206,7 +206,12 @@ describe('ValidationPage request errors', () => {
       total: 3, limit: 25, offset: 0,
     });
     const dismissed = vi.spyOn(api, 'dismissQueueJob').mockResolvedValue({ ...job('failed', 55, { validationOutcome: 'FAIL', validationRunId: 'validation-run:fail' }) } as never);
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const preview = vi.spyOn(api, 'previewValidationStagingCleanup').mockResolvedValue({
+      jobId: 165, executionNumber: 1, validationRunId: 'validation-run:fail', previewId: 'preview:165', expiresAt: '2026-10-20T10:00:00Z',
+      state: 'ready', workspacePath: '/work/job-165', ownership: 'QueueJob #165', reason: 'Owned job workspace',
+      files: [{ path: 'output.mkv', sizeBytes: 4096, kind: 'file' }], totalBytes: 4096, blockers: [],
+    });
+    const cleanup = vi.spyOn(api, 'cleanupValidationStaging').mockResolvedValue({ jobId: 165, previewId: 'preview:165', outcome: 'cleaned', removedPaths: ['output.mkv'], recoveredBytes: 4096, reason: '', evidenceId: 'evidence:1' });
     const user = userEvent.setup();
     const { queryClient } = renderPage();
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
@@ -214,12 +219,53 @@ describe('ValidationPage request errors', () => {
     const dismissButtons = await screen.findAllByRole('button', { name: 'Dismiss' });
     expect(dismissButtons).toHaveLength(1);
     await user.click(dismissButtons[0]);
-
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('source media will be preserved'));
-    await waitFor(() => expect(dismissed.mock.calls[0]?.[0]).toBe(165));
+    const dialog = await screen.findByRole('dialog', { name: 'Dismiss job' });
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(165));
+    expect((within(dialog).getByRole('checkbox', { name: 'Also clean staged output' }) as HTMLInputElement).checked).toBe(true);
+    expect(within(dialog).getByText('output.mkv')).toBeTruthy();
+    expect(within(dialog).getByText('4,096 bytes')).toBeTruthy();
+    await user.click(within(dialog).getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(cleanup).toHaveBeenCalledWith({ jobId: 165, previewId: 'preview:165' }));
+    expect(dismissed).toHaveBeenCalledWith(165);
+    expect(dismissed.mock.invocationCallOrder[0]).toBeLessThan(cleanup.mock.invocationCallOrder[0]);
     for (const key of ['validationReview', 'validationHistory', 'queueJobs', 'assets', 'queueBatchPreflight', 'publisherEligibility']) {
       expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: [key] });
     }
-    expect(await screen.findByText(/remains in History and its files and evidence are preserved/)).toBeTruthy();
+    expect(await screen.findByText(/staging cleaned/)).toBeTruthy();
+  });
+
+  it('allows Dismiss without invoking cleanup when the operator unchecks the option', async () => {
+    vi.spyOn(api, 'settings').mockResolvedValue([]);
+    vi.spyOn(api, 'validationReview').mockResolvedValue({ items: [{ ...job('failed'), validationOutcome: 'FAIL', validationRunId: 'run' }], total: 1, limit: 25, offset: 0 });
+    vi.spyOn(api, 'previewValidationStagingCleanup').mockResolvedValue({ jobId: 165, executionNumber: 1, validationRunId: 'run', previewId: 'p', expiresAt: '', state: 'ready', workspacePath: '/work/job-165', ownership: 'QueueJob #165', reason: '', files: [], totalBytes: 0, blockers: [] });
+    const dismiss = vi.spyOn(api, 'dismissQueueJob').mockResolvedValue({} as never);
+    const cleanup = vi.spyOn(api, 'cleanupValidationStaging');
+    const user = userEvent.setup(); renderPage();
+    await user.click((await screen.findAllByRole('button', { name: 'Dismiss' }))[0]);
+    const dialog = await screen.findByRole('dialog', { name: 'Dismiss job' });
+    const checkbox = within(dialog).getByRole('checkbox', { name: 'Also clean staged output' });
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    await user.click(checkbox);
+    await user.click(within(dialog).getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(dismiss).toHaveBeenCalledWith(165));
+    expect(await within(dialog).findByText('Dismissed; staging retained.')).toBeTruthy();
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  it('keeps Dismiss available and defaults cleanup off when the preview is blocked', async () => {
+    vi.spyOn(api, 'settings').mockResolvedValue([]);
+    vi.spyOn(api, 'validationReview').mockResolvedValue({ items: [{ ...job('failed'), validationOutcome: 'FAIL', validationRunId: 'run' }], total: 1, limit: 25, offset: 0 });
+    vi.spyOn(api, 'previewValidationStagingCleanup').mockResolvedValue({ jobId: 165, executionNumber: 1, validationRunId: 'run', previewId: '', expiresAt: '', state: 'blocked', workspacePath: '/work/job-165', ownership: 'unavailable', reason: '', files: [], totalBytes: 0, blockers: ['workspace is unsafe'] });
+    const dismiss = vi.spyOn(api, 'dismissQueueJob').mockResolvedValue({} as never);
+    const cleanup = vi.spyOn(api, 'cleanupValidationStaging');
+    const user = userEvent.setup(); renderPage();
+    await user.click((await screen.findAllByRole('button', { name: 'Dismiss' }))[0]);
+    const dialog = await screen.findByRole('dialog', { name: 'Dismiss job' });
+    const checkbox = await within(dialog).findByRole('checkbox', { name: 'Also clean staged output' });
+    await waitFor(() => expect((checkbox as HTMLInputElement).checked).toBe(false));
+    expect(within(dialog).getByRole('button', { name: 'Dismiss' }).hasAttribute('disabled')).toBe(false);
+    await user.click(within(dialog).getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(dismiss).toHaveBeenCalledWith(165));
+    expect(cleanup).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -116,6 +117,27 @@ describe('HistoryPage Publisher projection', () => {
 
     expect(await screen.findByText('Dismissed')).toBeTruthy();
     expect(screen.getByText(/Dismissed after Validation REVIEW_REQUIRED ·/)).toBeTruthy();
+  });
+
+  it('shows retained staging and requires fresh preview confirmation before retry', async () => {
+    vi.mocked(api.validationHistory).mockResolvedValue(page({
+      ...baseJob, validationOutcome: 'FAIL', dismissedAt: '2026-10-18T14:30:00Z', stagingState: 'retained',
+      stagingCleanupOutcome: 'failed', stagingCleanupReason: 'Previous attempt was interrupted',
+    }));
+    const preview = vi.spyOn(api, 'previewValidationStagingCleanup').mockResolvedValue({
+      jobId: 54, executionNumber: 3, validationRunId: baseJob.validationRunId, previewId: 'preview:54', expiresAt: '2026-10-20T10:00:00Z',
+      state: 'ready', workspacePath: '/work/job-54', ownership: 'QueueJob #54', reason: 'Owned job workspace',
+      files: [{ path: 'episode.mkv', sizeBytes: 2048, kind: 'file' }], totalBytes: 2048, blockers: [],
+    });
+    const cleanup = vi.spyOn(api, 'cleanupValidationStaging').mockResolvedValue({ jobId: 54, previewId: 'preview:54', outcome: 'cleaned', removedPaths: ['episode.mkv'], recoveredBytes: 2048, reason: '', evidenceId: 'evidence:54' });
+    const user = userEvent.setup(); renderHistory();
+    expect(await screen.findByText('Staging retained')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Review staged files' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Review staged files and retry cleanup' });
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(54));
+    expect(dialog.textContent).toContain('episode.mkv');
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm cleanup' }));
+    await waitFor(() => expect(cleanup).toHaveBeenCalledWith({ jobId: 54, previewId: 'preview:54' }));
   });
 
   it('shows bounded Jellyfin status and retries only eligible failures', async () => {
