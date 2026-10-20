@@ -197,6 +197,39 @@ func TestDismissCompletedValidationExceptionsPreservesHistoryAndAllowsFreshQueue
 	}
 }
 
+func TestDismissCompletedValidationDoesNotRequireOutputFile(t *testing.T) {
+	fixture := newQueueValidationDismissalFixture(t, models.QualityOutcomeFail)
+	delivery := fixture.delivery
+	if err := os.Remove(delivery.output); err != nil {
+		t.Fatalf("remove synthetic output before dismissal: %v", err)
+	}
+	if _, err := os.Stat(delivery.output); !os.IsNotExist(err) {
+		t.Fatalf("expected output file to be absent before dismissal, stat err=%v", err)
+	}
+
+	previousGinMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(previousGinMode) })
+	router := gin.New()
+	router.DELETE("/api/queue/jobs/:id", NewQueueHandler(delivery.db).Dismiss)
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/queue/jobs/"+strconv.Itoa(int(delivery.job.ID)), nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("dismiss status=%d body=%s", response.Code, response.Body.String())
+	}
+	var dismissed models.QueueJob
+	if err := json.Unmarshal(response.Body.Bytes(), &dismissed); err != nil {
+		t.Fatal(err)
+	}
+	if dismissed.DismissedAt == nil || dismissed.Status != JobStatusCompleted || dismissed.ValidationRunID != fixture.run.RunID {
+		t.Fatalf("dismissal changed historical job identity: %#v", dismissed)
+	}
+	if _, err := os.Stat(delivery.output); !os.IsNotExist(err) {
+		t.Fatalf("dismissal recreated the absent output file, stat err=%v", err)
+	}
+}
+
 func TestDismissCompletedValidationRejectsStaleOrConflictingJobsWithoutMutation(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -208,8 +241,8 @@ func TestDismissCompletedValidationRejectsStaleOrConflictingJobsWithoutMutation(
 				t.Fatal(err)
 			}
 		}},
-		{name: "stale output revision", mutate: func(t *testing.T, fixture *queueValidationDismissalFixture) {
-			if err := os.WriteFile(fixture.delivery.output, []byte("replacement output"), 0o600); err != nil {
+		{name: "stale output revision binding", mutate: func(t *testing.T, fixture *queueValidationDismissalFixture) {
+			if err := fixture.delivery.db.Model(&models.ValidationRun{}).Where("run_id = ?", fixture.run.RunID).Update("result_output_revision", "stale-output-revision").Error; err != nil {
 				t.Fatal(err)
 			}
 		}},

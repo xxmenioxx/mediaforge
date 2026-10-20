@@ -85,10 +85,6 @@ func validateCompletedValidationDismissal(db *gorm.DB, job models.QueueJob) erro
 	if !frozenBindingMatches(db, job, binding) {
 		return queueValidationDismissalConflict("the frozen Queue or ExecutionPlan identity is stale")
 	}
-	evidence, err := resultOutputRevisionForIdentity(job.OutputPath, identity.OutputRevision)
-	if err != nil || evidence.ContentRevision != identity.OutputRevision {
-		return queueValidationDismissalConflict("output changed after Validation")
-	}
 	derivedOutcome, _ := reduceValidationOutcome(validationFindingsForRun(run))
 	if derivedOutcome != run.Outcome {
 		return queueValidationDismissalConflict("ValidationRun outcome is inconsistent with its immutable findings")
