@@ -90,8 +90,9 @@ type compatiblePreviewDescriptor struct {
 }
 
 type compatiblePreviewPrepareError struct {
-	status int
-	err    error
+	status     int
+	err        error
+	resolution *labResolutionDiagnostic
 }
 
 func (err *compatiblePreviewPrepareError) Error() string {
@@ -118,6 +119,14 @@ func compatiblePreviewPrepareStatus(err error) int {
 		return prepareErr.status
 	}
 	return 500
+}
+
+func compatiblePreviewPreparePayload(err *compatiblePreviewPrepareError) gin.H {
+	payload := gin.H{"error": err.Error()}
+	if err.resolution != nil {
+		payload["resolution"] = err.resolution
+	}
+	return payload
 }
 
 func cloneCompatiblePreviewProfile(profile *models.Profile) *models.Profile {
@@ -272,7 +281,11 @@ func (h AssetHandler) prepareCompatiblePreviewDescriptor(input compatiblePreview
 			cadence, cadenceRecommendation := h.previewCadenceResolution(path)
 			profile, probeErr = resolvePreviewVideoProfile(h.db, path, profile, streams, interlace, cadence, cadenceRecommendation)
 			if probeErr != nil {
-				return nil, compatiblePreviewPrepareFailure(422, probeErr)
+				prepareErr := &compatiblePreviewPrepareError{status: 422, err: probeErr}
+				if isFrameStructureResolutionRequired(probeErr) {
+					prepareErr.resolution = buildLabResolutionDiagnostic(h.db, path, profile, streams, interlace, cadence, cadenceRecommendation, sourceRevision)
+				}
+				return nil, prepareErr
 			}
 			resolvedVideoDecision = effectiveVideoDecision(profile)
 			profile = profileWithPreviewDisplayNormalization(profile, normalization.Filter)
@@ -423,7 +436,7 @@ func writeCompatiblePreviewError(c *gin.Context, err error) {
 	}
 	var preparationErr *compatiblePreviewPrepareError
 	if errors.As(err, &preparationErr) {
-		c.JSON(preparationErr.status, gin.H{"error": preparationErr.Error()})
+		c.JSON(preparationErr.status, compatiblePreviewPreparePayload(preparationErr))
 		return
 	}
 	c.JSON(http.StatusInternalServerError, gin.H{"error": boundedCompatiblePreviewError("", err).Error()})

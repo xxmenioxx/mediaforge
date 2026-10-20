@@ -108,6 +108,7 @@ type LabFidelityRunIdentity = {
 import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { TrackProfileResolutionPreview } from '../components/TrackProfileResolutionPreview';
+import { LabResolutionAssistant } from '../components/LabResolutionAssistant';
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
 import { PageHeader } from '../components/PageHeader';
 import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
@@ -969,6 +970,7 @@ export function ProfileLabPage() {
   const [fidelityOpen, setFidelityOpen] = useState(true);
   const [fidelityTab, setFidelityTab] = useState<'previews' | 'technical' | 'frames' | 'characteristics' | 'warnings'>('previews');
   const [lastFidelityInspection, setLastFidelityInspection] = useState<LabFidelityInspection | null>(null);
+  const [labResolutionDiagnostic, setLabResolutionDiagnostic] = useState<{ path: string; draftSignature: string; resolution: NonNullable<ApiRequestError['resolution']> } | null>(null);
   const [labFidelityOperation, setLabFidelityOperation] = useState<LabFidelityOperation | null>(null);
   const [qsvTemporalChangedVariable, setQsvTemporalChangedVariable] = useState<QSVTemporalChangedVariable>('quality_rate_control');
   const [qsvTemporalFeature, setQsvTemporalFeature] = useState('adaptiveB');
@@ -1362,7 +1364,7 @@ export function ProfileLabPage() {
     staleTime: 0,
   });
   const trackSnapshot = useMutation({
-    mutationFn: async (input: { path: string; force?: boolean; analysisSeconds?: 10 | 20 }) => {
+    mutationFn: async (input: { path: string; force?: boolean; analysisSeconds?: 10 | 20; deepCadence?: boolean }) => {
       const requestID = ++snapshotRequestRef.current;
       let operation = await api.startSnapshotOperation(input);
       if (requestID === snapshotRequestRef.current) setLabSnapshotOperation(operation);
@@ -1376,6 +1378,7 @@ export function ProfileLabPage() {
       return operation.result;
     },
     onSuccess: (scan) => {
+      setLabResolutionDiagnostic(null);
       queryClient.setQueryData(['assetSnapshot', scan.path], {
         found: true,
         snapshot: scan,
@@ -1626,6 +1629,13 @@ export function ProfileLabPage() {
         variables.conversion.path !== assetPath ||
         operationSignature !== currentVideoRequestSignature
       ) return;
+      if (error instanceof ApiRequestError && error.resolution) {
+        setLabResolutionDiagnostic({
+          path: variables.conversion.path,
+          draftSignature: JSON.stringify(variables.conversion.profile ?? videoDraft),
+          resolution: error.resolution,
+        });
+      }
       if (!isCanceledFidelityRequest(error) && (error instanceof ApiRequestError && error.code === 'unknown_operation')) {
         const activeOperation = labFidelityOperationRef.current;
         setLabFidelityOperation((current) => {
@@ -2752,8 +2762,11 @@ export function ProfileLabPage() {
     }
   }
 
-  function processVideoPreview() {
+  function processVideoPreview(draftOverride?: ProfileInput) {
     if (!assetPath || !isValidPreviewStart(start)) return;
+    setLabResolutionDiagnostic(null);
+    const previewDraft = draftOverride ?? videoDraft;
+    const previewSignature = labVideoRequestSignature(assetPath, start, seconds, previewNormalization, previewDraft);
 
     const referenceCacheIsCurrent =
       referencePreviewCacheRef.current?.signature ===
@@ -2773,8 +2786,8 @@ export function ProfileLabPage() {
     setVideoPreviewSignal(controller.signal);
     fidelityInspection.reset();
     setFidelityTab('previews');
-    setProcessedVideoDraftSignature(JSON.stringify(videoDraft));
-    setProcessedVideoRequestSignature(currentVideoRequestSignature);
+    setProcessedVideoDraftSignature(JSON.stringify(previewDraft));
+    setProcessedVideoRequestSignature(previewSignature);
 
     setProcessedPreviewNormalization(
       previewNormalization,
@@ -2811,9 +2824,9 @@ export function ProfileLabPage() {
           seconds,
           mode: 'quality',
           previewNormalization,
-          profile: videoDraft,
+          profile: previewDraft,
         },
-        onProgress: (operation) => applyLabFidelityProgress(operation, controller, currentVideoRequestSignature, assetPath, videoDraft, currentReferenceRequestSignature),
+        onProgress: (operation) => applyLabFidelityProgress(operation, controller, previewSignature, assetPath, previewDraft, currentReferenceRequestSignature),
         signal: controller.signal,
         onPrepared: (referenceRequestId, conversionRequestId) => {
           if (controller.signal.aborted) return;
@@ -3721,6 +3734,42 @@ export function ProfileLabPage() {
                         >
                           {compatiblePreviewRecoveryMessage(fidelityInspection.error)}
                         </Alert>
+                      ) : null}
+                      {labResolutionDiagnostic?.path === assetPath && labResolutionDiagnostic.draftSignature === JSON.stringify(videoDraft) ? (
+                        <LabResolutionAssistant
+                          resolution={labResolutionDiagnostic.resolution}
+                          reanalyzing={trackSnapshot.isPending}
+                          onReanalyze={() => {
+                            if (!assetPath) return;
+                            trackSnapshot.mutate({ path: assetPath, force: true, deepCadence: true });
+                          }}
+                          onApply={(action, fieldOrder) => {
+                            setLabResolutionDiagnostic(null);
+                            const workerConfig = { ...(videoDraft.workerConfig ?? {}) };
+                            if (action.id === 'preserve_source') {
+                              workerConfig.cadenceMode = 'preserve';
+                              workerConfig.fieldStructureMode = 'preserve';
+                              workerConfig.cadenceFieldOrder = 'auto';
+                            } else if (action.id === 'compare_field_order' && fieldOrder) {
+                              workerConfig.cadenceFieldOrder = fieldOrder;
+                            }
+                            setVideoDraft({ ...videoDraft, scope: 'asset', workerConfig });
+                          }}
+                          onTest={(action, fieldOrder) => {
+                            setLabResolutionDiagnostic(null);
+                            const workerConfig = { ...(videoDraft.workerConfig ?? {}) };
+                            if (action.id === 'preserve_source') {
+                              workerConfig.cadenceMode = 'preserve';
+                              workerConfig.fieldStructureMode = 'preserve';
+                              workerConfig.cadenceFieldOrder = 'auto';
+                            } else if (action.id === 'compare_field_order' && fieldOrder) {
+                              workerConfig.cadenceFieldOrder = fieldOrder;
+                            }
+                            const alternative = { ...videoDraft, scope: 'asset' as const, workerConfig };
+                            setVideoDraft(alternative);
+                            processVideoPreview(alternative);
+                          }}
+                        />
                       ) : null}
                       {currentFidelityInspection?.temporalExperiment ? (
                         <Stack spacing={1}>

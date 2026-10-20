@@ -430,7 +430,7 @@ func (h AssetHandler) CreateCompatiblePreviewRequest(c *gin.Context) {
 		if err != nil {
 			var preparationErr *compatiblePreviewPrepareError
 			if errors.As(err, &preparationErr) {
-				c.JSON(preparationErr.status, gin.H{"error": preparationErr.Error()})
+				c.JSON(preparationErr.status, compatiblePreviewPreparePayload(preparationErr))
 			} else if lifecycleErr, ok := err.(*compatiblePreviewLifecycleError); ok {
 				writeCompatiblePreviewError(c, lifecycleErr)
 			} else {
