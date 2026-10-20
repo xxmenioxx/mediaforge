@@ -32,6 +32,7 @@ import { ValidationFindingsTable } from '../components/validation/ValidationFind
 import { ValidationRunSummary } from '../components/validation/ValidationRunSummary';
 import { ValidationTechnicalEvidence } from '../components/validation/ValidationTechnicalEvidence';
 import type { ValidationFinding, ValidationOverride, ValidationSummary, ValidationRun } from '../api/types';
+import { canDismissValidationJob } from '../utils/validationDismissal';
 
 type ValidationView = 'exceptions' | 'pending' | 'all';
 
@@ -50,7 +51,23 @@ export function ValidationPage() {
     mutationFn: api.validateJob,
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['validationReview'] }); },
   });
+  const dismissJob = useMutation({
+    mutationFn: api.dismissQueueJob,
+    onSuccess: async () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['validationReview'] }),
+      queryClient.invalidateQueries({ queryKey: ['validationHistory'] }),
+      queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+      queryClient.invalidateQueries({ queryKey: ['assets'] }),
+      queryClient.invalidateQueries({ queryKey: ['queueBatchPreflight'] }),
+      queryClient.invalidateQueries({ queryKey: ['publisherEligibility'] }),
+    ]),
+  });
   const pagedJobs = jobs.data?.items ?? [];
+
+  function dismissValidationJob(job: ValidationSummary) {
+    if (!window.confirm(`Dismiss Job #${job.executionNumber ?? job.id} from active Validation and Queue? This allows a fresh Queue operation. The Queue history, Result, Validation findings, logs, reports, staged output, sidecars, and source media will be preserved.`)) return;
+    dismissJob.mutate(job.id);
+  }
 
   return (
     <>
@@ -68,6 +85,8 @@ export function ValidationPage() {
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         {jobs.isError ? <Alert severity="warning">Unable to load completed jobs.</Alert> : null}
         {validateJob.isError ? <Alert severity="warning" sx={{ mb: 2 }}>{errorMessage(validateJob.error)}</Alert> : null}
+        {dismissJob.isError ? <Alert severity="warning" sx={{ mb: 2 }}>{errorMessage(dismissJob.error)}</Alert> : null}
+        {dismissJob.isSuccess ? <Alert severity="success" sx={{ mb: 2 }}>Dismissed from active Validation and Queue. The job remains in History and its files and evidence are preserved.</Alert> : null}
         <Card>
           <CardContent sx={{ p: 0, '&:last-child': { pb: 0 } }}>
             <Tabs value={validationView} onChange={(_, value: ValidationView) => { setValidationView(value); setPage(0); }} sx={{ px: 2, borderBottom: 1, borderColor: 'divider' }}>
@@ -93,6 +112,7 @@ export function ValidationPage() {
                       <TableCell>{job.validationRunId ? `${job.validationScore || 0}/100` : '—'}</TableCell>
                       <TableCell align="right"><Stack direction="row" spacing={1} justifyContent="flex-end">
                         <Button startIcon={<InfoOutlinedIcon />} variant="outlined" onClick={() => setDetailsJob(job)} disabled={!job.validationRunId}>Details</Button>
+                        {canDismissValidationJob(job) ? <Button variant="outlined" color="error" onClick={() => dismissValidationJob(job)} disabled={dismissJob.isPending || validateJob.isPending}>Dismiss</Button> : null}
                         <Button startIcon={<FactCheckIcon />} variant="contained" onClick={() => validateJob.mutate(job.id)} disabled={validateJob.isPending || Boolean(job.publishedAt)}>
                           {job.validationRunId ? 'Retry validation' : 'Run validation'}
                         </Button>

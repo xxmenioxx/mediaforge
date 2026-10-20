@@ -359,50 +359,69 @@ func (h QueueHandler) Dismiss(c *gin.Context) {
 		return
 	}
 	var job models.QueueJob
-	if err := h.db.First(&job, uint(id)).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
-			return
+	var removedPlaceholder bool
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&job, uint(id)).Error; err != nil {
+			return err
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if job.DismissedAt != nil {
-		c.JSON(http.StatusOK, job)
-		return
-	}
-	if job.Status == JobStatusRunning || job.Status == JobStatusCompleted {
-		c.JSON(http.StatusConflict, gin.H{"error": "running or completed jobs cannot be removed from queue"})
-		return
-	}
-	if job.ExecutionNumber == nil && job.StartedAt == nil {
-		err = h.db.Transaction(func(tx *gorm.DB) error {
+		if job.DismissedAt != nil {
+			return nil
+		}
+		if job.Status == JobStatusRunning {
+			return queueValidationDismissalConflict("running jobs cannot be dismissed")
+		}
+		if job.Status == JobStatusCompleted {
+			if err := validateCompletedValidationDismissal(tx, job); err != nil {
+				return err
+			}
+		}
+		if job.Status != JobStatusCompleted && job.ExecutionNumber == nil && job.StartedAt == nil {
+			result := tx.Where("id = ? AND status = ? AND dismissed_at IS NULL AND execution_number IS NULL AND started_at IS NULL", job.ID, job.Status).Delete(&models.QueueJob{})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return queueValidationDismissalConflict("Queue job changed while it was being dismissed")
+			}
 			if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
 				return err
 			}
 			if err := tx.Where("job_id = ?", job.ID).Delete(&models.ExecutionPlan{}).Error; err != nil {
 				return err
 			}
-			return tx.Delete(&job).Error
-		})
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+			removedPlaceholder = true
+			return nil
 		}
-		c.JSON(http.StatusOK, gin.H{"removed": true, "placeholderId": job.ID})
-		return
-	}
 
-	now := time.Now()
-	err = h.db.Transaction(func(tx *gorm.DB) error {
-		job.DismissedAt = &now
-		if err := tx.Save(&job).Error; err != nil {
+		now := time.Now().UTC()
+		result := tx.Model(&models.QueueJob{}).
+			Where("id = ? AND status = ? AND dismissed_at IS NULL AND updated_at = ? AND validation_run_id = ? AND validation_outcome = ? AND published_at IS NULL", job.ID, job.Status, job.UpdatedAt, job.ValidationRunID, job.ValidationOutcome).
+			Update("dismissed_at", now)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return queueValidationDismissalConflict("Queue job changed while it was being dismissed")
+		}
+		if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
 			return err
 		}
-		return scheduler.ReleaseReservation(tx, job.ID)
+		return tx.First(&job, job.ID).Error
 	})
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+			return
+		}
+		if errors.Is(err, errQueueValidationDismissalConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if removedPlaceholder {
+		c.JSON(http.StatusOK, gin.H{"removed": true, "placeholderId": uint(id)})
 		return
 	}
 	c.JSON(http.StatusOK, job)

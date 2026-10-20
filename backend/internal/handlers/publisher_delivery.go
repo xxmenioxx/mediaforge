@@ -193,6 +193,9 @@ func (h PublisherHandler) handoffAndPublishWithReason(job models.QueueJob, autom
 	if err := h.db.First(&job, job.ID).Error; err != nil {
 		return PublishResult{}, err
 	}
+	if job.DismissedAt != nil {
+		return PublishResult{}, publishError{Status: http.StatusConflict, Message: "dismissed Queue jobs cannot be published"}
+	}
 	if job.PublishedAt != nil && strings.TrimSpace(job.PublishedPath) != "" {
 		if job.ExecutionNumber == nil {
 			return PublishResult{JobID: job.ID, Status: "already_published", SourcePath: job.OutputPath, PublishedPath: job.PublishedPath, Message: "Historical publication is recorded on the Queue job; no delivery mutation was performed."}, nil
@@ -478,12 +481,26 @@ func (h PublisherHandler) persistPublicationIdentity(candidate models.PublisherP
 	now := time.Now().UTC()
 	candidate.CreatedAt, candidate.UpdatedAt = now, now
 	err = h.db.Transaction(func(tx *gorm.DB) error {
+		var job models.QueueJob
+		if err := tx.Select("id", "dismissed_at").First(&job, candidate.QueueJobID).Error; err != nil {
+			return err
+		}
+		if job.DismissedAt != nil {
+			return publishError{Status: http.StatusConflict, Message: "dismissed Queue jobs cannot create a Publisher record"}
+		}
 		if err := tx.Create(&candidate).Error; err != nil {
 			return err
 		}
-		return tx.Model(&models.QueueJob{}).Where("id = ?", candidate.QueueJobID).Updates(map[string]any{
+		result := tx.Model(&models.QueueJob{}).Where("id = ? AND dismissed_at IS NULL", candidate.QueueJobID).Updates(map[string]any{
 			"publication_id": candidate.PublicationID, "publication_state": PublicationReady, "publication_summary": "Ready for Publisher delivery.",
-		}).Error
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return publishError{Status: http.StatusConflict, Message: "Queue job was dismissed before Publisher handoff"}
+		}
+		return nil
 	})
 	if err != nil {
 		if h.db.Where("queue_job_id = ? AND execution_number = ?", candidate.QueueJobID, candidate.ExecutionNumber).First(&current).Error == nil {
@@ -706,6 +723,13 @@ func (h PublisherHandler) claimPublication(publicationID, actorSource, actorID s
 		if err := tx.Where("publication_id = ?", publicationID).First(&publication).Error; err != nil {
 			return err
 		}
+		var queueJob models.QueueJob
+		if err := tx.Select("id", "dismissed_at").First(&queueJob, publication.QueueJobID).Error; err != nil {
+			return err
+		}
+		if queueJob.DismissedAt != nil {
+			return publishError{Status: http.StatusConflict, Message: "dismissed Queue jobs cannot be claimed by Publisher"}
+		}
 		if publication.AttemptCount >= 100 && !recovery {
 			if err := tx.Model(&publication).Where("state = ?", PublicationReady).Updates(map[string]any{"state": PublicationBlocked, "failure_code": "attempt_limit", "failure_summary": "Publication reached the bounded retry limit; create a new Queue execution after review.", "updated_at": now}).Error; err != nil {
 				return err
@@ -793,7 +817,9 @@ func (h PublisherHandler) assertPublicationLease(owner publisherLeaseOwner, rene
 		updates["lease_expires_at"] = now.Add(publisherLease)
 		updates["updated_at"] = now
 	}
-	query := h.db.Model(&models.PublisherPublication{}).Where("publication_id = ? AND state = ? AND active_attempt_id = ? AND fencing_generation = ? AND lease_expires_at > ?", owner.publicationID, PublicationPublishing, owner.attemptID, owner.fence, now)
+	query := h.db.Model(&models.PublisherPublication{}).
+		Where("publication_id = ? AND state = ? AND active_attempt_id = ? AND fencing_generation = ? AND lease_expires_at > ?", owner.publicationID, PublicationPublishing, owner.attemptID, owner.fence, now).
+		Where("EXISTS (SELECT 1 FROM queue_jobs WHERE queue_jobs.id = publisher_publications.queue_job_id AND queue_jobs.dismissed_at IS NULL)")
 	if renew {
 		result := query.Updates(updates)
 		if result.Error != nil {
@@ -945,7 +971,7 @@ func (h PublisherHandler) ListManualEligibility(c *gin.Context) {
 	}
 
 	var jobs []models.QueueJob
-	if err := h.db.Where("status = ? AND published_at IS NULL", JobStatusCompleted).
+	if err := h.db.Where("status = ? AND published_at IS NULL AND dismissed_at IS NULL", JobStatusCompleted).
 		Order("updated_at desc, id desc").Limit(limit).Find(&jobs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -970,6 +996,9 @@ func (h PublisherHandler) manualEligibilityForJob(job models.QueueJob) Publisher
 	block := func(reason string) PublisherEligibilityCandidate {
 		candidate.Reason = reason
 		return candidate
+	}
+	if job.DismissedAt != nil {
+		return block("Queue job was dismissed and cannot be published")
 	}
 
 	if allowed, reason := canonicalRunAllowsPublish(h.db, job, false); !allowed {
@@ -1059,6 +1088,15 @@ func (h PublisherHandler) PublisherAction(c *gin.Context) {
 	var publication models.PublisherPublication
 	if err := h.db.Where("publication_id = ?", c.Param("publicationId")).First(&publication).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "publication not found"})
+		return
+	}
+	var queueJob models.QueueJob
+	if err := h.db.Select("id", "dismissed_at").First(&queueJob, publication.QueueJobID).Error; err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	if queueJob.DismissedAt != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "dismissed Queue jobs cannot be managed by Publisher"})
 		return
 	}
 	switch input.Action {

@@ -1727,8 +1727,9 @@ export type ValidationRunDetail = {
 
 export type ValidationSummary = Pick<QueueJob,
   | 'id' | 'executionNumber' | 'mediaPath' | 'outputPath' | 'status' | 'finishedAt' | 'createdAt' | 'updatedAt'
-  | 'validationStatus' | 'validationScore' | 'validationRunId' | 'validationOutcome' | 'validationOverridePresent'
-  | 'validationHasActionableWarnings' | 'publishedAt'
+  | 'stage' | 'validationStatus' | 'validationScore' | 'validationRunId' | 'validationOutcome' | 'validationOverridePresent'
+  | 'validationHasActionableWarnings' | 'publishedPath' | 'publishedAt' | 'publicationId' | 'publicationState' | 'publicationRetiredAt'
+  | 'originalArchivedPath' | 'originalArchiveStatus'
 >;
 
 export type ValidationSummaryPage = { items: ValidationSummary[]; total: number; limit: number; offset: number };
@@ -1756,7 +1757,7 @@ export type HistoryPublisherSummary = {
 export type ValidationHistorySummary = Pick<QueueJob,
   | 'id' | 'executionNumber' | 'mediaPath' | 'status' | 'publishedPath' | 'publishedAt' | 'createdAt' | 'updatedAt'
   | 'validationStatus' | 'validationScore' | 'validationRunId' | 'validationOutcome' | 'validationOverridePresent'
-  | 'validationHasActionableWarnings' | 'originalArchivedPath' | 'originalArchiveStatus'
+  | 'validationHasActionableWarnings' | 'originalArchivedPath' | 'originalArchiveStatus' | 'dismissedAt'
 > & { publisher?: HistoryPublisherSummary };
 
 export type ValidationHistoryPage = { items: ValidationHistorySummary[]; total: number; limit: number; offset: number };

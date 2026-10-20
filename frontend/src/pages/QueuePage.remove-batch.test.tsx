@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 import { api } from '../api/client';
 import type { QueueJob } from '../api/types';
 import { QueueGroupCard } from './QueuePage';
@@ -14,7 +15,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function job(id: number, status: QueueJob['status']): QueueJob {
+function job(id: number, status: QueueJob['status'], overrides: Partial<QueueJob> = {}): QueueJob {
   return {
     id,
     batchId: 'batch-1',
@@ -48,6 +49,7 @@ function job(id: number, status: QueueJob['status']): QueueJob {
     originalArchivedPath: '',
     createdAt: '',
     updatedAt: '',
+    ...overrides,
   };
 }
 
@@ -69,9 +71,11 @@ function group(jobs: QueueJob[]) {
 function renderGroup(jobs: QueueJob[]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const view = render(
-    <QueryClientProvider client={queryClient}>
-      <QueueGroupCard group={group(jobs)} onEditJob={() => undefined} />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <QueueGroupCard group={group(jobs)} onEditJob={() => undefined} />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
   return { ...view, queryClient };
 }
@@ -122,5 +126,29 @@ describe('Queue batch removal', () => {
     await waitFor(() => expect(dismiss).toHaveBeenCalledWith('batch-1'));
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['queueJobs'] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['assets'] });
+  });
+
+  it('exposes Dismiss for a completed unpublished Validation exception and invalidates preflight views', async () => {
+    const candidate = job(7, 'completed', {
+      executionNumber: 7,
+      stage: 'validation_review',
+      validationRunId: 'validation-run:review-required',
+      validationOutcome: 'REVIEW_REQUIRED',
+    });
+    const dismiss = vi.spyOn(api, 'dismissQueueJob').mockResolvedValue(candidate);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { queryClient } = renderGroup([candidate]);
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: 'Expand queue group' }));
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('staged output'));
+    await waitFor(() => expect(dismiss.mock.calls[0]?.[0]).toBe(candidate.id));
+    for (const key of ['validationReview', 'validationHistory', 'queueJobs', 'assets', 'queueBatchPreflight', 'publisherEligibility']) {
+      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: [key] });
+    }
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
   });
 });

@@ -36,6 +36,7 @@ import { DragEvent, FormEvent, useMemo, useState } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { canRemoveQueueBatch } from '../utils/queueBatch';
+import { canDismissValidationJob } from '../utils/validationDismissal';
 import { hasNonTerminalQueueLifecycle, originalArchiveStatusLabel } from '../utils/queueLifecycle';
 import { hasDeterminateQueueProgress, queueStagePresentation, queueStatusColor, queueStatusLabel } from '../utils/queuePresentation';
 import { CompactActionGroup } from '../components/CompactActionGroup';
@@ -566,6 +567,10 @@ function QueueFlatList({ jobs, selectedJobId, onEditJob }: {
     onSuccess: async () => Promise.all([
       queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
       queryClient.invalidateQueries({ queryKey: ['assets'] }),
+      queryClient.invalidateQueries({ queryKey: ['validationReview'] }),
+      queryClient.invalidateQueries({ queryKey: ['validationHistory'] }),
+      queryClient.invalidateQueries({ queryKey: ['queueBatchPreflight'] }),
+      queryClient.invalidateQueries({ queryKey: ['publisherEligibility'] }),
     ]),
   });
   const reorderJob = useMutation({
@@ -592,7 +597,7 @@ function QueueFlatList({ jobs, selectedJobId, onEditJob }: {
   }
 
   function removeJob(job: QueueJob) {
-    if (job.executionNumber && !window.confirm(`Remove Job #${job.executionNumber} from Queue? Its database record, logs, and reports will be preserved.`)) return;
+    if (job.executionNumber && !window.confirm(queueDismissConfirmation(job))) return;
     dismissJob.mutate(job.id);
   }
 
@@ -615,7 +620,7 @@ function QueueFlatList({ jobs, selectedJobId, onEditJob }: {
   return (
     <Stack spacing={0.75}>
       {reorderJob.isError ? <Alert severity="warning">The queue order could not be saved. The previous order was restored.</Alert> : null}
-      {dismissJob.isError ? <Alert severity="warning">Could not remove this job from Queue.</Alert> : null}
+      {dismissJob.isError ? <Alert severity="warning">Could not dismiss this job from Queue.</Alert> : null}
       <Typography variant="body2" color="text.secondary">
         Drag queued jobs by the handle to set their exact execution order. Running and historical jobs are locked.
       </Typography>
@@ -702,7 +707,8 @@ function FlatJobRow({
   const canEdit = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
   const canCancel = job.status === 'queued' || job.status === 'running';
   const canRequeue = job.status === 'failed' || job.status === 'canceled';
-  const canRemove = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
+  const canRemove = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled' || canDismissValidationJob(job);
+  const removeLabel = canDismissValidationJob(job) ? 'Dismiss' : 'Remove';
   const nextAction = nextPipelineAction(job);
   const hasDeterminateProgress = hasDeterminateQueueProgress(job.progress);
   const jobLabel = job.executionNumber ? `Job #${job.executionNumber}` : `Pending job ${job.id}`;
@@ -792,7 +798,7 @@ function FlatJobRow({
           <Tooltip title="Edit"><span><IconButton size="small" disabled={isUpdating || !canEdit} onClick={onEdit} aria-label={`Edit ${jobLabel}`}><EditIcon fontSize="small" /></IconButton></span></Tooltip>
           <Tooltip title="Cancel"><span><IconButton size="small" color="warning" disabled={isUpdating || !canCancel} onClick={onCancel} aria-label={`Cancel ${jobLabel}`}><CancelIcon fontSize="small" /></IconButton></span></Tooltip>
           <Tooltip title="Requeue"><span><IconButton size="small" color="primary" disabled={isUpdating || !canRequeue} onClick={onRequeue} aria-label={`Requeue ${jobLabel}`}><ReplayIcon fontSize="small" /></IconButton></span></Tooltip>
-          <Tooltip title="Remove"><span><IconButton size="small" color="error" disabled={isUpdating || !canRemove} onClick={onRemove} aria-label={`Remove ${jobLabel}`}><RemoveCircleOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
+          <Tooltip title={removeLabel}><span><IconButton size="small" color="error" disabled={isUpdating || !canRemove} onClick={onRemove} aria-label={`${removeLabel} ${jobLabel}`}><RemoveCircleOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
         </CompactActionGroup>
       </Box>
       {job.errorMessage ? <Alert severity={job.status === 'failed' ? 'error' : 'warning'} sx={{ mt: 0.75 }}>{shortText(job.errorMessage, 180)}</Alert> : null}
@@ -1022,6 +1028,10 @@ export function QueueGroupCard({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
         queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        queryClient.invalidateQueries({ queryKey: ['validationReview'] }),
+        queryClient.invalidateQueries({ queryKey: ['validationHistory'] }),
+        queryClient.invalidateQueries({ queryKey: ['queueBatchPreflight'] }),
+        queryClient.invalidateQueries({ queryKey: ['publisherEligibility'] }),
       ]);
     },
   });
@@ -1071,7 +1081,7 @@ export function QueueGroupCard({
   }
 
   function removeJob(job: QueueJob) {
-    if (job.executionNumber && !window.confirm(`Remove Job #${job.executionNumber} from Queue? Its database record, logs, and reports will be preserved.`)) return;
+    if (job.executionNumber && !window.confirm(queueDismissConfirmation(job))) return;
     dismissJob.mutate(job.id);
   }
 
@@ -1102,7 +1112,7 @@ export function QueueGroupCard({
     <Card sx={{ overflow: 'hidden' }}>
       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
         <Stack spacing={1}>
-          {dismissJob.isError ? <Alert severity="warning">Could not remove this job from Queue.</Alert> : null}
+          {dismissJob.isError ? <Alert severity="warning">Could not dismiss this job from Queue.</Alert> : null}
           {batchAction.isError ? <Alert severity="warning">Could not complete the batch action. Refresh Queue to review the remaining jobs.</Alert> : null}
           <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between" spacing={1.5}>
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
@@ -1224,7 +1234,8 @@ function JobRow({
   const canCancel = job.status === 'queued' || job.status === 'running';
   const canRequeue = job.status === 'failed' || job.status === 'canceled';
   const canEdit = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
-  const canRemove = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled';
+  const canRemove = job.status === 'queued' || job.status === 'failed' || job.status === 'canceled' || canDismissValidationJob(job);
+  const removeLabel = canDismissValidationJob(job) ? 'Dismiss' : 'Remove';
   const stage = queueStagePresentation(job);
   const timing = jobTiming(job);
 
@@ -1320,7 +1331,7 @@ function JobRow({
               disabled={isUpdating || !canRemove}
               onClick={() => onRemove(job)}
             >
-              Remove
+              {removeLabel}
             </Button>
           </Stack>
         </Stack>
@@ -1589,6 +1600,14 @@ function normalizeStatusFilter(value: string | null): QueueJob['status'] | 'all'
   return value === 'all' || value === 'queued' || value === 'running' || value === 'completed' || value === 'failed' || value === 'canceled'
     ? value
     : 'all';
+}
+
+function queueDismissConfirmation(job: QueueJob) {
+  const jobLabel = `Job #${job.executionNumber ?? job.id}`;
+  if (canDismissValidationJob(job)) {
+    return `Dismiss ${jobLabel} from active Queue and Validation? This allows a fresh Queue operation. Its Queue history, Result, Validation evidence, logs, reports, staged output, sidecars, and source media will be preserved.`;
+  }
+  return `Remove ${jobLabel} from Queue? Its database record, logs, and reports will be preserved.`;
 }
 
 function statusLabel(status: QueueJob['status'] | 'all') {
