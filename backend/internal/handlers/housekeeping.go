@@ -30,18 +30,51 @@ type HousekeepingPolicy struct {
 }
 
 type HousekeepingCandidate struct {
-	CandidateID   string `json:"candidateId"`
-	Kind          string `json:"kind"`
-	Path          string `json:"path"`
-	JobID         uint   `json:"jobId,omitempty"`
-	OperationID   string `json:"operationId,omitempty"`
-	TestEncodeID  uint   `json:"testEncodeId,omitempty"`
-	Reason        string `json:"reason"`
-	Ownership     string `json:"ownership"`
-	SizeBytes     int64  `json:"sizeBytes"`
-	ModifiedAt    string `json:"modifiedAt"`
-	SafeToDelete  bool   `json:"safeToDelete"`
-	BlockedReason string `json:"blockedReason,omitempty"`
+	CandidateID              string                            `json:"candidateId"`
+	Kind                     string                            `json:"kind"`
+	Path                     string                            `json:"path"`
+	JobID                    uint                              `json:"jobId,omitempty"`
+	OperationID              string                            `json:"operationId,omitempty"`
+	TestEncodeID             uint                              `json:"testEncodeId,omitempty"`
+	Reason                   string                            `json:"reason"`
+	Ownership                string                            `json:"ownership"`
+	SizeBytes                int64                             `json:"sizeBytes"`
+	ModifiedAt               string                            `json:"modifiedAt"`
+	SafeToDelete             bool                              `json:"safeToDelete"`
+	ManualOnly               bool                              `json:"manualOnly,omitempty"`
+	Outcome                  string                            `json:"outcome,omitempty"`
+	BlockedReason            string                            `json:"blockedReason,omitempty"`
+	Maintenance              *HousekeepingMaintenanceDetails   `json:"maintenance,omitempty"`
+	ProtectionReferences     []HousekeepingProtectionReference `json:"protectionReferences,omitempty"`
+	ProtectionReferenceCount int                               `json:"protectionReferenceCount,omitempty"`
+}
+
+type HousekeepingMaintenanceDetails struct {
+	AssetPath               string `json:"assetPath"`
+	AssetRecordID           uint   `json:"assetRecordId,omitempty"`
+	AssetRecordStatus       string `json:"assetRecordStatus,omitempty"`
+	AssetRecordMissing      bool   `json:"assetRecordMissing"`
+	Status                  string `json:"status"`
+	Phase                   string `json:"phase"`
+	FinishedAt              string `json:"finishedAt,omitempty"`
+	TemporaryPresence       string `json:"temporaryPresence"`
+	TemporarySizeKnown      bool   `json:"temporarySizeKnown"`
+	BackupPath              string `json:"backupPath,omitempty"`
+	BackupPresence          string `json:"backupPresence"`
+	RecoveryState           string `json:"recoveryState"`
+	ResultFingerprint       string `json:"resultFingerprint,omitempty"`
+	CurrentAssetFingerprint string `json:"currentAssetFingerprint,omitempty"`
+	AssetFingerprintState   string `json:"assetFingerprintState"`
+	Warning                 string `json:"warning,omitempty"`
+}
+
+type HousekeepingProtectionReference struct {
+	Source   string `json:"source"`
+	RecordID string `json:"recordId"`
+	Field    string `json:"field"`
+	Path     string `json:"path"`
+	State    string `json:"state"`
+	Reason   string `json:"reason"`
 }
 
 type HousekeepingCategorySummary struct {
@@ -53,6 +86,7 @@ type HousekeepingCategorySummary struct {
 type HousekeepingReport struct {
 	RanAt            time.Time                      `json:"ranAt"`
 	DryRun           bool                           `json:"dryRun"`
+	Outcome          string                         `json:"outcome"`
 	PreviewID        string                         `json:"previewId,omitempty"`
 	PreviewExpiresAt *time.Time                     `json:"previewExpiresAt,omitempty"`
 	Candidates       []HousekeepingCandidate        `json:"candidates"`

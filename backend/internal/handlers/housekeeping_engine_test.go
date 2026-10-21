@@ -195,8 +195,8 @@ func TestHousekeepingTerminalWorkerProvenanceDoesNotBlockWorkspaceOrLogRetention
 		}
 		for path, kind := range map[string]string{workspaces[job.ID]: housekeepingKindWorkspace, logs[job.ID]: housekeepingKindJobLog} {
 			candidate, ok := housekeepingCandidateByPath(report, path, kind)
-			if !ok || !candidate.SafeToDelete {
-				t.Errorf("terminal job %d was not cleanup eligible for %s: %#v", job.ID, kind, candidate)
+			if !ok || candidate.SafeToDelete || candidate.Outcome != "cleaned" {
+				t.Errorf("terminal job %d cleanup outcome was not retained for %s: %#v", job.ID, kind, candidate)
 			}
 		}
 	}
@@ -365,8 +365,8 @@ func TestHousekeepingCleansPersistedAbandonedStageArtifactsAndPreservesRecords(t
 	}
 	for _, path := range []string{maintenancePath, archiveStage} {
 		candidate, ok := housekeepingCandidateByPath(report, path, housekeepingKindStageArtifact)
-		if !ok || !candidate.SafeToDelete {
-			t.Errorf("owned stage artifact was not previewed as safe: %#v", candidate)
+		if !ok || candidate.SafeToDelete || candidate.Outcome != "cleaned" {
+			t.Errorf("owned stage artifact cleanup outcome was not recorded: %#v", candidate)
 		}
 	}
 }
@@ -439,12 +439,20 @@ func TestHousekeepingRawDirectoriesRequireLiteralEmptinessAndProtectReferences(t
 	processReferenceDir := filepath.Join(roots.raw, "active-process-reference")
 	reservedReferenceDir := filepath.Join(roots.raw, "active-reservation-reference")
 	publisherReferenceDir := filepath.Join(roots.raw, "active-publisher-reference")
-	for _, path := range []string{assetReferenceDir, queueReferenceDir, queuedReferenceDir, processReferenceDir, reservedReferenceDir, publisherReferenceDir} {
+	rootReferenceDir := filepath.Join(roots.raw, "asset-root-reference")
+	groupReferenceDir := filepath.Join(roots.raw, "asset-group-reference")
+	maintenanceReferenceDir := filepath.Join(roots.raw, "active-maintenance-reference")
+	for _, path := range []string{assetReferenceDir, queueReferenceDir, queuedReferenceDir, processReferenceDir, reservedReferenceDir, publisherReferenceDir, rootReferenceDir, groupReferenceDir, maintenanceReferenceDir} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := db.Create(&models.AssetRecord{Path: filepath.Join(assetReferenceDir, "current.mkv"), RootPath: roots.raw, Status: "unprocessed", Missing: false}).Error; err != nil {
+	assetRecord := models.AssetRecord{Path: filepath.Join(assetReferenceDir, "current.mkv"), SourcePath: filepath.Join(assetReferenceDir, "source.mkv"), RootPath: roots.raw, Status: "unprocessed", Missing: false}
+	if err := db.Create(&assetRecord).Error; err != nil {
+		t.Fatal(err)
+	}
+	rootGroupRecord := models.AssetRecord{Path: "/synthetic/movie.mkv", RootPath: rootReferenceDir, GroupPath: groupReferenceDir, Status: "unprocessed", Missing: false}
+	if err := db.Create(&rootGroupRecord).Error; err != nil {
 		t.Fatal(err)
 	}
 	old := housekeepingOldTime()
@@ -454,13 +462,23 @@ func TestHousekeepingRawDirectoriesRequireLiteralEmptinessAndProtectReferences(t
 	if historicalPublished.WorkerName != "local-worker" {
 		t.Fatal("historical QueueJob WorkerName provenance was not retained")
 	}
-	housekeepingCreateJob(t, db, JobStatusQueued, models.QueueJob{MediaPath: filepath.Join(queuedReferenceDir, "queued.mkv")})
+	queuedJob := housekeepingCreateJob(t, db, JobStatusQueued, models.QueueJob{MediaPath: filepath.Join(queuedReferenceDir, "queued.mkv")})
 	processJob := housekeepingCreateJob(t, db, JobStatusFailed, models.QueueJob{MediaPath: filepath.Join(processReferenceDir, "processing.mkv"), WorkerName: "local-worker", StartedAt: &old})
 	if err := db.Model(&processJob).UpdateColumn("finished_at", nil).Error; err != nil {
 		t.Fatal(err)
 	}
 	reservedJob := housekeepingCreateJob(t, db, JobStatusCompleted, models.QueueJob{MediaPath: filepath.Join(reservedReferenceDir, "reserved.mkv"), PublishedAt: &old, StartedAt: &old, FinishedAt: &old})
-	if err := db.Create(&models.SchedulerReservation{JobID: reservedJob.ID, AssetKey: reservedJob.MediaPath, State: "active", WorkerName: "local-worker"}).Error; err != nil {
+	reservation := models.SchedulerReservation{JobID: reservedJob.ID, AssetKey: reservedJob.MediaPath, State: "active", WorkerName: "local-worker"}
+	if err := db.Create(&reservation).Error; err != nil {
+		t.Fatal(err)
+	}
+	maintenanceOperation := models.AssetMaintenanceOperation{
+		ID: "maintenance-raw-active", AssetPath: filepath.Join(maintenanceReferenceDir, "working.mkv"),
+		TemporaryPath: filepath.Join(maintenanceReferenceDir, ".working.mkv.maintenance-raw-active.tmp.mkv"),
+		BackupPath:    filepath.Join(maintenanceReferenceDir, ".working.mkv.maintenance-raw-active.backup.mkv"),
+		Status:        maintenanceStatusRunning, Phase: "committing",
+	}
+	if err := db.Create(&maintenanceOperation).Error; err != nil {
 		t.Fatal(err)
 	}
 	publisherJob := housekeepingCreateJob(t, db, JobStatusCompleted, models.QueueJob{MediaPath: filepath.Join(publisherReferenceDir, "publishing.mkv"), PublishedAt: &old, StartedAt: &old, FinishedAt: &old})
@@ -490,12 +508,12 @@ func TestHousekeepingRawDirectoriesRequireLiteralEmptinessAndProtectReferences(t
 	if _, err := os.Lstat(queueReferenceDir); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("historical published QueueJob kept an empty RAW directory: %v", err)
 	}
-	for _, path := range []string{assetReferenceDir, queuedReferenceDir, processReferenceDir, reservedReferenceDir, publisherReferenceDir, filepath.Join(roots.raw, "contains-mkv"), filepath.Join(roots.raw, "contains-mp4"), filepath.Join(roots.raw, "contains-srt"), filepath.Join(roots.raw, "contains-nfo"), filepath.Join(roots.raw, "contains-artwork")} {
+	for _, path := range []string{assetReferenceDir, queuedReferenceDir, processReferenceDir, reservedReferenceDir, publisherReferenceDir, rootReferenceDir, groupReferenceDir, maintenanceReferenceDir, filepath.Join(roots.raw, "contains-mkv"), filepath.Join(roots.raw, "contains-mp4"), filepath.Join(roots.raw, "contains-srt"), filepath.Join(roots.raw, "contains-nfo"), filepath.Join(roots.raw, "contains-artwork")} {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("nonempty or referenced RAW directory was removed: %s (%v)", path, err)
 		}
 	}
-	for _, path := range []string{queuedReferenceDir, processReferenceDir, reservedReferenceDir, publisherReferenceDir} {
+	for _, path := range []string{queuedReferenceDir, processReferenceDir, reservedReferenceDir, publisherReferenceDir, maintenanceReferenceDir} {
 		candidate, ok := housekeepingCandidateByPath(report, path, housekeepingKindEmptyDirectory)
 		if !ok || candidate.SafeToDelete {
 			t.Errorf("current Queue ownership did not protect RAW directory %s: %#v", path, candidate)
@@ -505,8 +523,36 @@ func TestHousekeepingRawDirectoriesRequireLiteralEmptinessAndProtectReferences(t
 		t.Fatal("configured RAW root appeared as a candidate")
 	}
 	assetCandidate, ok := housekeepingCandidateByPath(report, assetReferenceDir, housekeepingKindEmptyDirectory)
-	if !ok || assetCandidate.SafeToDelete {
+	if !ok || assetCandidate.SafeToDelete || !housekeepingHasProtectionReference(assetCandidate, "AssetRecord", strconv.FormatUint(uint64(assetRecord.ID), 10), "path") {
 		t.Fatalf("AssetRecord-referenced empty directory was not protected: %#v", assetCandidate)
+	}
+	if !housekeepingHasProtectionReference(assetCandidate, "AssetRecord", strconv.FormatUint(uint64(assetRecord.ID), 10), "source_path") {
+		t.Fatalf("AssetRecord source_path was not identified: %#v", assetCandidate)
+	}
+	for _, reference := range []struct {
+		path  string
+		field string
+	}{{rootReferenceDir, "root_path"}, {groupReferenceDir, "group_path"}} {
+		candidate, ok := housekeepingCandidateByPath(report, reference.path, housekeepingKindEmptyDirectory)
+		if !ok || candidate.SafeToDelete || !housekeepingHasProtectionReference(candidate, "AssetRecord", strconv.FormatUint(uint64(rootGroupRecord.ID), 10), reference.field) {
+			t.Errorf("AssetRecord %s was not identified: %#v", reference.field, candidate)
+		}
+	}
+	queuedCandidate, ok := housekeepingCandidateByPath(report, queuedReferenceDir, housekeepingKindEmptyDirectory)
+	if !ok || !housekeepingHasProtectionReference(queuedCandidate, "QueueJob", strconv.FormatUint(uint64(queuedJob.ID), 10), "media_path") {
+		t.Fatalf("QueueJob source reference was not identified: %#v", queuedCandidate)
+	}
+	reservedCandidate, ok := housekeepingCandidateByPath(report, reservedReferenceDir, housekeepingKindEmptyDirectory)
+	if !ok || !housekeepingHasProtectionReference(reservedCandidate, "SchedulerReservation", strconv.FormatUint(uint64(reservation.ID), 10), "asset_key") {
+		t.Fatalf("active reservation was not identified: %#v", reservedCandidate)
+	}
+	publisherCandidate, ok := housekeepingCandidateByPath(report, publisherReferenceDir, housekeepingKindEmptyDirectory)
+	if !ok || !housekeepingHasProtectionReference(publisherCandidate, "PublisherPublication", "active-publisher-publication", "source_path") {
+		t.Fatalf("active Publisher lease was not identified: %#v", publisherCandidate)
+	}
+	maintenanceCandidate, ok := housekeepingCandidateByPath(report, maintenanceReferenceDir, housekeepingKindEmptyDirectory)
+	if !ok || !housekeepingHasProtectionReference(maintenanceCandidate, "AssetMaintenanceOperation", maintenanceOperation.ID, "asset_path") {
+		t.Fatalf("active maintenance operation was not identified: %#v", maintenanceCandidate)
 	}
 }
 
@@ -664,5 +710,443 @@ func TestHousekeepingAutomaticAndManualExecutionShareActiveJobGuards(t *testing.
 				t.Fatalf("execution path did not share the active reservation guard: %#v", candidate)
 			}
 		})
+	}
+}
+
+func TestHousekeepingCompletedLibraryMaintenanceTemporaryIsAlreadyAbsentNoop(t *testing.T) {
+	db, roots := newHousekeepingTestDB(t)
+	assetPath := filepath.Join(roots.library, "Akira", "Akira_t00.mkv")
+	temporaryPath := filepath.Join(filepath.Dir(assetPath), ".Akira_t00.mkv.maintenance-noop.tmp.mkv")
+	backupPath := filepath.Join(filepath.Dir(assetPath), ".Akira_t00.mkv.maintenance-noop.backup.mkv")
+	finished := housekeepingOldTime()
+	operation := models.AssetMaintenanceOperation{
+		ID: "maintenance-noop", OperationType: "remove_tracks", AssetPath: assetPath,
+		TemporaryPath: temporaryPath, BackupPath: backupPath, Status: maintenanceStatusComplete, Phase: "completed",
+		FinishedAt: &finished, CreatedAt: finished, UpdatedAt: finished,
+	}
+	if err := db.Create(&operation).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := PreviewHousekeeping(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, ok := housekeepingCandidateByPath(report, temporaryPath, housekeepingKindStageArtifact)
+	if !ok || candidate.SafeToDelete || candidate.Outcome != "already_absent" || candidate.SizeBytes != 0 || candidate.BlockedReason != "" {
+		t.Fatalf("completed missing temporary was not reported as a zero-byte no-op: %#v", candidate)
+	}
+	if candidate.Maintenance == nil || candidate.Maintenance.Status != "completed" || candidate.Maintenance.Phase != "completed" || candidate.Maintenance.TemporaryPresence != "absent" || candidate.Maintenance.BackupPresence != "absent" {
+		t.Fatalf("maintenance state was not diagnosed: %#v", candidate.Maintenance)
+	}
+	for _, summary := range report.Summaries {
+		if summary.Kind == housekeepingKindStageArtifact && summary.RecoverableBytes != 0 {
+			t.Fatalf("missing temporary contributed recoverable bytes: %#v", summary)
+		}
+	}
+	result, err := ExecuteHousekeepingPreview(db, report.PreviewID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noOp, ok := housekeepingCandidateByPath(result, temporaryPath, housekeepingKindStageArtifact)
+	if !ok || result.Outcome != "already_absent" || noOp.Outcome != "already_absent" || result.RecoveredBytes != 0 || len(result.RemovedPaths) != 0 {
+		t.Fatalf("already absent outcome was not retained durably: candidate=%#v report=%#v", noOp, result)
+	}
+}
+
+func TestHousekeepingCompletedLibraryMaintenanceTemporaryRequiresManualBoundCleanup(t *testing.T) {
+	db, roots := newHousekeepingTestDB(t)
+	assetPath := filepath.Join(roots.library, "Akira", "Akira_t00.mkv")
+	content := []byte("completed maintenance result fixture")
+	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(assetPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	temporaryPath := filepath.Join(filepath.Dir(assetPath), ".Akira_t00.mkv.maintenance-residual.tmp.mkv")
+	backupPath := filepath.Join(filepath.Dir(assetPath), ".Akira_t00.mkv.maintenance-residual.backup.mkv")
+	if err := os.WriteFile(temporaryPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := mediaFileFingerprint(assetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := models.AssetRecord{Path: assetPath, RootPath: roots.library, FileName: filepath.Base(assetPath), Status: "processed", SizeBytes: int64(len(content)), Missing: false}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	finished := housekeepingOldTime()
+	operation := models.AssetMaintenanceOperation{
+		ID: "maintenance-residual", OperationType: "remove_tracks", AssetRecordID: record.ID, AssetPath: assetPath,
+		OriginalFingerprint: "original-fingerprint", ResultFingerprint: fingerprint,
+		TemporaryPath: temporaryPath, BackupPath: backupPath, Status: maintenanceStatusComplete, Phase: "completed",
+		FinishedAt: &finished, CreatedAt: finished, UpdatedAt: finished,
+	}
+	if err := db.Create(&operation).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	automatic, err := runAutomaticHousekeeping(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	automaticCandidate, ok := housekeepingCandidateByPath(automatic, temporaryPath, housekeepingKindStageArtifact)
+	if !ok || automaticCandidate.SafeToDelete || !automaticCandidate.ManualOnly || automaticCandidate.Outcome != "blocked" {
+		t.Fatalf("automatic housekeeping did not retain Library maintenance output: %#v", automaticCandidate)
+	}
+	if _, err := os.Stat(temporaryPath); err != nil {
+		t.Fatalf("automatic housekeeping removed Library maintenance output: %v", err)
+	}
+
+	preview, err := PreviewHousekeeping(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, ok := housekeepingCandidateByPath(preview, temporaryPath, housekeepingKindStageArtifact)
+	if !ok || !candidate.SafeToDelete || !candidate.ManualOnly || candidate.Maintenance == nil || candidate.Maintenance.AssetRecordID != record.ID || candidate.Maintenance.TemporaryPresence != "present" || candidate.Maintenance.BackupPresence != "absent" {
+		t.Fatalf("verified Library residual was not eligible in manual preview: %#v", candidate)
+	}
+	result, err := ExecuteHousekeepingPreview(db, preview.PreviewID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(temporaryPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verified temporary was not removed: %v", err)
+	}
+	if current, err := os.ReadFile(assetPath); err != nil || string(current) != string(content) {
+		t.Fatalf("canonical Library asset changed: %q err=%v", current, err)
+	}
+	var persisted models.AssetMaintenanceOperation
+	if err := db.Where("id = ?", operation.ID).First(&persisted).Error; err != nil || persisted.Status != maintenanceStatusComplete {
+		t.Fatalf("maintenance history was modified: %#v err=%v", persisted, err)
+	}
+	cleaned, ok := housekeepingCandidateByPath(result, temporaryPath, housekeepingKindStageArtifact)
+	if !ok || cleaned.SafeToDelete || cleaned.Outcome != "cleaned" || result.Outcome != "cleaned" || result.RecoveredBytes != int64(len(content)) {
+		t.Fatalf("cleanup outcome or reclaimed bytes were not persisted: candidate=%#v report=%#v", cleaned, result)
+	}
+}
+
+func TestHousekeepingLibraryMaintenanceRejectsBackupFingerprintAndReplacementChanges(t *testing.T) {
+	for _, testCase := range []string{"backup", "fingerprint", "hardlink", "symlink", "replacement", "operation-deleted", "operation-changed", "reference-added", "failed", "running", "unknown"} {
+		t.Run(testCase, func(t *testing.T) {
+			db, roots := newHousekeepingTestDB(t)
+			assetPath := filepath.Join(roots.library, "film.mkv")
+			content := []byte("verified result bytes")
+			if err := os.WriteFile(assetPath, content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			temporaryPath := filepath.Join(roots.library, ".film.mkv.maintenance-race.tmp.mkv")
+			backupPath := filepath.Join(roots.library, ".film.mkv.maintenance-race.backup.mkv")
+			if err := os.WriteFile(temporaryPath, content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fingerprint, err := mediaFileFingerprint(assetPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if testCase == "fingerprint" {
+				if err := os.WriteFile(temporaryPath, []byte("different output"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if testCase == "hardlink" {
+				if err := os.Link(temporaryPath, temporaryPath+".alias"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if testCase == "symlink" {
+				alternate := temporaryPath + ".target"
+				if err := os.WriteFile(alternate, content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(temporaryPath); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(alternate, temporaryPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if testCase == "backup" {
+				if err := os.WriteFile(backupPath, []byte("recovery backup"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			record := models.AssetRecord{Path: assetPath, RootPath: roots.library, FileName: filepath.Base(assetPath), Status: "processed", Missing: false}
+			if err := db.Create(&record).Error; err != nil {
+				t.Fatal(err)
+			}
+			finished := housekeepingOldTime()
+			status, phase := maintenanceStatusComplete, "completed"
+			switch testCase {
+			case "failed":
+				status, phase = maintenanceStatusFailed, "interrupted"
+			case "running":
+				status, phase = maintenanceStatusRunning, "remuxing"
+			case "unknown":
+				status, phase = "mystery", "mystery"
+			}
+			operation := models.AssetMaintenanceOperation{
+				ID: "maintenance-race", OperationType: "remove_tracks", AssetRecordID: record.ID, AssetPath: assetPath,
+				ResultFingerprint: fingerprint, TemporaryPath: temporaryPath, BackupPath: backupPath,
+				Status: status, Phase: phase, FinishedAt: &finished, CreatedAt: finished, UpdatedAt: finished,
+			}
+			if err := db.Create(&operation).Error; err != nil {
+				t.Fatal(err)
+			}
+			preview, err := PreviewHousekeeping(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate, ok := housekeepingCandidateByPath(preview, temporaryPath, housekeepingKindStageArtifact)
+			if !ok || candidate.SafeToDelete {
+				if ok && candidate.SafeToDelete && (testCase == "replacement" || testCase == "operation-deleted" || testCase == "operation-changed" || testCase == "reference-added") {
+					switch testCase {
+					case "replacement":
+						alternate := temporaryPath + ".replacement"
+						if err := os.WriteFile(alternate, content, 0o644); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Remove(temporaryPath); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Rename(alternate, temporaryPath); err != nil {
+							t.Fatal(err)
+						}
+					case "operation-deleted":
+						if err := db.Delete(&models.AssetMaintenanceOperation{}, "id = ?", operation.ID).Error; err != nil {
+							t.Fatal(err)
+						}
+					case "operation-changed":
+						if err := db.Model(&models.AssetMaintenanceOperation{}).Where("id = ?", operation.ID).Updates(map[string]any{"status": maintenanceStatusRunning, "phase": "committing"}).Error; err != nil {
+							t.Fatal(err)
+						}
+					case "reference-added":
+						if err := db.Create(&models.AssetRecord{Path: temporaryPath, RootPath: roots.library, FileName: filepath.Base(temporaryPath), Status: "processed", Missing: false}).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+					result, err := ExecuteHousekeepingPreview(db, preview.PreviewID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					changed, _ := housekeepingCandidateByPath(result, temporaryPath, housekeepingKindStageArtifact)
+					if changed.SafeToDelete || changed.Outcome != "blocked" || changed.BlockedReason == "" {
+						t.Fatalf("replacement was not blocked: %#v", changed)
+					}
+					if _, err := os.Stat(temporaryPath); err != nil {
+						t.Fatalf("replacement file was removed: %v", err)
+					}
+					return
+				}
+				t.Fatalf("unexpected preview eligibility: %#v", candidate)
+			}
+			if testCase == "backup" && (candidate.Maintenance == nil || candidate.Maintenance.BackupPresence != "present") {
+				t.Fatalf("backup presence was not diagnosed: %#v", candidate.Maintenance)
+			}
+			if testCase == "fingerprint" && candidate.BlockedReason == "" {
+				t.Fatal("fingerprint mismatch was not explained")
+			}
+			if (testCase == "hardlink" || testCase == "symlink") && candidate.BlockedReason == "" {
+				t.Fatalf("unsafe temporary path was not explained: %#v", candidate)
+			}
+			if _, err := os.Stat(temporaryPath); err != nil {
+				t.Fatalf("blocked temporary was removed: %v", err)
+			}
+		})
+	}
+}
+
+func TestHousekeepingLibraryMaintenanceRejectsTraversalAndRoleOverlap(t *testing.T) {
+	for _, testCase := range []string{"traversal", "overlap"} {
+		t.Run(testCase, func(t *testing.T) {
+			db, roots := newHousekeepingTestDB(t)
+			libraryRoot := roots.library
+			if testCase == "overlap" {
+				libraryRoot = filepath.Join(roots.raw, "nested-library")
+				if err := os.MkdirAll(libraryRoot, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				var setting models.AppSetting
+				if err := db.Where("key = ?", "storageRoles").First(&setting).Error; err != nil {
+					t.Fatal(err)
+				}
+				setting.Value["library"] = map[string]interface{}{"path": libraryRoot}
+				if err := db.Save(&setting).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			assetPath := filepath.Join(libraryRoot, "film.mkv")
+			if err := os.WriteFile(assetPath, []byte("asset"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			temporaryPath := filepath.Join(libraryRoot, ".film.mkv.maintenance-unsafe.tmp.mkv")
+			if err := os.WriteFile(temporaryPath, []byte("asset"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if testCase == "traversal" {
+				temporaryPath = libraryRoot + string(os.PathSeparator) + ".." + string(os.PathSeparator) + filepath.Base(libraryRoot) + string(os.PathSeparator) + filepath.Base(temporaryPath)
+			}
+			finished := housekeepingOldTime()
+			operation := models.AssetMaintenanceOperation{
+				ID: "maintenance-unsafe", AssetPath: assetPath, TemporaryPath: temporaryPath,
+				BackupPath:        filepath.Join(libraryRoot, ".film.mkv.maintenance-unsafe.backup.mkv"),
+				ResultFingerprint: "unused", Status: maintenanceStatusComplete, Phase: "completed", FinishedAt: &finished, CreatedAt: finished, UpdatedAt: finished,
+			}
+			if err := db.Create(&operation).Error; err != nil {
+				t.Fatal(err)
+			}
+			report, err := PreviewHousekeeping(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate, ok := housekeepingCandidateByPath(report, temporaryPath, housekeepingKindStageArtifact)
+			if !ok || candidate.SafeToDelete || candidate.BlockedReason == "" {
+				t.Fatalf("unsafe Library role/path was not blocked: %#v", candidate)
+			}
+			if _, err := os.Stat(filepath.Join(libraryRoot, ".film.mkv.maintenance-unsafe.tmp.mkv")); err != nil {
+				t.Fatalf("unsafe path was modified: %v", err)
+			}
+		})
+	}
+}
+
+func TestHousekeepingRawDirectoryDiagnosticsRetainStaleAndConcurrentReferences(t *testing.T) {
+	db, roots := newHousekeepingTestDB(t)
+	staleDirectory := filepath.Join(roots.raw, "stale-asset")
+	if err := os.MkdirAll(staleDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := models.AssetRecord{Path: filepath.Join(staleDirectory, "missing.mkv"), RootPath: roots.raw, Status: "unprocessed", Missing: true}
+	if err := db.Create(&stale).Error; err != nil {
+		t.Fatal(err)
+	}
+	preview, err := PreviewHousekeeping(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleCandidate, ok := housekeepingCandidateByPath(preview, staleDirectory, housekeepingKindEmptyDirectory)
+	if !ok || staleCandidate.SafeToDelete || !housekeepingHasProtectionReference(staleCandidate, "AssetRecord", strconv.FormatUint(uint64(stale.ID), 10), "path") || staleCandidate.ProtectionReferences[0].State != "stale_reference_suspected" {
+		t.Fatalf("stale AssetRecord blocker was not identified: %#v", staleCandidate)
+	}
+	if _, err := os.Stat(staleDirectory); err != nil {
+		t.Fatalf("stale reference allowed empty RAW directory removal: %v", err)
+	}
+
+	concurrentDB, concurrentRoots := newHousekeepingTestDB(t)
+	concurrentDirectory := filepath.Join(concurrentRoots.raw, "new-reference")
+	if err := os.MkdirAll(concurrentDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	concurrentPreview, err := PreviewHousekeeping(concurrentDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, ok := housekeepingCandidateByPath(concurrentPreview, concurrentDirectory, housekeepingKindEmptyDirectory)
+	if !ok || !initial.SafeToDelete {
+		t.Fatalf("unreferenced empty directory was not eligible: %#v", initial)
+	}
+	newReference := models.AssetRecord{Path: filepath.Join(concurrentDirectory, "new.mkv"), RootPath: concurrentRoots.raw, Status: "unprocessed", Missing: false}
+	if err := concurrentDB.Create(&newReference).Error; err != nil {
+		t.Fatal(err)
+	}
+	result, err := ExecuteHousekeepingPreview(concurrentDB, concurrentPreview.PreviewID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, ok := housekeepingCandidateByPath(result, concurrentDirectory, housekeepingKindEmptyDirectory)
+	if !ok || changed.SafeToDelete || changed.Outcome != "blocked" || !housekeepingHasProtectionReference(changed, "AssetRecord", strconv.FormatUint(uint64(newReference.ID), 10), "path") {
+		t.Fatalf("new reference was not rechecked before removal: %#v", changed)
+	}
+	if _, err := os.Stat(concurrentDirectory); err != nil {
+		t.Fatalf("concurrent reference did not protect RAW directory: %v", err)
+	}
+}
+
+func housekeepingHasProtectionReference(candidate HousekeepingCandidate, source, recordID, field string) bool {
+	for _, reference := range candidate.ProtectionReferences {
+		if reference.Source == source && reference.RecordID == recordID && reference.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
+func TestHousekeepingRawDirectoryExecutionRejectsEntryAndIdentityChanges(t *testing.T) {
+	for _, testCase := range []string{"nonempty", "symlink", "replacement"} {
+		t.Run(testCase, func(t *testing.T) {
+			db, roots := newHousekeepingTestDB(t)
+			directory := filepath.Join(roots.raw, "mutable")
+			if err := os.MkdirAll(directory, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			preview, err := PreviewHousekeeping(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate, ok := housekeepingCandidateByPath(preview, directory, housekeepingKindEmptyDirectory)
+			if !ok || !candidate.SafeToDelete {
+				t.Fatalf("empty RAW directory was not eligible before mutation: %#v", candidate)
+			}
+			switch testCase {
+			case "nonempty":
+				housekeepingWriteFile(t, filepath.Join(directory, "poster.nfo"), "preserve sidecar")
+			case "symlink":
+				target := filepath.Join(t.TempDir(), "target")
+				if err := os.MkdirAll(target, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(directory); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, directory); err != nil {
+					t.Fatal(err)
+				}
+			case "replacement":
+				replacement := filepath.Join(roots.raw, "replacement")
+				if err := os.MkdirAll(replacement, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(directory); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(replacement, directory); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := ExecuteHousekeepingPreview(db, preview.PreviewID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed, ok := housekeepingCandidateByPath(result, directory, housekeepingKindEmptyDirectory)
+			if !ok || changed.SafeToDelete || changed.Outcome != "blocked" || changed.BlockedReason == "" {
+				t.Fatalf("changed RAW directory was not reported as blocked: %#v", changed)
+			}
+			if _, err := os.Lstat(directory); err != nil {
+				t.Fatalf("changed RAW directory or replacement was removed: %v", err)
+			}
+		})
+	}
+
+	db, roots := newHousekeepingTestDB(t)
+	directory := filepath.Join(roots.raw, "symlink-directory")
+	target := filepath.Join(t.TempDir(), "outside-target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, directory); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := PreviewHousekeeping(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	symlinkCandidate, ok := housekeepingCandidateByPath(preview, directory, housekeepingKindEmptyDirectory)
+	if !ok || symlinkCandidate.SafeToDelete || symlinkCandidate.Outcome != "blocked" || symlinkCandidate.BlockedReason == "" {
+		t.Fatalf("RAW symlink directory was not shown as blocked: %#v", symlinkCandidate)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("symlink target changed during preview: %v", err)
 	}
 }
