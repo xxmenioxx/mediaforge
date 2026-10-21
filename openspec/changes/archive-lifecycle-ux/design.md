@@ -88,6 +88,13 @@ availability, and the backend's bounded action reasons. A missing, stale, or
 unresolved original remains visible as such under that context and is not
 silently rebound to another asset.
 
+In the compact Library inventory, show a small Archive icon after the filename
+inside the existing name cell only when `lifecycle.archivedOriginals` contains
+an entry whose relationship is `current` and availability is `available`.
+This is a read-only availability hint: it does not depend on restore permission,
+does not appear in RAW, and adds no row, column, per-asset request, or action.
+The filename keeps its own truncation and tooltip.
+
 ### Existing mutations remain authoritative
 
 Use the existing `restore` and `deleteArchivedOriginal` capability fields as

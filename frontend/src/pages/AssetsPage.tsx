@@ -53,6 +53,7 @@ import ScienceIcon from '@mui/icons-material/Science';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
+import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Component, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
@@ -4255,6 +4256,9 @@ function AssetRow({
   const isAccepted = assetProvenance === 'imported' || (!assetProvenance && asset.status === 'accepted');
   const isLibraryReplacement = asset.status === 'unverified' || asset.status === 'library' || asset.status === 'published_as_is';
   const compactAssetsRow = compactLibrary || compactRaw;
+  const hasArchivedOriginal = (asset.lifecycle?.archivedOriginals ?? []).some(
+    (original) => original.relationship === 'current' && original.availability === 'available',
+  );
   const canGenerateTestEncode = testEncodeEligibleAsset(asset, mode);
   const labCapability = assetInfoCapability(asset, 'lab');
   const renameCapability = assetInfoCapability(asset, 'rename');
@@ -5325,14 +5329,21 @@ async function generateExternalSubtitle(
             </TableCell>
           ) : null}
           <TableCell sx={{ minWidth: 0 }}>
-            <Tooltip title={asset.fileName}>
-              <Stack direction="row" alignItems="center" spacing={0.65} sx={{ minWidth: 0 }}>
-                <InsertDriveFileOutlinedIcon sx={{ fontSize: 15, flexShrink: 0, color: selected ? '#b8a7ff' : '#8fb3d0' }} />
+            <Stack direction="row" alignItems="center" spacing={0.65} sx={{ minWidth: 0 }}>
+              <InsertDriveFileOutlinedIcon sx={{ fontSize: 15, flexShrink: 0, color: selected ? '#b8a7ff' : '#8fb3d0' }} />
+              <Tooltip title={asset.fileName}>
                 <Typography variant="body2" fontWeight={600} noWrap sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '0.8rem', color: selected ? '#e7eef8' : '#afc1d5' }}>
                   {asset.fileName}
                 </Typography>
-              </Stack>
-            </Tooltip>
+              </Tooltip>
+              {compactLibrary && !compactRaw && hasArchivedOriginal ? (
+                <Tooltip title="Original disponible en Archive">
+                  <Box component="span" role="img" aria-label="Original disponible en Archive" sx={{ display: 'inline-flex', flexShrink: 0, color: selected ? '#c9d3ff' : '#8fa5ba' }}>
+                    <ArchiveOutlinedIcon aria-hidden="true" sx={{ fontSize: 14 }} />
+                  </Box>
+                </Tooltip>
+              ) : null}
+            </Stack>
           </TableCell>
           <TableCell>
             {cachedAdvisor && Number.isFinite(cachedAdvisor.score) ? (
