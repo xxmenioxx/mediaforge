@@ -1615,7 +1615,7 @@ func resolveAutomaticFrameStructure(
 		return profile, nil
 	}
 	if profileWorkerBool(profile, "effectiveOutputFrameRateUnknown", false) {
-		return models.Profile{}, fmt.Errorf("frame structure GOP resolution requires a known effective output frame rate after an explicit FPS transform")
+		return models.Profile{}, &frameStructureResolutionRequiredError{}
 	}
 
 	scan, err := automaticFrameStructureSnapshot(db, mediaPath)
