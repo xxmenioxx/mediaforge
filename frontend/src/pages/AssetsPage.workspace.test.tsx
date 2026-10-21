@@ -1132,7 +1132,7 @@ describe('RAW Assets workspace', () => {
 
     expect(await screen.findByText('The requested Library location is unavailable or contains no matching assets.')).toBeTruthy();
     expect(screen.queryByText('Trailer.mkv')).toBeNull();
-    expect(libraryTreeItem('Anime').getAttribute('aria-selected')).toBe('false');
+    expect(screen.queryAllByRole('treeitem').filter((item) => item.getAttribute('aria-selected') === 'true')).toHaveLength(0);
     const query = new URLSearchParams(screen.getByTestId('asset-query').textContent ?? '');
     expect(query.get('location')).toBe('library');
     expect(query.get('libraryId')).toBe('99');
