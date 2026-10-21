@@ -605,6 +605,9 @@ export function AssetsPage() {
       </Box>
       <BatchPreflightDialog
         candidate={queuePreflightCandidate}
+        profiles={profiles.data}
+        libraries={libraries.data}
+        settings={settings.data}
         onClose={() => {
           queuePreflightRequestGeneration.current += 1;
           setQueuePreflightResumePending(false);

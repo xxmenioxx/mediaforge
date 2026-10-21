@@ -1963,6 +1963,41 @@ export type QueueBatchInput = {
 
 export type QueueBatchPreflightInput = QueueBatchInput & { revision?: number };
 
+export type QueueBatchPreflightAssignmentValue = {
+  selection?: string;
+  source?: string;
+  assignmentOrigin?: string;
+  targetPath?: string;
+  profileId?: number;
+  profileName?: string;
+  profileVersion?: number;
+  profileKey?: string;
+  libraryId?: number;
+  libraryName?: string;
+  destinationPath?: string;
+  processingMode?: string;
+  selectedEncoder?: string;
+  candidateOverride?: boolean;
+};
+
+export type QueueBatchPreflightAssignmentChange = {
+  domain: 'video' | 'audio' | 'tracks' | 'destination' | 'asset' | string;
+  reason: string;
+  before: QueueBatchPreflightAssignmentValue;
+  current: QueueBatchPreflightAssignmentValue;
+};
+
+export type QueueBatchPreflightAssignmentReview = {
+  required: boolean;
+  changes: Array<{
+    domain: 'video' | 'audio' | 'tracks' | 'destination' | string;
+    before: QueueBatchPreflightAssignmentValue;
+    after: QueueBatchPreflightAssignmentValue;
+  }>;
+};
+
+export type QueueBatchPreflightUpdateInput = QueueBatchPreflightInput & { reResolveAssignments?: boolean };
+
 export type QueueBatchPreflightPlan = {
   profile: Profile;
   profileSnapshot: Record<string, unknown> | null;
@@ -2069,6 +2104,8 @@ export type QueueBatchPreflightAsset = {
   blockers: string[];
   warnings: string[];
   queuedJobId?: number;
+  assignmentChanges?: QueueBatchPreflightAssignmentChange[];
+  assignmentReview?: QueueBatchPreflightAssignmentReview;
   plan?: QueueBatchPreflightPlan;
 };
 

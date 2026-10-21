@@ -19,11 +19,17 @@ import {
 } from '@mui/material';
 import { api, createCompatiblePreviewOwnerId, waitForCompatiblePreviewReady } from '../api/client';
 import { SourceBitrateQualityEvidence } from './SourceBitrateQualityEvidence';
+import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
 import type {
+  AppSetting,
+  AudioEnhancementProfile,
+  Library,
+  Profile,
   QueueBatchPreflightAsset,
-  QueueBatchPreflightInput,
+  QueueBatchPreflightAssignmentValue,
   QueueBatchPreflightPlan,
   QueueBatchPreflightResponse,
+  QueueBatchPreflightUpdateInput,
   QueueJobInput,
   SnapshotOperation,
 } from '../api/types';
@@ -37,6 +43,143 @@ function recordText(record: unknown, key: string) {
   const value = asRecord<Record<string, unknown>>(record)?.[key];
   if (value === undefined || value === null || value === '') return '';
   return typeof value === 'object' ? JSON.stringify(value) : String(value);
+}
+
+function audioProfilesForSettings(settings?: AppSetting[]): AudioEnhancementProfile[] {
+  const profiles = settings?.find((setting) => setting.key === 'audioEnhancementProfiles')?.value.profiles;
+  if (!Array.isArray(profiles)) return [];
+  return profiles.flatMap((value) => {
+    const profile = asRecord<AudioEnhancementProfile>(value);
+    return profile?.key && profile.name ? [profile] : [];
+  });
+}
+
+function assignmentOriginLabel(value: QueueBatchPreflightAssignmentValue) {
+  const source = value.source ?? '';
+  const scope = assignmentScopeName(value.assignmentOrigin ?? source);
+  const target = value.targetPath ? ` ${value.targetPath}` : '';
+  if (source === 'queue_batch_preflight_edit' || value.candidateOverride) {
+    const inherited = scope ? ` over ${scope}${target}` : '';
+    return `Candidate-only override${inherited}`;
+  }
+  if (scope === 'Path') return `Inherited from Path${target}`;
+  if (scope === 'Logical Group') return `Inherited from Logical Group${target}`;
+  if (scope === 'Source Group') return `Inherited from Source Group${target}`;
+  if (scope === 'Asset override') return 'Asset override';
+  if (scope === 'Global/default') return 'Global/default';
+  if (source === 'audio_only_fallback') return 'Audio-only fallback';
+  if (source) return `${scope}${target}`;
+  return 'No assignment origin recorded';
+}
+
+function assignmentScopeName(source: string) {
+  const normalized = source.replace(/_assignment$/, '');
+  if (normalized === 'asset') return 'Asset override';
+  if (normalized === 'path') return 'Path';
+  if (normalized === 'logical_group') return 'Logical Group';
+  if (normalized === 'source_group') return 'Source Group';
+  if (normalized === 'global') return 'Global/default';
+  return normalized.replace(/_/g, ' ');
+}
+
+function assignmentValueLabel(
+  value: QueueBatchPreflightAssignmentValue,
+  domain: string,
+  inventories: { profiles?: Profile[]; libraries?: Library[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[] },
+) {
+  const origin = assignmentOriginLabel(value);
+  if (domain === 'video') {
+    const profile = inventories.profiles?.find((item) => item.id === value.profileId);
+    const name = value.profileName || profile?.name || (value.selection === 'custom' || value.selection === 'override_only' ? 'Custom video configuration' : 'Video profile unavailable');
+    const version = value.profileVersion ? ` (v${value.profileVersion})` : profile?.profileVersion ? ` (v${profile.profileVersion})` : '';
+    const fallback = value.selection === 'audio_only_fallback' || value.source === 'audio_only_fallback';
+    return `${fallback ? 'Audio-only fallback: ' : ''}${name}${version}${value.profileId ? ` · ID ${value.profileId}` : ''} · ${origin}`;
+  }
+  if (domain === 'audio' || domain === 'tracks') {
+    const key = value.profileKey ?? '';
+    const custom = key === '__asset_defaults_custom_audio__' || key === '__asset_defaults_custom_tracks__';
+    const profiles = domain === 'audio' ? inventories.audioProfiles : inventories.trackProfiles;
+    const profile = profiles.find((item) => item.key === key);
+    const profileName = value.profileName || profile?.name;
+    const selection = value.selection ?? '';
+    let name = custom ? 'Custom Asset Defaults' : key ? profileName || `Missing ${domain === 'audio' ? 'Audio' : 'Track'} Profile` : selection === 'disabled' ? 'Disabled' : selection === 'inherit' ? 'Inherit' : 'None';
+    if (key && profileName && !custom) name = profileName;
+    return `${name}${key && !custom ? ` · key ${key}` : ''} · ${origin}`;
+  }
+  const library = inventories.libraries?.find((item) => item.id === value.libraryId);
+  const name = value.libraryName || library?.name || (value.libraryId ? 'Library unavailable' : 'No destination');
+  const path = value.destinationPath || library?.destinationPath || '';
+  return `${name}${value.libraryId ? ` · ID ${value.libraryId}` : ''}${path ? ` · ${path}` : ''} · ${origin}`;
+}
+
+function assignmentEvidence(asset: QueueBatchPreflightAsset, domain: string): QueueBatchPreflightAssignmentValue {
+  const resolution = asRecord(asset.plan?.profileResolution ?? asset.input.profileResolution);
+  const value = asRecord<QueueBatchPreflightAssignmentValue>(resolution?.[domain]);
+  if (domain === 'video' && asset.input.processingMode === 'audio_only' && asset.input.profileId === 0 && asset.plan) {
+    return {
+      ...(value ?? {}),
+      selection: 'audio_only_fallback',
+      profileId: asset.plan.profile.id,
+      profileName: asset.plan.profile.name,
+      profileVersion: asset.plan.profileVersion,
+      processingMode: 'audio_only',
+      selectedEncoder: asset.plan.selectedEncoder,
+    };
+  }
+  if (value) return value;
+  if (domain === 'video') return { profileId: asset.input.profileId, processingMode: asset.plan?.processingMode ?? asset.input.processingMode };
+  if (domain === 'audio') return { profileKey: asset.input.audioProfileKey ?? '' };
+  if (domain === 'tracks') return { profileKey: asset.input.trackProfileKey ?? '' };
+  return { libraryId: asset.input.libraryId };
+}
+
+function currentAssignmentValue(asset: QueueBatchPreflightAsset, domain: string): QueueBatchPreflightAssignmentValue {
+  const value = { ...assignmentEvidence(asset, domain) };
+  if (domain === 'video' && asset.plan) {
+    value.profileId = asset.plan.profile.id || value.profileId;
+    value.profileName = asset.plan.profile.name || value.profileName;
+    value.profileVersion = asset.plan.profileVersion;
+    value.processingMode = asset.plan.processingMode;
+    value.selectedEncoder = asset.plan.selectedEncoder;
+  } else if (domain === 'audio' && asset.plan) {
+    value.profileKey = asset.input.audioProfileKey || recordText(asset.plan.audioProfileSnapshot, 'key') || value.profileKey;
+    value.profileName = value.profileName || recordText(asset.plan.audioProfileSnapshot, 'name');
+  } else if (domain === 'tracks' && asset.plan) {
+    value.profileKey = asset.input.trackProfileKey || recordText(asset.plan.trackProfileSnapshot, 'key') || value.profileKey;
+    value.profileName = value.profileName || recordText(asset.plan.trackProfileSnapshot, 'name');
+  } else if (domain === 'destination' && asset.plan) {
+    value.libraryId = asset.input.libraryId;
+    value.libraryName = recordText(asset.plan.destination, 'libraryName') || value.libraryName;
+    value.destinationPath = recordText(asset.plan.destination, 'destinationRoot') || value.destinationPath;
+  }
+  return value;
+}
+
+function assignmentSummary(asset: QueueBatchPreflightAsset, inventories: { profiles?: Profile[]; libraries?: Library[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[] }) {
+  return [
+    ['Effective video profile', currentAssignmentValue(asset, 'video')],
+    ['Effective audio profile', currentAssignmentValue(asset, 'audio')],
+    ['Effective track profile', currentAssignmentValue(asset, 'tracks')],
+    ['Destination library', currentAssignmentValue(asset, 'destination')],
+  ].map(([label, value]) => <Grid key={String(label)} size={{ xs: 12, sm: 6 }}>
+    <Typography variant="caption" color="text.secondary">{label}</Typography>
+    <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{assignmentValueLabel(value as QueueBatchPreflightAssignmentValue, label === 'Effective video profile' ? 'video' : label === 'Effective audio profile' ? 'audio' : label === 'Effective track profile' ? 'tracks' : 'destination', inventories)}</Typography>
+  </Grid>);
+}
+
+function missingInventoryReferences(asset: QueueBatchPreflightAsset, profiles: Profile[] | undefined, libraries: Library[] | undefined, audioProfiles: AudioEnhancementProfile[], trackProfiles: TrackProfile[], settingsLoaded: boolean) {
+  const missing: string[] = [];
+  if (profiles && asset.input.profileId > 0 && !profiles.some((profile) => profile.id === asset.input.profileId && !profile.disabled && !profile.deletedAt)) missing.push(`Video Profile ID ${asset.input.profileId}`);
+  if (libraries && asset.input.libraryId > 0 && !libraries.some((library) => library.id === asset.input.libraryId)) missing.push(`Library ID ${asset.input.libraryId}`);
+  const audioKey = asset.input.audioProfileKey ?? '';
+  if (settingsLoaded && audioKey && audioKey !== '__asset_defaults_custom_audio__' && !audioProfiles.some((profile) => profile.key === audioKey && !(profile as unknown as Record<string, unknown>).disabled && !(profile as unknown as Record<string, unknown>).deletedAt)) missing.push(`Audio Profile key ${audioKey}`);
+  const trackKey = asset.input.trackProfileKey ?? '';
+  if (settingsLoaded && trackKey && trackKey !== '__asset_defaults_custom_tracks__' && !trackProfiles.some((profile) => profile.key === trackKey && !profile.disabled && !profile.deletedAt)) missing.push(`Track Profile key ${trackKey}`);
+  return missing;
+}
+
+function reviewValue(value: QueueBatchPreflightAssignmentValue, domain: string, inventories: { profiles?: Profile[]; libraries?: Library[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[] }) {
+  return assignmentValueLabel(value, domain, inventories);
 }
 
 function planSummary(asset: QueueBatchPreflightAsset) {
@@ -158,17 +301,24 @@ function releaseCompatiblePreviewLease(lease: CompatiblePreviewLease | null) {
 
 export function BatchPreflightDialog({
   candidate: initialCandidate,
+  profiles,
+  libraries,
+  settings,
   onClose,
   onAccepted,
   onDiscarded,
 }: {
   candidate: QueueBatchPreflightResponse | null;
+  profiles?: Profile[];
+  libraries?: Library[];
+  settings?: AppSetting[];
   onClose: () => void;
   onAccepted: (candidate: QueueBatchPreflightResponse) => void;
   onDiscarded: (candidate: QueueBatchPreflightResponse) => void;
 }) {
   const [candidate, setCandidate] = useState(initialCandidate);
   const [selected, setSelected] = useState<string[]>(() => initialCandidate?.assets.filter((asset) => asset.status === 'ready').map((asset) => asset.id) ?? []);
+  const [reviewedAssignmentChanges, setReviewedAssignmentChanges] = useState(false);
   const [editing, setEditing] = useState(initialCandidate?.resolved === false);
   const [batchName, setBatchName] = useState(initialCandidate?.batchName ?? '');
   const [jobs, setJobs] = useState<QueueJobInput[]>(() => initialCandidate?.assets.filter((asset) => asset.status !== 'queued').map((asset) => ({ ...asset.input })) ?? []);
@@ -198,6 +348,7 @@ export function BatchPreflightDialog({
       return;
     }
     setCandidate(initialCandidate);
+    setReviewedAssignmentChanges(false);
     setSelected(initialCandidate.assets.filter((asset) => asset.status === 'ready').map((asset) => asset.id));
     setBatchName(initialCandidate.batchName);
     setJobs(initialCandidate.assets.filter((asset) => asset.status !== 'queued').map((asset) => ({ ...asset.input })));
@@ -234,10 +385,11 @@ export function BatchPreflightDialog({
   const resolveEdits = async () => {
     setBusy(true); setError('');
     try {
-      const input: QueueBatchPreflightInput = { revision: candidate.revision, batchId: candidate.batchId, batchName, jobs };
+      const input: QueueBatchPreflightUpdateInput = { revision: candidate.revision, batchId: candidate.batchId, batchName, jobs };
       const resolved = await api.updateQueueBatchPreflight(candidate.id, input);
       setCandidate(resolved);
       setSelected(resolved.assets.filter((asset) => asset.status === 'ready').map((asset) => asset.id));
+      setReviewedAssignmentChanges(false);
       setEditing(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -247,7 +399,9 @@ export function BatchPreflightDialog({
   const accept = async () => {
     setBusy(true); setError('');
     try {
-      const accepted = await api.acceptQueueBatchPreflight(candidate.id, candidate.revision, selected);
+      const accepted = reviewedAssignmentChanges
+        ? await api.acceptQueueBatchPreflight(candidate.id, candidate.revision, selected, true)
+        : await api.acceptQueueBatchPreflight(candidate.id, candidate.revision, selected);
       setCandidate(accepted);
       onAccepted(accepted);
     } catch (caught) {
@@ -451,9 +605,11 @@ export function BatchPreflightDialog({
         batchId: candidate.batchId,
         batchName: editBaseline.batchName,
         jobs: editBaseline.jobs,
+        reResolveAssignments: true,
       });
       setCandidate(restored);
       setSelected(restored.assets.filter((asset) => asset.status === 'ready').map((asset) => asset.id));
+      setReviewedAssignmentChanges(false);
       setEditing(false);
       setEditBaseline(null);
     } catch (caught) {
@@ -463,6 +619,13 @@ export function BatchPreflightDialog({
 
   const unresolvedCount = candidate.assets.filter((asset) => asset.status !== 'queued').length;
   const blockerCount = candidate.assets.filter((asset) => asset.status !== 'queued' && asset.blockers.length > 0).length;
+  const audioProfiles = audioProfilesForSettings(settings);
+  const trackProfiles = getTrackProfiles(settings, true);
+  const inventories = { profiles, libraries, audioProfiles, trackProfiles };
+  const settingsLoaded = settings !== undefined;
+  const assignmentReviewPending = candidate.assets.some((asset) => asset.assignmentReview?.required);
+  const assignmentChanges = candidate.assets.filter((asset) => (asset.assignmentChanges?.length ?? 0) > 0);
+  const missingReferences = candidate.assets.flatMap((asset) => missingInventoryReferences(asset, profiles, libraries, audioProfiles, trackProfiles, settingsLoaded).map((reference) => ({ asset, reference })));
 
   return <Dialog open onClose={busy ? undefined : closeDialog} fullWidth maxWidth="lg" aria-labelledby="batch-preflight-title">
     <DialogTitle id="batch-preflight-title">Batch Preflight · {candidate.batchName || 'Selected assets'}</DialogTitle>
@@ -473,6 +636,29 @@ export function BatchPreflightDialog({
         </Alert>
         {error ? <Alert severity="error">{error}</Alert> : null}
         {error ? <Button size="small" disabled={busy} onClick={() => void reloadLatestCandidate()}>Reload latest candidate</Button> : null}
+        {assignmentChanges.map((asset) => <Alert severity="warning" key={`${asset.id}-assignment-stale`} data-testid="preflight-stale-assignment">
+          <Stack spacing={0.5}>
+            <Typography variant="subtitle2">Assignments changed or became unavailable · {asset.mediaPath}</Typography>
+            {asset.assignmentChanges?.map((change, index) => <Typography variant="body2" key={`${change.domain}-${change.reason}-${index}`} sx={{ overflowWrap: 'anywhere' }}>
+              {change.domain === 'asset' ? 'Source asset identity changed; reload this candidate.' : `${change.domain}: ${change.reason.replace(/_/g, ' ')}. Before: ${reviewValue(change.before, change.domain, inventories)}. Current: ${reviewValue(change.current, change.domain, inventories)}.`}
+            </Typography>)}
+            <Typography variant="body2">Edit this candidate and choose “Discard edits &amp; re-resolve” to review the current canonical assignments. Accept &amp; Queue is disabled until the candidate is current.</Typography>
+          </Stack>
+        </Alert>)}
+        {missingReferences.length > 0 ? <Alert severity="error" data-testid="preflight-missing-inventory">
+          <Stack spacing={0.5}>
+            <Typography variant="subtitle2">Some candidate references are missing from current inventory.</Typography>
+            {missingReferences.map(({ asset, reference }) => <Typography key={`${asset.id}-${reference}`} variant="body2" sx={{ overflowWrap: 'anywhere' }}>{asset.mediaPath}: {reference}. The frozen candidate value is retained; choose a replacement explicitly.</Typography>)}
+          </Stack>
+        </Alert> : null}
+        {assignmentReviewPending ? <Alert severity="warning" data-testid="preflight-assignment-review">
+          <Stack spacing={0.75}>
+            <Typography variant="subtitle2">Review the assignment changes before accepting this candidate.</Typography>
+            {candidate.assets.filter((asset) => asset.assignmentReview?.required).flatMap((asset) => asset.assignmentReview?.changes.map((change, index) => <Typography variant="body2" key={`${asset.id}-${change.domain}-${index}`} sx={{ overflowWrap: 'anywhere' }}>
+              {asset.mediaPath} · {change.domain}: {reviewValue(change.before, change.domain, inventories)} → {reviewValue(change.after, change.domain, inventories)}
+            </Typography>) ?? [])}
+          </Stack>
+        </Alert> : null}
         {previewState !== 'idle' && previewAsset ? <Box sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
           <Stack spacing={1}>
             <Typography variant="subtitle2">Exact plan preview · {previewAsset.mediaPath}</Typography>
@@ -531,13 +717,86 @@ export function BatchPreflightDialog({
                 if (asset) void removeAsset(asset);
               }}>Remove from candidate</Button>
             </Stack>
-            <Grid container spacing={1}>
-              <Grid size={{ xs: 6, md: 2 }}><TextField label="Profile ID" type="number" size="small" value={job.profileId} onChange={(event) => updateJob(index, { profileId: Number(event.target.value) })} fullWidth /></Grid>
-              <Grid size={{ xs: 6, md: 2 }}><TextField label="Library ID" type="number" size="small" value={job.libraryId} onChange={(event) => updateJob(index, { libraryId: Number(event.target.value) })} fullWidth /></Grid>
-              <Grid size={{ xs: 12, md: 3 }}><TextField label="Audio profile key" size="small" value={job.audioProfileKey ?? ''} onChange={(event) => updateJob(index, { audioProfileKey: event.target.value })} fullWidth /></Grid>
-              <Grid size={{ xs: 12, md: 3 }}><TextField label="Track profile key" size="small" value={job.trackProfileKey ?? ''} onChange={(event) => updateJob(index, { trackProfileKey: event.target.value })} fullWidth /></Grid>
-              <Grid size={{ xs: 12, md: 2 }}><TextField select label="Processing" size="small" value={job.processingMode ?? 'full_encode'} onChange={(event) => updateJob(index, { processingMode: event.target.value as QueueJobInput['processingMode'] })} fullWidth><MenuItem value="full_encode">Full encode</MenuItem><MenuItem value="audio_only">Audio only</MenuItem></TextField></Grid>
-            </Grid>
+            {candidate.assets.find((asset) => asset.mediaPath === job.mediaPath) ? <Grid container spacing={0.75} sx={{ mb: 1 }}>
+              {assignmentSummary(candidate.assets.find((asset) => asset.mediaPath === job.mediaPath)!, inventories)}
+            </Grid> : null}
+            {(() => {
+              const currentAsset = candidate.assets.find((asset) => asset.mediaPath === job.mediaPath);
+              const currentVideo = currentAsset ? currentAssignmentValue(currentAsset, 'video') : null;
+              const currentDestination = currentAsset ? currentAssignmentValue(currentAsset, 'destination') : null;
+              const currentAudio = currentAsset ? currentAssignmentValue(currentAsset, 'audio') : null;
+              const currentTracks = currentAsset ? currentAssignmentValue(currentAsset, 'tracks') : null;
+              const videoValue = job.profileId > 0 ? String(job.profileId) : job.processingMode === 'audio_only' ? 'audio-only-fallback' : 'custom-video';
+              const audioValue = job.audioProfileKey ?? '';
+              const trackValue = job.trackProfileKey ?? '';
+              const profileList = profiles ?? [];
+              const libraryList = libraries ?? [];
+              const selectedProfile = profileList.find((profile) => profile.id === job.profileId);
+              const selectedLibrary = libraryList.find((library) => library.id === job.libraryId);
+              return <Grid container spacing={1}>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <TextField select label="Video profile" size="small" value={videoValue} fullWidth
+                    onChange={(event) => updateJob(index, { profileId: event.target.value === 'audio-only-fallback' || event.target.value === 'custom-video' ? 0 : Number(event.target.value) })}
+                    helperText={currentVideo ? `Current candidate: ${assignmentValueLabel(currentVideo, 'video', inventories)}` : 'Choose the profile definition used by this candidate.'}>
+                    {job.processingMode === 'audio_only' && job.profileId === 0 ? <MenuItem value="audio-only-fallback">
+                      <Stack><span>Audio-only fallback: {currentAsset?.plan?.profile.name || 'profile snapshot'} (v{currentAsset?.plan?.profileVersion ?? 'unknown'})</span><Typography variant="caption">ID {currentAsset?.plan?.profile.id ?? 'unavailable'} · used for the audio-only frozen snapshot</Typography></Stack>
+                    </MenuItem> : null}
+                    {job.profileId === 0 && job.processingMode !== 'audio_only' ? <MenuItem value="custom-video">Custom video configuration · no reusable profile</MenuItem> : null}
+                    {job.profileId > 0 && profiles && !selectedProfile ? <MenuItem value={String(job.profileId)} disabled>
+                      <Stack><span>Missing Video Profile · frozen {currentAsset?.plan?.profile.name || 'profile unavailable'}</span><Typography variant="caption">ID {job.profileId}</Typography></Stack>
+                    </MenuItem> : null}
+                    {!profiles && job.profileId > 0 ? <MenuItem value={String(job.profileId)}>
+                      <Stack><span>{currentAsset?.plan?.profile.name || `Video Profile ${job.profileId}`} (v{currentAsset?.plan?.profileVersion ?? 'unknown'})</span><Typography variant="caption">Candidate snapshot · ID {job.profileId}; inventory loading</Typography></Stack>
+                    </MenuItem> : null}
+                    {profileList.map((profile) => <MenuItem key={profile.id} value={String(profile.id)} disabled={profile.disabled || Boolean(profile.deletedAt)}>
+                      <Stack><span>{profile.name} (v{profile.id === job.profileId && currentAsset?.plan ? currentAsset.plan.profileVersion : profile.profileVersion}){profile.disabled || profile.deletedAt ? ' · unavailable' : ''}</span><Typography variant="caption">ID {profile.id}</Typography></Stack>
+                    </MenuItem>)}
+                  </TextField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <TextField select label="Destination library" size="small" value={String(job.libraryId)} fullWidth
+                    onChange={(event) => updateJob(index, { libraryId: Number(event.target.value) })}
+                    helperText={currentDestination ? `Current candidate: ${assignmentValueLabel(currentDestination, 'destination', inventories)}` : 'Choose the publication destination.'}>
+                    {job.libraryId > 0 && libraries && !selectedLibrary ? <MenuItem value={String(job.libraryId)} disabled>
+                      <Stack><span>Missing Library · frozen {currentAsset?.plan ? recordText(currentAsset.plan.destination, 'libraryName') || 'destination snapshot' : 'destination unavailable'}</span><Typography variant="caption">ID {job.libraryId}</Typography></Stack>
+                    </MenuItem> : null}
+                    {!libraries && job.libraryId > 0 ? <MenuItem value={String(job.libraryId)}>
+                      <Stack><span>{currentAsset?.plan ? recordText(currentAsset.plan.destination, 'libraryName') || `Library ${job.libraryId}` : `Library ${job.libraryId}`}</span><Typography variant="caption">Candidate snapshot · ID {job.libraryId}; inventory loading</Typography></Stack>
+                    </MenuItem> : null}
+                    {libraryList.map((library) => <MenuItem key={library.id} value={String(library.id)}>
+                      <Stack><span>{library.name}</span><Typography variant="caption">{library.destinationPath} · ID {library.id}</Typography></Stack>
+                    </MenuItem>)}
+                  </TextField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField select label="Audio profile" size="small" value={audioValue} fullWidth
+                    onChange={(event) => updateJob(index, { audioProfileKey: event.target.value })}
+                    helperText={currentAudio ? `Current candidate: ${assignmentValueLabel(currentAudio, 'audio', inventories)}` : 'Choose a named Audio Profile or keep the current none/disabled state.'}>
+                    <MenuItem value="">{currentAudio?.selection === 'disabled' ? 'Disabled' : currentAudio?.selection === 'inherit' ? 'Inherit' : 'None'}</MenuItem>
+                    {audioValue === '__asset_defaults_custom_audio__' ? <MenuItem value="__asset_defaults_custom_audio__">Custom Asset Defaults</MenuItem> : null}
+                    {audioValue && audioValue !== '__asset_defaults_custom_audio__' && settingsLoaded && !audioProfiles.some((profile) => profile.key === audioValue) ? <MenuItem value={audioValue} disabled>Missing Audio Profile · key {audioValue}</MenuItem> : null}
+                    {!settingsLoaded && audioValue ? <MenuItem value={audioValue}>Current snapshot · key {audioValue} (inventory loading)</MenuItem> : null}
+                    {audioProfiles.map((profile) => <MenuItem key={profile.key} value={profile.key} disabled={Boolean((profile as unknown as Record<string, unknown>).disabled || (profile as unknown as Record<string, unknown>).deletedAt)}>{profile.name} · key {profile.key}</MenuItem>)}
+                  </TextField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField select label="Track profile" size="small" value={trackValue} fullWidth
+                    onChange={(event) => updateJob(index, { trackProfileKey: event.target.value })}
+                    helperText={currentTracks ? `Current candidate: ${assignmentValueLabel(currentTracks, 'tracks', inventories)}` : 'Choose a named Track Profile or keep the current none/disabled state.'}>
+                    <MenuItem value="">{currentTracks?.selection === 'disabled' ? 'Disabled' : currentTracks?.selection === 'inherit' ? 'Inherit' : 'None'}</MenuItem>
+                    {trackValue === '__asset_defaults_custom_tracks__' ? <MenuItem value="__asset_defaults_custom_tracks__">Custom Asset Defaults</MenuItem> : null}
+                    {trackValue && trackValue !== '__asset_defaults_custom_tracks__' && settingsLoaded && !trackProfiles.some((profile) => profile.key === trackValue) ? <MenuItem value={trackValue} disabled>Missing Track Profile · key {trackValue}</MenuItem> : null}
+                    {!settingsLoaded && trackValue ? <MenuItem value={trackValue}>Current snapshot · key {trackValue} (inventory loading)</MenuItem> : null}
+                    {trackProfiles.map((profile) => <MenuItem key={profile.key} value={profile.key} disabled={Boolean(profile.disabled || profile.deletedAt)}>{profile.name} · key {profile.key}</MenuItem>)}
+                  </TextField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField select label="Processing" size="small" value={job.processingMode ?? 'full_encode'} onChange={(event) => updateJob(index, { processingMode: event.target.value as QueueJobInput['processingMode'] })} fullWidth>
+                    <MenuItem value="full_encode">Full encode</MenuItem><MenuItem value="audio_only">Audio only</MenuItem>
+                  </TextField>
+                </Grid>
+              </Grid>;
+            })()}
           </Box>)}
         </> : candidate.assets.map((asset) => <Box key={asset.id} sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
           <Stack spacing={1.25}>
@@ -586,6 +845,9 @@ export function BatchPreflightDialog({
             </Alert> : null}
             {asset.blockers.map((blocker) => <Alert key={blocker} severity={asset.status === 'requires_review' ? 'warning' : 'error'} variant="outlined">{blocker}</Alert>)}
             {asset.warnings.map((warning) => <Alert key={warning} severity="warning" variant="outlined">{warning}</Alert>)}
+            <Grid container spacing={0.75}>
+              {assignmentSummary(asset, inventories)}
+            </Grid>
             {planSummary(asset)}
             {asset.plan && recordText(asset.plan.profile.workerConfig as Record<string, unknown>, 'effectiveCadenceOperation') === 'inverse_telecine' ? <Alert severity="info">
               An explicit field order makes this plan resolvable, but does not prove visual fidelity. Review for combing, duplicate frames, and judder using Preview, Test Encode, or LAB before acceptance.
@@ -600,6 +862,10 @@ export function BatchPreflightDialog({
           </Stack>
         </Box>)}
         {blockerCount ? <Alert severity="warning">{blockerCount} unresolved asset(s) need review or configuration. They remain in this candidate after approved assets are queued.</Alert> : null}
+        {assignmentReviewPending ? <FormControlLabel
+          control={<Checkbox checked={reviewedAssignmentChanges} disabled={busy || assignmentChanges.length > 0 || missingReferences.length > 0} onChange={(event) => setReviewedAssignmentChanges(event.target.checked)} />}
+          label="I reviewed the before-and-after assignment changes"
+        /> : null}
       </Stack>
     </DialogContent>
     <DialogActions>
@@ -611,7 +877,7 @@ export function BatchPreflightDialog({
       </> : <>
         <Button disabled={busy || !candidate.resolved || unresolvedCount === 0} onClick={() => void beginEdit()}>Edit</Button>
         <Button disabled={busy} onClick={closeDialog}>Close</Button>
-        <Button variant="contained" disabled={busy || !candidate.resolved || selected.length === 0} onClick={() => void accept()}>Accept &amp; Queue {selected.length ? `(${selected.length})` : ''}</Button>
+        <Button variant="contained" disabled={busy || !candidate.resolved || selected.length === 0 || assignmentChanges.length > 0 || missingReferences.length > 0 || (assignmentReviewPending && !reviewedAssignmentChanges)} onClick={() => void accept()}>Accept &amp; Queue {selected.length ? `(${selected.length})` : ''}</Button>
       </>}
     </DialogActions>
   </Dialog>;

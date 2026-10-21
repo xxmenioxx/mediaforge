@@ -464,6 +464,9 @@ export function QueuePage() {
       />
       <BatchPreflightDialog
         candidate={singleQueueCandidate}
+        profiles={profiles.data}
+        libraries={libraries.data}
+        settings={settings.data}
         onClose={() => setSingleQueueCandidate(null)}
         onAccepted={(candidate) => {
           setSingleQueueCandidate(candidate);
