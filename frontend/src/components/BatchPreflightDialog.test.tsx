@@ -357,18 +357,26 @@ describe('BatchPreflightDialog', () => {
     expect(screen.getByText(/4\.0 main/)).toBeTruthy();
   });
 
-  it('passes the exact candidate plan to Preview and Test Encode and opens LAB with its identity', async () => {
-    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+  it('passes the exact candidate snapshot to an inline preview player and preserves Test Encode and LAB flows', async () => {
+    const view = render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+    let resolveReady!: (value: { state: string }) => void;
+    mocks.waitPreview.mockImplementationOnce(() => new Promise((resolve) => { resolveReady = resolve; }));
 
-    const previewWindow = { location: { href: '' } };
-    mocks.open.mockReturnValue(previewWindow);
+    mocks.open.mockReturnValue(null);
+    fireEvent.click(screen.getByRole('button', { name: 'Preview exact plan' }));
     fireEvent.click(screen.getByRole('button', { name: 'Preview exact plan' }));
     await waitFor(() => expect(mocks.preview).toHaveBeenCalledWith(expect.objectContaining({
       path: '/raw/Season 1/Episode 1.mkv', profile, ephemeral: true,
       preflightCandidateId: 'candidate-1', preflightRevision: 1, preflightAssetId: 'asset-1',
-    })));
-    expect(mocks.open).toHaveBeenNthCalledWith(1, 'about:blank', '_blank', 'noopener,noreferrer');
-    await waitFor(() => expect(previewWindow.location.href).toBe('/preview/preview-1'));
+    }), expect.any(AbortSignal)));
+    expect(await screen.findByText('Preview is encoding. This may take a few minutes…')).toBeTruthy();
+    resolveReady({ state: 'ready' });
+    await waitFor(() => expect(view.container.querySelector('video')?.getAttribute('src')).toBe('/preview/preview-1'));
+    expect(mocks.preview).toHaveBeenCalledTimes(1);
+    expect(mocks.open).not.toHaveBeenCalled();
+    fireEvent.error(view.container.querySelector('video')!);
+    expect(await screen.findByText(/preview artifact is ready, but the browser could not play it/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Retry exact plan preview' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Test Encode exact plan' }));
     await waitFor(() => expect(mocks.testEncode).toHaveBeenCalledWith(expect.objectContaining({
@@ -382,6 +390,28 @@ describe('BatchPreflightDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open LAB with candidate context' }));
     expect(mocks.open).toHaveBeenLastCalledWith('/profile-lab?preflightCandidateId=candidate-1&preflightRevision=1&assetId=asset-1', '_blank', 'noopener,noreferrer');
+  });
+
+  it('shows stale candidate context distinctly and offers to reload the latest candidate', async () => {
+    mocks.preview.mockRejectedValueOnce(Object.assign(new Error('candidate revision changed'), { code: 'batch_preflight_context_stale' }));
+    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview exact plan' }));
+    expect(await screen.findByText('This Batch Preflight snapshot is stale. Reload and review the latest candidate before previewing.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reload latest candidate' }));
+    await waitFor(() => expect(mocks.getCandidate).toHaveBeenCalledWith('candidate-1'));
+  });
+
+  it('aborts the preview lifecycle when the dialog unmounts', async () => {
+    let resolveReady!: (value: { state: string }) => void;
+    mocks.waitPreview.mockImplementationOnce(() => new Promise((resolve) => { resolveReady = resolve; }));
+    const view = render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Preview exact plan' }));
+    await waitFor(() => expect(mocks.waitPreview).toHaveBeenCalled());
+    const signal = mocks.waitPreview.mock.calls[0][1] as AbortSignal;
+    view.unmount();
+    expect(signal.aborted).toBe(true);
+    resolveReady({ state: 'ready' });
   });
 
   it('keeps Close, Discard candidate, and Discard edits as separate actions', async () => {

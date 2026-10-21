@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -167,6 +167,13 @@ export function BatchPreflightDialog({
   const [deepOperationPath, setDeepOperationPath] = useState('');
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const [editBaseline, setEditBaseline] = useState<{ batchName: string; jobs: QueueJobInput[] } | null>(null);
+  const [previewState, setPreviewState] = useState<'idle' | 'creating' | 'encoding' | 'ready' | 'error'>('idle');
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewAsset, setPreviewAsset] = useState<QueueBatchPreflightAsset | null>(null);
+  const [previewError, setPreviewError] = useState('');
+  const previewController = useRef<AbortController | null>(null);
+
+  useEffect(() => () => previewController.current?.abort(), []);
 
   useEffect(() => {
     if (!initialCandidate) {
@@ -285,8 +292,16 @@ export function BatchPreflightDialog({
   };
 
   const runPreview = async (asset: QueueBatchPreflightAsset) => {
-    if (!asset.plan) return;
-    const previewWindow = window.open('about:blank', '_blank', 'noopener,noreferrer');
+    if (!asset.plan || busy) return;
+    previewController.current?.abort();
+    const controller = new AbortController();
+    previewController.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(new DOMException('Compatible Preview timed out after 5 minutes.', 'TimeoutError')), 5 * 60 * 1000);
+    let requestCreated = false;
+    setPreviewAsset(asset);
+    setPreviewUrl('');
+    setPreviewError('');
+    setPreviewState('creating');
     setBusy(true); setError('');
     try {
       const preview = await api.createCompatiblePreviewRequest({
@@ -296,14 +311,42 @@ export function BatchPreflightDialog({
         preflightRevision: candidate.revision,
         preflightAssetId: asset.id,
         ephemeral: true,
-      });
-      const ready = await waitForCompatiblePreviewReady(preview.requestId);
-      if (previewWindow) previewWindow.location.href = api.compatibleAssetPreviewUrl(preview.requestId);
-      else window.open(api.compatibleAssetPreviewUrl(preview.requestId), '_blank', 'noopener,noreferrer');
+      }, controller.signal);
+      requestCreated = true;
+      setPreviewState('encoding');
+      const ready = await waitForCompatiblePreviewReady(preview.requestId, controller.signal);
       if (ready.state !== 'ready') throw new Error('Compatible Preview did not produce a ready artifact.');
+      if (!controller.signal.aborted) {
+        setPreviewUrl(api.compatibleAssetPreviewUrl(preview.requestId));
+        setPreviewState('ready');
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally { setBusy(false); }
+      if (!controller.signal.aborted) {
+        const failure = caught as { code?: string; state?: string } | null;
+        const code = failure?.code;
+        const message = caught instanceof Error ? caught.message : String(caught);
+        setPreviewError(code === 'batch_preflight_context_stale'
+          ? 'This Batch Preflight snapshot is stale. Reload and review the latest candidate before previewing.'
+          : requestCreated
+            ? `Preview lifecycle ${failure?.state ?? code ?? 'failed'}: ${message}`
+            : `Preview request rejected: ${message}`);
+        setPreviewState('error');
+      } else if (controller.signal.reason instanceof DOMException && controller.signal.reason.name === 'TimeoutError') {
+        setPreviewError(controller.signal.reason.message);
+        setPreviewState('error');
+      } else if (previewController.current === controller) {
+        setPreviewState('idle');
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      if (previewController.current === controller) previewController.current = null;
+      setBusy(false);
+    }
+  };
+
+  const closeDialog = () => {
+    previewController.current?.abort();
+    onClose();
   };
 
   const runTestEncode = async (asset: QueueBatchPreflightAsset) => {
@@ -389,7 +432,7 @@ export function BatchPreflightDialog({
   const unresolvedCount = candidate.assets.filter((asset) => asset.status !== 'queued').length;
   const blockerCount = candidate.assets.filter((asset) => asset.status !== 'queued' && asset.blockers.length > 0).length;
 
-  return <Dialog open onClose={busy ? undefined : onClose} fullWidth maxWidth="lg" aria-labelledby="batch-preflight-title">
+  return <Dialog open onClose={busy ? undefined : closeDialog} fullWidth maxWidth="lg" aria-labelledby="batch-preflight-title">
     <DialogTitle id="batch-preflight-title">Batch Preflight · {candidate.batchName || 'Selected assets'}</DialogTitle>
     <DialogContent dividers>
       <Stack spacing={2}>
@@ -398,6 +441,23 @@ export function BatchPreflightDialog({
         </Alert>
         {error ? <Alert severity="error">{error}</Alert> : null}
         {error ? <Button size="small" disabled={busy} onClick={() => void reloadLatestCandidate()}>Reload latest candidate</Button> : null}
+        {previewState !== 'idle' && previewAsset ? <Box sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
+          <Stack spacing={1}>
+            <Typography variant="subtitle2">Exact plan preview · {previewAsset.mediaPath}</Typography>
+            {previewState === 'creating' ? <Alert severity="info">Creating the preview request…</Alert> : null}
+            {previewState === 'encoding' ? <Alert severity="info">Preview is encoding. This may take a few minutes…</Alert> : null}
+            {previewState === 'error' ? <Alert severity="error">{previewError}</Alert> : null}
+            {previewState === 'error' ? <Stack direction="row" spacing={1}>
+              <Button size="small" disabled={busy} onClick={() => void runPreview(previewAsset)}>Retry exact plan preview</Button>
+              {previewError.startsWith('This Batch Preflight snapshot is stale') ? <Button size="small" disabled={busy} onClick={() => void reloadLatestCandidate()}>Reload latest candidate</Button> : null}
+            </Stack> : null}
+            {previewState === 'ready' ? <video controls playsInline preload="metadata" src={previewUrl} onError={() => {
+              setPreviewError('The preview artifact is ready, but the browser could not play it. Retry the preview or check artifact delivery and video compatibility.');
+              setPreviewState('error');
+            }} style={{ display: 'block', width: '100%', maxHeight: '60vh', background: '#000' }} /> : null}
+            {busy ? <Button size="small" onClick={() => previewController.current?.abort()}>Cancel preview</Button> : null}
+          </Stack>
+        </Box> : null}
         {confirmingDiscard ? <Alert severity="warning" action={<Stack direction="row" spacing={1}>
           <Button color="inherit" size="small" disabled={busy} onClick={() => setConfirmingDiscard(false)}>Keep candidate</Button>
           <Button color="error" size="small" disabled={busy} onClick={() => void discardCandidate()}>Discard pending assets</Button>
