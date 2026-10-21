@@ -159,6 +159,90 @@ describe('BatchPreflightDialog', () => {
     expect(onAccepted).toHaveBeenCalledWith(expect.objectContaining({ revision: 4 }));
   });
 
+  it('reviews and accepts a reopened selected title with nullable snapshots across nested groups', async () => {
+    const baseAsset = candidate().assets[0];
+    const assetIds = Array.from({ length: 10 }, (_, index) => `series-asset-${index + 1}`);
+    const assets = assetIds.map((id, index) => {
+      const mediaPath = index < 8
+        ? `/raw/Series/Season1/Episode${index + 1}.mkv`
+        : `/raw/Series/Season0/Episode${index - 7}.mkv`;
+      const plan = baseAsset.plan!;
+      return {
+        ...baseAsset,
+        id,
+        mediaPath,
+        batchId: index < 8 ? 'group-season1' : 'group-season0',
+        batchName: index < 8 ? 'Season 1' : 'Season0',
+        input: { ...baseAsset.input, mediaPath },
+        plan: {
+          ...plan,
+          profile: { ...profile, workerConfig: index === 1 ? null : profile.workerConfig } as never,
+          profileSnapshot: index === 0 ? null : plan.profileSnapshot,
+          profileResolution: index === 7 ? null : {
+            tracks: { selection: 'disabled', source: 'source_group', targetPath: '/media/raw/series' },
+          },
+          audioProfileSnapshot: null,
+          trackProfileSnapshot: null,
+          constraints: index === 3 ? null : plan.constraints,
+          qualityEvidence: index === 4
+            ? null
+            : index === 5
+              ? { sourceBitrateEvidence: null, bpppfAssessment: null, profileQualification: null }
+              : plan.qualityEvidence,
+          destination: index === 2 ? null : plan.destination,
+        },
+      };
+    });
+    const reopenedCandidate = candidate({
+      id: 'selected-title-candidate',
+      revision: 17,
+      batchId: 'logical-series-title',
+      batchName: 'Complete Series',
+      assets,
+    });
+    mocks.edit.mockResolvedValue({ ...reopenedCandidate, revision: 18, resolved: false });
+    mocks.update.mockResolvedValue({ ...reopenedCandidate, revision: 19, resolved: true });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      render(<BatchPreflightDialog candidate={reopenedCandidate} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+      expect(screen.getByText('Batch Preflight · Complete Series')).toBeTruthy();
+      for (const asset of assets) expect(screen.getByText(asset.mediaPath)).toBeTruthy();
+      expect(screen.getAllByText('No Track Profile selected (disabled at Source Group)')).toHaveLength(9);
+      expect(screen.getAllByText('Audio profile snapshot unavailable')).toHaveLength(10);
+      expect(screen.getByText('Profile resolution unavailable')).toBeTruthy();
+      expect(screen.getByText('Track Profile snapshot unavailable')).toBeTruthy();
+
+      const queueAssetInputs = screen.getAllByLabelText('Queue this asset') as HTMLInputElement[];
+      expect(queueAssetInputs).toHaveLength(10);
+      expect(queueAssetInputs.every((input) => input.checked)).toBe(true);
+      fireEvent.click(queueAssetInputs[9]);
+      expect(screen.getByRole('button', { name: 'Accept & Queue (9)' })).toBeTruthy();
+      fireEvent.click(queueAssetInputs[9]);
+      expect(screen.getByRole('button', { name: 'Accept & Queue (10)' })).toBeTruthy();
+      expect(mocks.accept).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      await screen.findByRole('button', { name: 'Resolve Preflight again' });
+      expect(mocks.edit).toHaveBeenCalledWith('selected-title-candidate', 17);
+      fireEvent.click(screen.getByRole('button', { name: 'Resolve Preflight again' }));
+      await screen.findByRole('button', { name: 'Accept & Queue (10)' });
+      expect(mocks.update).toHaveBeenCalledWith('selected-title-candidate', expect.objectContaining({
+        revision: 18,
+        batchId: 'logical-series-title',
+        batchName: 'Complete Series',
+        jobs: expect.arrayContaining(assets.map((asset) => expect.objectContaining({ mediaPath: asset.mediaPath }))),
+      }));
+      expect(mocks.accept).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Accept & Queue (10)' }));
+      await waitFor(() => expect(mocks.accept).toHaveBeenCalledWith('selected-title-candidate', 19, assetIds));
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it('keeps ambiguous auto IVTC out of Queue until a candidate-scoped TFF/BFF plan is resolved', async () => {
     const base = candidate().assets[0];
     const reviewAsset = {

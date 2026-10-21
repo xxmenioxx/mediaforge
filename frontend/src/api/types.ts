@@ -1935,16 +1935,16 @@ export type QueueBatchPreflightInput = QueueBatchInput & { revision?: number };
 
 export type QueueBatchPreflightPlan = {
   profile: Profile;
-  profileSnapshot: Record<string, unknown>;
+  profileSnapshot: Record<string, unknown> | null;
   profileVersion: number;
   profileCapturedAt?: string;
-  profileResolution: Record<string, unknown>;
-  audioProfileSnapshot: Record<string, unknown>;
-  trackProfileSnapshot: Record<string, unknown>;
-  constraints: Record<string, unknown>;
+  profileResolution: Record<string, unknown> | null;
+  audioProfileSnapshot: Record<string, unknown> | null;
+  trackProfileSnapshot: Record<string, unknown> | null;
+  constraints: Record<string, unknown> | null;
   qualityEvidence?: {
-    sourceBitrateEvidence?: SourceBitrateEvidence;
-    bpppfAssessment?: BPPPFAssessment;
+    sourceBitrateEvidence?: SourceBitrateEvidence | null;
+    bpppfAssessment?: BPPPFAssessment | null;
     profileQualification?: {
       status: string;
       message?: string;
@@ -1963,12 +1963,12 @@ export type QueueBatchPreflightPlan = {
       worstSceneCategory?: string;
       rules?: ProfileQualificationRuleResult[];
       warnings?: string[];
-    };
-  };
+    } | null;
+  } | null;
   selectedEncoder: string;
   runtimeSnapshotId: number;
   runtimeProfile: string;
-  destination: Record<string, unknown>;
+  destination: Record<string, unknown> | null;
   publishMode: string;
   processingMode: string;
 };

@@ -1055,8 +1055,8 @@ export function ProfileLabPage() {
       setAudioDraft(audio);
       setSavedAudioProfileKey(audio.key);
     }
-    const rawTrack = candidateAsset.plan.trackProfileSnapshot as Partial<TrackProfile>;
-    if (typeof rawTrack.key === 'string') {
+    const rawTrack = candidateAsset.plan.trackProfileSnapshot;
+    if (rawTrack && !Array.isArray(rawTrack) && typeof rawTrack.key === 'string') {
       const track = { ...emptyTrackDraft, ...rawTrack } as TrackProfile;
       setTrackDraft(track);
       setSavedTrackProfileKey(track.key);

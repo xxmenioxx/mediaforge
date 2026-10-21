@@ -133,6 +133,49 @@ func queuePreflightInput(fixture queuePreflightFixture, batchName string) QueueB
 	return QueueBatchPreflightInput{BatchID: "preflight-test-batch", BatchName: batchName, Jobs: jobs}
 }
 
+func TestQueuePreflightResponseSerializesNilTrackProfileSnapshot(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	snapshot, err := scheduler.CaptureProfileSnapshot(fixture.profile, time.Now().UTC(), "nil-track-preflight-response-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := queuePreflightResponse(models.QueueBatchPreflight{
+		ID: "candidate-nil-track", Revision: 12, Resolved: true, Status: models.QueueBatchPreflightStatusActive,
+	}, queueBatchPreflightState{
+		BatchID: "logical-series-title", BatchName: "Complete Series",
+		Assets: []queueBatchPreflightAsset{{
+			ID: "asset-nil-track", MediaPath: fixture.paths[0], BatchID: "season0-group", BatchName: "Season0",
+			Input: QueueJobInput{MediaPath: fixture.paths[0]}, Status: queuePreflightReady,
+			Blockers: []string{}, Warnings: []string{},
+			ResolvedJob: &models.QueueJob{
+				ProfileSnapshot: snapshot, ProfileVersion: 1,
+				TrackProfileSnapshot: nil, AudioProfileSnapshot: nil,
+				ProfileResolution: nil, ResolvedDestinationSnapshot: nil,
+			},
+		}},
+	})
+	payload, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Assets []struct {
+			Plan map[string]json.RawMessage `json:"plan"`
+		} `json:"assets"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Assets) != 1 {
+		t.Fatalf("response assets=%d want=1: %s", len(decoded.Assets), payload)
+	}
+	for _, field := range []string{"trackProfileSnapshot", "audioProfileSnapshot", "profileResolution", "destination"} {
+		if got := string(decoded.Assets[0].Plan[field]); got != "null" {
+			t.Errorf("%s JSON=%q want null: %s", field, got, payload)
+		}
+	}
+}
+
 func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
 	fixture := newQueuePreflightFixture(t, 1)
 	fixture.profile.OptimizationIntent = "balanced"
