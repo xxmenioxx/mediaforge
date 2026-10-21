@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Asset, AssetGroup, AssetInventory, AssetPath, AssetSourceGroup, ExternalSubtitle, Library, ProfileAssignment, ScanResult } from '../api/types';
 
@@ -173,7 +173,12 @@ const pathAssignment: ProfileAssignment = { id: 1, targetType: 'path', targetPat
 const profile = { id: 1, name: 'Library HEVC', scope: 'path', disabled: false, workerConfig: {} };
 
 function SearchProbe() {
-  return <output data-testid="asset-query">{useLocation().search}</output>;
+  const navigate = useNavigate();
+  return <>
+    <output data-testid="asset-query">{useLocation().search}</output>
+    <button data-testid="history-back" onClick={() => navigate(-1)}>Back</button>
+    <button data-testid="history-forward" onClick={() => navigate(1)}>Forward</button>
+  </>;
 }
 
 function assetsTree() {
@@ -1063,7 +1068,7 @@ describe('RAW Assets workspace', () => {
   it('uses one accessible Assets tree to switch RAW and Library while preserving common search', async () => {
     const user = userEvent.setup();
     vi.mocked(api.libraries).mockResolvedValue([library, { ...library, id: 2, name: 'Movies', sourcePath: '/media/raw/movies', destinationPath: '/media/library/movies', type: 'movies' }]);
-    renderRawPage('/assets?location=raw&search=Attack&sourceGroup=7&logicalGroup=attack&path=%2Fmedia%2Fraw%2Fanime%2FAttack');
+    renderRawPage('/assets?location=raw&search=Attack&sourceGroup=7');
 
     const tree = assetsTree();
     expect(screen.queryByRole('tab', { name: 'RAW' })).toBeNull();
@@ -1082,15 +1087,56 @@ describe('RAW Assets workspace', () => {
     expect(query.get('location')).toBe('library');
     expect(query.get('search')).toBe('Attack');
     expect(query.get('libraryId')).toBe('1');
+    expect(libraryTreeItem('Anime').getAttribute('aria-selected')).toBe('true');
+    expect(treeItem('RAW', 1).getAttribute('aria-selected')).toBe('false');
     for (const key of ['sourceGroup', 'logicalGroup', 'path', 'rawScope', 'tab']) expect(query.has(key)).toBe(false);
 
-    await user.click(treeItem('RAW', 1));
-    expect(treeItem('RAW', 1).getAttribute('aria-selected')).toBe('true');
+    await user.click(treeExpander('RAW', 1));
+    await user.click(rawTreeItem('Anime'));
+    expect(rawTreeItem('Anime').getAttribute('aria-selected')).toBe('true');
+    expect(libraryTreeItem('Anime').getAttribute('aria-selected')).toBe('false');
     query = new URLSearchParams(screen.getByTestId('asset-query').textContent ?? '');
     expect(query.get('location')).toBe('raw');
     expect(query.get('search')).toBe('Attack');
-    expect(query.get('rawScope')).toBe('all');
-    for (const key of ['libraryId', 'libraryPath', 'sourceGroup', 'logicalGroup', 'path', 'tab']) expect(query.has(key)).toBe(false);
+    expect(query.get('sourceGroup')).toBe('7');
+    expect(query.has('rawScope')).toBe(false);
+    for (const key of ['libraryId', 'libraryPath', 'logicalGroup', 'path', 'tab']) expect(query.has(key)).toBe(false);
+
+    await user.click(screen.getByTestId('history-back'));
+    query = new URLSearchParams(screen.getByTestId('asset-query').textContent ?? '');
+    expect(query.get('location')).toBe('library');
+    expect(query.get('libraryId')).toBe('1');
+    expect(libraryTreeItem('Anime').getAttribute('aria-selected')).toBe('true');
+    await user.click(screen.getByTestId('history-forward'));
+    query = new URLSearchParams(screen.getByTestId('asset-query').textContent ?? '');
+    expect(query.get('location')).toBe('raw');
+    expect(query.get('sourceGroup')).toBe('7');
+    expect(rawTreeItem('Anime').getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('keeps a missing RAW deep link visibly invalid instead of selecting a search match', async () => {
+    renderRawPage('/assets?location=raw&search=Attack&sourceGroup=999&logicalGroup=missing&path=%2Fmedia%2Fraw%2Fmissing');
+
+    expect(await screen.findByText('The requested RAW location is no longer available.')).toBeTruthy();
+    expect(screen.getByRole('navigation', { name: 'RAW source location' }).textContent).toContain('Selection unavailable');
+    expect(screen.queryByText('S01E01.mkv')).toBeNull();
+    expect(treeItem('RAW', 1).getAttribute('aria-selected')).toBe('false');
+    const query = new URLSearchParams(screen.getByTestId('asset-query').textContent ?? '');
+    expect(query.get('location')).toBe('raw');
+    expect(query.get('sourceGroup')).toBe('999');
+    expect(query.get('search')).toBe('Attack');
+  });
+
+  it('keeps a missing Library deep link empty instead of broadening to all libraries', async () => {
+    renderLibraryPage(undefined, '/assets?location=library&libraryId=99&libraryPath=%2Fmissing');
+
+    expect(await screen.findByText('The requested Library location is unavailable or contains no matching assets.')).toBeTruthy();
+    expect(screen.queryByText('Trailer.mkv')).toBeNull();
+    expect(libraryTreeItem('Anime').getAttribute('aria-selected')).toBe('false');
+    const query = new URLSearchParams(screen.getByTestId('asset-query').textContent ?? '');
+    expect(query.get('location')).toBe('library');
+    expect(query.get('libraryId')).toBe('99');
+    expect(query.get('libraryPath')).toBe('/missing');
   });
 
   it('clears Library-only state when selecting RAW and retains safe search', async () => {
