@@ -1108,7 +1108,7 @@ function LibraryAssetTable({
             {filterContent}
           </AssetsV2InventoryControls>
 
-          <Box data-testid="assets-list-scroll" role="region" aria-label="Library asset list" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', pb: 1.25 }}>
+          <Box data-testid="assets-list-scroll" role="region" aria-label="Library asset list" sx={{ flex: 1, width: '100%', maxWidth: '100%', minWidth: 0, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', pb: 1.25 }}>
           {visibleAssets.length ? (
             <AssetsInventoryTable
               mode="library"
