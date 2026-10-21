@@ -1925,8 +1925,8 @@ func TestHistoryListProjectsPublisherAndArchiveFactsWithBoundedBatchQueries(t *t
 	if history.Total != 4 || len(history.Items) != 4 {
 		t.Fatalf("History row count=%d total=%d, want 4: %#v", len(history.Items), history.Total, history)
 	}
-	if queryCount+rowQueryCount != 4 {
-		t.Fatalf("History used %d persisted queries for 4 rows; want bounded count, page, publication batch, and latest-evidence batch: %v", queryCount+rowQueryCount, queries)
+	if queryCount+rowQueryCount != 6 {
+		t.Fatalf("History used %d persisted queries for 4 rows; want bounded count/page plus staging-schema checks and publication/evidence batches: %v", queryCount+rowQueryCount, queries)
 	}
 	var canonical *validationSummaryRow
 	var canonicalWithoutOverride *validationSummaryRow
@@ -1959,8 +1959,15 @@ func TestHistoryListProjectsPublisherAndArchiveFactsWithBoundedBatchQueries(t *t
 	if canonicalWithoutOverride == nil || canonicalWithoutOverride.Publisher.ValidationOverridePresent || len(canonicalWithoutOverride.Publisher.ValidationOverrideEventIDs) != 0 {
 		t.Fatalf("History did not preserve explicit absence of a frozen override: %#v", canonicalWithoutOverride)
 	}
-	if !strings.Contains(queries[2], "execution_number = ?") {
-		t.Fatalf("Publisher batch query was not bound to the page's exact executions: %s", queries[2])
+	publisherBatchBound := false
+	for _, query := range queries {
+		if strings.Contains(query, "execution_number = ?") {
+			publisherBatchBound = true
+			break
+		}
+	}
+	if !publisherBatchBound {
+		t.Fatalf("Publisher batch query was not bound to the page's exact executions: %v", queries)
 	}
 	if canonical.OriginalArchiveStatus != "failed" || canonical.OriginalArchivedPath != "/archive/original-3.mkv" || projection.State != PublicationPublished {
 		t.Fatalf("#174 archive outcome was conflated with canonical publication state: row=%#v", canonical)

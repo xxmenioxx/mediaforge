@@ -53,6 +53,8 @@ import type {
   ValidationResult,
   ValidationSummaryPage,
   ValidationHistoryPage,
+  ValidationStagingCleanupPreview,
+  ValidationStagingCleanupResult,
   RuntimeState,
   RuntimeProfilesResponse,
   ScanResult,
@@ -824,6 +826,10 @@ export const api = {
     request<ValidationSummaryPage>(`/api/validation/review?view=${view}&limit=${limit}&offset=${offset}`),
   validationHistory: ({ q, sort, limit, offset }: { q: string; sort: 'asc' | 'desc'; limit: number; offset: number }) =>
     request<ValidationHistoryPage>(`/api/validation/history?q=${encodeURIComponent(q)}&sort=${sort}&limit=${limit}&offset=${offset}`),
+  previewValidationStagingCleanup: (jobId: number) =>
+    request<ValidationStagingCleanupPreview>(`/api/validation/jobs/${jobId}/staging-cleanup/preview`, { method: 'POST', body: JSON.stringify({}) }),
+  cleanupValidationStaging: ({ jobId, previewId }: { jobId: number; previewId: string }) =>
+    request<ValidationStagingCleanupResult>(`/api/validation/jobs/${jobId}/staging-cleanup`, { method: 'POST', body: JSON.stringify({ previewId }) }),
   publishJob: ({ jobId, reason }: { jobId: number; reason?: string }) =>
     request<PublishResult>(`/api/publisher/jobs/${jobId}/publish`, {
       method: 'POST',

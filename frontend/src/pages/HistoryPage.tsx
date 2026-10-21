@@ -22,6 +22,7 @@ import { Link as RouterLink } from 'react-router-dom';
 import { api } from '../api/client';
 import type { ValidationHistorySummary } from '../api/types';
 import { PageHeader } from '../components/PageHeader';
+import { ValidationStagingCleanupDialog } from '../components/ValidationStagingCleanupDialog';
 
 export function HistoryPage() {
   const queryClient = useQueryClient();
@@ -29,6 +30,7 @@ export function HistoryPage() {
   const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc');
   const [pageSize, setPageSize] = useState(25);
   const [page, setPage] = useState(1);
+  const [stagingJob, setStagingJob] = useState<ValidationHistorySummary | null>(null);
   const jobs = useQuery({
     queryKey: ['validationHistory', search, sortDirection, pageSize, page],
     queryFn: () => api.validationHistory({ q: search.trim(), sort: sortDirection, limit: pageSize, offset: (page - 1) * pageSize }),
@@ -114,6 +116,7 @@ export function HistoryPage() {
                       <Stack spacing={0.5} alignItems="flex-start">
                         <Chip label={job.status} color={statusColor(job)} size="small" />
                         {job.dismissedAt ? <Chip label="Dismissed" size="small" variant="outlined" /> : null}
+                        {job.dismissedAt && job.stagingState ? <Chip label={stagingLabel(job.stagingState)} size="small" color={stagingColor(job.stagingState)} variant="outlined" /> : null}
                       </Stack>
                     </TableCell>
                     <TableCell>
@@ -125,6 +128,9 @@ export function HistoryPage() {
                             ? `Dismissed after Validation ${job.validationOutcome}`
                             : 'Dismissed from Queue'} · {formatDate(job.dismissedAt)}
                         </Typography> : null}
+                        {job.stagingCleanupReason ? <Typography variant="caption" color="text.secondary">{job.stagingCleanupReason}</Typography> : null}
+                        {typeof job.stagingRecoveredBytes === 'number' ? <Typography variant="caption" color="text.secondary">Recovered {job.stagingRecoveredBytes.toLocaleString()} bytes{job.stagingCleanupAt ? ` · ${formatDate(job.stagingCleanupAt)}` : ''}</Typography> : null}
+                        {job.stagingState === 'cleaned' ? <Typography variant="caption" color="text.secondary">Staged files were removed; historical Validation and Result evidence remains available.</Typography> : null}
                       </Stack>
                     </TableCell>
                     <TableCell>
@@ -167,7 +173,10 @@ export function HistoryPage() {
                     </TableCell>
                     <TableCell>{formatDate(job.updatedAt)}</TableCell>
                     <TableCell align="right">
-                      <Button component={RouterLink} to={`/queue?job=${job.id}`} variant="contained" size="small">Review</Button>
+                      <Stack spacing={0.5} alignItems="flex-end">
+                        {job.dismissedAt && ['retained', 'failed', 'blocked'].includes(job.stagingState ?? '') ? <Button size="small" onClick={() => setStagingJob(job)}>{job.stagingState === 'retained' ? 'Review staged files' : 'Retry cleanup'}</Button> : null}
+                        <Button component={RouterLink} to={`/queue?job=${job.id}`} variant="contained" size="small">Review</Button>
+                      </Stack>
                     </TableCell>
                   </TableRow>
                   );
@@ -178,6 +187,7 @@ export function HistoryPage() {
         </Card>
         {!jobs.isLoading && (jobs.data?.total ?? 0) === 0 ? <Alert severity="info" sx={{ mt: 2 }}>No historical jobs yet.</Alert> : null}
       </Box>
+      <ValidationStagingCleanupDialog open={Boolean(stagingJob)} jobId={stagingJob?.id ?? 0} executionNumber={stagingJob?.executionNumber} mode="retry" onClose={() => setStagingJob(null)} onComplete={() => { void queryClient.invalidateQueries({ queryKey: ['validationHistory'] }); }} />
     </>
   );
 }
@@ -201,6 +211,15 @@ function statusColor(job: ValidationHistorySummary) {
 
 function hasLegacyPublication(job: ValidationHistorySummary) {
   return !job.publisher && Boolean(job.publishedAt || job.publishedPath);
+}
+
+function stagingLabel(state: NonNullable<ValidationHistorySummary['stagingState']>) {
+  return ({ retained: 'Staging retained', cleaned: 'Staging cleaned', failed: 'Cleanup failed', blocked: 'Cleanup blocked', no_workspace: 'No staging workspace', not_applicable: 'Staging not applicable' })[state];
+}
+function stagingColor(state: NonNullable<ValidationHistorySummary['stagingState']>) {
+  if (state === 'cleaned') return 'success';
+  if (state === 'failed' || state === 'blocked') return 'warning';
+  return 'default';
 }
 
 function formatDate(value: string) {

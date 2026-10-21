@@ -80,6 +80,11 @@ type validationSummaryRow struct {
 	ValidationHasActionableWarn bool                     `json:"validationHasActionableWarnings"`
 	DismissedAt                 *time.Time               `json:"dismissedAt,omitempty"`
 	Stage                       string                   `json:"stage,omitempty"`
+	StagingState                string                   `json:"stagingState"`
+	StagingCleanupOutcome       string                   `json:"stagingCleanupOutcome,omitempty"`
+	StagingCleanupReason        string                   `json:"stagingCleanupReason,omitempty"`
+	StagingRecoveredBytes       int64                    `json:"stagingRecoveredBytes"`
+	StagingCleanupAt            *time.Time               `json:"stagingCleanupAt,omitempty"`
 	Publisher                   *historyPublisherSummary `json:"publisher,omitempty"`
 }
 
@@ -1065,6 +1070,7 @@ func validationSummaryRows(jobs []models.QueueJob) []validationSummaryRow {
 			ValidationRunID: job.ValidationRunID, ValidationOutcome: job.ValidationOutcome,
 			ValidationOverridePresent: job.ValidationOverride, ValidationHasActionableWarn: job.ValidationActionable,
 			DismissedAt: job.DismissedAt, Stage: job.Stage,
+			StagingState: historyDefaultStagingState(job),
 		})
 	}
 	return rows
@@ -1074,6 +1080,60 @@ func historySummaryRows(db *gorm.DB, jobs []models.QueueJob) ([]validationSummar
 	rows := validationSummaryRows(jobs)
 	if len(jobs) == 0 {
 		return rows, nil
+	}
+	jobIDs := make([]uint, 0, len(jobs))
+	indexByJob := make(map[uint]int, len(jobs))
+	for index, job := range jobs {
+		jobIDs = append(jobIDs, job.ID)
+		indexByJob[job.ID] = index
+	}
+	cleanupEvidenceByJob := make(map[uint]struct{}, len(jobs))
+	if db.Migrator().HasTable(&models.ValidationStagingCleanupEvidence{}) {
+		var cleanupEvidence []models.ValidationStagingCleanupEvidence
+		if err := db.Where("id IN (SELECT MAX(id) FROM validation_staging_cleanup_evidences WHERE job_id IN ? GROUP BY job_id)", jobIDs).
+			Find(&cleanupEvidence).Error; err != nil {
+			return nil, err
+		}
+		for _, evidence := range cleanupEvidence {
+			index, ok := indexByJob[evidence.JobID]
+			if !ok {
+				continue
+			}
+			cleanupEvidenceByJob[evidence.JobID] = struct{}{}
+			row := &rows[index]
+			row.StagingCleanupOutcome = evidence.Outcome
+			row.StagingCleanupReason = evidence.Reason
+			row.StagingRecoveredBytes = evidence.RecoveredBytes
+			row.StagingCleanupAt = &evidence.CreatedAt
+			switch evidence.Outcome {
+			case "cleaned":
+				row.StagingState = "cleaned"
+			case "noop":
+				row.StagingState = "no_workspace"
+			case "blocked":
+				row.StagingState = "blocked"
+			case "failed", "in_progress":
+				row.StagingState = "failed"
+				if evidence.Event == "started" {
+					row.StagingCleanupOutcome = "failed"
+					row.StagingCleanupReason = "cleanup attempt was interrupted before a terminal outcome was recorded"
+				}
+			}
+		}
+	}
+	if db.Migrator().HasTable(&models.ValidationStagingCleanupPreview{}) {
+		var previews []models.ValidationStagingCleanupPreview
+		if err := db.Where("id IN (SELECT MAX(id) FROM validation_staging_cleanup_previews WHERE job_id IN ? GROUP BY job_id)", jobIDs).Find(&previews).Error; err != nil {
+			return nil, err
+		}
+		for _, preview := range previews {
+			index, ok := indexByJob[preview.JobID]
+			_, hasCleanupEvidence := cleanupEvidenceByJob[preview.JobID]
+			if !ok || preview.State != "noop" || hasCleanupEvidence {
+				continue
+			}
+			rows[index].StagingState = "no_workspace"
+		}
 	}
 	jobExecutions := make([]string, 0, len(jobs))
 	queryArgs := make([]any, 0, len(jobs)*2)
@@ -1140,6 +1200,13 @@ func historySummaryRows(db *gorm.DB, jobs []models.QueueJob) ([]validationSummar
 		rows[index].OriginalArchivedPath = publication.OriginalArchivedPath
 	}
 	return rows, nil
+}
+
+func historyDefaultStagingState(job models.QueueJob) string {
+	if job.DismissedAt != nil && job.Status == JobStatusCompleted && (job.ValidationOutcome == models.QualityOutcomeFail || job.ValidationOutcome == models.QualityOutcomeReviewRequired) {
+		return "retained"
+	}
+	return "not_applicable"
 }
 
 func historyStringIDs(values models.JSONList) []string {

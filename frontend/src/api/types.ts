@@ -1801,7 +1801,39 @@ export type ValidationHistorySummary = Pick<QueueJob,
   | 'id' | 'executionNumber' | 'mediaPath' | 'status' | 'publishedPath' | 'publishedAt' | 'createdAt' | 'updatedAt'
   | 'validationStatus' | 'validationScore' | 'validationRunId' | 'validationOutcome' | 'validationOverridePresent'
   | 'validationHasActionableWarnings' | 'originalArchivedPath' | 'originalArchiveStatus' | 'dismissedAt'
-> & { publisher?: HistoryPublisherSummary };
+> & {
+  publisher?: HistoryPublisherSummary;
+  stagingState?: 'retained' | 'cleaned' | 'failed' | 'blocked' | 'no_workspace' | 'not_applicable';
+  stagingCleanupOutcome?: 'cleaned' | 'noop' | 'blocked' | 'failed';
+  stagingCleanupReason?: string;
+  stagingRecoveredBytes?: number;
+  stagingCleanupAt?: string;
+};
+
+export type ValidationStagingCleanupFile = { path: string; sizeBytes: number; kind: string };
+export type ValidationStagingCleanupPreview = {
+  jobId: number;
+  executionNumber?: number;
+  validationRunId: string;
+  previewId: string;
+  expiresAt: string;
+  state: 'ready' | 'blocked' | 'noop';
+  workspacePath: string;
+  ownership: string;
+  reason: string;
+  files: ValidationStagingCleanupFile[];
+  totalBytes: number;
+  blockers: string[];
+};
+export type ValidationStagingCleanupResult = {
+  jobId: number;
+  previewId: string;
+  outcome: 'cleaned' | 'noop' | 'blocked' | 'failed';
+  removedPaths: string[];
+  recoveredBytes: number;
+  reason: string;
+  evidenceId: string;
+};
 
 export type ValidationHistoryPage = { items: ValidationHistorySummary[]; total: number; limit: number; offset: number };
 
