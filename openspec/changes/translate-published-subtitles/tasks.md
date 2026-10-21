@@ -9,6 +9,7 @@
 - [x] 1.7 Fail closed when the bounded publication candidate set exceeds its safety cap.
 - [x] 1.8 Restore unprocessed RAW assets without publication identity; add Capability → Start → Completed coverage and retain Queue, maintenance, missing-file, source-revision, and archive blockers.
 - [x] 1.9 Replace suffix-expression publication lookups with indexed canonical path keys; backfill historical rows idempotently and validate publication/source lookup plans with SQLite `EXPLAIN QUERY PLAN`.
+- [x] 1.10 Allow Translation for an identity-verified converted Library publication whose QueueJob records an archived original; retain physical Archive and unauthorized-path blockers and prove Capability → Start → Completed leaves all original and Publisher evidence unchanged.
 
 ## 2. Asset Info Translation Controls
 

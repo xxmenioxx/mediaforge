@@ -32,10 +32,15 @@ asset-scoped publication and reference queries; Translation SHALL NOT load all
 historical QueueJobs, DirectPublications, or ScanResults for a selected asset
 request.
 
-An archived original SHALL remain ineligible for Translation. An asset with no
-current publication identity SHALL not be required to invent Library
-publication provenance; a current or conflicting publication identity SHALL
-continue to receive strict authority and source-correlation checks.
+An AssetRecord whose physical inventory status is `archive` SHALL remain
+ineligible for Translation, and paths outside configured media roots SHALL
+remain unauthorized. A Library asset SHALL remain eligible when its current
+Queue publication records an `OriginalArchivedPath`; that path describes the
+preserved original and does not make the selected Library asset an Archive
+record. An asset with no current publication identity SHALL not be required to
+invent Library publication provenance; a current or conflicting publication
+identity SHALL continue to receive strict authority and source-correlation
+checks.
 
 #### Scenario: Unprocessed RAW sidecar can be translated
 
@@ -83,6 +88,15 @@ continue to receive strict authority and source-correlation checks.
   provenance and no active conflicting operation
 - **THEN** Asset Info leaves `Translate...` available regardless of conversion
   or profile editing locks and opens the dialog for that exact sidecar
+
+#### Scenario: Converted Library publication remains translatable when its original is archived
+
+- **WHEN** a converted Library asset has a current, identity-verified Queue
+  publication with an `OriginalArchivedPath` and the original remains in
+  Archive
+- **THEN** Translation uses the Library asset and its exact authorized
+  sidecar, preserves the video, sidecar, archived original, and Publisher
+  evidence, and does not treat the Library asset as a physical Archive record
 
 #### Scenario: Generic subtitle actions remain advisory during publication conflict
 

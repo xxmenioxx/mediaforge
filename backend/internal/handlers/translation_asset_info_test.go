@@ -661,7 +661,7 @@ func TestAssetInfoTranslationCapabilityAllowsPublishedLibraryVariants(t *testing
 	}
 }
 
-func TestAssetInfoTranslationPublishedQueueLifecycleCompletesWithoutMutatingPublisherEvidence(t *testing.T) {
+func TestAssetInfoTranslationConvertedPublishedWithArchivedOriginalCompletesWithoutMutatingEvidence(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
 	mediaPath := filepath.Join(root, "episode.mkv")
@@ -672,6 +672,20 @@ func TestAssetInfoTranslationPublishedQueueLifecycleCompletesWithoutMutatingPubl
 	writeTestFile(t, sourcePath, string(sourceBefore))
 	db := translationLibrarySourceTestDB(t, root, mediaPath)
 	raw, job := seedTranslationQueuePublication(t, db, mediaPath)
+	archiveRoot := filepath.Join(root, "archive")
+	archivedPath := filepath.Join(archiveRoot, "episode.mkv")
+	archivedBytes := []byte("preserved archived original bytes")
+	writeTestFile(t, archivedPath, string(archivedBytes))
+	archivedRecord := models.AssetRecord{
+		Path: archivedPath, RootPath: archiveRoot, RelativePath: "episode.mkv",
+		FileName: "episode.mkv", Status: "archive", SizeBytes: int64(len(archivedBytes)),
+	}
+	if err := db.Create(&archivedRecord).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.QueueJob{}).Where("id = ?", job.ID).Update("original_archived_path", archivedPath).Error; err != nil {
+		t.Fatal(err)
+	}
 	publisherEvidence := seedTranslationPublisherEvidence(t, db, mediaPath, raw, job)
 	persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
 	fixture := newAssetInfoTranslationOllamaFixture()
@@ -697,6 +711,13 @@ func TestAssetInfoTranslationPublishedQueueLifecycleCompletesWithoutMutatingPubl
 	if err := db.First(&publisherBefore, publisherEvidence.ID).Error; err != nil {
 		t.Fatal(err)
 	}
+	var archivedBefore models.AssetRecord
+	if err := db.First(&archivedBefore, archivedRecord.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if archivedBefore.Status != "archive" || archivedBefore.Path != archivedPath {
+		t.Fatalf("fixture must represent an available archived original: %#v", archivedBefore)
+	}
 	operation := startAssetInfoTranslationAndWait(t, handler, body)
 	if operation.Result == nil || len(operation.Result.Created) != 1 || len(operation.Result.Artifacts) != 1 {
 		t.Fatalf("published Queue translation did not complete with one artifact: %#v", operation.Result)
@@ -710,6 +731,9 @@ func TestAssetInfoTranslationPublishedQueueLifecycleCompletesWithoutMutatingPubl
 	}
 	if got, err := os.ReadFile(sourcePath); err != nil || !bytes.Equal(got, sourceBefore) {
 		t.Fatalf("original sidecar changed during translation: err=%v", err)
+	}
+	if got, err := os.ReadFile(archivedPath); err != nil || !bytes.Equal(got, archivedBytes) {
+		t.Fatalf("archived original changed during translation: err=%v", err)
 	}
 	translatedFound := false
 	for name, content := range files {
@@ -733,6 +757,13 @@ func TestAssetInfoTranslationPublishedQueueLifecycleCompletesWithoutMutatingPubl
 	}
 	if !reflect.DeepEqual(publisherBefore, publisherAfter) {
 		t.Fatalf("translation changed Publisher evidence: before=%#v after=%#v", publisherBefore, publisherAfter)
+	}
+	var archivedAfter models.AssetRecord
+	if err := db.First(&archivedAfter, archivedRecord.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(archivedBefore, archivedAfter) {
+		t.Fatalf("translation changed archived-original inventory: before=%#v after=%#v", archivedBefore, archivedAfter)
 	}
 	var directPublicationCount int64
 	if err := db.Model(&models.DirectPublication{}).Count(&directPublicationCount).Error; err != nil {
@@ -869,25 +900,6 @@ func TestAssetInfoTranslationRawBlocksMissingMediaAndStaleSource(t *testing.T) {
 			t.Fatalf("changed source was overwritten: err=%v", err)
 		}
 	})
-}
-
-func TestAssetInfoTranslationBlocksArchivedOriginalForPublishedAsset(t *testing.T) {
-	root := t.TempDir()
-	mediaPath := filepath.Join(root, "episode.mkv")
-	sourcePath := filepath.Join(root, "episode.eng.srt")
-	writeTestFile(t, mediaPath, "library video bytes")
-	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
-	db := translationLibrarySourceTestDB(t, root, mediaPath)
-	_, job := seedTranslationQueuePublication(t, db, mediaPath)
-	archivedPath := filepath.Join(root, "archive", "episode.mkv")
-	if err := db.Model(&models.QueueJob{}).Where("id = ?", job.ID).Update("original_archived_path", archivedPath).Error; err != nil {
-		t.Fatal(err)
-	}
-	request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath)
-	status, body := postAssetInfoTranslationCapability(t, AssetHandler{db: db}, request)
-	if status != http.StatusUnprocessableEntity || !strings.Contains(body, "archived original") {
-		t.Fatalf("published asset with archived original was not blocked: status=%d body=%s", status, body)
-	}
 }
 
 func TestAssetInfoTranslationCapabilityStartAndRetryRejectConflictingPublications(t *testing.T) {
@@ -1285,6 +1297,55 @@ func TestAssetInfoTranslationCapabilityRejectsMissingUnsupportedAndArchivedSourc
 			}
 			if testCase.wantReasonPart != "" && !strings.Contains(capability.Reason, testCase.wantReasonPart) {
 				t.Fatalf("reason=%q does not identify archived source", capability.Reason)
+			}
+		})
+	}
+}
+
+func TestAssetInfoTranslationRejectsPhysicalArchiveAndUnauthorizedAssetPaths(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		useOutsideRoot bool
+		wantReasonPart string
+	}{
+		{name: "physical Archive record", wantReasonPart: "archived originals"},
+		{name: "asset outside configured roots", useOutsideRoot: true, wantReasonPart: "outside configured media roots"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "episode.mkv")
+			sourcePath := filepath.Join(root, "episode.eng.srt")
+			writeTestFile(t, mediaPath, "media fixture")
+			writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+			db := translationLibrarySourceTestDB(t, root, mediaPath)
+			if !testCase.useOutsideRoot {
+				if err := db.Model(&models.AssetRecord{}).Where("path = ?", mediaPath).Update("status", "archive").Error; err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				outsideRoot := t.TempDir()
+				mediaPath = filepath.Join(outsideRoot, "episode.mkv")
+				sourcePath = filepath.Join(outsideRoot, "episode.eng.srt")
+				writeTestFile(t, mediaPath, "outside media fixture")
+				writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+				if err := db.Create(&models.AssetRecord{
+					Path: mediaPath, RootPath: outsideRoot, RelativePath: "episode.mkv",
+					FileName: "episode.mkv", Status: "unprocessed",
+				}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			handler := AssetHandler{db: db}
+			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
+			capabilityRequest := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath)
+			for name, call := range map[string]func() (int, string){
+				"Capability": func() (int, string) { return postAssetInfoTranslationCapability(t, handler, capabilityRequest) },
+				"Start":      func() (int, string) { return postAssetInfoTranslationStart(t, handler, request) },
+			} {
+				status, body := call()
+				if status < http.StatusBadRequest || !strings.Contains(body, testCase.wantReasonPart) {
+					t.Fatalf("%s allowed %s: status=%d body=%s", name, testCase.name, status, body)
+				}
 			}
 		})
 	}

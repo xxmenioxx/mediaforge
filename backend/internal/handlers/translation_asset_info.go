@@ -103,9 +103,6 @@ func (h AssetHandler) resolveSubtitleTranslationAssetSource(
 }
 
 func subtitleTranslationPublicationIdentityBlocker(record models.AssetRecord, projection AssetLifecycleProjection) error {
-	if projection.Original == AssetOriginalArchived {
-		return errors.New("assets with an archived original cannot be translated")
-	}
 	switch projection.CurrentPublication.State {
 	case assetCurrentPublicationConflict:
 		return errors.New("conflicting publication identities must be resolved before subtitle translation")
