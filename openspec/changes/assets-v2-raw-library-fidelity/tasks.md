@@ -16,3 +16,9 @@
 
 - [x] 4.1 Add focused regressions for context switching, legacy URLs, hierarchy isolation, RAW hierarchy/actions, Library’s six columns and path actions, selected detail and one Play control, metadata absence, accessibility, and responsive structure; run the focused Assets and navigation suites.
 - [x] 4.2 Run `openspec validate assets-v2-raw-library-fidelity --strict`, `npm run lint`, `npm run build`, and `./scripts/verify.sh --auto`; resolve only failures introduced by this change and record exact results.
+
+## 5. Issue #388 exact navigation selection
+
+- [x] 5.1 Keep explicit stale RAW and Library URL selections scoped and empty instead of substituting search matches or unrelated locations.
+- [x] 5.2 Cover same-name nodes, nested and sibling paths, selection changes, browser Back/Forward, and invalid deep links.
+- [x] 5.3 Clear stale All RAW bulk selection on invalid deep links and verify no bulk action survives Back/Forward restoration.

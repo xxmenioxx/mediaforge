@@ -109,14 +109,18 @@ import {
 const VIDEO_PROFILE_OVERRIDE_ONLY = -1;
 const VIDEO_PROFILE_AUDIO_ONLY = -2;
 
-function rawSelectionFromContext(sourceGroups: AssetSourceGroup[], query: string, legacyAssetPath: string, sourceGroupParam: string | null, logicalGroupParam: string | null, pathParam: string | null, rawScopeParam: string | null): RawHierarchySelection {
-  if (rawScopeParam === 'all') return { kind: 'all' };
+function rawSelectionFromContext(sourceGroups: AssetSourceGroup[], query: string, legacyAssetPath: string, sourceGroupParam: string | null, logicalGroupParam: string | null, pathParam: string | null, rawScopeParam: string | null): RawHierarchySelection | null {
+  if (rawScopeParam !== null) return rawScopeParam === 'all' ? { kind: 'all' } : null;
+  const hasExplicitSelection = Boolean(sourceGroupParam || logicalGroupParam || pathParam);
   const requestedSourceGroupId = sourceGroupParam ? Number(sourceGroupParam) : null;
   const sourceGroup = requestedSourceGroupId === null ? undefined : sourceGroups.find((candidate) => candidate.id === requestedSourceGroupId);
+  if (sourceGroupParam && (!Number.isInteger(requestedSourceGroupId) || !sourceGroup)) return null;
   const requestedLogicalGroup = logicalGroupParam
     ? sourceGroups.flatMap((candidate) => candidate.logicalGroups.map((logicalGroup) => ({ candidate, logicalGroup })))
       .find(({ candidate, logicalGroup }) => (!sourceGroup || candidate.id === sourceGroup.id) && logicalGroup.id === logicalGroupParam)
     : undefined;
+  if (logicalGroupParam && !requestedLogicalGroup) return null;
+  if (pathParam && !logicalGroupParam) return null;
   const selectionSourceGroup = sourceGroup ?? requestedLogicalGroup?.candidate;
   if (selectionSourceGroup) {
     const logicalGroup = requestedLogicalGroup?.candidate.id === selectionSourceGroup.id
@@ -125,6 +129,7 @@ function rawSelectionFromContext(sourceGroups: AssetSourceGroup[], query: string
     const path = pathParam && logicalGroup
       ? logicalGroup.assetPaths.find((candidate) => candidate.id === pathParam || normalizePath(candidate.path) === normalizePath(pathParam))
       : undefined;
+    if (pathParam && !path) return null;
     if (path && logicalGroup) return { kind: 'path', sourceGroupId: selectionSourceGroup.id, logicalGroupId: logicalGroup.id, pathId: path.id };
     if (logicalGroup) return { kind: 'logical', sourceGroupId: selectionSourceGroup.id, logicalGroupId: logicalGroup.id };
     return { kind: 'source', sourceGroupId: selectionSourceGroup.id };
@@ -134,7 +139,9 @@ function rawSelectionFromContext(sourceGroups: AssetSourceGroup[], query: string
     const linked = sourceGroups.flatMap((candidate) => candidate.logicalGroups.flatMap((logicalGroup) => logicalGroup.assetPaths.map((path) => ({ candidate, logicalGroup, path }))))
       .find(({ path }) => path.assets.some((asset) => normalizePath(asset.path) === normalizePath(legacyAssetPath)));
     if (linked) return { kind: 'path', sourceGroupId: linked.candidate.id, logicalGroupId: linked.logicalGroup.id, pathId: linked.path.id };
+    return null;
   }
+  if (hasExplicitSelection) return null;
 
   const cleanQuery = query.trim().toLowerCase();
   const firstLogical = sourceGroups
@@ -147,9 +154,10 @@ function rawSelectionFromContext(sourceGroups: AssetSourceGroup[], query: string
   return { kind: 'all' };
 }
 
-function librarySelectionFromContext(libraries: Library[], groups: AssetGroup[], libraryIdParam: string | null, libraryPathParam: string | null): LibraryTreeSelection {
+function librarySelectionFromContext(libraryIdParam: string | null, libraryPathParam: string | null): LibraryTreeSelection {
   const id = libraryIdParam ? Number(libraryIdParam) : null;
-  if (id === null || !Number.isInteger(id) || (!libraries.some((library) => library.id === id) && !groups.some((group) => group.libraryId === id))) return { libraryId: null, path: '' };
+  if (id === null) return { libraryId: null, path: '' };
+  if (!Number.isInteger(id)) return { libraryId: Number.NaN, path: libraryPathParam ?? '' };
   return { libraryId: id, path: libraryPathParam ?? '' };
 }
 
@@ -351,7 +359,7 @@ export function AssetsPage() {
   const rawScopeParam = searchParams.get('rawScope');
   const libraryIdParam = searchParams.get('libraryId');
   const libraryPathParam = searchParams.get('libraryPath');
-  const rawSelection = useMemo(() => rawSelectionFromContext(
+  const rawSelectionContext = useMemo(() => rawSelectionFromContext(
     sourceGroups,
     assetQuery,
     legacyAssetPath,
@@ -361,11 +369,10 @@ export function AssetsPage() {
     rawScopeParam,
   ), [sourceGroups, assetQuery, legacyAssetPath, sourceGroupParam, logicalGroupParam, rawPathParam, rawScopeParam]);
   const libraryTreeSelection = useMemo(() => librarySelectionFromContext(
-    libraries.data ?? [],
-    canonicalLibraryGroups,
     libraryIdParam,
     libraryPathParam,
-  ), [libraries.data, canonicalLibraryGroups, libraryIdParam, libraryPathParam]);
+  ), [libraryIdParam, libraryPathParam]);
+  const rawSelection = rawSelectionContext ?? { kind: 'all' as const };
   const statusGroups = safeArray(
     tab === 'library' ? canonicalLibraryGroups : assets.data?.rawGroups ?? assets.data?.unprocessedGroups,
   );
@@ -452,7 +459,7 @@ export function AssetsPage() {
       groups={canonicalLibraryGroups}
       libraries={libraries.data ?? []}
       location={tab}
-      rawSelection={rawSelection}
+      rawSelection={rawSelectionContext}
       librarySelection={libraryTreeSelection}
       onSelectRaw={(selection) => switchLocation('raw', selection)}
       onSelectLibrary={(selection) => switchLocation('library', selection)}
@@ -541,7 +548,7 @@ export function AssetsPage() {
           {tab === 'raw' ? (
             <AssetsErrorBoundary boundaryKey="raw">
               <RawAssetsView
-                key={assetQuery}
+                key={`${assetQuery}:${rawSelectionContext === null ? 'invalid-selection' : 'valid-selection'}`}
                 summaryStrip={summaryStrip}
                 filterContent={filterContent}
                 activeFilterCount={activeFilterCount}
@@ -560,6 +567,7 @@ export function AssetsPage() {
                 query={assetQuery}
                 legacyAssetPath={legacyAssetPath}
                 selection={rawSelection}
+                selectionInvalid={rawSelectionContext === null}
                 hierarchyPanel={hierarchyPanel}
               />
             </AssetsErrorBoundary>
@@ -586,7 +594,9 @@ export function AssetsPage() {
                 query={assetQuery}
                 libraryTreeSelection={libraryTreeSelection}
                 hierarchyPanel={hierarchyPanel}
-                emptyLabel="No Library asset groups match the persisted filters."
+                emptyLabel={libraryTreeSelection.libraryId !== null
+                  ? 'The requested Library location is unavailable or contains no matching assets.'
+                  : 'No Library asset groups match the persisted filters.'}
               />
             </AssetsErrorBoundary>
           )}
@@ -1253,7 +1263,7 @@ type AssetCollection = {
   sizeBytes: number;
 };
 
-function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDetails, syncPending, onSync, sourceGroups, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query, legacyAssetPath, selection, hierarchyPanel }: AssetsWorkspaceChromeProps & {
+function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDetails, syncPending, onSync, sourceGroups, libraries, profiles, audioProfiles, trackProfiles, settings, assetCategories, queueJobs, runningSnapshotPaths, query, legacyAssetPath, selection, selectionInvalid, hierarchyPanel }: AssetsWorkspaceChromeProps & {
   sourceGroups: AssetSourceGroup[];
   libraries: Library[];
   profiles: Profile[];
@@ -1266,6 +1276,7 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
   query: string;
   legacyAssetPath: string;
   selection: RawHierarchySelection;
+  selectionInvalid: boolean;
   hierarchyPanel: ReactNode;
 }) {
   const selectionIdentity = `${query}\u0000${selection.kind}\u0000${selection.kind === 'all' ? '' : selection.sourceGroupId}\u0000${selection.kind === 'logical' || selection.kind === 'path' ? selection.logicalGroupId : ''}\u0000${selection.kind === 'path' ? selection.pathId : ''}`;
@@ -1317,7 +1328,8 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
     }));
     return { sourceGroup, logicalGroup, selectedPath, contextLogicalGroups, visibleAssets };
   }, [filteredSourceGroups, selectionKind, selectionLogicalGroupId, selectionPathId, selectionSourceGroupId, sourceGroups]);
-  const { sourceGroup, logicalGroup, selectedPath, contextLogicalGroups, visibleAssets } = rawContext;
+  const { sourceGroup, logicalGroup, selectedPath, contextLogicalGroups } = rawContext;
+  const visibleAssets = selectionInvalid ? [] : rawContext.visibleAssets;
   const contextIdentity = `${query}\u0000${selection.kind}\u0000${selection.kind === 'all' ? '' : selection.sourceGroupId}\u0000${selection.kind === 'logical' || selection.kind === 'path' ? selection.logicalGroupId : ''}\u0000${selection.kind === 'path' ? selection.pathId : ''}`;
   const page = pageState.identity === contextIdentity ? pageState.page : 0;
   const requestedSelectedAssetPath = selectedAssetPathState.identity === contextIdentity ? selectedAssetPathState.path : '';
@@ -1352,7 +1364,9 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
     ? assetPipelineState(selectedAsset, associatedJobForCurrentPublication(selectedAsset, queueJobs), false)
     : undefined;
   const selectedPathGroup = selectedPath ? assetGroupFromTreePath(selectedPath) : undefined;
-  const rawBreadcrumbs = selection.kind === 'all'
+  const rawBreadcrumbs = selectionInvalid
+    ? ['Assets', 'RAW', 'Selection unavailable']
+    : selection.kind === 'all'
     ? ['Assets', 'RAW', 'All RAW assets']
     : [
       'Assets',
@@ -1363,7 +1377,7 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
     ];
   const setSelectedAssetPath = (path: string) => setSelectedAssetPathState({ identity: contextIdentity, path });
   const setPage = (nextPage: number) => setPageState({ identity: contextIdentity, page: nextPage });
-  const scopedSelectedAssets = selectedSelectableAssetsForLogicalGroups(contextLogicalGroups, selectedAssetIds);
+  const scopedSelectedAssets = selectionInvalid ? [] : selectedSelectableAssetsForLogicalGroups(contextLogicalGroups, selectedAssetIds);
   const updateSelectedAssets = (assetIds: number[], selected: boolean) => {
     const current = selectedAssetIdsState.identity === selectionIdentity ? selectedAssetIdsState.ids : new Set<number>();
     const next = new Set(current);
@@ -1421,7 +1435,7 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
               path={sourceGroup?.sourcePath ?? ''}
               mode="raw"
               breadcrumbs={<WorkspaceBreadcrumbs segments={rawBreadcrumbs} label="RAW source location" />}
-              primaryActions={sourceGroup ? <SourceGroupConfigureButton sourceGroup={sourceGroup} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} /> : null}
+              primaryActions={!selectionInvalid && sourceGroup ? <SourceGroupConfigureButton sourceGroup={sourceGroup} profiles={profiles} audioProfiles={audioProfiles} trackProfiles={trackProfiles} libraries={libraries} categories={assetCategories} /> : null}
             />
           )}
           {scopedSelectedAssets.length ? (
@@ -1491,7 +1505,7 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
                   })}
             </AssetsInventoryTable>
           ) : (
-            <Alert severity="info" sx={{ mt: 1 }}>{sourceGroups.length ? 'No RAW assets match this context or search.' : 'No RAW Source Groups found.'}</Alert>
+            <Alert severity="info" sx={{ mt: 1 }}>{selectionInvalid ? 'The requested RAW location is no longer available.' : sourceGroups.length ? 'No RAW assets match this context or search.' : 'No RAW Source Groups found.'}</Alert>
           )}
           </Box>
           {visibleAssets.length ? (

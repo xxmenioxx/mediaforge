@@ -32,6 +32,13 @@ RAW MUST present source inventory using the existing Source Group, Logical Group
 - **WHEN** a user expands a Source Group and selects a Logical Group or path
 - **THEN** the hierarchy remains visible, the selected context is identified, and only matching RAW assets appear in the list
 
+#### Scenario: Keep an invalid explicit navigation selection scoped
+- **WHEN** a bookmarked or browser-history URL names a RAW source, logical group, path, or Library location that is no longer present
+- **THEN** the requested RAW or Library context remains selected and shows an invalid or empty state
+- **AND** the workspace does not substitute a search-matching RAW group such as Anime or broaden to unrelated Library paths
+- **AND** a stale RAW selection does not retain bulk-selected assets or expose bulk actions from the previous location
+- **AND** Back and Forward restore each valid or invalid URL selection without changing inventory context
+
 #### Scenario: Browse a source with root and nested paths
 - **WHEN** a Logical Group contains root assets and child paths
 - **THEN** the workspace keeps root assets and child paths distinguishable and lets the user reach assets at each level
