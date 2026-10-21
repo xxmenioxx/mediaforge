@@ -1179,6 +1179,49 @@ export type ProfileInput = {
   disabled?: boolean;
 };
 
+export type LabResolutionBlockingField = {
+  field: string;
+  source?: unknown;
+  expected?: unknown;
+  value?: unknown;
+  authority?: string;
+  authorityState: string;
+  reason: string;
+};
+
+export type LabResolutionAction = {
+  id: 'reanalyze_cadence' | 'preserve_source' | 'compare_field_order';
+  label: string;
+  eligible: boolean;
+  recommended?: boolean;
+  reason: string;
+  tradeoffs?: string;
+};
+
+export type LabResolutionRequired = {
+  version: 1;
+  status: 'resolution_required';
+  gate?: 'planning' | 'canonical_fidelity';
+  planningStatus: 'NEEDS_REVIEW' | 'RESOLVED';
+  fidelityStatus?: 'UNVERIFIED';
+  blockingFields: LabResolutionBlockingField[];
+  evidence: {
+    path: string;
+    sourceSizeBytes: number;
+    sourceModifiedAtNs: number;
+    sourceMode: number;
+    cadenceAnalysisVersion: number;
+    sourceFrameRate: string;
+    scanId?: number;
+    scanUpdatedAt?: string;
+    profileDecisionSignature: string;
+    requestedProfileSignature: string;
+  };
+  requested: { cadence: string; fieldStructure: string; gop: string; gopStrategy: string };
+  effective: { frameRate?: string | null; frameRateKnown: boolean; progressive?: boolean | null; progressiveReliable: boolean; cadenceOperation?: string | null; fieldOrder?: string | null };
+  actions: LabResolutionAction[];
+};
+
 export type ProfileTemplate = {
   key: string;
   version: number;

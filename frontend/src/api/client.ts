@@ -108,6 +108,7 @@ import type {
   TestEncodeDeleteSelectionResult,
   TestEncodeReconcileResponse,
   TestEncodeOrphanArtifact,
+  LabResolutionRequired,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -118,6 +119,7 @@ export class ApiRequestError extends Error {
   readonly reason?: string;
   readonly retryable?: boolean;
   readonly recreate?: boolean;
+  readonly resolution?: LabResolutionRequired;
 
   constructor(message: string, readonly status: number, details?: {
     code?: string;
@@ -125,6 +127,7 @@ export class ApiRequestError extends Error {
     reason?: string;
     retryable?: boolean;
     recreate?: boolean;
+    resolution?: LabResolutionRequired;
   }) {
     super(message);
     this.name = 'ApiRequestError';
@@ -133,6 +136,7 @@ export class ApiRequestError extends Error {
     this.reason = details?.reason;
     this.retryable = details?.retryable;
     this.recreate = details?.recreate;
+    this.resolution = details?.resolution;
   }
 }
 
@@ -167,6 +171,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
       reason?: unknown;
       retryable?: unknown;
       recreate?: unknown;
+      resolution?: unknown;
     } | null;
     throw new ApiRequestError(message, response.status, {
       code: typeof payload?.code === 'string' ? payload.code : undefined,
@@ -174,6 +179,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
       reason: typeof payload?.reason === 'string' ? payload.reason : undefined,
       retryable: typeof payload?.retryable === 'boolean' ? payload.retryable : undefined,
       recreate: typeof payload?.recreate === 'boolean' ? payload.recreate : undefined,
+      resolution: payload?.resolution && typeof payload.resolution === 'object' ? payload.resolution as LabResolutionRequired : undefined,
     });
   }
 
