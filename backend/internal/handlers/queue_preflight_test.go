@@ -1215,7 +1215,7 @@ func TestSingleQueuePreflightReviewsExplicitJob2191IVTCPlanBeforeAccept(t *testi
 	}
 
 	accepted := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{
-		"revision": candidate.Revision, "assetIds": []string{candidate.Assets[0].ID},
+		"revision": candidate.Revision, "assetIds": []string{candidate.Assets[0].ID}, "reviewedAssignmentChanges": true,
 	})
 	if accepted.Code != http.StatusCreated {
 		t.Fatalf("accept status=%d body=%s", accepted.Code, accepted.Body.String())

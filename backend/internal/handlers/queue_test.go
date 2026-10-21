@@ -2862,6 +2862,25 @@ func TestAcceptedSelectedQueueJobFreezesReviewedConfigurationOnce(t *testing.T) 
 	if err := db.Model(&assignment).Update("video_profile_id", second.ID).Error; err != nil {
 		t.Fatal(err)
 	}
+	staleAcceptance := queueSelectedAssetsPreflightRequest(t, db, http.MethodPost, "/api/queue/preflights/"+candidate.ID+"/accept", map[string]any{
+		"revision": candidate.Revision, "assetIds": []string{candidate.Assets[0].ID},
+	})
+	if staleAcceptance.Code != http.StatusConflict || !strings.Contains(staleAcceptance.Body.String(), "assignments for "+mediaPath+" changed or became unavailable after review") {
+		t.Fatalf("stale assignment acceptance status=%d body=%s", staleAcceptance.Code, staleAcceptance.Body.String())
+	}
+	var jobsAfterStaleAcceptance, plansAfterStaleAcceptance int64
+	if err := db.Model(&models.QueueJob{}).Count(&jobsAfterStaleAcceptance).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.ExecutionPlan{}).Count(&plansAfterStaleAcceptance).Error; err != nil {
+		t.Fatal(err)
+	}
+	if jobsAfterStaleAcceptance != 0 || plansAfterStaleAcceptance != 0 {
+		t.Fatalf("stale candidate created Queue state: jobs=%d plans=%d", jobsAfterStaleAcceptance, plansAfterStaleAcceptance)
+	}
+	if err := db.Model(&assignment).Update("video_profile_id", first.ID).Error; err != nil {
+		t.Fatal(err)
+	}
 	first.QualityValue = 29
 	if err := db.Save(&first).Error; err != nil {
 		t.Fatal(err)
