@@ -7,6 +7,8 @@
 - [x] 1.5 Add high-history regressions proving unrelated records are not loaded and relevant active Queue work and Queue/DirectPublication conflicts remain visible.
 - [x] 1.6 Add a published QueueJob end-to-end Translation regression and assert video, original sidecar, and Publisher evidence remain unchanged; retain Accepted and DirectPublication fixtures.
 - [x] 1.7 Fail closed when the bounded publication candidate set exceeds its safety cap.
+- [x] 1.8 Restore unprocessed RAW assets without publication identity; add Capability → Start → Completed coverage and retain Queue, maintenance, missing-file, source-revision, and archive blockers.
+- [x] 1.9 Replace suffix-expression publication lookups with indexed canonical path keys; backfill historical rows idempotently and validate publication/source lookup plans with SQLite `EXPLAIN QUERY PLAN`.
 
 ## 2. Asset Info Translation Controls
 

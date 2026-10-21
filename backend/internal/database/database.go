@@ -86,6 +86,9 @@ func Migrate(db *gorm.DB) error {
 	); err != nil {
 		return err
 	}
+	if err := backfillPublicationPathKeys(db); err != nil {
+		return err
+	}
 	if err := migrateValidationPolicySetting(db); err != nil {
 		return err
 	}

@@ -103,6 +103,9 @@ func (h AssetHandler) resolveSubtitleTranslationAssetSource(
 }
 
 func subtitleTranslationPublicationIdentityBlocker(record models.AssetRecord, projection AssetLifecycleProjection) error {
+	if projection.Original == AssetOriginalArchived {
+		return errors.New("assets with an archived original cannot be translated")
+	}
 	switch projection.CurrentPublication.State {
 	case assetCurrentPublicationConflict:
 		return errors.New("conflicting publication identities must be resolved before subtitle translation")
@@ -126,6 +129,9 @@ func subtitleTranslationPublicationIdentityBlocker(record models.AssetRecord, pr
 			return errors.New("current publication provenance is ambiguous for subtitle translation")
 		}
 	case assetCurrentPublicationUnpublished:
+		if projection.Location == AssetLocationRaw && record.LibraryID == 0 {
+			return nil
+		}
 		if projection.Location == AssetLocationLibrary &&
 			strings.EqualFold(strings.TrimSpace(record.Status), "accepted") &&
 			projection.Provenance == AssetProvenanceImported {

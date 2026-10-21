@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 const QueueSourceAnalysisEvidenceKey = "sourceAnalysisEvidence"
 const QueuePreflightSelectedEncoderKey = "queuePreflightSelectedEncoder"
@@ -11,10 +15,11 @@ type QueueJob struct {
 	BatchID                     string     `json:"batchId" gorm:"index"`
 	BatchName                   string     `json:"batchName"`
 	BatchPosition               int        `json:"batchPosition" gorm:"not null;default:0;index"`
-	MediaPath                   string     `json:"mediaPath" gorm:"not null"`
+	MediaPath                   string     `json:"mediaPath" gorm:"not null;index"`
+	MediaPathKey                string     `json:"-" gorm:"not null;default:'';index"`
 	SourceAssetRecordID         *uint      `json:"sourceAssetRecordId,omitempty" gorm:"index"`
 	PublishMode                 string     `json:"publishMode" gorm:"not null;default:standard"`
-	LibraryID                   uint       `json:"libraryId" gorm:"not null;index"`
+	LibraryID                   uint       `json:"libraryId" gorm:"not null;index;index:idx_queue_jobs_library_published_path_key,priority:1"`
 	ProfileID                   uint       `json:"profileId" gorm:"not null"`
 	ProfileVersion              int        `json:"profileVersion" gorm:"not null;default:1"`
 	ProfileSnapshot             JSONMap    `json:"profileSnapshot" gorm:"type:json"`
@@ -49,6 +54,7 @@ type QueueJob struct {
 	ValidationOverride          bool       `json:"validationOverridePresent" gorm:"not null;default:false"`
 	ValidationActionable        bool       `json:"validationHasActionableWarnings" gorm:"not null;default:false"`
 	PublishedPath               string     `json:"publishedPath" gorm:"index"`
+	PublishedPathKey            string     `json:"-" gorm:"not null;default:'';index:idx_queue_jobs_library_published_path_key,priority:2"`
 	PublishedFingerprint        string     `json:"publishedFingerprint" gorm:"index"`
 	PublishedSizeBytes          int64      `json:"publishedSizeBytes"`
 	PublishedAt                 *time.Time `json:"publishedAt"`
@@ -64,4 +70,10 @@ type QueueJob struct {
 	DismissedAt                 *time.Time `json:"dismissedAt" gorm:"index"`
 	CreatedAt                   time.Time  `json:"createdAt"`
 	UpdatedAt                   time.Time  `json:"updatedAt"`
+}
+
+func (job *QueueJob) BeforeSave(_ *gorm.DB) error {
+	job.MediaPathKey = CanonicalPublicationPathKey(job.MediaPath)
+	job.PublishedPathKey = CanonicalPublicationPathKey(job.PublishedPath)
+	return nil
 }

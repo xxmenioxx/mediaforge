@@ -15,6 +15,12 @@ published-as-is, or accepted provenance, Asset Info SHALL expose the action
 when no active source-operation guard blocks it. Translation SHALL remain
 independent of video conversion and publication lifecycle.
 
+For an owned subtitle on an unprocessed RAW asset with no current publication
+identity, Asset Info SHALL also expose the action when no active Queue or
+maintenance operation blocks it. RAW translation SHALL retain the same exact
+source, root ownership, and source-revision checks as published-asset
+translation.
+
 The generic `Subtitles` lifecycle capability SHALL retain its existing policy;
 a publication conflict alone SHALL NOT change that capability. Translation
 itself SHALL fail closed when publication authorities conflict, the current
@@ -25,6 +31,27 @@ eligible. The same canonical lifecycle projection SHALL be built using
 asset-scoped publication and reference queries; Translation SHALL NOT load all
 historical QueueJobs, DirectPublications, or ScanResults for a selected asset
 request.
+
+An archived original SHALL remain ineligible for Translation. An asset with no
+current publication identity SHALL not be required to invent Library
+publication provenance; a current or conflicting publication identity SHALL
+continue to receive strict authority and source-correlation checks.
+
+#### Scenario: Unprocessed RAW sidecar can be translated
+
+- **WHEN** an owned, readable, unprocessed RAW asset has an exact supported
+  sidecar, no current publication identity, and no active Queue or maintenance
+  work
+- **THEN** Capability and Start accept the selected source revision and the
+  existing operation pipeline completes one translated sidecar without
+  modifying the media or original sidecar
+
+#### Scenario: RAW translation fails closed when the source changes
+
+- **WHEN** the selected RAW sidecar changes after Start but before sidecar
+  publication
+- **THEN** publication revalidation rejects the operation and leaves the
+  changed source and media untouched
 
 #### Scenario: Embedded English text subtitle can be translated
 

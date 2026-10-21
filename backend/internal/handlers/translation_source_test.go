@@ -169,10 +169,26 @@ func translationSourceTestDB(t *testing.T, root, mediaPath string) *gorm.DB {
 	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}, &models.AppSetting{}, &models.OCRDictionaryEntry{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.Library{Name: "Test", SourcePath: root, DestinationPath: root, Type: "movies"}).Error; err != nil {
+	if err := db.Create(&models.Library{Name: "Test", SourcePath: root, DestinationPath: filepath.Join(root, "library"), Type: "movies"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.AssetRecord{Path: mediaPath, RootPath: root, RelativePath: filepath.Base(mediaPath), FileName: filepath.Base(mediaPath), LibraryID: 1, LibraryName: "Test", Status: "accepted"}).Error; err != nil {
+	if err := db.Create(&models.AssetRecord{Path: mediaPath, RootPath: root, RelativePath: filepath.Base(mediaPath), FileName: filepath.Base(mediaPath), Status: "unprocessed"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func translationLibrarySourceTestDB(t *testing.T, root, mediaPath string) *gorm.DB {
+	t.Helper()
+	db := translationSourceTestDB(t, root, mediaPath)
+	if err := db.Model(&models.Library{}).Where("id = ?", 1).Update("destination_path", root).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.AssetRecord{}).Where("path = ?", mediaPath).Updates(map[string]any{
+		"library_id":   1,
+		"library_name": "Test",
+		"status":       "accepted",
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	return db

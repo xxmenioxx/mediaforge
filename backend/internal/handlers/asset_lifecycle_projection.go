@@ -1163,15 +1163,7 @@ func firstNonEmptyAssetText(values ...string) string {
 }
 
 func cleanAssetLifecyclePath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	clean := filepath.Clean(path)
-	if clean == "." {
-		return ""
-	}
-	return clean
+	return models.CanonicalPublicationPathKey(path)
 }
 
 func cloneUintPointer(value *uint) *uint {
@@ -1318,6 +1310,7 @@ func (h AssetHandler) assetLifecycleProjectionForTranslation(record models.Asset
 	}
 
 	pathCandidates := assetLifecycleProjectionPathCandidates(record.Path)
+	publicationPathKey := models.CanonicalPublicationPathKey(record.Path)
 	var libraries []models.Library
 	if h.db.Migrator().HasTable(&models.Library{}) {
 		query := h.db
@@ -1329,6 +1322,11 @@ func (h AssetHandler) assetLifecycleProjectionForTranslation(record models.Asset
 		}
 	}
 	libraryIDs := assetLifecycleTranslationLibraryIDs(record, libraries)
+	librariesByID := make(map[uint]models.Library, len(libraries))
+	for _, library := range libraries {
+		librariesByID[library.ID] = library
+	}
+	location := assetLifecycleLocation(record, librariesByID)
 
 	var jobs []models.QueueJob
 	if h.db.Migrator().HasTable(&models.QueueJob{}) {
@@ -1340,9 +1338,19 @@ func (h AssetHandler) assetLifecycleProjectionForTranslation(record models.Asset
 			return nil, assetLifecycleTranslationCandidateLimitError("Queue")
 		}
 		jobs = append(jobs, bySource...)
+		if location == AssetLocationRaw {
+			var byMediaPath []models.QueueJob
+			if err := h.db.Where("media_path_key = ?", models.CanonicalPublicationPathKey(record.Path)).Limit(assetLifecycleTranslationCandidateLimit + 1).Find(&byMediaPath).Error; err != nil {
+				return nil, err
+			}
+			if len(byMediaPath) > assetLifecycleTranslationCandidateLimit {
+				return nil, assetLifecycleTranslationCandidateLimitError("Queue")
+			}
+			jobs = append(jobs, byMediaPath...)
+		}
 		for _, libraryID := range libraryIDs {
 			var byPath []models.QueueJob
-			if err := h.db.Where("library_id = ? AND (published_path IN ? OR substr(published_path, -length(?)) = ?)", libraryID, pathCandidates, assetLifecycleProjectionPathSuffix(record.Path), assetLifecycleProjectionPathSuffix(record.Path)).Limit(assetLifecycleTranslationCandidateLimit + 1).Find(&byPath).Error; err != nil {
+			if err := h.db.Where("library_id = ? AND published_path_key = ?", libraryID, publicationPathKey).Limit(assetLifecycleTranslationCandidateLimit + 1).Find(&byPath).Error; err != nil {
 				return nil, err
 			}
 			if len(byPath) > assetLifecycleTranslationCandidateLimit {
@@ -1367,7 +1375,7 @@ func (h AssetHandler) assetLifecycleProjectionForTranslation(record models.Asset
 		directPublications = append(directPublications, bySource...)
 		for _, libraryID := range libraryIDs {
 			var byPath []models.DirectPublication
-			if err := h.db.Where("library_id = ? AND (published_path IN ? OR substr(published_path, -length(?)) = ?)", libraryID, pathCandidates, assetLifecycleProjectionPathSuffix(record.Path), assetLifecycleProjectionPathSuffix(record.Path)).Limit(assetLifecycleTranslationCandidateLimit + 1).Find(&byPath).Error; err != nil {
+			if err := h.db.Where("library_id = ? AND published_path_key = ?", libraryID, publicationPathKey).Limit(assetLifecycleTranslationCandidateLimit + 1).Find(&byPath).Error; err != nil {
 				return nil, err
 			}
 			if len(byPath) > assetLifecycleTranslationCandidateLimit {

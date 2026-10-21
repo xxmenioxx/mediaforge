@@ -1391,7 +1391,8 @@ func TestPublisherOriginalArchiveClaimFencesExpiredOwner(t *testing.T) {
 	plannedDestination := filepath.Join(fixture.archiveRoot, "planned-original.mkv")
 	if err := fixture.db.Model(&models.QueueJob{}).Where("id = ?", fixture.job.ID).Updates(map[string]any{
 		"published_at": publishedAt, "published_path": fixture.destination,
-		"publication_id": publication.PublicationID, "publication_state": PublicationPublished,
+		"published_path_key": models.CanonicalPublicationPathKey(fixture.destination),
+		"publication_id":     publication.PublicationID, "publication_state": PublicationPublished,
 		"original_archive_status": "pending", "original_archived_path": plannedDestination, "stage": JobStagePublishing,
 	}).Error; err != nil {
 		t.Fatal(err)
@@ -1465,7 +1466,8 @@ func TestPublisherNotApplicableArchiveCompletesLifecycle(t *testing.T) {
 	publishedAt := time.Now().UTC()
 	if err := fixture.db.Model(&models.QueueJob{}).Where("id = ?", fixture.job.ID).Updates(map[string]any{
 		"published_at": publishedAt, "published_path": fixture.destination,
-		"publication_id": publication.PublicationID, "publication_state": PublicationPublished,
+		"published_path_key": models.CanonicalPublicationPathKey(fixture.destination),
+		"publication_id":     publication.PublicationID, "publication_state": PublicationPublished,
 		"original_archive_status": "pending", "stage": JobStagePublishing,
 	}).Error; err != nil {
 		t.Fatal(err)

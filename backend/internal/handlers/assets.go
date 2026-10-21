@@ -3071,7 +3071,10 @@ func reconcileLibraryRenameState(tx *gorm.DB, plan LibraryRenamePlan, library mo
 		for oldPath, newPath := range targets {
 			if err := tx.Model(&models.QueueJob{}).
 				Where("publication_retired_at IS NULL AND published_path = ?", oldPath).
-				Update("published_path", newPath).Error; err != nil {
+				Updates(map[string]any{
+					"published_path":     newPath,
+					"published_path_key": models.CanonicalPublicationPathKey(newPath),
+				}).Error; err != nil {
 				return err
 			}
 			if err := tx.Model(&models.QueueJob{}).
@@ -3085,7 +3088,10 @@ func reconcileLibraryRenameState(tx *gorm.DB, plan LibraryRenamePlan, library mo
 		for oldPath, newPath := range targets {
 			if err := tx.Model(&models.DirectPublication{}).
 				Where("returned_at IS NULL AND published_path = ?", oldPath).
-				Update("published_path", newPath).Error; err != nil {
+				Updates(map[string]any{
+					"published_path":     newPath,
+					"published_path_key": models.CanonicalPublicationPathKey(newPath),
+				}).Error; err != nil {
 				return err
 			}
 		}
@@ -3276,7 +3282,12 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 			}
 			if err := tx.Model(&models.QueueJob{}).
 				Where("published_path = ? AND publication_retired_at IS NULL", oldPath).
-				Updates(map[string]any{"published_path": newPath, "library_id": destinationLibrary.ID, "notes": gorm.Expr("COALESCE(notes, '') || ?", "\nConverted asset migrated to "+newPath)}).Error; err != nil {
+				Updates(map[string]any{
+					"published_path":     newPath,
+					"published_path_key": models.CanonicalPublicationPathKey(newPath),
+					"library_id":         destinationLibrary.ID,
+					"notes":              gorm.Expr("COALESCE(notes, '') || ?", "\nConverted asset migrated to "+newPath),
+				}).Error; err != nil {
 				return err
 			}
 			if err := tx.Model(&models.QueueJob{}).
@@ -3287,7 +3298,11 @@ func (h AssetHandler) MigratePath(c *gin.Context) {
 			if tx.Migrator().HasTable(&models.DirectPublication{}) {
 				if err := tx.Model(&models.DirectPublication{}).
 					Where("published_path = ? AND returned_at IS NULL", oldPath).
-					Updates(map[string]any{"published_path": newPath, "library_id": destinationLibrary.ID}).Error; err != nil {
+					Updates(map[string]any{
+						"published_path":     newPath,
+						"published_path_key": models.CanonicalPublicationPathKey(newPath),
+						"library_id":         destinationLibrary.ID,
+					}).Error; err != nil {
 					return err
 				}
 			}
@@ -4202,7 +4217,10 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		if tx.Migrator().HasTable(&models.QueueJob{}) {
 			if err := tx.Model(&models.QueueJob{}).
 				Where("publication_retired_at IS NULL AND published_path = ?", resolvedPath).
-				Update("published_path", target).Error; err != nil {
+				Updates(map[string]any{
+					"published_path":     target,
+					"published_path_key": models.CanonicalPublicationPathKey(target),
+				}).Error; err != nil {
 				return err
 			}
 			if err := tx.Model(&models.QueueJob{}).
@@ -4214,7 +4232,10 @@ func (h AssetHandler) Rename(c *gin.Context) {
 		if tx.Migrator().HasTable(&models.DirectPublication{}) {
 			if err := tx.Model(&models.DirectPublication{}).
 				Where("returned_at IS NULL AND published_path = ?", resolvedPath).
-				Update("published_path", target).Error; err != nil {
+				Updates(map[string]any{
+					"published_path":     target,
+					"published_path_key": models.CanonicalPublicationPathKey(target),
+				}).Error; err != nil {
 				return err
 			}
 		}

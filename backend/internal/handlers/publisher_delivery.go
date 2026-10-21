@@ -2237,7 +2237,16 @@ func (h PublisherHandler) commitPublishedPackage(job models.QueueJob, publicatio
 				return err
 			}
 		}
-		if err := tx.Model(&models.QueueJob{}).Where("id = ?", job.ID).Updates(map[string]any{"published_path": job.PublishedPath, "published_at": now, "published_size_bytes": job.PublishedSizeBytes, "publication_id": publication.PublicationID, "publication_state": PublicationPublished, "publication_summary": job.PublicationSummary, "original_archive_status": "pending"}).Error; err != nil {
+		if err := tx.Model(&models.QueueJob{}).Where("id = ?", job.ID).Updates(map[string]any{
+			"published_path":          job.PublishedPath,
+			"published_path_key":      models.CanonicalPublicationPathKey(job.PublishedPath),
+			"published_at":            now,
+			"published_size_bytes":    job.PublishedSizeBytes,
+			"publication_id":          publication.PublicationID,
+			"publication_state":       PublicationPublished,
+			"publication_summary":     job.PublicationSummary,
+			"original_archive_status": "pending",
+		}).Error; err != nil {
 			return err
 		}
 		return nil
