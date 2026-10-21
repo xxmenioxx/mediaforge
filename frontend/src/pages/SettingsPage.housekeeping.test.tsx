@@ -54,7 +54,7 @@ function Harness({ initialPreview, onRun }: { initialPreview?: HousekeepingRepor
     onRun={(previewId) => {
       onRun(previewId);
       setPreview(undefined);
-      setResult(report({ dryRun: false, previewId: undefined, previewExpiresAt: undefined, removedPaths: ['/work/job-1'] }));
+      setResult(report({ dryRun: false, outcome: 'cleaned', previewId: undefined, previewExpiresAt: undefined, removedPaths: ['/work/job-1'] }));
     }} />;
 }
 
@@ -71,6 +71,7 @@ describe('Settings housekeeping preview authorization', () => {
     expect(onRun).toHaveBeenCalledWith('preview-token-301');
     expect((screen.getByRole('button', { name: 'Remove previewed candidates' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('Cleanup result')).toBeTruthy();
+    expect(screen.getByText('Outcome: cleaned')).toBeTruthy();
   });
 
   it('does not enable run for blocked or expired previews', () => {
@@ -85,5 +86,45 @@ describe('Settings housekeeping preview authorization', () => {
     expect((screen.getByRole('button', { name: 'Remove previewed candidates' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/This preview has expired/)).toBeTruthy();
     expect(onRun).not.toHaveBeenCalled();
+  });
+
+  it('shows RAW protection records and completed maintenance no-op state', () => {
+    const preview = report({
+      candidates: [
+        {
+          candidateId: 'raw-protected', kind: 'empty_directory', path: '/media/raw/movies/Whiplash',
+          reason: 'directory is literally empty', ownership: 'empty_directory under raw storage role',
+          sizeBytes: 0, modifiedAt: '2026-10-01T12:00:00Z', safeToDelete: false, outcome: 'blocked',
+          blockedReason: 'directory is protected by AssetRecord #42 path (stale_reference_suspected)',
+          protectionReferences: [{ source: 'AssetRecord', recordId: '42', field: 'path', path: '/media/raw/movies/Whiplash/Whiplash.mkv', state: 'stale_reference_suspected', reason: 'Re-scan or reconcile inventory before cleanup.' }],
+          protectionReferenceCount: 1,
+        },
+        {
+          candidateId: 'maintenance-noop', kind: 'stage_artifact', path: '/media/library/Akira/.Akira.mkv.maintenance-1.tmp.mkv',
+          operationId: 'maintenance-1', reason: 'completed maintenance temporary output is already absent',
+          ownership: 'asset_maintenance_operation.temporary_path under Library storage role', sizeBytes: 0,
+          modifiedAt: '2026-09-01T12:00:00Z', safeToDelete: false, outcome: 'already_absent',
+          maintenance: {
+            assetPath: '/media/library/Akira/Akira.mkv', assetRecordId: 7, assetRecordStatus: 'processed', assetRecordMissing: false,
+            status: 'completed', phase: 'completed', finishedAt: '2026-09-01T12:00:00Z', temporaryPresence: 'absent', temporarySizeKnown: true,
+            backupPath: '/media/library/Akira/.Akira.mkv.maintenance-1.backup.mkv', backupPresence: 'absent',
+            recoveryState: 'completed operation; temporary output is already absent', resultFingerprint: 'result-hash',
+            assetFingerprintState: 'verified_match', currentAssetFingerprint: 'result-hash',
+          },
+        },
+      ],
+      summaries: [
+        { kind: 'empty_directory', candidateCount: 1, recoverableBytes: 0 },
+        { kind: 'stage_artifact', candidateCount: 1, recoverableBytes: 0 },
+      ],
+    });
+    render(<HousekeepingCard value={value} saving={false} preview={preview} busy={false} onSave={() => undefined} onPreview={() => undefined} onRun={() => undefined} />);
+
+    expect(screen.getAllByText(/AssetRecord #42/)).toHaveLength(2);
+    expect(screen.getByText(/Re-scan or reconcile inventory/)).toBeTruthy();
+    expect(screen.getByText(/AssetRecord #7/)).toBeTruthy();
+    expect(screen.getByText(/completed \/ completed/)).toBeTruthy();
+    expect(screen.getByText(/Already absent · 0 recoverable bytes/)).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Remove previewed candidates' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

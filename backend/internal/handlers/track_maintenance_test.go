@@ -548,3 +548,33 @@ func TestTrackRemovalRequestJSONUsesAbsoluteStreamIndexes(t *testing.T) {
 		t.Fatalf("absolute indexes were not serialized: %s", encoded)
 	}
 }
+
+func TestExecuteTrackRemovalPersistsDeferredTemporaryCleanupWarning(t *testing.T) {
+	fixture := newMaintenanceTestFixture(t)
+	fixture.runtime.rename = func(oldPath, newPath string) error {
+		if strings.Contains(filepath.Base(oldPath), ".tmp.") {
+			contents, err := os.ReadFile(oldPath)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(newPath, contents, 0o644)
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	fixture.runtime.remove = func(path string) error {
+		if strings.Contains(filepath.Base(path), ".tmp.") {
+			return errors.New("permission denied")
+		}
+		return os.Remove(path)
+	}
+
+	fixture.handler.executeTrackRemoval(fixture.operation.ID, fixture.inventory, fixture.remaining)
+	operation := fixture.loadOperation(t)
+	if operation.Status != maintenanceStatusComplete || !strings.Contains(operation.Warning, "maintenance temporary output could not be removed: permission denied") {
+		t.Fatalf("deferred temporary cleanup failure was not persisted as a warning: %#v", operation)
+	}
+	temporary := filepath.Join(filepath.Dir(fixture.path), "."+filepath.Base(fixture.path)+"."+fixture.operation.ID+".tmp"+filepath.Ext(fixture.path))
+	if _, err := os.Stat(temporary); err != nil {
+		t.Fatalf("fixture did not retain the simulated temporary output: %v", err)
+	}
+}

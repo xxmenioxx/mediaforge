@@ -1569,7 +1569,36 @@ export type HousekeepingCandidate = {
   sizeBytes: number;
   modifiedAt: string;
   safeToDelete: boolean;
+  manualOnly?: boolean;
+  outcome?: 'eligible' | 'already_absent' | 'cleaned' | 'blocked' | 'failed' | 'partial';
   blockedReason?: string;
+  maintenance?: {
+    assetPath: string;
+    assetRecordId?: number;
+    assetRecordStatus?: string;
+    assetRecordMissing: boolean;
+    status: string;
+    phase: string;
+    finishedAt?: string;
+    temporaryPresence: 'present' | 'absent' | 'unknown';
+    temporarySizeKnown: boolean;
+    backupPath?: string;
+    backupPresence: 'present' | 'absent' | 'unknown';
+    recoveryState: string;
+    resultFingerprint?: string;
+    currentAssetFingerprint?: string;
+    assetFingerprintState: string;
+    warning?: string;
+  };
+  protectionReferences?: {
+    source: string;
+    recordId: string;
+    field: string;
+    path: string;
+    state: string;
+    reason: string;
+  }[];
+  protectionReferenceCount?: number;
 };
 export type RuntimeSnapshotRetentionReport = {
   rowsConsidered: number;
@@ -1583,6 +1612,7 @@ export type RuntimeSnapshotRetentionReport = {
 export type HousekeepingReport = {
   ranAt: string;
   dryRun: boolean;
+  outcome?: 'preview' | 'cleaned' | 'already_absent' | 'blocked' | 'failed' | 'partial' | 'no_op';
   previewId?: string;
   previewExpiresAt?: string;
   candidates: HousekeepingCandidate[];

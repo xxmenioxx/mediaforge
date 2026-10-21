@@ -96,6 +96,16 @@ func runAutomaticHousekeeping(db *gorm.DB) (HousekeepingReport, error) {
 	if err != nil {
 		return report, err
 	}
+	for index := range state.Candidates {
+		bound := &state.Candidates[index]
+		if !bound.Candidate.ManualOnly {
+			continue
+		}
+		bound.Candidate.SafeToDelete = false
+		bound.Candidate.Outcome = "blocked"
+		bound.Candidate.BlockedReason = "Library maintenance temporary cleanup requires an operator preview"
+		bound.Candidate.CandidateID = housekeepingCandidateID(bound.Candidate, bound.Identity)
+	}
 	report = housekeepingReportForState(state, false)
 	applyHousekeepingPlan(db, roots, policy, &state, &report)
 	if err := persistHousekeepingReport(db, report); err != nil {
@@ -364,21 +374,167 @@ func addStageArtifactCandidates(db *gorm.DB, roots map[string]string, policy Hou
 }
 
 func maintenanceArtifactCandidate(db *gorm.DB, roots map[string]string, operation models.AssetMaintenanceOperation, policy HousekeepingPolicy, now time.Time) (HousekeepingCandidate, string) {
-	candidate := HousekeepingCandidate{Kind: housekeepingKindStageArtifact, OperationID: operation.ID, Path: operation.TemporaryPath, Ownership: "asset_maintenance_operation.temporary_path", Reason: "abandoned maintenance temporary artifact", ModifiedAt: operation.UpdatedAt.UTC().Format(time.RFC3339Nano)}
+	candidate := HousekeepingCandidate{Kind: housekeepingKindStageArtifact, OperationID: operation.ID, Path: operation.TemporaryPath, Ownership: "asset_maintenance_operation.temporary_path", Reason: "maintenance temporary artifact", ModifiedAt: operation.UpdatedAt.UTC().Format(time.RFC3339Nano)}
+	details := &HousekeepingMaintenanceDetails{
+		AssetPath: operation.AssetPath, AssetRecordID: operation.AssetRecordID, Status: operation.Status, Phase: operation.Phase,
+		TemporaryPresence: "unknown", BackupPath: operation.BackupPath, BackupPresence: "unknown", RecoveryState: "unresolved",
+		ResultFingerprint: operation.ResultFingerprint, AssetFingerprintState: "unavailable", Warning: operation.Warning,
+	}
+	candidate.Maintenance = details
 	if operation.FinishedAt != nil {
 		candidate.ModifiedAt = operation.FinishedAt.UTC().Format(time.RFC3339Nano)
+		details.FinishedAt = operation.FinishedAt.UTC().Format(time.RFC3339Nano)
 	}
 	identity := "unresolved"
 	if operation.TemporaryPath == "" {
 		candidate.BlockedReason = "operation has no persisted temporary path"
+		candidate.Outcome = "blocked"
 		return candidate, identity
 	}
+
+	if roots["library"] != "" && pathWithin(roots["library"], filepath.Clean(operation.TemporaryPath)) {
+		candidate.ManualOnly = true
+		role, path, info, pathErr := resolveOwnedFilePath(roots, operation.TemporaryPath, []string{"library"})
+		if pathErr != nil || role != "library" {
+			if pathErr == nil {
+				pathErr = errors.New("maintenance temporary path did not resolve to the Library storage role")
+			}
+			candidate.BlockedReason = pathErr.Error()
+			candidate.Outcome = "blocked"
+			return candidate, identity
+		}
+		candidate.Path = path
+		candidate.Ownership = "asset_maintenance_operation.temporary_path under Library storage role"
+		if unsafeLibraryRoleRoot(roots) {
+			candidate.BlockedReason = "configured Library storage role overlaps another storage role"
+			candidate.Outcome = "blocked"
+			return candidate, identity
+		}
+		if info == nil {
+			details.TemporaryPresence = "absent"
+			details.TemporarySizeKnown = true
+		} else {
+			details.TemporaryPresence = "present"
+			if info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+				candidate.SizeBytes = info.Size()
+				details.TemporarySizeKnown = true
+			}
+			identity = statIdentity(info, false)
+		}
+		if info == nil {
+			if err := classifyLibraryMaintenanceArtifact(db, roots, operation, candidate, info); err != nil {
+				candidate.BlockedReason = err.Error()
+				candidate.Outcome = "blocked"
+				return candidate, identity
+			}
+			_ = loadMaintenanceAssetRecord(db, operation, details)
+			if assetFingerprint, _, assetErr := fingerprintLibraryMaintenanceAsset(roots, operation.AssetPath); assetErr == nil {
+				details.CurrentAssetFingerprint = assetFingerprint
+				if operation.ResultFingerprint != "" && assetFingerprint == operation.ResultFingerprint {
+					details.AssetFingerprintState = "verified_match"
+				} else if operation.ResultFingerprint != "" {
+					details.AssetFingerprintState = "mismatch"
+				} else {
+					details.AssetFingerprintState = "result_fingerprint_unavailable"
+				}
+			}
+			candidate.Reason = "completed maintenance temporary output is already absent"
+			candidate.Outcome = "already_absent"
+			candidate.SafeToDelete = false
+			candidate.SizeBytes = 0
+			return candidate, "missing"
+		}
+		assetRecordErr := loadMaintenanceAssetRecord(db, operation, details)
+		if err := classifyLibraryMaintenanceArtifact(db, roots, operation, candidate, info); err != nil {
+			candidate.BlockedReason = err.Error()
+			candidate.Outcome = "blocked"
+			return candidate, identity
+		}
+		if assetRecordErr != nil {
+			candidate.BlockedReason = assetRecordErr.Error()
+			candidate.Outcome = "blocked"
+			return candidate, identity
+		}
+		fingerprint, fingerprintInfo, fingerprintErr := fingerprintSafeMaintenanceFile(path)
+		if fingerprintErr != nil {
+			candidate.BlockedReason = fingerprintErr.Error()
+			candidate.Outcome = "blocked"
+			return candidate, identity
+		}
+		identity = statIdentity(fingerprintInfo, false)
+		if fingerprint != operation.ResultFingerprint {
+			candidate.BlockedReason = "temporary output fingerprint does not match the completed operation result"
+			candidate.Outcome = "blocked"
+			return candidate, identity
+		}
+		assetFingerprint, _, assetErr := fingerprintLibraryMaintenanceAsset(roots, operation.AssetPath)
+		if assetErr != nil {
+			candidate.BlockedReason = assetErr.Error()
+			candidate.Outcome = "blocked"
+			return candidate, identity
+		}
+		if assetFingerprint != operation.ResultFingerprint {
+			details.CurrentAssetFingerprint = assetFingerprint
+			details.AssetFingerprintState = "mismatch"
+			candidate.BlockedReason = "current Library asset fingerprint does not match the completed operation result"
+			candidate.Outcome = "blocked"
+			return candidate, identity
+		}
+		details.CurrentAssetFingerprint = assetFingerprint
+		details.AssetFingerprintState = "verified_match"
+		if reason := operationArtifactReferenceBlock(db, operation.ID, path); reason != "" {
+			candidate.BlockedReason = reason
+			candidate.Outcome = "blocked"
+			return candidate, identity
+		}
+		candidate.Reason = "verified residual Library maintenance temporary output"
+		candidate.SafeToDelete = true
+		candidate.Outcome = "eligible"
+		details.RecoveryState = "completed result verified; no backup or active reference remains"
+		return candidate, identity
+	}
+
+	role, path, info, pathErr := resolveOwnedFilePath(roots, operation.TemporaryPath, []string{"work", "cache", "reports", "logs"})
+	if pathErr != nil {
+		candidate.BlockedReason = pathErr.Error()
+		candidate.Outcome = "blocked"
+		return candidate, identity
+	}
+	candidate.Path, candidate.Ownership = path, "asset_maintenance_operation.temporary_path under "+role+" storage role"
+	if info == nil {
+		details.TemporaryPresence = "absent"
+		details.TemporarySizeKnown = true
+		if operationIsActive(operation.Status) {
+			candidate.BlockedReason = "owning maintenance operation is still active"
+			candidate.Outcome = "blocked"
+			return candidate, "missing"
+		}
+		if !operationIsAbandoned(operation.Status, operation.Phase) {
+			candidate.BlockedReason = "operation status and phase do not establish an abandoned temporary artifact"
+			candidate.Outcome = "blocked"
+			return candidate, "missing"
+		}
+		candidate.Reason = "maintenance temporary artifact is already absent"
+		candidate.Outcome = "already_absent"
+		return candidate, "missing"
+	}
+	details.TemporaryPresence = "present"
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		candidate.BlockedReason = "owned stage artifacts must be regular non-symlink files"
+		candidate.Outcome = "blocked"
+		return candidate, statIdentity(info, false)
+	}
+	candidate.SizeBytes = info.Size()
+	details.TemporarySizeKnown = true
+	identity = statIdentity(info, false)
 	if operationIsActive(operation.Status) {
-		candidate.BlockedReason = "owning operation is still active"
+		candidate.BlockedReason = "owning maintenance operation is still active"
+		candidate.Outcome = "blocked"
 		return candidate, identity
 	}
 	if !operationIsAbandoned(operation.Status, operation.Phase) {
-		candidate.BlockedReason = "operation status does not prove an abandoned temporary artifact"
+		candidate.BlockedReason = "operation status and phase do not establish an abandoned temporary artifact"
+		candidate.Outcome = "blocked"
 		return candidate, identity
 	}
 	retentionReference := operation.UpdatedAt
@@ -387,31 +543,248 @@ func maintenanceArtifactCandidate(db *gorm.DB, roots map[string]string, operatio
 	}
 	if now.Before(retentionReference.Add(time.Duration(max(policy.OrphanRetentionDays, 0)) * 24 * time.Hour)) {
 		candidate.BlockedReason = "abandoned artifact retention period has not elapsed"
-	}
-	role, path, info, pathErr := resolveOwnedFilePath(roots, operation.TemporaryPath, []string{"work", "cache", "reports", "logs"})
-	if pathErr != nil {
-		candidate.BlockedReason = pathErr.Error()
+		candidate.Outcome = "blocked"
 		return candidate, identity
 	}
-	candidate.Path, candidate.Ownership = path, "asset_maintenance_operation.temporary_path under "+role+" storage role"
-	if info == nil {
-		candidate.SafeToDelete = candidate.BlockedReason == ""
-		return candidate, "missing"
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		candidate.BlockedReason = "owned stage artifacts must be regular non-symlink files"
-		return candidate, statIdentity(info, false)
-	}
-	candidate.SizeBytes = info.Size()
-	identity = statIdentity(info, false)
 	if reason := operationArtifactReferenceBlock(db, operation.ID, path); reason != "" {
 		candidate.BlockedReason = reason
+		candidate.Outcome = "blocked"
 		return candidate, identity
 	}
-	if candidate.BlockedReason == "" {
-		candidate.SafeToDelete = true
-	}
+	candidate.SafeToDelete = true
+	candidate.Outcome = "eligible"
 	return candidate, identity
+}
+
+func loadMaintenanceAssetRecord(db *gorm.DB, operation models.AssetMaintenanceOperation, details *HousekeepingMaintenanceDetails) error {
+	if operation.AssetRecordID == 0 || !db.Migrator().HasTable(&models.AssetRecord{}) {
+		return errors.New("maintenance asset identity could not be verified")
+	}
+	var record models.AssetRecord
+	result := db.Select("id, path, status, missing").Where("id = ?", operation.AssetRecordID).Limit(1).Find(&record)
+	if result.Error != nil {
+		return errors.New("maintenance asset identity could not be verified")
+	}
+	if result.RowsAffected == 0 || !sameHousekeepingPath(record.Path, operation.AssetPath) {
+		return errors.New("maintenance operation no longer matches its AssetRecord path")
+	}
+	details.AssetRecordStatus = record.Status
+	details.AssetRecordMissing = record.Missing
+	return nil
+}
+
+func classifyLibraryMaintenanceArtifact(db *gorm.DB, roots map[string]string, operation models.AssetMaintenanceOperation, candidate HousekeepingCandidate, temporaryInfo os.FileInfo) error {
+	details := candidate.Maintenance
+	if unsafeLibraryRoleRoot(roots) {
+		return errors.New("configured Library storage role overlaps another storage role")
+	}
+	expectedTemporary, expectedBackup, pathsErr := expectedMaintenanceArtifactPaths(operation)
+	if pathsErr != nil || !sameHousekeepingPath(expectedTemporary, operation.TemporaryPath) || !sameHousekeepingPath(expectedBackup, operation.BackupPath) {
+		return errors.New("maintenance temporary or backup path does not match the exact operation naming pattern")
+	}
+	for _, path := range []string{operation.TemporaryPath, operation.BackupPath, operation.AssetPath} {
+		symlink, err := hasSymlinkWithinRole(path, roots["library"])
+		if err != nil {
+			details.RecoveryState = "path components could not be inspected"
+			return errors.New("maintenance path contains an uninspectable component")
+		}
+		if symlink {
+			details.RecoveryState = "path contains a symlink under Library"
+			return errors.New("maintenance temporary, backup, or asset path contains a Library symlink component")
+		}
+	}
+	if operation.BackupPath == "" {
+		details.BackupPresence = "unknown"
+		details.RecoveryState = "backup path is not recorded"
+		return errors.New("maintenance backup path is not recorded")
+	}
+	_, backupPath, backupInfo, backupErr := resolveOwnedFilePath(roots, operation.BackupPath, []string{"library"})
+	if backupErr != nil || !sameHousekeepingPath(backupPath, operation.BackupPath) {
+		details.BackupPresence = "unknown"
+		details.RecoveryState = "backup path could not be safely resolved"
+		return errors.New("maintenance backup path could not be safely resolved under the configured Library role")
+	}
+	if backupInfo != nil {
+		details.BackupPresence = "present"
+		details.RecoveryState = "recovery backup remains present"
+		return errors.New("maintenance recovery backup is still present and must be preserved")
+	}
+	details.BackupPresence = "absent"
+	if operationIsActive(operation.Status) {
+		details.RecoveryState = "active operation"
+		return errors.New("maintenance operation is still active and may require recovery")
+	}
+	if strings.ToLower(strings.TrimSpace(operation.Status)) != "completed" || strings.ToLower(strings.TrimSpace(operation.Phase)) != "completed" || operation.FinishedAt == nil {
+		details.RecoveryState = "failed, interrupted, or unconfirmed operation"
+		return errors.New("maintenance operation is not a confirmed completed operation; retain the output for recovery or inspection")
+	}
+	if details.Warning != "" {
+		warning := strings.ToLower(details.Warning)
+		if strings.Contains(warning, "backup") || strings.Contains(warning, "rollback") || strings.Contains(warning, "recover") || strings.Contains(warning, "restore") {
+			details.RecoveryState = "operation warning indicates unresolved backup or recovery work"
+			return errors.New("maintenance operation has an unresolved backup or recovery warning")
+		}
+	}
+	if temporaryInfo != nil && (!temporaryInfo.Mode().IsRegular() || temporaryInfo.Mode()&os.ModeSymlink != 0) {
+		details.RecoveryState = "temporary path is not a regular file"
+		return errors.New("Library maintenance temporary output must be a regular non-symlink file")
+	}
+	if temporaryInfo == nil {
+		details.RecoveryState = "completed operation; temporary output is already absent"
+		return nil
+	}
+	if strings.TrimSpace(operation.ResultFingerprint) == "" {
+		details.RecoveryState = "completed result fingerprint is unavailable"
+		return errors.New("completed maintenance result fingerprint is unavailable")
+	}
+	if details.AssetRecordMissing {
+		details.RecoveryState = "AssetRecord is marked missing"
+		return errors.New("maintenance AssetRecord is marked missing; reconcile inventory before cleanup")
+	}
+	if err := validateLibraryMaintenanceAsset(roots, operation.AssetPath); err != nil {
+		details.RecoveryState = "current Library asset could not be verified"
+		return err
+	}
+	details.RecoveryState = "completed result and recovery paths verified"
+	return nil
+}
+
+func expectedMaintenanceArtifactPaths(operation models.AssetMaintenanceOperation) (string, string, error) {
+	if operation.ID == "" || filepath.Base(operation.ID) != operation.ID || operation.AssetPath == "" || !filepath.IsAbs(operation.AssetPath) || filepath.Clean(operation.AssetPath) != operation.AssetPath {
+		return "", "", errors.New("maintenance operation identity or asset path is unsafe")
+	}
+	extension := filepath.Ext(operation.AssetPath)
+	temporary := filepath.Join(filepath.Dir(operation.AssetPath), "."+filepath.Base(operation.AssetPath)+"."+operation.ID+".tmp"+extension)
+	backup := filepath.Join(filepath.Dir(operation.AssetPath), "."+filepath.Base(operation.AssetPath)+"."+operation.ID+".backup"+extension)
+	return temporary, backup, nil
+}
+
+func validateLibraryMaintenanceAsset(roots map[string]string, path string) error {
+	role, resolved, info, err := resolveOwnedFilePath(roots, path, []string{"library"})
+	if err != nil || role != "library" || !sameHousekeepingPath(path, resolved) {
+		return errors.New("maintenance asset path is not safely contained by the configured Library role")
+	}
+	if info == nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("canonical Library asset is missing or is not a regular non-symlink file")
+	}
+	return nil
+}
+
+func fingerprintLibraryMaintenanceAsset(roots map[string]string, path string) (string, os.FileInfo, error) {
+	if err := validateLibraryMaintenanceAsset(roots, path); err != nil {
+		return "", nil, err
+	}
+	return fingerprintSafeMaintenanceFile(path)
+}
+
+func fingerprintSafeMaintenanceFile(path string) (string, os.FileInfo, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return "", nil, err
+	}
+	if !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 {
+		return "", nil, errors.New("maintenance output must be a regular non-symlink file")
+	}
+	links, known := housekeepingFileLinkCount(before)
+	if !known || links != 1 {
+		return "", nil, errors.New("maintenance output has an unsafe or unverifiable hard-link count")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(before, opened) {
+		return "", nil, errors.New("maintenance output changed while it was opened")
+	}
+	fingerprint, err := mediaFileFingerprintForOpenFile(file, opened)
+	if err != nil {
+		return "", nil, err
+	}
+	after, err := os.Lstat(path)
+	if err != nil || !os.SameFile(opened, after) || statIdentity(before, false) != statIdentity(after, false) {
+		return "", nil, errors.New("maintenance output changed while its fingerprint was calculated")
+	}
+	links, known = housekeepingFileLinkCount(after)
+	if !known || links != 1 {
+		return "", nil, errors.New("maintenance output acquired an unsafe or unverifiable hard link")
+	}
+	return fingerprint, after, nil
+}
+
+func hasSymlinkWithinRole(path, root string) (bool, error) {
+	if path == "" || root == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return false, errors.New("path is not absolute and clean")
+	}
+	volume := filepath.VolumeName(path)
+	current := volume + string(filepath.Separator)
+	remainder := strings.TrimPrefix(path, current)
+	for _, component := range strings.Split(remainder, string(filepath.Separator)) {
+		if component == "" {
+			continue
+		}
+		current = filepath.Join(current, component)
+		resolved, err := filepath.EvalSymlinks(current)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if !pathWithin(root, resolved) {
+			continue
+		}
+		info, err := os.Lstat(current)
+		if err != nil {
+			return false, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func housekeepingFileLinkCount(info os.FileInfo) (uint64, bool) {
+	value := reflect.ValueOf(info.Sys())
+	if !value.IsValid() {
+		return 0, false
+	}
+	if value.Kind() == reflect.Pointer {
+		value = value.Elem()
+	}
+	if !value.IsValid() || value.Kind() != reflect.Struct {
+		return 0, false
+	}
+	field := value.FieldByName("Nlink")
+	if !field.IsValid() {
+		return 0, false
+	}
+	switch field.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return field.Uint(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if field.Int() < 0 {
+			return 0, false
+		}
+		return uint64(field.Int()), true
+	default:
+		return 0, false
+	}
+}
+
+func unsafeLibraryRoleRoot(roots map[string]string) bool {
+	library := roots["library"]
+	if library == "" {
+		return true
+	}
+	for role, other := range roots {
+		if role != "library" && other != "" && (pathWithin(library, other) || pathWithin(other, library)) {
+			return true
+		}
+	}
+	return false
 }
 
 func publisherStageArtifactCandidate(db *gorm.DB, roots map[string]string, publication models.PublisherPublication, policy HousekeepingPolicy, now time.Time) (HousekeepingCandidate, string) {
@@ -532,12 +905,16 @@ func addEmptyDirectoryCandidates(db *gorm.DB, roots map[string]string, unsafeRaw
 	sharedPlannedDirectories := map[string]struct{}{}
 	seenDirectories := map[string]struct{}{}
 	if rawEnabled {
-		protectedRaw, err := protectedRawDirectories(db, roots[string(scheduler.StorageRoleRaw)])
+		protectionReferences, protectionReferenceCounts, err := protectedRawDirectoryReferences(db, roots[string(scheduler.StorageRoleRaw)])
 		if err != nil {
 			return err
 		}
+		protectedRaw := make(map[string]struct{}, len(protectionReferences))
+		for path := range protectionReferences {
+			protectedRaw[path] = struct{}{}
+		}
 		rawRoot := roots[string(scheduler.StorageRoleRaw)]
-		if err := addEmptyDirectoryRoleCandidates(rawRoot, "raw", roots, true, unsafeRaw, nil, nil, protectedRaw, sharedPlannedDirectories, seenDirectories, state); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := addEmptyDirectoryRoleCandidates(rawRoot, "raw", roots, true, unsafeRaw, nil, nil, protectedRaw, protectionReferences, protectionReferenceCounts, sharedPlannedDirectories, seenDirectories, state); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
@@ -560,25 +937,28 @@ func addEmptyDirectoryCandidates(db *gorm.DB, roots map[string]string, unsafeRaw
 				protectHousekeepingPathAndParents(protected, root, roleRoot)
 			}
 		}
-		if err := addEmptyDirectoryRoleCandidates(root, role, roots, false, unsafeOperationalRoleRoot(roots, role), removedFiles, removedWorkspaces, protected, sharedPlannedDirectories, seenDirectories, state); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := addEmptyDirectoryRoleCandidates(root, role, roots, false, unsafeOperationalRoleRoot(roots, role), removedFiles, removedWorkspaces, protected, nil, nil, sharedPlannedDirectories, seenDirectories, state); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
 	return nil
 }
 
-func addEmptyDirectoryRoleCandidates(root, role string, allRoots map[string]string, raw, unsafeRoot bool, removedFiles map[string]struct{}, removedWorkspaces []string, protected, plannedDirectories, seenDirectories map[string]struct{}, state *housekeepingPreviewState) error {
+func addEmptyDirectoryRoleCandidates(root, role string, allRoots map[string]string, raw, unsafeRoot bool, removedFiles map[string]struct{}, removedWorkspaces []string, protected map[string]struct{}, protectionReferences map[string][]HousekeepingProtectionReference, protectionReferenceCounts map[string]int, plannedDirectories, seenDirectories map[string]struct{}, state *housekeepingPreviewState) error {
 	if root == "" {
 		return nil
 	}
 	directories := []string{}
+	symlinkDirectories := []string{}
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			if entry.IsDir() {
-				return filepath.SkipDir
+			if raw {
+				if target, statErr := os.Stat(path); statErr == nil && target.IsDir() {
+					symlinkDirectories = append(symlinkDirectories, path)
+				}
 			}
 			return nil
 		}
@@ -589,6 +969,27 @@ func addEmptyDirectoryRoleCandidates(root, role string, allRoots map[string]stri
 	})
 	if err != nil {
 		return err
+	}
+	for _, path := range symlinkDirectories {
+		if _, exists := seenDirectories[filepath.Clean(path)]; exists {
+			continue
+		}
+		info, statErr := os.Lstat(path)
+		if statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		candidate := HousekeepingCandidate{
+			Kind: housekeepingKindEmptyDirectory, Path: path, OperationID: role,
+			Ownership:  "empty_directory under " + role + " storage role",
+			Reason:     "symlink directory path is never followed or removed",
+			ModifiedAt: info.ModTime().UTC().Format(time.RFC3339Nano), SafeToDelete: false,
+			Outcome: "blocked", BlockedReason: "RAW directory path is a symlink and cannot be safely inspected",
+		}
+		if unsafeRoot {
+			candidate.BlockedReason = "configured RAW storage role overlaps another storage role"
+		}
+		addBoundCandidate(state, candidate, statIdentity(info, false))
+		seenDirectories[filepath.Clean(path)] = struct{}{}
 	}
 	sort.Slice(directories, func(i, j int) bool {
 		leftDepth, rightDepth := pathDepth(directories[i]), pathDepth(directories[j])
@@ -635,9 +1036,16 @@ func addEmptyDirectoryRoleCandidates(root, role string, allRoots map[string]stri
 			candidate.Reason = "directory will be empty after previewed owned-file cleanup"
 		}
 		if _, isProtected := protected[filepath.Clean(path)]; isProtected {
-			candidate.BlockedReason = "directory is referenced by a current asset, Queue source/restore target, or active operation"
+			candidate.BlockedReason = "directory is referenced by a current or stale asset, Queue source/restore target, or active operation"
+			candidate.Outcome = "blocked"
+			candidate.ProtectionReferences = protectionReferences[filepath.Clean(path)]
+			candidate.ProtectionReferenceCount = protectionReferenceCounts[filepath.Clean(path)]
+			if len(candidate.ProtectionReferences) > 0 {
+				candidate.BlockedReason = summarizeRawDirectoryProtection(candidate.ProtectionReferences, candidate.ProtectionReferenceCount)
+			}
 		} else {
 			candidate.SafeToDelete = true
+			candidate.Outcome = "eligible"
 			plannedDirectories[filepath.Clean(path)] = struct{}{}
 		}
 		if raw && !currentEmpty && !emptyAfterPlan {
@@ -649,6 +1057,7 @@ func addEmptyDirectoryRoleCandidates(root, role string, allRoots map[string]stri
 		if unsafeRoot {
 			candidate.SafeToDelete = false
 			candidate.BlockedReason = "configured RAW storage role overlaps another storage role"
+			candidate.Outcome = "blocked"
 		}
 		addBoundCandidate(state, candidate, statIdentity(info, true))
 		seenDirectories[filepath.Clean(path)] = struct{}{}
@@ -678,29 +1087,52 @@ func directoryWillBeEmpty(path string, removedFiles, removedDirectories map[stri
 }
 
 func protectedRawDirectories(db *gorm.DB, root string) (map[string]struct{}, error) {
-	protected := map[string]struct{}{}
+	references, _, err := protectedRawDirectoryReferences(db, root)
+	if err != nil {
+		return nil, err
+	}
+	protected := make(map[string]struct{}, len(references))
+	for path := range references {
+		protected[path] = struct{}{}
+	}
+	return protected, nil
+}
+
+func protectedRawDirectoryReferences(db *gorm.DB, root string) (map[string][]HousekeepingProtectionReference, map[string]int, error) {
+	references := map[string][]HousekeepingProtectionReference{}
+	counts := map[string]int{}
 	if root == "" {
-		return protected, nil
+		return references, counts, nil
 	}
 	root = canonicalHousekeepingPath(root)
-	add := func(path string, directory bool) {
+	add := func(path string, directory bool, reference HousekeepingProtectionReference) {
 		if strings.TrimSpace(path) == "" {
 			return
 		}
 		path = canonicalHousekeepingPath(path)
-		if path == "" {
-			return
-		}
-		path = filepath.Clean(path)
-		if !filepath.IsAbs(path) {
+		if path == "" || !filepath.IsAbs(path) {
 			return
 		}
 		if !directory {
 			path = filepath.Dir(path)
 		}
 		for pathWithin(root, path) {
-			protected[filepath.Clean(path)] = struct{}{}
-			if filepath.Clean(path) == filepath.Clean(root) {
+			key := filepath.Clean(path)
+			items := references[key]
+			duplicate := false
+			for _, current := range items {
+				if current.Source == reference.Source && current.RecordID == reference.RecordID && current.Field == reference.Field && current.Path == reference.Path {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				counts[key]++
+				if len(items) < 20 {
+					references[key] = append(items, reference)
+				}
+			}
+			if key == filepath.Clean(root) {
 				break
 			}
 			path = filepath.Dir(path)
@@ -708,70 +1140,194 @@ func protectedRawDirectories(db *gorm.DB, root string) (map[string]struct{}, err
 	}
 	if db.Migrator().HasTable(&models.AssetRecord{}) {
 		var assets []models.AssetRecord
-		if err := db.Where("missing = ?", false).Select("path, source_path, root_path, group_path").Find(&assets).Error; err != nil {
-			return nil, err
+		if err := db.Select("id, path, source_path, root_path, group_path, status, missing").Find(&assets).Error; err != nil {
+			return nil, nil, err
 		}
 		for _, asset := range assets {
-			add(asset.Path, false)
-			add(asset.SourcePath, false)
-			add(asset.RootPath, true)
-			add(asset.GroupPath, true)
+			state := "current"
+			reason := "AssetRecord still claims this path; verify it through the canonical asset scan if stale."
+			if asset.Missing {
+				state = "stale_reference_suspected"
+				reason = "AssetRecord is marked missing; re-scan or reconcile inventory before removing this directory."
+			}
+			for _, field := range []struct {
+				name      string
+				path      string
+				directory bool
+			}{{"path", asset.Path, false}, {"source_path", asset.SourcePath, false}, {"root_path", asset.RootPath, true}, {"group_path", asset.GroupPath, true}} {
+				if field.path == "" {
+					continue
+				}
+				fieldState, fieldReason := state, reason
+				if !asset.Missing && !field.directory && (field.name == "path" || field.name == "source_path") &&
+					pathWithin(root, canonicalHousekeepingPath(field.path)) {
+					info, statErr := os.Lstat(field.path)
+					if errors.Is(statErr, os.ErrNotExist) {
+						fieldState = "stale_reference_suspected"
+						fieldReason = "AssetRecord path is absent while the record is not marked missing; re-scan or reconcile inventory before cleanup."
+					} else if statErr != nil || info.Mode()&os.ModeSymlink != 0 {
+						fieldState = "evidence_unresolved"
+						fieldReason = "AssetRecord filesystem identity could not be verified; reconcile inventory before cleanup."
+					}
+				}
+				add(field.path, field.directory, HousekeepingProtectionReference{
+					Source: "AssetRecord", RecordID: strconv.FormatUint(uint64(asset.ID), 10), Field: field.name,
+					Path: field.path, State: fieldState, Reason: fieldReason,
+				})
+			}
 		}
 	}
+
+	reservationsByJob := map[uint][]models.SchedulerReservation{}
+	if db.Migrator().HasTable(&models.SchedulerReservation{}) {
+		var reservations []models.SchedulerReservation
+		if err := db.Where("state IN ?", []string{scheduler.ReservationStateLocked, scheduler.ReservationStateActive}).Select("id, job_id, asset_key, state").Find(&reservations).Error; err != nil {
+			return nil, nil, err
+		}
+		for _, reservation := range reservations {
+			reservationsByJob[reservation.JobID] = append(reservationsByJob[reservation.JobID], reservation)
+			add(reservation.AssetKey, false, HousekeepingProtectionReference{
+				Source: "SchedulerReservation", RecordID: strconv.FormatUint(uint64(reservation.ID), 10),
+				Field: "asset_key", Path: reservation.AssetKey, State: reservation.State,
+				Reason: "Active scheduler reservation retains this source or restore path.",
+			})
+		}
+	}
+
+	publicationsByJob := map[uint][]models.PublisherPublication{}
+	if db.Migrator().HasTable(&models.PublisherPublication{}) {
+		var publications []models.PublisherPublication
+		now := time.Now().UTC()
+		if err := db.Where("TRIM(active_attempt_id) <> '' OR lease_expires_at > ? OR original_archive_lease_expires_at > ?", now, now).
+			Select("id, publication_id, queue_job_id, source_path, destination_path, original_archived_path, original_archive_source_path, original_archive_temporary_path, active_attempt_id, lease_expires_at, original_archive_lease_expires_at, state").Find(&publications).Error; err != nil {
+			return nil, nil, err
+		}
+		for _, publication := range publications {
+			publicationsByJob[publication.QueueJobID] = append(publicationsByJob[publication.QueueJobID], publication)
+			for _, field := range []struct{ name, path string }{
+				{"source_path", publication.SourcePath}, {"destination_path", publication.DestinationPath},
+				{"original_archived_path", publication.OriginalArchivedPath}, {"original_archive_source_path", publication.OriginalArchiveSourcePath},
+				{"original_archive_temporary_path", publication.OriginalArchiveTemporaryPath},
+			} {
+				add(field.path, false, HousekeepingProtectionReference{
+					Source: "PublisherPublication", RecordID: publication.PublicationID, Field: field.name,
+					Path: field.path, State: publication.State, Reason: "Active Publisher attempt or lease retains this publication path.",
+				})
+			}
+		}
+	}
+
 	if db.Migrator().HasTable(&models.QueueJob{}) {
 		var jobs []models.QueueJob
 		if err := db.Select("id, media_path, output_path, published_path, planned_published_path, replacement_target_path, original_archived_path, subtitle_artifacts, status, stage, validation_status, validation_outcome, validation_actionable, validation_override, published_at, started_at, finished_at").Find(&jobs).Error; err != nil {
-			return nil, err
-		}
-		activeReservations := map[uint]struct{}{}
-		if db.Migrator().HasTable(&models.SchedulerReservation{}) {
-			var reservations []struct {
-				JobID uint
-			}
-			if err := db.Model(&models.SchedulerReservation{}).Select("job_id").Where("state IN ?", []string{scheduler.ReservationStateLocked, scheduler.ReservationStateActive}).Find(&reservations).Error; err != nil {
-				return nil, err
-			}
-			for _, reservation := range reservations {
-				activeReservations[reservation.JobID] = struct{}{}
-			}
-		}
-		activePublisherJobs := map[uint]struct{}{}
-		if db.Migrator().HasTable(&models.PublisherPublication{}) {
-			var publications []struct {
-				QueueJobID uint
-			}
-			now := time.Now().UTC()
-			if err := db.Model(&models.PublisherPublication{}).Select("queue_job_id").Where("TRIM(active_attempt_id) <> '' OR lease_expires_at > ? OR original_archive_lease_expires_at > ?", now, now).Find(&publications).Error; err != nil {
-				return nil, err
-			}
-			for _, publication := range publications {
-				activePublisherJobs[publication.QueueJobID] = struct{}{}
-			}
+			return nil, nil, err
 		}
 		for _, job := range jobs {
-			_, hasActiveReservation := activeReservations[job.ID]
-			_, hasActivePublisher := activePublisherJobs[job.ID]
-			if !jobHasActiveHousekeepingReferencesFromJob(&job) && !hasActiveReservation && !hasActivePublisher {
+			reservations := reservationsByJob[job.ID]
+			publications := publicationsByJob[job.ID]
+			if !jobHasActiveHousekeepingReferencesFromJob(&job) && len(reservations) == 0 && len(publications) == 0 {
 				continue
 			}
-			for _, path := range []string{job.MediaPath, job.OutputPath, job.PublishedPath, job.PlannedPublishedPath, job.ReplacementTargetPath, job.OriginalArchivedPath} {
-				add(path, false)
+			state := strings.TrimSpace(job.Status)
+			if strings.TrimSpace(job.Stage) != "" {
+				state += "/" + strings.TrimSpace(job.Stage)
 			}
-			walkHousekeepingJSONStrings(job.SubtitleArtifacts, func(path string) { add(path, false) })
+			reason := "QueueJob lifecycle still requires its source, result, or restore paths."
+			for _, field := range []struct{ name, path string }{
+				{"media_path", job.MediaPath}, {"output_path", job.OutputPath}, {"published_path", job.PublishedPath},
+				{"planned_published_path", job.PlannedPublishedPath}, {"replacement_target_path", job.ReplacementTargetPath},
+				{"original_archived_path", job.OriginalArchivedPath},
+			} {
+				add(field.path, false, HousekeepingProtectionReference{
+					Source: "QueueJob", RecordID: strconv.FormatUint(uint64(job.ID), 10), Field: field.name,
+					Path: field.path, State: state, Reason: reason,
+				})
+				for _, reservation := range reservations {
+					add(field.path, false, HousekeepingProtectionReference{
+						Source: "SchedulerReservation", RecordID: strconv.FormatUint(uint64(reservation.ID), 10),
+						Field: "QueueJob." + field.name, Path: field.path, State: reservation.State,
+						Reason: "Active scheduler reservation retains this Queue source or restore path.",
+					})
+				}
+				for _, publication := range publications {
+					add(field.path, false, HousekeepingProtectionReference{
+						Source: "PublisherPublication", RecordID: publication.PublicationID,
+						Field: "QueueJob." + field.name, Path: field.path, State: publication.State,
+						Reason: "Active Publisher attempt or lease retains this Queue source or restore path.",
+					})
+				}
+			}
+			walkHousekeepingJSONStrings(job.SubtitleArtifacts, func(path string) {
+				add(path, false, HousekeepingProtectionReference{
+					Source: "QueueJob", RecordID: strconv.FormatUint(uint64(job.ID), 10), Field: "subtitle_artifacts",
+					Path: path, State: state, Reason: reason,
+				})
+			})
 		}
 	}
+
 	if db.Migrator().HasTable(&models.AssetMaintenanceOperation{}) {
 		var operations []models.AssetMaintenanceOperation
-		if err := db.Where("status IN ?", []string{"queued", "running"}).Select("asset_path, temporary_path, backup_path").Find(&operations).Error; err != nil {
-			return nil, err
+		if err := db.Select("id, asset_path, temporary_path, backup_path, status, phase, warning").Find(&operations).Error; err != nil {
+			return nil, nil, err
 		}
 		for _, operation := range operations {
-			add(operation.AssetPath, false)
-			add(operation.TemporaryPath, false)
-			add(operation.BackupPath, false)
+			backupNeedsRecovery := false
+			if strings.TrimSpace(operation.BackupPath) != "" &&
+				pathWithin(root, canonicalHousekeepingPath(operation.BackupPath)) {
+				if _, err := os.Lstat(operation.BackupPath); err == nil || !errors.Is(err, os.ErrNotExist) {
+					backupNeedsRecovery = true
+				}
+			}
+			warning := strings.ToLower(operation.Warning)
+			recoveryWarning := strings.Contains(warning, "backup") || strings.Contains(warning, "rollback") || strings.Contains(warning, "recover") || strings.Contains(warning, "restore")
+			if !operationIsActive(operation.Status) && !backupNeedsRecovery && !recoveryWarning {
+				continue
+			}
+			reason := "Active or recovery-required maintenance ownership retains this path."
+			if backupNeedsRecovery || recoveryWarning {
+				reason = "Maintenance backup or recovery warning retains this path until recovery is resolved."
+			}
+			for _, field := range []struct{ name, path string }{{"asset_path", operation.AssetPath}, {"temporary_path", operation.TemporaryPath}, {"backup_path", operation.BackupPath}} {
+				add(field.path, false, HousekeepingProtectionReference{
+					Source: "AssetMaintenanceOperation", RecordID: operation.ID, Field: field.name,
+					Path: field.path, State: operation.Status + "/" + operation.Phase,
+					Reason: reason,
+				})
+			}
 		}
 	}
-	return protected, nil
+	for path := range references {
+		sort.Slice(references[path], func(i, j int) bool {
+			left, right := references[path][i], references[path][j]
+			if left.Source != right.Source {
+				return left.Source < right.Source
+			}
+			if left.RecordID != right.RecordID {
+				return left.RecordID < right.RecordID
+			}
+			if left.Field != right.Field {
+				return left.Field < right.Field
+			}
+			return left.Path < right.Path
+		})
+	}
+	return references, counts, nil
+}
+
+func summarizeRawDirectoryProtection(references []HousekeepingProtectionReference, total int) string {
+	if len(references) == 0 {
+		return "directory protection evidence could not be resolved; re-scan or reconcile inventory before cleanup"
+	}
+	parts := make([]string, 0, min(len(references), 3))
+	for _, reference := range references[:min(len(references), 3)] {
+		parts = append(parts, fmt.Sprintf("%s #%s %s (%s)", reference.Source, reference.RecordID, reference.Field, reference.State))
+	}
+	message := "directory is protected by " + strings.Join(parts, "; ")
+	if total > len(parts) {
+		message += fmt.Sprintf("; %d additional references", total-len(parts))
+	}
+	return message + ". Re-scan or reconcile inventory to verify stale references before cleanup."
 }
 
 func protectedOperationalDirectories(db *gorm.DB, root string, includeQueueWorkspaces bool) (map[string]struct{}, error) {
@@ -847,7 +1403,7 @@ func housekeepingCandidateID(candidate HousekeepingCandidate, identity string) s
 
 func housekeepingReportForState(state housekeepingPreviewState, dryRun bool) HousekeepingReport {
 	report := HousekeepingReport{
-		RanAt: state.CreatedAt, DryRun: dryRun, PreviewID: state.PreviewID,
+		RanAt: state.CreatedAt, DryRun: dryRun, Outcome: "pending", PreviewID: state.PreviewID,
 		PreviewExpiresAt: &state.ExpiresAt, Candidates: make([]HousekeepingCandidate, 0, len(state.Candidates)),
 		Summaries: []HousekeepingCategorySummary{}, RemovedPaths: []string{}, Errors: append([]string{}, state.Errors...), RuntimeSnapshots: state.RuntimeSnapshots,
 	}
@@ -857,6 +1413,8 @@ func housekeepingReportForState(state housekeepingPreviewState, dryRun bool) Hou
 	if !dryRun {
 		report.PreviewID = ""
 		report.PreviewExpiresAt = nil
+	} else {
+		report.Outcome = "preview"
 	}
 	report.Summaries = housekeepingSummaries(report.Candidates)
 	return report
@@ -887,24 +1445,77 @@ func applyHousekeepingPlan(db *gorm.DB, roots map[string]string, policy Housekee
 	for index, bound := range state.Candidates {
 		candidate := bound.Candidate
 		if candidate.SafeToDelete {
-			updated, removed, err := executeHousekeepingCandidate(db, roots, policy, report.RanAt, bound)
+			updated, removed, err := executeHousekeepingCandidateWithStaging(db, roots, policy, report.RanAt, bound, nil)
 			candidate = updated
 			if err != nil {
 				candidate.SafeToDelete = false
+				candidate.Outcome = "failed"
 				candidate.BlockedReason = err.Error()
 				report.Errors = append(report.Errors, fmt.Sprintf("%s: %v", candidate.Path, err))
 			}
 			if removed {
+				candidate.SafeToDelete = false
+				candidate.Outcome = "cleaned"
 				report.RemovedPaths = append(report.RemovedPaths, candidate.Path)
 				report.RecoveredBytes += candidate.SizeBytes
 				if candidate.Kind == housekeepingKindRuntimeSnapshot {
 					report.RuntimeSnapshots.Deleted++
 				}
+			} else if err == nil && candidate.SafeToDelete && candidate.Outcome == "" {
+				candidate.SafeToDelete = false
+				candidate.Outcome = "already_absent"
+				candidate.SizeBytes = 0
+			}
+			if !candidate.SafeToDelete && candidate.Outcome == "eligible" {
+				candidate.Outcome = "blocked"
+			}
+		}
+		if candidate.Outcome == "" {
+			if candidate.SafeToDelete {
+				candidate.Outcome = "eligible"
+			} else {
+				candidate.Outcome = "blocked"
 			}
 		}
 		report.Candidates[index] = candidate
 	}
 	report.Summaries = housekeepingSummaries(report.Candidates)
+	report.Outcome = housekeepingReportOutcome(report.Candidates)
+}
+
+func housekeepingReportOutcome(candidates []HousekeepingCandidate) string {
+	if len(candidates) == 0 {
+		return "no_op"
+	}
+	cleaned, absent, blocked, failed := 0, 0, 0, 0
+	for _, candidate := range candidates {
+		switch candidate.Outcome {
+		case "cleaned":
+			cleaned++
+		case "already_absent":
+			absent++
+		case "failed":
+			failed++
+		case "blocked":
+			blocked++
+		}
+	}
+	if cleaned > 0 {
+		if cleaned != len(candidates) {
+			return "partial"
+		}
+		return "cleaned"
+	}
+	if failed > 0 {
+		return "failed"
+	}
+	if blocked > 0 {
+		return "blocked"
+	}
+	if absent == len(candidates) {
+		return "already_absent"
+	}
+	return "no_op"
 }
 
 func saveHousekeepingPreview(db *gorm.DB, state housekeepingPreviewState) error {
@@ -1314,6 +1925,14 @@ func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]strin
 	case housekeepingKindStageArtifact:
 		if strings.HasPrefix(candidate.Ownership, "publisher_publication") {
 			allowedRoles = []string{"originals_archive"}
+		} else if candidate.ManualOnly {
+			if candidate.Maintenance == nil {
+				candidate.SafeToDelete = false
+				candidate.Outcome = "blocked"
+				candidate.BlockedReason = "Library maintenance candidate details are missing"
+				return candidate, false, nil
+			}
+			allowedRoles = []string{"library"}
 		} else {
 			allowedRoles = []string{"work", "cache", "reports", "logs"}
 		}
@@ -1335,7 +1954,14 @@ func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]strin
 	}
 	if info == nil {
 		candidate.SizeBytes = 0
-		return candidate, true, nil
+		candidate.SafeToDelete = false
+		candidate.Outcome = "already_absent"
+		candidate.Reason = "owned artifact is already absent; no cleanup is required"
+		if candidate.Maintenance != nil {
+			candidate.Maintenance.TemporaryPresence = "absent"
+			candidate.Maintenance.TemporarySizeKnown = true
+		}
+		return candidate, false, nil
 	}
 	identity := statIdentity(info, info.IsDir())
 	if candidate.Kind == housekeepingKindWorkspace {
@@ -1348,6 +1974,7 @@ func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]strin
 	}
 	if identity != bound.Identity {
 		candidate.SafeToDelete = false
+		candidate.Outcome = "blocked"
 		candidate.BlockedReason = "path identity changed after preview"
 		return candidate, false, nil
 	}
@@ -1470,10 +2097,16 @@ func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]strin
 		removed, changed, err := removeHousekeepingFileIfUnchanged(path, bound.Identity)
 		if changed {
 			candidate.SafeToDelete = false
+			candidate.Outcome = "blocked"
 			candidate.BlockedReason = "job log changed immediately before cleanup"
+		} else if err == nil && !removed {
+			candidate.SafeToDelete = false
+			candidate.Outcome = "already_absent"
+			candidate.SizeBytes = 0
 		}
 		return candidate, removed, err
 	case housekeepingKindStageArtifact:
+		currentRoots := roots
 		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			candidate.SafeToDelete = false
 			candidate.BlockedReason = "stage artifact is no longer a regular non-symlink file"
@@ -1490,20 +2123,83 @@ func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]strin
 				return candidate, false, nil
 			}
 		} else {
-			current, err := maintenanceArtifactStillOwned(db, candidate)
+			if candidate.ManualOnly {
+				roles, err := scheduler.LoadStorageRoles(db)
+				if err != nil {
+					return candidate, false, err
+				}
+				currentRoots, err = housekeepingRoleRoots(roles)
+				if err != nil {
+					return candidate, false, err
+				}
+				if !reflect.DeepEqual(currentRoots, roots) || unsafeLibraryRoleRoot(currentRoots) {
+					candidate.SafeToDelete = false
+					candidate.Outcome = "blocked"
+					candidate.BlockedReason = "Library role roots changed or overlap another storage role after preview"
+					return candidate, false, nil
+				}
+			}
+			current, currentIdentity, err := maintenanceArtifactStillOwned(db, currentRoots, candidate, policy, now)
 			if err != nil {
 				return candidate, false, err
 			}
-			if !current {
+			if !current.SafeToDelete || currentIdentity != bound.Identity || current.CandidateID != candidate.CandidateID {
 				candidate.SafeToDelete = false
-				candidate.BlockedReason = "operation ownership or terminal state changed after preview"
+				candidate.Outcome = current.Outcome
+				if current.SafeToDelete {
+					candidate.Outcome = "blocked"
+				}
+				candidate.Maintenance = current.Maintenance
+				candidate.BlockedReason = current.BlockedReason
+				if candidate.BlockedReason == "" {
+					candidate.BlockedReason = "operation, role, asset, reference, or file identity changed after preview"
+				}
+				return candidate, false, nil
+			}
+		}
+		if candidate.ManualOnly {
+			info, err := os.Lstat(path)
+			if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				candidate.SafeToDelete = false
+				candidate.Outcome = "blocked"
+				candidate.BlockedReason = "Library maintenance temporary output changed or is no longer a regular file"
+				return candidate, false, nil
+			}
+			links, known := housekeepingFileLinkCount(info)
+			if !known || links != 1 {
+				candidate.SafeToDelete = false
+				candidate.Outcome = "blocked"
+				candidate.BlockedReason = "Library maintenance temporary output has an unsafe or unverifiable hard-link count"
+				return candidate, false, nil
+			}
+			latestRoles, err := scheduler.LoadStorageRoles(db)
+			if err != nil {
+				return candidate, false, err
+			}
+			latestRoots, err := housekeepingRoleRoots(latestRoles)
+			if err != nil {
+				return candidate, false, err
+			}
+			if !reflect.DeepEqual(currentRoots, latestRoots) || unsafeLibraryRoleRoot(latestRoots) {
+				candidate.SafeToDelete = false
+				candidate.Outcome = "blocked"
+				candidate.BlockedReason = "Library role roots changed or overlap another storage role immediately before cleanup"
 				return candidate, false, nil
 			}
 		}
 		removed, changed, err := removeHousekeepingFileIfUnchanged(path, bound.Identity)
 		if changed {
 			candidate.SafeToDelete = false
+			candidate.Outcome = "blocked"
 			candidate.BlockedReason = "stage artifact changed immediately before cleanup"
+		} else if err == nil && !removed {
+			candidate.SafeToDelete = false
+			candidate.Outcome = "already_absent"
+			candidate.SizeBytes = 0
+			if candidate.Maintenance != nil {
+				candidate.Maintenance.TemporaryPresence = "absent"
+				candidate.Maintenance.TemporarySizeKnown = true
+			}
 		}
 		return candidate, removed, err
 	case housekeepingKindEmptyDirectory:
@@ -1522,15 +2218,6 @@ func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]strin
 			return candidate, false, nil
 		}
 		if role == "raw" {
-			protected, err := protectedRawDirectories(db, roots["raw"])
-			if err != nil {
-				return candidate, false, err
-			}
-			if _, exists := protected[filepath.Clean(path)]; exists {
-				candidate.SafeToDelete = false
-				candidate.BlockedReason = "RAW directory is referenced by an asset, Queue source/restore target, or active operation"
-				return candidate, false, nil
-			}
 			if unsafeRawRoleRoot(roots) {
 				candidate.SafeToDelete = false
 				candidate.BlockedReason = "configured RAW storage role overlaps Library or originals archive"
@@ -1562,10 +2249,40 @@ func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]strin
 			candidate.BlockedReason = "configured storage role root is never removable"
 			return candidate, false, nil
 		}
-		removed, changed, err := removeEmptyHousekeepingDirectoryIfUnchanged(path, bound.Identity)
+		var rawProtectionReferences []HousekeepingProtectionReference
+		var rawProtectionReferenceCount int
+		var authorizeRawRemoval func() (string, error)
+		if role == "raw" {
+			authorizeRawRemoval = func() (string, error) {
+				protectionReferences, protectionCounts, protectionErr := protectedRawDirectoryReferences(db, roots["raw"])
+				if protectionErr != nil {
+					return "", protectionErr
+				}
+				if references, exists := protectionReferences[filepath.Clean(path)]; exists {
+					rawProtectionReferences = references
+					rawProtectionReferenceCount = protectionCounts[filepath.Clean(path)]
+					return summarizeRawDirectoryProtection(references, rawProtectionReferenceCount), nil
+				}
+				return "", nil
+			}
+		}
+		removed, changed, protectionReason, err := removeEmptyHousekeepingDirectoryIfUnchanged(path, bound.Identity, authorizeRawRemoval)
+		if protectionReason != "" {
+			candidate.SafeToDelete = false
+			candidate.Outcome = "blocked"
+			candidate.ProtectionReferences = rawProtectionReferences
+			candidate.ProtectionReferenceCount = rawProtectionReferenceCount
+			candidate.BlockedReason = protectionReason
+			return candidate, false, nil
+		}
 		if changed {
 			candidate.SafeToDelete = false
+			candidate.Outcome = "blocked"
 			candidate.BlockedReason = "directory became nonempty or changed immediately before cleanup"
+		} else if err == nil && !removed {
+			candidate.SafeToDelete = false
+			candidate.Outcome = "already_absent"
+			candidate.SizeBytes = 0
 		}
 		return candidate, removed, err
 	}
@@ -1575,7 +2292,7 @@ func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]strin
 func removeHousekeepingFileIfUnchanged(path, identity string) (removed, changed bool, err error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return true, false, nil
+		return false, false, nil
 	}
 	if err != nil {
 		return false, false, err
@@ -1584,40 +2301,46 @@ func removeHousekeepingFileIfUnchanged(path, identity string) (removed, changed 
 		return false, true, nil
 	}
 	if err := os.Remove(path); errors.Is(err, os.ErrNotExist) {
-		return true, false, nil
+		return false, false, nil
 	} else if err != nil {
 		return false, false, err
 	}
 	return true, false, nil
 }
 
-func removeEmptyHousekeepingDirectoryIfUnchanged(path, identity string) (removed, changed bool, err error) {
+func removeEmptyHousekeepingDirectoryIfUnchanged(path, identity string, authorizeRemoval func() (string, error)) (removed, changed bool, blockedReason string, err error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return true, false, nil
+		return false, false, "", nil
 	}
 	if err != nil {
-		return false, false, err
+		return false, false, "", err
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || statIdentity(info, true) != identity {
-		return false, true, nil
+		return false, true, "", nil
 	}
 	entries, err := os.ReadDir(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return true, false, nil
+		return false, false, "", nil
 	}
 	if err != nil {
-		return false, false, err
+		return false, false, "", err
 	}
 	if len(entries) != 0 {
-		return false, true, nil
+		return false, true, "", nil
+	}
+	if authorizeRemoval != nil {
+		blockedReason, err := authorizeRemoval()
+		if err != nil || blockedReason != "" {
+			return false, false, blockedReason, err
+		}
 	}
 	if err := os.Remove(path); errors.Is(err, os.ErrNotExist) {
-		return true, false, nil
+		return false, false, "", nil
 	} else if err != nil {
-		return false, false, err
+		return false, false, "", err
 	}
-	return true, false, nil
+	return true, false, "", nil
 }
 
 func executeTestEncodeCandidate(db *gorm.DB, candidate HousekeepingCandidate, identity string, now time.Time) (HousekeepingCandidate, bool, error) {
@@ -2043,16 +2766,21 @@ func canonicalHousekeepingPath(path string) string {
 	}
 }
 
-func maintenanceArtifactStillOwned(db *gorm.DB, candidate HousekeepingCandidate) (bool, error) {
+func maintenanceArtifactStillOwned(db *gorm.DB, roots map[string]string, candidate HousekeepingCandidate, policy HousekeepingPolicy, now time.Time) (HousekeepingCandidate, string, error) {
 	var operation models.AssetMaintenanceOperation
 	result := db.Where("id = ?", candidate.OperationID).Limit(1).Find(&operation)
-	if result.Error != nil || result.RowsAffected == 0 {
-		return false, result.Error
+	if result.Error != nil {
+		return candidate, "", result.Error
 	}
-	if !sameHousekeepingPath(operation.TemporaryPath, candidate.Path) || operationIsActive(operation.Status) || !operationIsAbandoned(operation.Status, operation.Phase) {
-		return false, nil
+	if result.RowsAffected == 0 {
+		candidate.SafeToDelete = false
+		candidate.Outcome = "blocked"
+		candidate.BlockedReason = "maintenance operation record disappeared after preview"
+		return candidate, "", nil
 	}
-	return operationArtifactReferenceBlock(db, operation.ID, candidate.Path) == "", nil
+	current, identity := maintenanceArtifactCandidate(db, roots, operation, policy, now)
+	current.CandidateID = housekeepingCandidateID(current, identity)
+	return current, identity, nil
 }
 
 func publisherArtifactStillOwned(db *gorm.DB, candidate HousekeepingCandidate, now time.Time) (bool, error) {

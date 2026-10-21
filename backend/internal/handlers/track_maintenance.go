@@ -795,6 +795,23 @@ func (h AssetHandler) updateMaintenance(id, status, phase string, progress int, 
 	_ = h.db.Model(&models.AssetMaintenanceOperation{}).Where("id = ?", id).Updates(values).Error
 }
 
+func (h AssetHandler) appendMaintenanceWarning(id, warning string) {
+	var operation models.AssetMaintenanceOperation
+	if err := h.db.Where("id = ?", id).Limit(1).Find(&operation).Error; err != nil || operation.ID == "" {
+		return
+	}
+	warning = strings.TrimSpace(warning)
+	if warning == "" || strings.Contains(operation.Warning, warning) {
+		return
+	}
+	if operation.Warning != "" {
+		warning = operation.Warning + "; " + warning
+	}
+	_ = h.db.Model(&models.AssetMaintenanceOperation{}).Where("id = ?", id).Updates(map[string]any{
+		"warning": warning, "updated_at": time.Now(),
+	}).Error
+}
+
 func (h AssetHandler) executeTrackRemoval(id string, inventory TrackMaintenanceInventory, remaining []TrackMaintenanceStream) {
 	h.executeTrackMutation(id, inventory, remaining,
 		func(output string) []string { return buildRemoveTracksFFmpegArgs(inventory.Path, output, remaining) },
@@ -808,7 +825,11 @@ func (h AssetHandler) executeTrackMutation(id string, inventory TrackMaintenance
 	temporary := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+"."+id+".tmp"+extension)
 	backup := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+"."+id+".backup"+extension)
 	h.updateMaintenance(id, maintenanceStatusRunning, "remuxing", 10, map[string]any{"started_at": time.Now(), "temporary_path": temporary, "backup_path": backup})
-	defer func() { _ = runtime.remove(temporary) }()
+	defer func() {
+		if err := runtime.remove(temporary); err != nil && !os.IsNotExist(err) {
+			h.appendMaintenanceWarning(id, "maintenance temporary output could not be removed: "+err.Error())
+		}
+	}()
 	args := buildArgs(temporary)
 	lastProgress := 10
 	if err := runtime.remux(context.Background(), args, inventory.DurationSeconds, func(fraction float64) {

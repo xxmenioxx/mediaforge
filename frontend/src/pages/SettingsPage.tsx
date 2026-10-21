@@ -1570,7 +1570,7 @@ export function HousekeepingCard({ value, saving, preview, result, busy, onSave,
     {report ? <Stack spacing={1}>
       <Typography variant="h4">{report.dryRun ? 'Cleanup preview' : 'Cleanup result'}</Typography>
       {report.previewExpiresAt ? <Typography variant="body2" color="text.secondary">Preview expires {new Date(report.previewExpiresAt).toLocaleString()}</Typography> : null}
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>{report.summaries.map((summary) => <Chip key={summary.kind} label={`${housekeepingKindLabels[summary.kind]}: ${summary.candidateCount} · ${formatBytes(summary.recoverableBytes)}`} />)}<Chip label={`${report.dryRun ? 'Recoverable' : 'Recovered'}: ${formatBytes(report.dryRun ? recoverableBytes : report.recoveredBytes)}`} /><Chip label={`${report.removedPaths.length} removed`} color={report.removedPaths.length ? 'success' : 'default'} /></Stack>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>{report.summaries.map((summary) => <Chip key={summary.kind} label={`${housekeepingKindLabels[summary.kind]}: ${summary.candidateCount} · ${formatBytes(summary.recoverableBytes)}`} />)}{!report.dryRun && report.outcome ? <Chip label={`Outcome: ${report.outcome.replaceAll('_', ' ')}`} color={report.outcome === 'cleaned' || report.outcome === 'already_absent' ? 'success' : report.outcome === 'failed' ? 'error' : report.outcome === 'partial' ? 'warning' : 'default'} /> : null}<Chip label={`${report.dryRun ? 'Recoverable' : 'Recovered'}: ${formatBytes(report.dryRun ? recoverableBytes : report.recoveredBytes)}`} /><Chip label={`${report.removedPaths.length} removed`} color={report.removedPaths.length ? 'success' : 'default'} /></Stack>
       <TextField select label="Category" value={category} onChange={(event) => setCategory(event.target.value as typeof category)} fullWidth>
         <MenuItem value="all">All categories ({report.candidates.length})</MenuItem>
         {report.summaries.map((summary) => <MenuItem key={summary.kind} value={summary.kind}>{housekeepingKindLabels[summary.kind]} ({summary.candidateCount})</MenuItem>)}
@@ -1580,8 +1580,26 @@ export function HousekeepingCard({ value, saving, preview, result, busy, onSave,
       </TableRow></TableHead><TableBody>{rows.map((item) => <TableRow key={item.candidateId}>
         <TableCell>{housekeepingKindLabels[item.kind]}</TableCell><TableCell sx={{ overflowWrap: 'anywhere' }}>{item.path}</TableCell>
         <TableCell>{[item.ownership, item.jobId !== undefined ? `Job ${item.jobId}` : undefined, item.operationId, item.testEncodeId !== undefined ? `Test Encode ${item.testEncodeId}` : undefined].filter(Boolean).join(' · ') || '—'}</TableCell>
-        <TableCell>{item.reason}</TableCell><TableCell>{candidateAge(item.modifiedAt)}</TableCell><TableCell>{formatBytes(item.sizeBytes)}</TableCell>
-        <TableCell>{item.safeToDelete ? 'Eligible' : `Blocked: ${item.blockedReason || 'Not eligible'}`}</TableCell>
+        <TableCell sx={{ overflowWrap: 'anywhere' }}><Stack spacing={0.5}>
+          <Typography variant="body2">{item.reason}</Typography>
+          {item.maintenance ? <Stack spacing={0.25}>
+            <Typography variant="caption">Asset: {item.maintenance.assetPath}</Typography>
+            <Typography variant="caption">{item.maintenance.assetRecordId ? `AssetRecord #${item.maintenance.assetRecordId} · ${item.maintenance.assetRecordStatus || 'status unknown'} · ${item.maintenance.assetRecordMissing ? 'marked missing' : 'not marked missing'}` : 'AssetRecord identity unavailable'}</Typography>
+            <Typography variant="caption">Operation: {item.maintenance.status} / {item.maintenance.phase}{item.maintenance.finishedAt ? ` · finished ${new Date(item.maintenance.finishedAt).toLocaleString()}` : ' · finished time unknown'}</Typography>
+            <Typography variant="caption">Temporary file: {item.maintenance.temporaryPresence}{item.maintenance.temporarySizeKnown ? ` · ${formatBytes(item.sizeBytes)}` : ' · size unknown'}</Typography>
+            <Typography variant="caption">Backup: {item.maintenance.backupPath || 'path not recorded'} · {item.maintenance.backupPresence} · {item.maintenance.recoveryState}</Typography>
+            {item.maintenance.resultFingerprint ? <Typography variant="caption" sx={{ overflowWrap: 'anywhere' }}>Result fingerprint: {item.maintenance.resultFingerprint}</Typography> : null}
+            <Typography variant="caption" sx={{ overflowWrap: 'anywhere' }}>Current asset fingerprint: {item.maintenance.assetFingerprintState}{item.maintenance.currentAssetFingerprint ? ` · ${item.maintenance.currentAssetFingerprint}` : ''}</Typography>
+            {item.maintenance.warning ? <Typography variant="caption" color="warning.main">Operation warning: {item.maintenance.warning}</Typography> : null}
+          </Stack> : null}
+          {item.protectionReferences?.map((reference) => <Typography key={`${reference.source}-${reference.recordId}-${reference.field}-${reference.path}`} variant="caption">
+            {reference.source} #{reference.recordId} · {reference.field}: {reference.path} · {reference.state} — {reference.reason}
+          </Typography>)}
+          {item.protectionReferenceCount && item.protectionReferences && item.protectionReferenceCount > item.protectionReferences.length ? <Typography variant="caption">{item.protectionReferenceCount - item.protectionReferences.length} additional references</Typography> : null}
+        </Stack></TableCell>
+        <TableCell>{item.maintenance?.finishedAt ? candidateAge(item.maintenance.finishedAt) : candidateAge(item.modifiedAt)}</TableCell>
+        <TableCell>{item.maintenance?.temporaryPresence === 'unknown' ? 'Unknown' : item.kind === 'empty_directory' ? '0 bytes (directory entry only)' : formatBytes(item.sizeBytes)}</TableCell>
+        <TableCell>{item.outcome === 'already_absent' ? 'Already absent · 0 recoverable bytes' : item.safeToDelete ? (item.manualOnly ? 'Eligible · manual cleanup' : 'Eligible') : `Blocked: ${item.blockedReason || 'Not eligible'}`}</TableCell>
       </TableRow>)}</TableBody></Table></Box> : <Typography color="text.secondary">No candidates in this category.</Typography>}
       {report.errors.map((error) => <Alert severity="error" key={error}>{error}</Alert>)}
     </Stack> : null}
