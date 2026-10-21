@@ -319,11 +319,32 @@ func validationStagingDisplayFiles(files []validationStagingFile) []validationSt
 }
 
 func validationStagingContainsPath(workspace, outputPath string, files []validationStagingFile) bool {
-	if !filepath.IsAbs(outputPath) || filepath.Clean(outputPath) != outputPath || !pathWithin(workspace, outputPath) {
+	if !filepath.IsAbs(outputPath) || filepath.Clean(outputPath) != outputPath {
+		return false
+	}
+	// The configured Work root is canonicalized before it is returned by
+	// housekeepingRoleRoots. On platforms where the temp root is a symlink
+	// (for example /var -> /private/var on macOS), QueueJob.OutputPath may
+	// still use the equivalent lexical spelling. Resolve both spellings
+	// before comparing ownership; a final symlink is never an owned output.
+	outputInfo, err := os.Lstat(outputPath)
+	if err != nil || outputInfo.Mode()&os.ModeSymlink != 0 || !outputInfo.Mode().IsRegular() {
+		return false
+	}
+	canonicalWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return false
+	}
+	canonicalOutput, err := filepath.EvalSymlinks(outputPath)
+	if err != nil || !pathWithin(canonicalWorkspace, canonicalOutput) {
 		return false
 	}
 	for _, file := range files {
-		if file.Kind == "file" && file.Path == outputPath {
+		if file.Kind != "file" {
+			continue
+		}
+		canonicalFile, err := filepath.EvalSymlinks(file.Path)
+		if err == nil && filepath.Clean(canonicalFile) == filepath.Clean(canonicalOutput) {
 			return true
 		}
 	}
@@ -339,12 +360,38 @@ func newValidationStagingID(prefix string) (string, error) {
 }
 
 func explicitValidationStagingHasActiveReferences(db *gorm.DB, jobID uint, workspace string) bool {
-	if !db.Migrator().HasTable(&models.QueueJob{}) || !db.Migrator().HasTable(&models.SchedulerReservation{}) || !db.Migrator().HasTable(&models.AssetMaintenanceOperation{}) || !db.Migrator().HasTable(&models.PublisherPublication{}) || !db.Migrator().HasTable(&models.TestEncode{}) || !db.Migrator().HasTable(&models.TestEncodeArtifact{}) {
+	if !db.Migrator().HasTable(&models.QueueJob{}) || !db.Migrator().HasTable(&models.ExecutionPlan{}) || !db.Migrator().HasTable(&models.AssetRecord{}) || !db.Migrator().HasTable(&models.Library{}) || !db.Migrator().HasTable(&models.SchedulerReservation{}) || !db.Migrator().HasTable(&models.AssetMaintenanceOperation{}) || !db.Migrator().HasTable(&models.PublisherPublication{}) || !db.Migrator().HasTable(&models.PublisherPublicationAttempt{}) || !db.Migrator().HasTable(&models.PublisherAttemptEvidence{}) || !db.Migrator().HasTable(&models.TestEncode{}) || !db.Migrator().HasTable(&models.TestEncodeArtifact{}) || !db.Migrator().HasTable(&models.CompatiblePreviewArtifactRecord{}) {
 		return true
+	}
+	referencesWorkspace := func(path string) bool {
+		return housekeepingPathWithin(workspace, path) || housekeepingPathWithin(path, workspace)
 	}
 	var job models.QueueJob
 	if err := db.First(&job, jobID).Error; err != nil || job.StartedAt != nil && job.FinishedAt == nil {
 		return true
+	}
+	for _, path := range []string{job.MediaPath, job.PublishedPath, job.PlannedPublishedPath, job.ReplacementTargetPath, job.OriginalArchivedPath} {
+		if referencesWorkspace(path) {
+			return true
+		}
+	}
+	var assets []models.AssetRecord
+	if err := db.Select("path, source_path").Find(&assets).Error; err != nil {
+		return true
+	}
+	for _, asset := range assets {
+		if referencesWorkspace(asset.Path) || referencesWorkspace(asset.SourcePath) {
+			return true
+		}
+	}
+	var libraries []models.Library
+	if err := db.Select("source_path, destination_path").Find(&libraries).Error; err != nil {
+		return true
+	}
+	for _, library := range libraries {
+		if referencesWorkspace(library.SourcePath) || referencesWorkspace(library.DestinationPath) {
+			return true
+		}
 	}
 	var reservations int64
 	if err := db.Model(&models.SchedulerReservation{}).Where("job_id = ? AND state IN ?", jobID, []string{scheduler.ReservationStateLocked, scheduler.ReservationStateActive}).Count(&reservations).Error; err != nil || reservations != 0 {
@@ -362,8 +409,51 @@ func explicitValidationStagingHasActiveReferences(db *gorm.DB, jobID uint, works
 		}
 	}
 	var publications []models.PublisherPublication
-	if err := db.Where("queue_job_id = ?", jobID).Find(&publications).Error; err != nil || len(publications) != 0 {
+	if err := db.Find(&publications).Error; err != nil {
 		return true
+	}
+	for _, publication := range publications {
+		for _, path := range []string{publication.SourcePath, publication.DestinationPath, publication.OriginalArchivedPath, publication.OriginalArchiveSourcePath, publication.OriginalArchiveTemporaryPath} {
+			if referencesWorkspace(path) {
+				return true
+			}
+		}
+		referenced := false
+		walkHousekeepingJSONStrings(publication.Manifest, func(path string) {
+			if referencesWorkspace(path) {
+				referenced = true
+			}
+		})
+		if referenced {
+			return true
+		}
+		if publication.QueueJobID == jobID {
+			return true
+		}
+	}
+	var publisherEvidence []models.PublisherAttemptEvidence
+	if err := db.Find(&publisherEvidence).Error; err != nil {
+		return true
+	}
+	for _, evidence := range publisherEvidence {
+		referenced := false
+		walkHousekeepingJSONStrings(evidence.Paths, func(path string) {
+			if referencesWorkspace(path) {
+				referenced = true
+			}
+		})
+		if referenced {
+			return true
+		}
+	}
+	var otherPlans []models.ExecutionPlan
+	if err := db.Where("job_id <> ?", jobID).Find(&otherPlans).Error; err != nil {
+		return true
+	}
+	for _, plan := range otherPlans {
+		if referencesWorkspace(plan.OutputPath) || referencesWorkspace(plan.DestinationRoot) || referencesWorkspace(plan.DestinationPath) {
+			return true
+		}
 	}
 	var activeTestEncodes []models.TestEncode
 	if err := db.Where("status IN ? AND deleted_at IS NULL", []string{"queued", "running", "processing"}).Find(&activeTestEncodes).Error; err != nil {
@@ -371,9 +461,18 @@ func explicitValidationStagingHasActiveReferences(db *gorm.DB, jobID uint, works
 	}
 	for _, testEncode := range activeTestEncodes {
 		for _, path := range []string{testEncode.OutputPath, testEncode.TemporaryPath} {
-			if housekeepingPathWithin(workspace, path) || housekeepingPathWithin(path, workspace) {
+			if referencesWorkspace(path) {
 				return true
 			}
+		}
+		referenced := false
+		walkHousekeepingJSONStrings(testEncode.SubtitleArtifacts, func(path string) {
+			if referencesWorkspace(path) {
+				referenced = true
+			}
+		})
+		if referenced {
+			return true
 		}
 	}
 	var artifacts []models.TestEncodeArtifact
@@ -381,7 +480,16 @@ func explicitValidationStagingHasActiveReferences(db *gorm.DB, jobID uint, works
 		return true
 	}
 	for _, artifact := range artifacts {
-		if housekeepingPathWithin(workspace, artifact.Path) || housekeepingPathWithin(artifact.Path, workspace) {
+		if referencesWorkspace(artifact.Path) {
+			return true
+		}
+	}
+	var previews []models.CompatiblePreviewArtifactRecord
+	if err := db.Where("state = ? OR (state = ? AND expires_at > ?)", compatiblePreviewArtifactGenerating, compatiblePreviewArtifactReady, time.Now().UTC()).Find(&previews).Error; err != nil {
+		return true
+	}
+	for _, preview := range previews {
+		if referencesWorkspace(preview.SourcePath) || referencesWorkspace(preview.CachePath) {
 			return true
 		}
 	}
@@ -390,14 +498,14 @@ func explicitValidationStagingHasActiveReferences(db *gorm.DB, jobID uint, works
 		return true
 	}
 	for _, other := range otherJobs {
-		for _, path := range []string{other.OutputPath, other.PlannedPublishedPath} {
-			if housekeepingPathWithin(workspace, path) || housekeepingPathWithin(path, workspace) {
+		for _, path := range []string{other.MediaPath, other.OutputPath, other.PublishedPath, other.PlannedPublishedPath, other.ReplacementTargetPath, other.OriginalArchivedPath} {
+			if referencesWorkspace(path) {
 				return true
 			}
 		}
 		referenced := false
 		walkHousekeepingJSONStrings(other.SubtitleArtifacts, func(path string) {
-			if housekeepingPathWithin(workspace, path) || housekeepingPathWithin(path, workspace) {
+			if referencesWorkspace(path) {
 				referenced = true
 			}
 		})

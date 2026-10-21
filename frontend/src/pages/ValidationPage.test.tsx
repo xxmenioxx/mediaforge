@@ -226,7 +226,7 @@ describe('ValidationPage request errors', () => {
     expect(within(dialog).getByText('4,096 bytes')).toBeTruthy();
     await user.click(within(dialog).getByRole('button', { name: 'Dismiss' }));
     await waitFor(() => expect(cleanup).toHaveBeenCalledWith({ jobId: 165, previewId: 'preview:165' }));
-    expect(dismissed).toHaveBeenCalledWith(165);
+    expect(dismissed.mock.calls[0]?.[0]).toBe(165);
     expect(dismissed.mock.invocationCallOrder[0]).toBeLessThan(cleanup.mock.invocationCallOrder[0]);
     for (const key of ['validationReview', 'validationHistory', 'queueJobs', 'assets', 'queueBatchPreflight', 'publisherEligibility']) {
       expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: [key] });
@@ -247,7 +247,7 @@ describe('ValidationPage request errors', () => {
     expect((checkbox as HTMLInputElement).checked).toBe(true);
     await user.click(checkbox);
     await user.click(within(dialog).getByRole('button', { name: 'Dismiss' }));
-    await waitFor(() => expect(dismiss).toHaveBeenCalledWith(165));
+    await waitFor(() => expect(dismiss.mock.calls[0]?.[0]).toBe(165));
     expect(await within(dialog).findByText('Dismissed; staging retained.')).toBeTruthy();
     expect(cleanup).not.toHaveBeenCalled();
   });
@@ -265,7 +265,7 @@ describe('ValidationPage request errors', () => {
     await waitFor(() => expect((checkbox as HTMLInputElement).checked).toBe(false));
     expect(within(dialog).getByRole('button', { name: 'Dismiss' }).hasAttribute('disabled')).toBe(false);
     await user.click(within(dialog).getByRole('button', { name: 'Dismiss' }));
-    await waitFor(() => expect(dismiss).toHaveBeenCalledWith(165));
+    await waitFor(() => expect(dismiss.mock.calls[0]?.[0]).toBe(165));
     expect(cleanup).not.toHaveBeenCalled();
   });
 });

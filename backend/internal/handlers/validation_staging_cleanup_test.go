@@ -28,7 +28,7 @@ func newValidationStagingFixture(t *testing.T) validationStagingFixture {
 	db := fixture.delivery.db
 	if err := db.AutoMigrate(
 		&models.SchedulerReservation{}, &models.AssetMaintenanceOperation{}, &models.TestEncode{}, &models.TestEncodeArtifact{},
-		&models.ValidationStagingCleanupPreview{}, &models.ValidationStagingCleanupEvidence{},
+		&models.CompatiblePreviewArtifactRecord{}, &models.ValidationStagingCleanupPreview{}, &models.ValidationStagingCleanupEvidence{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestValidationStagingCleanupDismissThenCleansOnlyPreviewedWorkspace(t *test
 		t.Fatal(err)
 	}
 	if preview.State != "ready" || preview.PreviewID == "" || len(preview.Files) != 2 || preview.TotalBytes == 0 {
-		t.Fatalf("preview did not bind the exact workspace files: %#v", preview)
+		t.Fatalf("preview did not bind the exact workspace files: %#v output=%q workspace=%q", preview, fixture.validation.delivery.job.OutputPath, fixture.workspace)
 	}
 	dismissValidationStagingFixture(t, fixture)
 	result, err := executeValidationStagingCleanup(db, fixture.validation.delivery.job.ID, preview.PreviewID, "local_operator")
@@ -254,5 +254,278 @@ func TestValidationStagingCleanupResponseContractSerializes(t *testing.T) {
 	encoded, err := json.Marshal(validationStagingCleanupResponse{Outcome: "blocked", RemovedPaths: []string{}, RecoveredBytes: 0})
 	if err != nil || !strings.Contains(string(encoded), `"outcome":"blocked"`) || !strings.Contains(string(encoded), `"recoveredBytes":0`) {
 		t.Fatalf("cleanup result response contract=%s err=%v", encoded, err)
+	}
+}
+
+func setValidationStagingExecutionNumber(t *testing.T, fixture *validationStagingFixture, number uint) {
+	t.Helper()
+	db := fixture.validation.delivery.db
+	job := fixture.validation.delivery.job
+	job.ExecutionNumber = &number
+	if err := db.Save(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJobResultArtifact(db, job, map[string]any{"status": "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, _, err := readLatestJobArtifact(db, job, "result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, identityOK := resultIdentityFromArtifact(artifact)
+	binding, bindingOK := resultBindingFromArtifact(artifact)
+	if !identityOK || !bindingOK || binding.ExecutionNumber != number {
+		t.Fatalf("new Result identity was not bound to execution %d: identity=%#v binding=%#v", number, identity, binding)
+	}
+	var run models.ValidationRun
+	if err := db.Where("run_id = ? AND job_id = ?", job.ValidationRunID, job.ID).First(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	run.ExecutionNumber = binding.ExecutionNumber
+	run.ExecutionPlanID = binding.ExecutionPlanID
+	run.ExecutionPlanVersion = binding.ExecutionPlanVersion
+	run.ExecutionPlanFingerprint = binding.ExecutionPlanFingerprint
+	run.ResultArtifactID = identity.ArtifactID
+	run.ResultGenerationToken = identity.GenerationToken
+	run.ResultGenerationVersion = identity.GenerationVersion
+	run.ResultOutputRevision = identity.OutputRevision
+	if err := db.Save(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	fixture.validation.delivery.job = job
+	fixture.validation.run = run
+}
+
+func TestValidationStagingCleanupUsesQueueJobIDNotExecutionNumber(t *testing.T) {
+	fixture := newValidationStagingFixture(t)
+	setValidationStagingExecutionNumber(t, &fixture, 42)
+	preview, err := createValidationStagingPreview(fixture.validation.delivery.db, fixture.validation.delivery.job.ID)
+	if err != nil || preview.State != "ready" {
+		t.Fatalf("preview=%#v err=%v", preview, err)
+	}
+	workRoot, err := filepath.EvalSymlinks(filepath.Dir(fixture.workspace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(workRoot, "job-"+strconv.FormatUint(uint64(fixture.validation.delivery.job.ID), 10))
+	if preview.ExecutionNumber != 42 || preview.WorkspacePath != want || preview.WorkspacePath == filepath.Join(workRoot, "job-42") {
+		t.Fatalf("workspace ownership used the wrong identity: preview=%#v want=%q", preview, want)
+	}
+	dismissValidationStagingFixture(t, fixture)
+	result, err := executeValidationStagingCleanup(fixture.validation.delivery.db, fixture.validation.delivery.job.ID, preview.PreviewID, "local_operator")
+	if err != nil || result.Outcome != "cleaned" {
+		t.Fatalf("QueueJob ID scoped cleanup failed: result=%#v err=%v", result, err)
+	}
+}
+
+func TestValidationStagingCleanupRejectsChangedQueueIdentity(t *testing.T) {
+	for _, mode := range []string{"execution_number", "validation_run", "output_path"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := newValidationStagingFixture(t)
+			db := fixture.validation.delivery.db
+			preview, err := createValidationStagingPreview(db, fixture.validation.delivery.job.ID)
+			if err != nil || preview.State != "ready" {
+				t.Fatalf("preview=%#v err=%v", preview, err)
+			}
+			dismissValidationStagingFixture(t, fixture)
+			var job models.QueueJob
+			if err := db.First(&job, fixture.validation.delivery.job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "execution_number":
+				changed := *job.ExecutionNumber + 1
+				job.ExecutionNumber = &changed
+			case "validation_run":
+				job.ValidationRunID = "validation-run:stale"
+			case "output_path":
+				job.OutputPath = filepath.Join(fixture.validation.delivery.root, "outside.mkv")
+			}
+			if err := db.Save(&job).Error; err != nil {
+				t.Fatal(err)
+			}
+			result, err := executeValidationStagingCleanup(db, job.ID, preview.PreviewID, "local_operator")
+			if err != nil || result.Outcome != "blocked" {
+				t.Fatalf("changed identity was not blocked: result=%#v err=%v", result, err)
+			}
+			if _, err := os.Stat(fixture.validation.delivery.output); err != nil {
+				t.Fatalf("staged output was deleted after identity changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidationStagingCleanupExpiredPreviewNeverDeletesWorkspace(t *testing.T) {
+	fixture := newValidationStagingFixture(t)
+	db := fixture.validation.delivery.db
+	preview, err := createValidationStagingPreview(db, fixture.validation.delivery.job.ID)
+	if err != nil || preview.PreviewID == "" {
+		t.Fatalf("preview=%#v err=%v", preview, err)
+	}
+	dismissValidationStagingFixture(t, fixture)
+	var stored models.ValidationStagingCleanupPreview
+	if err := db.Where("preview_id = ?", preview.PreviewID).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	stored.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+	if err := db.Save(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	result, err := executeValidationStagingCleanup(db, fixture.validation.delivery.job.ID, preview.PreviewID, "local_operator")
+	if err != nil || result.Outcome != "blocked" {
+		t.Fatalf("expired preview was not blocked: result=%#v err=%v", result, err)
+	}
+	if _, err := os.Stat(fixture.validation.delivery.output); err != nil {
+		t.Fatalf("workspace changed after expired preview: %v", err)
+	}
+	latest, err := latestValidationStagingEvidence(db, fixture.validation.delivery.job.ID, preview.PreviewID)
+	if err != nil || latest.Outcome != "blocked" || !strings.Contains(latest.Reason, "expired") {
+		t.Fatalf("expired preview did not preserve an auditable blocked outcome: latest=%#v err=%v", latest, err)
+	}
+}
+
+func TestValidationStagingCleanupBlocksUnsafeOrChangedWorkRole(t *testing.T) {
+	for _, mode := range []string{"unsafe_preview_root", "root_changed_after_preview"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := newValidationStagingFixture(t)
+			db := fixture.validation.delivery.db
+			var setting models.AppSetting
+			if err := db.Where("key = ?", "paths").First(&setting).Error; err != nil {
+				t.Fatal(err)
+			}
+			if mode == "root_changed_after_preview" {
+				preview, err := createValidationStagingPreview(db, fixture.validation.delivery.job.ID)
+				if err != nil || preview.State != "ready" {
+					t.Fatalf("preview=%#v err=%v", preview, err)
+				}
+				dismissValidationStagingFixture(t, fixture)
+				setting.Value["stagingPath"] = fixture.validation.delivery.rawRoot
+				if err := db.Save(&setting).Error; err != nil {
+					t.Fatal(err)
+				}
+				result, err := executeValidationStagingCleanup(db, fixture.validation.delivery.job.ID, preview.PreviewID, "local_operator")
+				if err != nil || result.Outcome != "blocked" {
+					t.Fatalf("changed Work role was not blocked: result=%#v err=%v", result, err)
+				}
+			} else {
+				setting.Value["stagingPath"] = fixture.validation.delivery.rawRoot
+				if err := db.Save(&setting).Error; err != nil {
+					t.Fatal(err)
+				}
+				preview, err := createValidationStagingPreview(db, fixture.validation.delivery.job.ID)
+				if err != nil || preview.State != "blocked" || preview.PreviewID != "" {
+					t.Fatalf("unsafe Work role produced a usable preview: preview=%#v err=%v", preview, err)
+				}
+			}
+			if _, err := os.Stat(fixture.validation.delivery.original); err != nil {
+				t.Fatalf("RAW original changed after unsafe role block: %v", err)
+			}
+			if _, err := os.Stat(fixture.validation.delivery.output); err != nil {
+				t.Fatalf("staged output changed after unsafe role block: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidationStagingCleanupBlocksEveryActiveReferenceSurface(t *testing.T) {
+	for _, mode := range []string{"maintenance", "publisher", "test_encode", "test_encode_artifact", "other_job_output", "asset_record", "other_execution_plan", "other_publisher_manifest", "active_compatible_preview"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := newValidationStagingFixture(t)
+			db := fixture.validation.delivery.db
+			job := fixture.validation.delivery.job
+			var referencedOriginal string
+			if mode == "asset_record" {
+				referencedOriginal = filepath.Join(fixture.workspace, "preserved-original.mkv")
+				if err := os.WriteFile(referencedOriginal, []byte("synthetic RAW original"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			preview, err := createValidationStagingPreview(db, job.ID)
+			if err != nil || preview.State != "ready" {
+				t.Fatalf("preview=%#v err=%v", preview, err)
+			}
+			dismissValidationStagingFixture(t, fixture)
+			referencePath := filepath.Join(fixture.workspace, "output.mkv")
+			switch mode {
+			case "maintenance":
+				err = db.Create(&models.AssetMaintenanceOperation{ID: "maintenance-race", OperationType: "archive", AssetPath: referencePath, Status: maintenanceStatusRunning, Phase: "running"}).Error
+			case "publisher":
+				artifact, _, readErr := readLatestJobArtifact(db, job, "result")
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				identity, identityOK := resultIdentityFromArtifact(artifact)
+				binding, bindingOK := resultBindingFromArtifact(artifact)
+				if !identityOK || !bindingOK {
+					t.Fatalf("fixture Result binding is unavailable: %#v", artifact)
+				}
+				now := time.Now().UTC()
+				err = db.Create(&models.PublisherPublication{
+					PublicationID: "publication-race", QueueJobID: job.ID, ExecutionNumber: *job.ExecutionNumber,
+					ExecutionPlanID: binding.ExecutionPlanID, ExecutionPlanVersion: binding.ExecutionPlanVersion,
+					ExecutionPlanFingerprint: binding.ExecutionPlanFingerprint, LibraryID: job.LibraryID,
+					DestinationRoot: fixture.validation.delivery.libraryRoot, DestinationPath: fixture.validation.delivery.destination,
+					PublishMode: job.PublishMode, ResultArtifactID: identity.ArtifactID,
+					ResultGenerationToken: identity.GenerationToken, ResultGenerationVersion: identity.GenerationVersion,
+					ResultOutputRevision: identity.OutputRevision, ValidationRunID: job.ValidationRunID,
+					SourcePath: job.MediaPath, State: "pending", Manifest: models.JSONList{}, CreatedAt: now, UpdatedAt: now,
+				}).Error
+			case "test_encode":
+				err = db.Create(&models.TestEncode{SourcePath: job.MediaPath, LibraryID: job.LibraryID, ConfigurationSource: "profile", ConfigurationHash: "synthetic", Status: "running", Phase: "encoding", OutputPath: referencePath}).Error
+			case "test_encode_artifact":
+				var testEncode models.TestEncode
+				if err = db.Create(&models.TestEncode{SourcePath: job.MediaPath, LibraryID: job.LibraryID, ConfigurationSource: "profile", ConfigurationHash: "synthetic", Status: "completed", Phase: "complete"}).Error; err == nil {
+					err = db.First(&testEncode, "source_path = ?", job.MediaPath).Error
+				}
+				if err == nil {
+					err = db.Create(&models.TestEncodeArtifact{TestEncodeID: testEncode.ID, LibraryID: job.LibraryID, Path: referencePath, Type: "output", Expected: true, State: "owned"}).Error
+				}
+			case "other_job_output":
+				err = db.Create(&models.QueueJob{MediaPath: "/raw/other.mkv", Status: JobStatusCompleted, OutputPath: referencePath}).Error
+			case "asset_record":
+				err = db.Create(&models.AssetRecord{Path: referencedOriginal, SourcePath: referencedOriginal, RootPath: fixture.workspace, RelativePath: filepath.Base(referencedOriginal), FileName: filepath.Base(referencedOriginal), Extension: ".mkv", Status: "unprocessed"}).Error
+			case "other_execution_plan":
+				err = db.Create(&models.ExecutionPlan{JobID: job.ID + 1000, Version: 1, Status: "frozen", OutputPath: referencePath}).Error
+			case "other_publisher_manifest":
+				other := models.QueueJob{MediaPath: "/raw/other.mkv", Status: JobStatusCompleted}
+				if err = db.Create(&other).Error; err == nil {
+					artifact, _, readErr := readLatestJobArtifact(db, job, "result")
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					identity, identityOK := resultIdentityFromArtifact(artifact)
+					binding, bindingOK := resultBindingFromArtifact(artifact)
+					if !identityOK || !bindingOK {
+						t.Fatalf("fixture Result binding is unavailable: %#v", artifact)
+					}
+					now := time.Now().UTC()
+					err = db.Create(&models.PublisherPublication{
+						PublicationID: "other-publication-manifest", QueueJobID: other.ID, ExecutionNumber: 1,
+						ExecutionPlanID: binding.ExecutionPlanID, ExecutionPlanVersion: binding.ExecutionPlanVersion,
+						ExecutionPlanFingerprint: binding.ExecutionPlanFingerprint, LibraryID: job.LibraryID,
+						DestinationRoot: fixture.validation.delivery.libraryRoot, DestinationPath: filepath.Join(fixture.validation.delivery.libraryRoot, "other.mkv"),
+						PublishMode: job.PublishMode, ResultArtifactID: identity.ArtifactID,
+						ResultGenerationToken: identity.GenerationToken, ResultGenerationVersion: identity.GenerationVersion,
+						ResultOutputRevision: identity.OutputRevision, ValidationRunID: "other-validation-run",
+						SourcePath: other.MediaPath, State: "pending", Manifest: models.JSONList{referencePath}, CreatedAt: now, UpdatedAt: now,
+					}).Error
+				}
+			case "active_compatible_preview":
+				err = db.Create(&models.CompatiblePreviewArtifactRecord{
+					ArtifactID: "active-preview-ref", CachePath: filepath.Join(fixture.validation.delivery.root, "cache", "preview.mkv"),
+					SourcePath: referencePath, State: string(compatiblePreviewArtifactGenerating), ExpiresAt: time.Now().UTC().Add(time.Minute),
+				}).Error
+			}
+			if err != nil {
+				t.Fatalf("create %s reference: %v", mode, err)
+			}
+			result, err := executeValidationStagingCleanup(db, job.ID, preview.PreviewID, "local_operator")
+			if err != nil || result.Outcome != "blocked" {
+				t.Fatalf("%s reference did not block cleanup: result=%#v err=%v", mode, result, err)
+			}
+			if _, err := os.Stat(fixture.validation.delivery.output); err != nil {
+				t.Fatalf("staged output was deleted despite %s reference: %v", mode, err)
+			}
+		})
 	}
 }

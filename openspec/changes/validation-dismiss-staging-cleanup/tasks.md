@@ -4,7 +4,7 @@
 - [x] 1.2 Implement job-scoped preview issuance with current Dismiss/Validation/Result/ExecutionPlan identity, exact QueueJob ID workspace resolution, file manifest, byte totals, ownership, active-reference blockers, and missing-workspace no-op.
 - [x] 1.3 Implement a one-time token-bound post-Dismiss Housekeeping operation, rechecking all bound identities and reference surfaces; isolate it from the singleton global preview and keep general dismissed-job protection unchanged.
 - [x] 1.4 Extend the existing Housekeeping deletion boundary for per-job serialization and rooted, no-follow, manifest-only removal; accurately persist complete, no-op, partial, blocked, and failed outcomes and support a fresh-preview retry.
-- [ ] 1.5 Add focused backend tests for identity mismatch, stale/consumed tokens, QueueJob ID versus execution number, unsafe paths/roles, all active references, concurrency, partial failure/retry, zero workspace, preserved evidence, and global Housekeeping isolation.
+- [x] 1.5 Add focused backend tests for identity mismatch, stale/consumed tokens, QueueJob ID versus execution number, unsafe paths/roles, all active references, concurrency, partial failure/retry, zero workspace, preserved evidence, and global Housekeeping isolation.
 
 ## 2. Validation and History API/UI
 
@@ -16,6 +16,6 @@
 
 ## 3. Verification and delivery
 
-- [ ] 3.1 Validate the OpenSpec change strictly and run the focused backend/frontend checks.
-- [ ] 3.2 Run `./scripts/verify.sh --auto` through the serialized shared-validation lock and resolve only reported in-scope failures.
+- [x] 3.1 Validate the OpenSpec change strictly and run the focused backend/frontend checks.
+- [x] 3.2 Run `./scripts/verify.sh --auto` through the serialized shared-validation lock and resolve only reported in-scope failures.
 - [x] 3.3 Inspect changed paths and lines for scope/secrets, commit the scoped #376 changes locally, and report the commit and validation evidence.
