@@ -250,6 +250,7 @@ type LabFidelityInspection = {
   hevcBitstreamEvidence?: HEVCBitstreamEvidence;
   hevcLevelValidation: { verdict: 'safe' | 'review' | 'reject'; status: 'validated' | 'mismatch' | 'unavailable' | 'unverified'; reason: string };
   canonicalFidelity?: Record<string, unknown>;
+  resolution?: NonNullable<ApiRequestError['resolution']>;
   requestedEncoder: string;
   effectiveEncoder: string;
   requestedQSVRateControl: string;
@@ -386,6 +387,7 @@ function labInspectionFromOperation(
     frameValidation: (result.frameValidation ?? { verdict: 'review', confidence: 'unverified', reasons: [] }) as LabFidelityInspection['frameValidation'],
     hevcLevelValidation: (result.hevcLevelValidation ?? { verdict: 'review', status: 'unverified', reason: 'Canonical validation is still being collected.' }) as LabFidelityInspection['hevcLevelValidation'],
     canonicalFidelity: (result.canonicalFidelity ?? {}) as Record<string, unknown>,
+    resolution: result.resolution as LabFidelityInspection['resolution'],
     requestedEncoder: String(result.requestedEncoder ?? ''),
     effectiveEncoder: String(result.effectiveEncoder ?? ''),
     requestedQSVRateControl: String(result.requestedQSVRateControl ?? ''),
@@ -1873,6 +1875,13 @@ export function ProfileLabPage() {
     lastFidelityInspection?.assetPath === assetPath
     ? lastFidelityInspection
     : undefined;
+  const currentFidelityResolution = currentFidelityInspection?.canonicalStatus === 'unverified' &&
+    currentFidelityInspection.draftSignature === JSON.stringify(videoDraft)
+    ? currentFidelityInspection.resolution
+    : undefined;
+  const activeLabResolution = labResolutionDiagnostic?.path === assetPath && labResolutionDiagnostic.draftSignature === JSON.stringify(videoDraft)
+    ? labResolutionDiagnostic.resolution
+    : currentFidelityResolution;
   const videoUpscaleError = customUpscaleHeightError(
     (videoDraft.workerConfig?.upscaleMode as UpscaleMode | undefined) ?? 'disabled',
     typeof videoDraft.workerConfig?.upscaleCustomHeight === 'number' ? videoDraft.workerConfig.upscaleCustomHeight : undefined,
@@ -3736,9 +3745,9 @@ export function ProfileLabPage() {
                           {compatiblePreviewRecoveryMessage(fidelityInspection.error)}
                         </Alert>
                       ) : null}
-                      {labResolutionDiagnostic?.path === assetPath && labResolutionDiagnostic.draftSignature === JSON.stringify(videoDraft) ? (
+                      {activeLabResolution ? (
                         <LabResolutionAssistant
-                          resolution={labResolutionDiagnostic.resolution}
+                          resolution={activeLabResolution}
                           reanalyzing={trackSnapshot.isPending}
                           onReanalyze={() => {
                             if (!assetPath) return;

@@ -52,6 +52,10 @@ LAB SHALL label planning status `RESOLVED`, `NEEDS_REVIEW`, or `UNAVAILABLE` ind
 - **WHEN** the frozen Preserve plan cannot establish required source FPS or field structure
 - **THEN** LAB shows field-level `UNVERIFIED` authority and reason and does not label the sample Safe
 
+#### Scenario: Preview succeeds while Canonical Frame Fidelity is unverified
+- **WHEN** Preview and planning resolve successfully but the canonical Fidelity aggregate has required `UNVERIFIED` fields
+- **THEN** LAB shows those canonical field reasons and only existing eligible actions that can address those fields; it labels planning `RESOLVED`, Fidelity `UNVERIFIED`, and keeps the sample in review
+
 #### Scenario: Bounded evidence cannot resolve field order
 - **WHEN** bounded evidence remains inconclusive after analysis or comparison
 - **THEN** LAB leaves Fidelity in review and exposes the manual comparison step without changing thresholds or bypassing canonical checks

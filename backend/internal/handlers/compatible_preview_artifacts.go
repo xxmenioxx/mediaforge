@@ -87,6 +87,7 @@ type compatiblePreviewDescriptor struct {
 	frozen                   bool
 	GenerationToken          string
 	GenerationVersion        int64
+	FidelityResolution       *labFidelityResolutionContext
 }
 
 type compatiblePreviewPrepareError struct {
@@ -271,6 +272,7 @@ func (h AssetHandler) prepareCompatiblePreviewDescriptor(input compatiblePreview
 	var effectivePreviewProfile *models.Profile
 	var resolvedVideoDecision models.JSONMap
 	var videoCodecArguments []string
+	var fidelityResolutionContext *labFidelityResolutionContext
 	if previewProfile != nil {
 		profile := normalizeHardwareQualityPreset(*previewProfile)
 		if streams, probeErr := probeMediaStreams(path); probeErr == nil && len(streams.Video) > 0 {
@@ -279,6 +281,14 @@ func (h AssetHandler) prepareCompatiblePreviewDescriptor(input compatiblePreview
 			}
 			interlace := h.previewInterlaceAnalysis(path, streams)
 			cadence, cadenceRecommendation := h.previewCadenceResolution(path)
+			contextProfile := profile
+			contextProfile.WorkerConfig = cloneWorkerConfig(profile.WorkerConfig)
+			contextStreams := streams
+			contextStreams.Video = append([]MediaStream(nil), streams.Video...)
+			fidelityResolutionContext = &labFidelityResolutionContext{
+				Profile: contextProfile, Streams: contextStreams, Interlace: interlace,
+				Cadence: cadence, Recommendation: cadenceRecommendation, SourceRevision: sourceRevision,
+			}
 			profile, probeErr = resolvePreviewVideoProfile(h.db, path, profile, streams, interlace, cadence, cadenceRecommendation)
 			if probeErr != nil {
 				prepareErr := &compatiblePreviewPrepareError{status: 422, err: probeErr}
@@ -361,6 +371,7 @@ func (h AssetHandler) prepareCompatiblePreviewDescriptor(input compatiblePreview
 		EffectiveVideoEncoder:   effectiveVideoEncoder,
 		RequestedQSVRateControl: requestedQSVRateControl,
 		EffectiveQSVRateControl: effectiveQSVRateControl,
+		FidelityResolution:      fidelityResolutionContext,
 		RetentionPolicy:         compatiblePreviewPersistentRetention,
 	}
 	if normalized.Ephemeral {

@@ -30,6 +30,8 @@ Canonical Fidelity is evaluated separately by `evaluateCanonicalFidelity` throug
 
 5. **Make Fidelity's evidence authoritative in the UI.** The panel renders backend field status, authority state, and reason. It does not infer confidence from a selected Preserve mode. Planning status and sample verdict are distinct; only existing canonical aggregation and metric/coverage policy can show Safe.
 
+6. **Attach guidance when Preview succeeds but canonical Fidelity is unverified.** Carry the candidate's source and cadence analysis context with the transient preview descriptor. When the completed Fidelity aggregate is `unverified`, build an additive diagnostic from its required canonical field results and reuse only the existing evidence-eligible actions. Report planning as `RESOLVED` and Fidelity as `UNVERIFIED`; the assistant must not convert either gate into a Safe verdict. Do not show cadence or field-order actions for unverified properties they cannot address.
+
 ## Risks / Trade-offs
 
 - [A recommendation could become stale after analysis or source edits] → Bind it to exact source and scan revisions and reject stale apply/test requests.

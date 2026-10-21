@@ -17,9 +17,10 @@ type Props = {
 
 export function LabResolutionAssistant({ resolution, onApply, onTest, onReanalyze, reanalyzing = false }: Props) {
   const recommended = resolution.actions.find((action) => action.eligible && action.recommended);
+  const fidelityReview = resolution.gate === 'canonical_fidelity';
   return <Alert severity="warning" data-testid="lab-resolution-assistant">
     <Stack spacing={1}>
-      <Typography variant="subtitle2">Why Auto needs review</Typography>
+      <Typography variant="subtitle2">{fidelityReview ? 'Why Canonical Frame Fidelity needs review' : 'Why Auto needs review'}</Typography>
       {resolution.blockingFields.map((item) => <Stack key={`${item.field}:${item.source ?? ''}`} spacing={0.25}>
         <Typography variant="body2"><strong>{item.field}</strong> · {item.authorityState}{item.authority ? ` · ${item.authority}` : ''}</Typography>
         <Typography variant="caption" color="text.secondary">{item.reason}{displayEvidenceValue(item.expected) ? ` Expected: ${displayEvidenceValue(item.expected)}.` : ''}{displayEvidenceValue(item.value) ? ` Observed: ${displayEvidenceValue(item.value)}.` : ''}</Typography>
@@ -41,7 +42,9 @@ export function LabResolutionAssistant({ resolution, onApply, onTest, onReanalyz
               <Button size="small" variant="contained" onClick={() => onTest(action)}>Test alternative</Button>
             </Stack>}
       </Stack>)}
-      <Typography variant="caption" color="text.secondary">Plan status: NEEDS_REVIEW. Fidelity remains governed by the existing sample and canonical evidence.</Typography>
+      <Typography variant="caption" color="text.secondary">{fidelityReview
+        ? `Plan status: ${resolution.planningStatus}. Canonical Frame Fidelity: ${resolution.fidelityStatus ?? 'UNVERIFIED'}. Safe remains unavailable until canonical evidence passes.`
+        : 'Plan status: NEEDS_REVIEW. Fidelity remains governed by the existing sample and canonical evidence.'}</Typography>
     </Stack>
   </Alert>;
 }

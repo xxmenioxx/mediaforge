@@ -1129,6 +1129,10 @@ func labFidelityOperationResult(input labFidelityOperationInput, descriptor *com
 		"samplingPlanIdentity": plan.PlanIdentity,
 		"completedAt":          map[bool]int64{true: time.Now().UnixMilli(), false: 0}[complete],
 	}
+	resolutionCanonicalSummary := labFidelityUnverifiedCanonicalSummary(windows)
+	if resolution := buildLabFidelityResolutionDiagnostic(descriptor.persistenceDB, descriptor.Path, descriptor.FidelityResolution, resolutionCanonicalSummary); resolution != nil {
+		result["resolution"] = resolution
+	}
 	if evidenceSet, evidenceErr := labPerceptualEvidenceSet(plan, descriptor, windows); evidenceErr == nil {
 		result["perceptualEvidence"] = evidenceSet
 	} else {
@@ -1138,6 +1142,26 @@ func labFidelityOperationResult(input labFidelityOperationInput, descriptor *com
 		result["overallVerdict"] = labFidelityOverallVerdict(canonicalStatus, visualAggregate)
 	}
 	return result
+}
+
+func labFidelityUnverifiedCanonicalSummary(windows []models.JSONMap) models.JSONMap {
+	fields := models.JSONMap{}
+	for _, window := range windows {
+		canonical := unknownRecord(window["canonicalFidelity"])
+		if stringFromUnknown(canonical["status"]) != "unverified" {
+			continue
+		}
+		for name, value := range unknownRecord(canonical["fields"]) {
+			field := unknownRecord(value)
+			if field != nil && stringFromUnknown(field["status"]) == "unverified" && field["required"] == true {
+				fields[name] = value
+			}
+		}
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return models.JSONMap{"status": "unverified", "fields": fields}
 }
 
 func labPerceptualEvidenceSet(plan SamplingPlan, descriptor *compatiblePreviewDescriptor, windows []models.JSONMap) (PerceptualEvidenceSet, error) {

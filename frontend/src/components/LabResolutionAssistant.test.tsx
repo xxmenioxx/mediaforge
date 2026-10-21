@@ -48,4 +48,17 @@ describe('LAB resolution assistant', () => {
     render(<LabResolutionAssistant resolution={{ ...response, actions: [{ ...response.actions[1], eligible: false }] }} onApply={vi.fn()} onTest={vi.fn()} onReanalyze={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Re-analyze cadence' })).toBeNull();
   });
+
+  it('distinguishes resolved planning from unverified canonical Fidelity', () => {
+    const fidelityResolution: LabResolutionRequired = {
+      ...response,
+      gate: 'canonical_fidelity',
+      planningStatus: 'RESOLVED',
+      fidelityStatus: 'UNVERIFIED',
+    };
+    render(<LabResolutionAssistant resolution={fidelityResolution} onApply={vi.fn()} onTest={vi.fn()} onReanalyze={vi.fn()} />);
+    expect(screen.getByText('Why Canonical Frame Fidelity needs review')).toBeTruthy();
+    expect(screen.getByText(/Plan status: RESOLVED\. Canonical Frame Fidelity: UNVERIFIED/)).toBeTruthy();
+    expect(screen.getByText(/Safe remains unavailable until canonical evidence passes/)).toBeTruthy();
+  });
 });

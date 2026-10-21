@@ -34,12 +34,23 @@ type labResolutionAction struct {
 type labResolutionDiagnostic struct {
 	Version        int                   `json:"version"`
 	Status         string                `json:"status"`
+	Gate           string                `json:"gate,omitempty"`
 	PlanningStatus string                `json:"planningStatus"`
+	FidelityStatus string                `json:"fidelityStatus,omitempty"`
 	BlockingFields []labResolutionField  `json:"blockingFields"`
 	Evidence       models.JSONMap        `json:"evidence"`
 	Requested      models.JSONMap        `json:"requested"`
 	Effective      models.JSONMap        `json:"effective"`
 	Actions        []labResolutionAction `json:"actions"`
+}
+
+type labFidelityResolutionContext struct {
+	Profile        models.Profile
+	Streams        MediaStreamInventory
+	Interlace      InterlaceAnalysis
+	Cadence        CadenceAnalysis
+	Recommendation CadenceRecommendation
+	SourceRevision compatiblePreviewSourceRevision
 }
 
 func (err *frameStructureResolutionRequiredError) Error() string {
@@ -140,6 +151,79 @@ func buildLabResolutionDiagnostic(
 		},
 		Actions: actions,
 	}
+}
+
+func buildLabFidelityResolutionDiagnostic(
+	db *gorm.DB,
+	path string,
+	context *labFidelityResolutionContext,
+	canonical models.JSONMap,
+) *labResolutionDiagnostic {
+	if context == nil || stringFromUnknown(canonical["status"]) != "unverified" {
+		return nil
+	}
+	planning := buildLabResolutionDiagnostic(db, path, context.Profile, context.Streams, context.Interlace, context.Cadence, context.Recommendation, context.SourceRevision)
+	if planning == nil {
+		return nil
+	}
+	fields := unknownRecord(canonical["fields"])
+	if fields == nil {
+		return nil
+	}
+	names := make([]string, 0, len(fields))
+	for name, value := range fields {
+		field := unknownRecord(value)
+		if field != nil && stringFromUnknown(field["status"]) == "unverified" && field["required"] == true {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	if len(names) == 0 {
+		return nil
+	}
+	blocking := make([]labResolutionField, 0, len(names))
+	for _, name := range names {
+		field := unknownRecord(fields[name])
+		blocking = append(blocking, labResolutionField{
+			Field: name, Source: field["source"], Expected: field["expected"], Value: field["actual"],
+			Authority: stringFromUnknown(field["authority"]), AuthorityState: stringFromUnknown(field["authorityState"]),
+			Reason: stringFromUnknown(field["reason"]),
+		})
+	}
+	resolution := *planning
+	resolution.Gate = "canonical_fidelity"
+	resolution.PlanningStatus = "RESOLVED"
+	resolution.FidelityStatus = "UNVERIFIED"
+	resolution.BlockingFields = blocking
+	resolution.Evidence = models.JSONMap{}
+	for key, value := range planning.Evidence {
+		resolution.Evidence[key] = value
+	}
+	resolution.Evidence["canonicalAuthority"] = canonical["authority"]
+	resolution.Evidence["canonicalStatus"] = canonical["status"]
+
+	needsCadenceAction := false
+	needsFieldOrderAction := false
+	for _, field := range blocking {
+		switch field.Field {
+		case "frameRate":
+			needsCadenceAction = true
+		case "fieldStructure", "fieldOrder":
+			needsCadenceAction = true
+			needsFieldOrderAction = true
+		}
+	}
+	for index := range resolution.Actions {
+		switch resolution.Actions[index].ID {
+		case "reanalyze_cadence", "preserve_source":
+			resolution.Actions[index].Eligible = resolution.Actions[index].Eligible && needsCadenceAction
+			resolution.Actions[index].Recommended = resolution.Actions[index].Recommended && needsCadenceAction
+		case "compare_field_order":
+			resolution.Actions[index].Eligible = resolution.Actions[index].Eligible && needsFieldOrderAction
+			resolution.Actions[index].Recommended = resolution.Actions[index].Recommended && needsFieldOrderAction
+		}
+	}
+	return &resolution
 }
 
 func labPreserveCandidateResolves(db *gorm.DB, path string, requested models.Profile, streams MediaStreamInventory, interlace InterlaceAnalysis, cadence CadenceAnalysis, recommendation CadenceRecommendation) bool {

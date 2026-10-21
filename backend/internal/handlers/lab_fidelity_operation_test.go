@@ -384,6 +384,57 @@ func TestLabFidelityAggregateKeepsCanonicalUnverifiedAboveLaterPass(t *testing.T
 	}
 }
 
+func TestLabFidelityUnverifiedIncludesResolutionAssistantWithoutChangingVerdict(t *testing.T) {
+	descriptor := testCompatiblePreviewDescriptor(t, "aggregate-unverified-resolution")
+	descriptor.FidelityResolution = &labFidelityResolutionContext{
+		Profile: models.Profile{VideoCodec: "hevc", WorkerConfig: models.JSONMap{
+			"cadenceMode": "auto", "fieldStructureMode": "auto", "cadenceFieldOrder": "auto",
+			"frameStructureMode": "off", "frameStructureGopMode": "off", "effectiveOutputFrameRateUnknown": true,
+		}},
+		Streams:        MediaStreamInventory{Video: []MediaStream{{Width: 1920, Height: 1080, FrameRate: "30000/1001", FieldOrder: "tt", PixelFormat: "yuv420p"}}},
+		Interlace:      InterlaceAnalysis{Version: interlaceAnalysisVersion, Status: "telecine_suspected", IVTCValidation: &IVTCValidation{Confidence: .5}},
+		Cadence:        CadenceAnalysis{Version: cadenceAnalysisVersion, Type: "hard_telecine", DeclaredFrameRate: "30000/1001", EffectiveFPS: 24000.0 / 1001.0},
+		Recommendation: CadenceRecommendation{Version: 1, Operation: "inverse_telecine", OutputFrameRate: "24000/1001"},
+		SourceRevision: compatiblePreviewSourceRevision{Size: 100, ModifiedAtNS: 10, Mode: 0o644},
+	}
+	canonical := models.JSONMap{
+		"authority": "frozen_execution_plan", "status": "unverified",
+		"fields": models.JSONMap{
+			"frameRate":      models.JSONMap{"source": "30000/1001", "expected": "24000/1001", "actual": nil, "status": "unverified", "required": true, "authority": "resolved_cadence", "authorityState": "resolved", "reason": "Output frame-rate evidence is unavailable."},
+			"fieldStructure": models.JSONMap{"source": "interlaced", "expected": nil, "actual": "unknown", "status": "unverified", "required": true, "authority": "resolved_cadence", "authorityState": "unresolved", "reason": "No validated field structure is available."},
+		},
+	}
+	canonicalFields := canonical["fields"].(models.JSONMap)
+	canonicalFrameRate := models.JSONMap{
+		"authority": canonical["authority"], "status": "unverified",
+		"fields": models.JSONMap{"frameRate": canonicalFields["frameRate"]},
+	}
+	canonicalFieldStructure := models.JSONMap{
+		"authority": canonical["authority"], "status": "unverified",
+		"fields": models.JSONMap{"fieldStructure": canonicalFields["fieldStructure"]},
+	}
+	result := labFidelityOperationResult(labFidelityOperationInput{}, descriptor, []models.JSONMap{
+		{"metrics": models.JSONMap{"comparable": true, "ssim": .99, "psnr": 50}, "canonicalFidelity": canonicalFrameRate},
+		{"metrics": models.JSONMap{"comparable": true, "ssim": .98, "psnr": 49}, "canonicalFidelity": canonicalFieldStructure},
+	}, SamplingPlan{WindowSeconds: 20}, 2, true)
+	resolution, ok := result["resolution"].(*labResolutionDiagnostic)
+	if !ok {
+		t.Fatalf("canonical UNVERIFIED result did not attach a resolution diagnostic: %#v", result["resolution"])
+	}
+	if resolution.Gate != "canonical_fidelity" || resolution.PlanningStatus != "RESOLVED" || resolution.FidelityStatus != "UNVERIFIED" {
+		t.Fatalf("planning and Fidelity gates were conflated: %#v", resolution)
+	}
+	if result["canonicalStatus"] != "unverified" || result["overallVerdict"] != "Review" {
+		t.Fatalf("resolution assistant changed canonical outcome: status=%v verdict=%v", result["canonicalStatus"], result["overallVerdict"])
+	}
+	if len(resolution.BlockingFields) != 2 || resolution.BlockingFields[0].Field != "fieldStructure" || resolution.BlockingFields[1].Field != "frameRate" {
+		t.Fatalf("assistant blockers do not reflect canonical fields: %#v", resolution.BlockingFields)
+	}
+	if !resolution.Actions[2].Eligible {
+		t.Fatalf("ambiguous field structure should retain the existing explicit comparison action: %#v", resolution.Actions)
+	}
+}
+
 func TestLabFidelityAggregatePreservesVisualThresholdsAndCanonicalPrecedence(t *testing.T) {
 	descriptor := testCompatiblePreviewDescriptor(t, "aggregate-thresholds")
 	windows := []models.JSONMap{

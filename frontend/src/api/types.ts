@@ -1201,7 +1201,9 @@ export type LabResolutionAction = {
 export type LabResolutionRequired = {
   version: 1;
   status: 'resolution_required';
-  planningStatus: 'NEEDS_REVIEW';
+  gate?: 'planning' | 'canonical_fidelity';
+  planningStatus: 'NEEDS_REVIEW' | 'RESOLVED';
+  fidelityStatus?: 'UNVERIFIED';
   blockingFields: LabResolutionBlockingField[];
   evidence: {
     path: string;
