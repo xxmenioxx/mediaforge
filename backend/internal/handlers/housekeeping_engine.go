@@ -1442,21 +1442,10 @@ func housekeepingSummaries(candidates []HousekeepingCandidate) []HousekeepingCat
 func applyHousekeepingPlan(db *gorm.DB, roots map[string]string, policy HousekeepingPolicy, state *housekeepingPreviewState, report *HousekeepingReport) {
 	report.RuntimeSnapshots = state.RuntimeSnapshots
 	report.Candidates = make([]HousekeepingCandidate, len(state.Candidates))
-	var executionContext *housekeepingExecutionContext
-	for _, bound := range state.Candidates {
-		if bound.Candidate.Kind == housekeepingKindEmptyDirectory && bound.Candidate.OperationID == "raw" && bound.Candidate.SafeToDelete {
-			executionContext = &housekeepingExecutionContext{}
-			protectionReferences, protectionCounts, err := protectedRawDirectoryReferences(db, roots["raw"])
-			executionContext.rawProtectionReferences = protectionReferences
-			executionContext.rawProtectionCounts = protectionCounts
-			executionContext.rawProtectionErr = err
-			break
-		}
-	}
 	for index, bound := range state.Candidates {
 		candidate := bound.Candidate
 		if candidate.SafeToDelete {
-			updated, removed, err := executeHousekeepingCandidateWithContext(db, roots, policy, report.RanAt, bound, nil, executionContext)
+			updated, removed, err := executeHousekeepingCandidateWithStaging(db, roots, policy, report.RanAt, bound, nil)
 			candidate = updated
 			if err != nil {
 				candidate.SafeToDelete = false
@@ -1905,16 +1894,6 @@ func executeHousekeepingCandidate(db *gorm.DB, roots map[string]string, policy H
 }
 
 func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]string, policy HousekeepingPolicy, now time.Time, bound housekeepingBoundCandidate, explicit *explicitValidationStagingAuthorization) (HousekeepingCandidate, bool, error) {
-	return executeHousekeepingCandidateWithContext(db, roots, policy, now, bound, explicit, nil)
-}
-
-type housekeepingExecutionContext struct {
-	rawProtectionReferences map[string][]HousekeepingProtectionReference
-	rawProtectionCounts     map[string]int
-	rawProtectionErr        error
-}
-
-func executeHousekeepingCandidateWithContext(db *gorm.DB, roots map[string]string, policy HousekeepingPolicy, now time.Time, bound housekeepingBoundCandidate, explicit *explicitValidationStagingAuthorization, executionContext *housekeepingExecutionContext) (HousekeepingCandidate, bool, error) {
 	candidate := bound.Candidate
 	if candidate.CandidateID == "" || candidate.CandidateID != housekeepingCandidateID(candidate, bound.Identity) {
 		candidate.SafeToDelete = false
@@ -2239,27 +2218,6 @@ func executeHousekeepingCandidateWithContext(db *gorm.DB, roots map[string]strin
 			return candidate, false, nil
 		}
 		if role == "raw" {
-			var protectionReferences map[string][]HousekeepingProtectionReference
-			var protectionCounts map[string]int
-			var protectionErr error
-			if executionContext != nil {
-				protectionReferences = executionContext.rawProtectionReferences
-				protectionCounts = executionContext.rawProtectionCounts
-				protectionErr = executionContext.rawProtectionErr
-			} else {
-				protectionReferences, protectionCounts, protectionErr = protectedRawDirectoryReferences(db, roots["raw"])
-			}
-			if protectionErr != nil {
-				return candidate, false, protectionErr
-			}
-			if references, exists := protectionReferences[filepath.Clean(path)]; exists {
-				candidate.SafeToDelete = false
-				candidate.Outcome = "blocked"
-				candidate.ProtectionReferences = references
-				candidate.ProtectionReferenceCount = protectionCounts[filepath.Clean(path)]
-				candidate.BlockedReason = summarizeRawDirectoryProtection(references, candidate.ProtectionReferenceCount)
-				return candidate, false, nil
-			}
 			if unsafeRawRoleRoot(roots) {
 				candidate.SafeToDelete = false
 				candidate.BlockedReason = "configured RAW storage role overlaps Library or originals archive"
@@ -2291,7 +2249,32 @@ func executeHousekeepingCandidateWithContext(db *gorm.DB, roots map[string]strin
 			candidate.BlockedReason = "configured storage role root is never removable"
 			return candidate, false, nil
 		}
-		removed, changed, err := removeEmptyHousekeepingDirectoryIfUnchanged(path, bound.Identity)
+		var rawProtectionReferences []HousekeepingProtectionReference
+		var rawProtectionReferenceCount int
+		var authorizeRawRemoval func() (string, error)
+		if role == "raw" {
+			authorizeRawRemoval = func() (string, error) {
+				protectionReferences, protectionCounts, protectionErr := protectedRawDirectoryReferences(db, roots["raw"])
+				if protectionErr != nil {
+					return "", protectionErr
+				}
+				if references, exists := protectionReferences[filepath.Clean(path)]; exists {
+					rawProtectionReferences = references
+					rawProtectionReferenceCount = protectionCounts[filepath.Clean(path)]
+					return summarizeRawDirectoryProtection(references, rawProtectionReferenceCount), nil
+				}
+				return "", nil
+			}
+		}
+		removed, changed, protectionReason, err := removeEmptyHousekeepingDirectoryIfUnchanged(path, bound.Identity, authorizeRawRemoval)
+		if protectionReason != "" {
+			candidate.SafeToDelete = false
+			candidate.Outcome = "blocked"
+			candidate.ProtectionReferences = rawProtectionReferences
+			candidate.ProtectionReferenceCount = rawProtectionReferenceCount
+			candidate.BlockedReason = protectionReason
+			return candidate, false, nil
+		}
 		if changed {
 			candidate.SafeToDelete = false
 			candidate.Outcome = "blocked"
@@ -2325,33 +2308,39 @@ func removeHousekeepingFileIfUnchanged(path, identity string) (removed, changed 
 	return true, false, nil
 }
 
-func removeEmptyHousekeepingDirectoryIfUnchanged(path, identity string) (removed, changed bool, err error) {
+func removeEmptyHousekeepingDirectoryIfUnchanged(path, identity string, authorizeRemoval func() (string, error)) (removed, changed bool, blockedReason string, err error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, false, nil
+		return false, false, "", nil
 	}
 	if err != nil {
-		return false, false, err
+		return false, false, "", err
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || statIdentity(info, true) != identity {
-		return false, true, nil
+		return false, true, "", nil
 	}
 	entries, err := os.ReadDir(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, false, nil
+		return false, false, "", nil
 	}
 	if err != nil {
-		return false, false, err
+		return false, false, "", err
 	}
 	if len(entries) != 0 {
-		return false, true, nil
+		return false, true, "", nil
+	}
+	if authorizeRemoval != nil {
+		blockedReason, err := authorizeRemoval()
+		if err != nil || blockedReason != "" {
+			return false, false, blockedReason, err
+		}
 	}
 	if err := os.Remove(path); errors.Is(err, os.ErrNotExist) {
-		return false, false, nil
+		return false, false, "", nil
 	} else if err != nil {
-		return false, false, err
+		return false, false, "", err
 	}
-	return true, false, nil
+	return true, false, "", nil
 }
 
 func executeTestEncodeCandidate(db *gorm.DB, candidate HousekeepingCandidate, identity string, now time.Time) (HousekeepingCandidate, bool, error) {

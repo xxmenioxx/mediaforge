@@ -70,6 +70,11 @@ Housekeeping SHALL remove a RAW directory only through the existing controlled p
 - **WHEN** a safe leaf is literally empty and has no verified or unresolved protection
 - **THEN** it is eligible only through controlled Housekeeping and is rechecked before non-recursive removal
 
+#### Scenario: A new reference appears between batch removals
+
+- **WHEN** a batch initially contains multiple eligible empty RAW leaves and a current reference to a later leaf appears after an earlier leaf is processed
+- **THEN** execution re-reads current references immediately before each leaf removal, blocks the later leaf, and preserves it
+
 #### Scenario: Directory contains data or changes
 
 - **WHEN** a directory is nonempty, gains an entry, is replaced, is a symlink, or has ambiguous ownership

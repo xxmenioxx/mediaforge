@@ -1064,6 +1064,87 @@ func TestHousekeepingRawDirectoryDiagnosticsRetainStaleAndConcurrentReferences(t
 	}
 }
 
+func TestHousekeepingRawBatchRevalidatesReferencesBeforeEachRemoval(t *testing.T) {
+	for _, manual := range []bool{false, true} {
+		t.Run(fmt.Sprintf("manual-%v", manual), func(t *testing.T) {
+			db, roots := newHousekeepingTestDB(t)
+			firstDirectory := filepath.Join(roots.raw, "a-first")
+			secondDirectory := filepath.Join(roots.raw, "b-second")
+			for _, path := range []string{firstDirectory, secondDirectory} {
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			preview, err := PreviewHousekeeping(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{firstDirectory, secondDirectory} {
+				candidate, ok := housekeepingCandidateByPath(preview, path, housekeepingKindEmptyDirectory)
+				if !ok || !candidate.SafeToDelete {
+					t.Fatalf("directory was not initially eligible: path=%q candidate=%#v", path, candidate)
+				}
+			}
+
+			var insertedReference *models.AssetRecord
+			var callbackErr error
+			callbackName := fmt.Sprintf("test:housekeeping-raw-batch-reference-%d", housekeepingTestSequence)
+			if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+				if insertedReference != nil || tx.Statement.Table != "asset_records" {
+					return
+				}
+				if _, err := os.Stat(firstDirectory); !os.IsNotExist(err) {
+					return
+				}
+				if _, err := os.Stat(secondDirectory); err != nil {
+					return
+				}
+				reference := models.AssetRecord{
+					Path:     filepath.Join(secondDirectory, "new-active-reference.mkv"),
+					RootPath: roots.raw, Status: "unprocessed", Missing: false,
+				}
+				if err := db.Create(&reference).Error; err != nil {
+					callbackErr = err
+					return
+				}
+				insertedReference = &reference
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Callback().Query().Remove(callbackName) })
+
+			var report HousekeepingReport
+			if manual {
+				report, err = ExecuteHousekeepingPreview(db, preview.PreviewID)
+			} else {
+				report, err = RunHousekeeping(db, false)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if callbackErr != nil {
+				t.Fatalf("could not create the inter-candidate reference: %v", callbackErr)
+			}
+			if insertedReference == nil {
+				t.Fatal("no reference was inserted after the first directory was processed")
+			}
+
+			if _, err := os.Stat(firstDirectory); !os.IsNotExist(err) {
+				t.Fatalf("first eligible directory was not removed: stat error=%v", err)
+			}
+			if info, err := os.Lstat(secondDirectory); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				t.Fatalf("second directory was not preserved as a directory: info=%v error=%v", info, err)
+			}
+			second, ok := housekeepingCandidateByPath(report, secondDirectory, housekeepingKindEmptyDirectory)
+			if !ok || second.SafeToDelete || second.Outcome != "blocked" ||
+				!housekeepingHasProtectionReference(second, "AssetRecord", strconv.FormatUint(uint64(insertedReference.ID), 10), "path") {
+				t.Fatalf("new inter-candidate reference did not block deletion: %#v", second)
+			}
+		})
+	}
+}
+
 func housekeepingHasProtectionReference(candidate HousekeepingCandidate, source, recordID, field string) bool {
 	for _, reference := range candidate.ProtectionReferences {
 		if reference.Source == source && reference.RecordID == recordID && reference.Field == field {
