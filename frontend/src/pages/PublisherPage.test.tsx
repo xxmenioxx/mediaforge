@@ -66,6 +66,34 @@ describe('PublisherPage persisted delivery controls', () => {
     expect(screen.queryByRole('button', { name: 'Discard' })).toBeNull();
   });
 
+  it('prioritizes Ready, Publishing, Failed/Blocked, and Held across the unified asset list', async () => {
+    vi.spyOn(api, 'publisherEligibility').mockResolvedValue({ items: [
+      { job: { id: 72, executionNumber: 1, mediaPath: '/raw/blocked.mkv', outputPath: '/stage/blocked.mkv', publishedPath: '', destinationPath: '/library/blocked.mkv', validationStatus: 'failed', validationScore: 70 }, status: 'BLOCKED' },
+      { job: { id: 71, executionNumber: 1, mediaPath: '/raw/ready.mkv', outputPath: '/stage/ready.mkv', publishedPath: '', destinationPath: '/library/ready.mkv', validationStatus: 'passed', validationScore: 99 }, status: 'ALLOWED' },
+    ], limit: 100 });
+    const publication = (publicationId: string, queueJobId: number, fileName: string, state: PublisherPublicationSummary['publication']['state']): PublisherPublicationSummary => ({
+      publication: {
+        publicationId, queueJobId, executionNumber: 1, executionPlanId: 1, libraryId: 1,
+        destinationRoot: '/library', destinationPath: `/library/${fileName}`, publishMode: 'standard',
+        resultArtifactId: `result-${queueJobId}`, validationRunId: `validation-${queueJobId}`, state,
+        attemptCount: 1, fencingGeneration: 1, originalArchiveStatus: 'pending', createdAt: '', updatedAt: '',
+      },
+      attempts: [], evidence: [], audit: [],
+    });
+    vi.spyOn(api, 'publisherPublications').mockResolvedValue({ items: [
+      publication('held', 75, 'held.mkv', 'HELD'),
+      publication('failed', 74, 'failed.mkv', 'FAILED'),
+      publication('publishing', 73, 'publishing.mkv', 'PUBLISHING'),
+    ], limit: 100 });
+    renderPage();
+
+    const firstAsset = await screen.findByText('ready.mkv');
+    const rowOrder = Array.from(firstAsset.closest('tbody')!.querySelectorAll('tr')).map((row) => row.textContent ?? '');
+    expect(rowOrder.map((row) => row.match(/(?:ready|publishing|blocked|failed|held)\.mkv/)?.[0])).toEqual([
+      'ready.mkv', 'publishing.mkv', 'blocked.mkv', 'failed.mkv', 'held.mkv',
+    ]);
+  });
+
   it('shows a stored publication and sends a reasoned hold action without actor input', async () => {
     const publication: PublisherPublicationSummary = {
       publication: {

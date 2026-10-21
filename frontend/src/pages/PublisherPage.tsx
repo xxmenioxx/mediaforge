@@ -155,6 +155,13 @@ export function PublisherPage() {
     !publicationsByExecution.has(`${candidate.job.id}:${candidate.job.executionNumber}`),
   );
   const searchMatches = (value: string) => value.toLowerCase().includes(search.trim().toLowerCase());
+  const publisherStatePriority = (state: string) => {
+    if (state === 'READY' || state === 'ALLOWED' || state === 'ALLOWED_BY_OVERRIDE') return 0;
+    if (state === 'PUBLISHING') return 1;
+    if (state === 'FAILED' || state === 'BLOCKED') return 2;
+    if (state === 'HELD') return 3;
+    return 4;
+  };
   const visibleCandidates = candidateRows.filter((candidate) => {
     const state = candidate.status === 'BLOCKED' ? 'Failed/Blocked' : 'Ready';
     return (stateFilter === 'All active' || stateFilter === state) &&
@@ -164,10 +171,19 @@ export function PublisherPage() {
     const matches = searchMatches(`${publication.queueJobId} ${publication.executionNumber} ${publication.destinationPath} ${publication.publicationId}`);
     const state = publication.state === 'PUBLISHED' ? 'Published' : publication.state === 'PUBLISHING' ? 'Publishing' : publication.state === 'HELD' ? 'Held' : publication.state === 'FAILED' || publication.state === 'BLOCKED' ? 'Failed/Blocked' : 'Ready';
     return matches && (stateFilter === 'All active' ? publication.state !== 'PUBLISHED' : stateFilter === state || (stateFilter === 'Failed/Blocked' && state === 'Failed/Blocked'));
-  }).sort((left, right) => {
-    const order: Record<string, number> = { BLOCKED: 0, FAILED: 1, HELD: 2, READY: 3, PUBLISHING: 4, PUBLISHED: 5 };
-    return order[left.publication.state] - order[right.publication.state];
   });
+  const visibleRows = [
+    ...visibleCandidates.map((candidate) => ({
+      kind: 'candidate' as const,
+      candidate,
+      priority: publisherStatePriority(candidate.status),
+    })),
+    ...visiblePublications.map((summary) => ({
+      kind: 'publication' as const,
+      summary,
+      priority: publisherStatePriority(summary.publication.state),
+    })),
+  ].sort((left, right) => left.priority - right.priority);
   const countFor = (state: string) => candidateRows.filter((item) =>
     state === 'Failed/Blocked' ? item.status === 'BLOCKED' : state === 'Ready' && item.status !== 'BLOCKED',
   ).length + (publications.data?.items ?? []).filter((item) => {
@@ -212,14 +228,14 @@ export function PublisherPage() {
         />
 
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} sx={{ mb: 2 }} alignItems={{ md: 'center' }}>
-          {['Ready', 'Publishing', 'Held', 'Failed/Blocked', 'Published'].map((state) => (
+          {['Ready', 'Publishing', 'Failed/Blocked', 'Held', 'Published'].map((state) => (
             <Chip key={state} label={`${state}: ${countFor(state)}`} size="small" />
           ))}
           <TextField label="Search filename, job, or destination" value={search} onChange={(event) => setSearch(event.target.value)} size="small" />
           <FormControl size="small" sx={{ minWidth: 160 }}>
             <InputLabel id="publisher-state-filter-label">State</InputLabel>
             <Select labelId="publisher-state-filter-label" label="State" value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
-              {['All active', 'Ready', 'Publishing', 'Held', 'Failed/Blocked', 'Published'].map((state) => <MenuItem key={state} value={state}>{state}</MenuItem>)}
+              {['All active', 'Ready', 'Publishing', 'Failed/Blocked', 'Held', 'Published'].map((state) => <MenuItem key={state} value={state}>{state}</MenuItem>)}
             </Select>
           </FormControl>
           <Link component={RouterLink} to="/history">Full History</Link>
@@ -231,21 +247,22 @@ export function PublisherPage() {
             <Table sx={{ tableLayout: 'fixed' }}>
               <TableHead><TableRow><TableCell>Asset / Job</TableCell><TableCell>Frozen destination</TableCell><TableCell>Publication / Validation</TableCell><TableCell>Evidence</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead>
               <TableBody>
-                {visibleCandidates.map((candidate) => <TableRow key={`job-${candidate.job.id}-${candidate.job.executionNumber ?? 'unknown'}`} hover>
-                  <TableCell><Typography fontWeight={700}>{fileNameFromPath(candidate.job.mediaPath)}</Typography><Typography variant="caption">Job #{candidate.job.id} · Run {candidate.job.executionNumber ?? 'unknown'}</Typography></TableCell>
-                  <TableCell sx={{ wordBreak: 'break-all' }}>{candidate.job.destinationPath || 'Frozen destination unavailable'}</TableCell>
-                  <TableCell><Chip size="small" label={candidate.status === 'BLOCKED' ? 'BLOCKED' : 'READY'} color={candidate.status === 'BLOCKED' ? 'error' : candidate.status === 'ALLOWED_BY_OVERRIDE' ? 'warning' : 'success'} /><Typography display="block" variant="caption">Eligibility: {candidate.status}</Typography><Typography display="block" variant="caption">{candidate.job.validationOutcome || candidate.job.validationStatus || 'Validation unavailable'}</Typography>{candidate.reason ? <Typography variant="caption" color="error.main">{candidate.reason}</Typography> : null}</TableCell>
-                  <TableCell>Eligibility window</TableCell>
-                  <TableCell align="right"><Button startIcon={<PublishIcon />} variant="contained" onClick={() => openPublishDialog(candidate)} disabled={publishJob.isPending || candidate.status === 'BLOCKED'}>Publish</Button><Button variant="outlined" color="error" size="small" startIcon={<DeleteOutlineIcon />} disabled={publishJob.isPending || discardJob.isPending} onClick={() => openDiscardDialog(candidate.job)}>Discard</Button></TableCell>
-                </TableRow>)}
-                {visiblePublications.map(({ publication, evidence, audit }) => (
-                  <TableRow key={publication.publicationId} hover>
-                    <TableCell><Typography fontWeight={700}>{fileNameFromPath(publication.destinationPath)}</Typography><Typography variant="caption">Job #{publication.queueJobId} · Run {publication.executionNumber}</Typography><Typography variant="caption" display="block">Publication {publication.publicationId}</Typography></TableCell>
-                    <TableCell sx={{ wordBreak: 'break-all' }}>{publication.destinationPath}</TableCell>
-                    <TableCell><Stack spacing={0.5}><Chip label={publication.state} size="small" color={publication.state === 'PUBLISHED' ? 'success' : publication.state === 'BLOCKED' || publication.state === 'FAILED' ? 'error' : publication.state === 'HELD' ? 'warning' : 'default'} />{publication.validationOverrideEventIds?.length ? <Chip label="ALLOWED_BY_OVERRIDE" color="warning" size="small" /> : null}<Typography variant="caption">Validation {publication.validationRunId}</Typography><Typography variant="caption">{publication.failureSummary || publication.holdReason || publication.state}</Typography></Stack></TableCell>
-                    <TableCell><details><summary>Evidence · {publication.attemptCount} attempts</summary><Typography variant="caption" display="block">Archive: {publication.originalArchiveStatus}{publication.originalArchivedPath ? ` · ${publication.originalArchivedPath}` : ''}</Typography>{evidence.map((entry) => <Typography key={`${entry.attemptId}-${entry.phase}`} variant="caption" display="block">{entry.createdAt} · {entry.phase}: {entry.summary || entry.outcome}</Typography>)}{audit.map((entry) => <Typography key={`${entry.version}-${entry.action}`} variant="caption" display="block">{entry.createdAt} · {entry.action} · {entry.actorId}{entry.reason ? ` · ${entry.reason}` : ''}</Typography>)}</details></TableCell>
+                {visibleRows.map((row) => row.kind === 'candidate' ? (
+                  <TableRow key={`job-${row.candidate.job.id}-${row.candidate.job.executionNumber ?? 'unknown'}`} hover>
+                    <TableCell><Typography fontWeight={700}>{fileNameFromPath(row.candidate.job.mediaPath)}</Typography><Typography variant="caption">Job #{row.candidate.job.id} · Run {row.candidate.job.executionNumber ?? 'unknown'}</Typography></TableCell>
+                    <TableCell sx={{ wordBreak: 'break-all' }}>{row.candidate.job.destinationPath || 'Frozen destination unavailable'}</TableCell>
+                    <TableCell><Chip size="small" label={row.candidate.status === 'BLOCKED' ? 'BLOCKED' : 'READY'} color={row.candidate.status === 'BLOCKED' ? 'error' : row.candidate.status === 'ALLOWED_BY_OVERRIDE' ? 'warning' : 'success'} /><Typography display="block" variant="caption">Eligibility: {row.candidate.status}</Typography><Typography display="block" variant="caption">{row.candidate.job.validationOutcome || row.candidate.job.validationStatus || 'Validation unavailable'}</Typography>{row.candidate.reason ? <Typography variant="caption" color="error.main">{row.candidate.reason}</Typography> : null}</TableCell>
+                    <TableCell>Eligibility window</TableCell>
+                    <TableCell align="right"><Button startIcon={<PublishIcon />} variant="contained" onClick={() => openPublishDialog(row.candidate)} disabled={publishJob.isPending || row.candidate.status === 'BLOCKED'}>Publish</Button><Button variant="outlined" color="error" size="small" startIcon={<DeleteOutlineIcon />} disabled={publishJob.isPending || discardJob.isPending} onClick={() => openDiscardDialog(row.candidate.job)}>Discard</Button></TableCell>
+                  </TableRow>
+                ) : (
+                  <TableRow key={row.summary.publication.publicationId} hover>
+                    <TableCell><Typography fontWeight={700}>{fileNameFromPath(row.summary.publication.destinationPath)}</Typography><Typography variant="caption">Job #{row.summary.publication.queueJobId} · Run {row.summary.publication.executionNumber}</Typography><Typography variant="caption" display="block">Publication {row.summary.publication.publicationId}</Typography></TableCell>
+                    <TableCell sx={{ wordBreak: 'break-all' }}>{row.summary.publication.destinationPath}</TableCell>
+                    <TableCell><Stack spacing={0.5}><Chip label={row.summary.publication.state} size="small" color={row.summary.publication.state === 'PUBLISHED' ? 'success' : row.summary.publication.state === 'BLOCKED' || row.summary.publication.state === 'FAILED' ? 'error' : row.summary.publication.state === 'HELD' ? 'warning' : 'default'} />{row.summary.publication.validationOverrideEventIds?.length ? <Chip label="ALLOWED_BY_OVERRIDE" color="warning" size="small" /> : null}<Typography variant="caption">Validation {row.summary.publication.validationRunId}</Typography><Typography variant="caption">{row.summary.publication.failureSummary || row.summary.publication.holdReason || row.summary.publication.state}</Typography></Stack></TableCell>
+                    <TableCell><details><summary>Evidence · {row.summary.publication.attemptCount} attempts</summary><Typography variant="caption" display="block">Archive: {row.summary.publication.originalArchiveStatus}{row.summary.publication.originalArchivedPath ? ` · ${row.summary.publication.originalArchivedPath}` : ''}</Typography>{row.summary.evidence.map((entry) => <Typography key={`${entry.attemptId}-${entry.phase}`} variant="caption" display="block">{entry.createdAt} · {entry.phase}: {entry.summary || entry.outcome}</Typography>)}{row.summary.audit.map((entry) => <Typography key={`${entry.version}-${entry.action}`} variant="caption" display="block">{entry.createdAt} · {entry.action} · {entry.actorId}{entry.reason ? ` · ${entry.reason}` : ''}</Typography>)}</details></TableCell>
                     <TableCell align="right">
-                      {publication.state === 'READY' ? <Stack direction="row" justifyContent="flex-end" spacing={1}><Button size="small" variant="contained" startIcon={<PublishIcon />} onClick={() => openExistingPublicationDialog(publication)} disabled={publishJob.isPending}>Publish</Button><Button size="small" onClick={() => publisherAction.mutate({ publicationId: publication.publicationId, action: 'hold', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Hold</Button></Stack> : publication.state === 'HELD' ? <Button size="small" onClick={() => publisherAction.mutate({ publicationId: publication.publicationId, action: 'release', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Release</Button> : publication.state === 'FAILED' || publication.state === 'BLOCKED' ? <Stack direction="row" justifyContent="flex-end" spacing={1}><Button size="small" onClick={() => publisherAction.mutate({ publicationId: publication.publicationId, action: 'retry', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Retry</Button><Button size="small" onClick={() => publisherAction.mutate({ publicationId: publication.publicationId, action: 'hold', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Hold</Button></Stack> : null}
+                      {row.summary.publication.state === 'READY' ? <Stack direction="row" justifyContent="flex-end" spacing={1}><Button size="small" variant="contained" startIcon={<PublishIcon />} onClick={() => openExistingPublicationDialog(row.summary.publication)} disabled={publishJob.isPending}>Publish</Button><Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'hold', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Hold</Button></Stack> : row.summary.publication.state === 'HELD' ? <Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'release', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Release</Button> : row.summary.publication.state === 'FAILED' || row.summary.publication.state === 'BLOCKED' ? <Stack direction="row" justifyContent="flex-end" spacing={1}><Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'retry', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Retry</Button><Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'hold', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Hold</Button></Stack> : null}
                     </TableCell>
                   </TableRow>
                 ))}

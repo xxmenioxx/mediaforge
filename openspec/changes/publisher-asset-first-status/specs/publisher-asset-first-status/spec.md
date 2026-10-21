@@ -6,11 +6,15 @@ Publisher presents current actionable work before historical detail while preser
 
 ### Requirement: Publisher prioritizes a unified current-state asset list
 
-The Publisher view SHALL present eligible jobs and persisted publication records in one primary list, with filename or job identity and frozen destination visible. It SHALL provide search by filename, job, or destination and state filters. The default view SHALL prioritize active or attention-needed work and SHALL make Published records available through an explicit filter or history context.
+The Publisher view SHALL present eligible jobs and persisted publication records in one primary list, with filename or job identity and frozen destination visible. It SHALL provide search by filename, job, or destination and state filters. The default view SHALL order active work as Ready, Publishing, Failed/Blocked, then Held, across both read models, and SHALL make Published records available through an explicit filter or history context.
 
 #### Scenario: Eligible work is visible on initial load
 - **WHEN** Publisher eligibility contains eligible jobs and publication summaries contain older records
 - **THEN** the primary list initially shows active or attention-needed eligible work before historical published-only records
+
+#### Scenario: Active states follow operational priority
+- **WHEN** the bounded eligibility and publication responses contain Ready, Publishing, Failed/Blocked, and Held records
+- **THEN** the unified list orders those records by Ready, Publishing, Failed/Blocked, and Held, regardless of which response supplied each row
 
 #### Scenario: User filters and searches current state
 - **WHEN** the user selects a publication-state filter or searches by filename, job, or destination
