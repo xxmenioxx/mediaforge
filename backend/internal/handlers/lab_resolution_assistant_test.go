@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -130,5 +132,29 @@ func TestLabResolutionMixedCadenceDoesNotRecommendPreserve(t *testing.T) {
 		interlace, cadence, CadenceRecommendation{Version: 1, Operation: "review"}, compatiblePreviewSourceRevision{Size: 100, ModifiedAtNS: 10})
 	if diagnostic.Actions[1].Eligible || diagnostic.Actions[1].Recommended {
 		t.Fatalf("mixed cadence must remain review-blocked: %#v", diagnostic.Actions[1])
+	}
+}
+
+func TestLabResolutionDeepCadenceActionRequiresCurrentSourceRevision(t *testing.T) {
+	db := queueJobTestDB(t)
+	path := filepath.Join(t.TempDir(), "source.mkv")
+	if err := os.WriteFile(path, []byte("synthetic source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ScanResult{Path: path}).Error; err != nil {
+		t.Fatal(err)
+	}
+	current := compatiblePreviewSourceRevision{Size: info.Size(), ModifiedAtNS: info.ModTime().UnixNano(), Mode: uint32(info.Mode())}
+	if deepCadenceActionEligible(db, path, current) {
+		t.Fatal("Deep Cadence action must stay ineligible without current validated snapshot evidence")
+	}
+	stale := current
+	stale.Size++
+	if deepCadenceActionEligible(db, path, stale) {
+		t.Fatal("Deep Cadence action accepted a diagnostic bound to a different source revision")
 	}
 }

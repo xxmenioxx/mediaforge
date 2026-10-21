@@ -1,5 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+// @vitest-environment jsdom
+
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LabResolutionAssistant } from './LabResolutionAssistant';
 import type { LabResolutionRequired } from '../api/types';
 
@@ -19,6 +21,8 @@ const response: LabResolutionRequired = {
 };
 
 describe('LAB resolution assistant', () => {
+  afterEach(() => cleanup());
+
   it('shows evidence and eligible actions without claiming Safe', () => {
     const onApply = vi.fn();
     const onTest = vi.fn();
@@ -33,8 +37,8 @@ describe('LAB resolution assistant', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Re-analyze cadence' }));
     fireEvent.click(screen.getByRole('button', { name: 'Test TFF alternative' }));
     fireEvent.click(screen.getByRole('button', { name: 'Test BFF alternative' }));
-    expect(onApply).toHaveBeenCalledWith(response.actions[0], undefined);
-    expect(onTest).toHaveBeenCalledWith(response.actions[0], undefined);
+    expect(onApply).toHaveBeenCalledWith(response.actions[0]);
+    expect(onTest).toHaveBeenCalledWith(response.actions[0]);
     expect(onReanalyze).toHaveBeenCalledOnce();
     expect(onTest).toHaveBeenCalledWith(response.actions[2], 'tff');
     expect(onTest).toHaveBeenCalledWith(response.actions[2], 'bff');

@@ -109,6 +109,7 @@ import { starterAudioProfiles } from '../audioProfiles';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { TrackProfileResolutionPreview } from '../components/TrackProfileResolutionPreview';
 import { LabResolutionAssistant } from '../components/LabResolutionAssistant';
+import { labResolutionActionDraft } from '../utils/labResolutionAction';
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
 import { PageHeader } from '../components/PageHeader';
 import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
@@ -3745,27 +3746,11 @@ export function ProfileLabPage() {
                           }}
                           onApply={(action, fieldOrder) => {
                             setLabResolutionDiagnostic(null);
-                            const workerConfig = { ...(videoDraft.workerConfig ?? {}) };
-                            if (action.id === 'preserve_source') {
-                              workerConfig.cadenceMode = 'preserve';
-                              workerConfig.fieldStructureMode = 'preserve';
-                              workerConfig.cadenceFieldOrder = 'auto';
-                            } else if (action.id === 'compare_field_order' && fieldOrder) {
-                              workerConfig.cadenceFieldOrder = fieldOrder;
-                            }
-                            setVideoDraft({ ...videoDraft, scope: 'asset', workerConfig });
+                            setVideoDraft(labResolutionActionDraft(videoDraft, action, fieldOrder));
                           }}
                           onTest={(action, fieldOrder) => {
                             setLabResolutionDiagnostic(null);
-                            const workerConfig = { ...(videoDraft.workerConfig ?? {}) };
-                            if (action.id === 'preserve_source') {
-                              workerConfig.cadenceMode = 'preserve';
-                              workerConfig.fieldStructureMode = 'preserve';
-                              workerConfig.cadenceFieldOrder = 'auto';
-                            } else if (action.id === 'compare_field_order' && fieldOrder) {
-                              workerConfig.cadenceFieldOrder = fieldOrder;
-                            }
-                            const alternative = { ...videoDraft, scope: 'asset' as const, workerConfig };
+                            const alternative = labResolutionActionDraft(videoDraft, action, fieldOrder);
                             setVideoDraft(alternative);
                             processVideoPreview(alternative);
                           }}
@@ -3851,7 +3836,7 @@ export function ProfileLabPage() {
                         variant="contained"
                         size="small"
                         disabled={!assetPath || previewNonce === 0 || !previewStartValid || videoPreviewStatus === 'loading'}
-                        onClick={processVideoPreview}
+                        onClick={() => processVideoPreview()}
                         sx={{ minHeight: 32 }}
                       >
                         {videoPreviewStatus === 'loading' ? 'Processing...' : 'Process Video'}
