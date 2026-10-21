@@ -42,7 +42,7 @@ The adapter uses the configured Translation model by default over the existing O
 
 ### Revision and compatibility
 
-The exact external sidecar is the publication target; the backend does not infer a replacement path. Apply preserves a restorable preimage in the existing internal subtitle revision area (generalized only as needed) rather than creating adjacent backup sidecars. Publication reuses the established same-filesystem staging/atomic rename boundary. Existing OCR approval, translation, sidecar editing, and extraction APIs retain their current contracts. No database migration or new dependency is required.
+The exact external sidecar is the publication target; the backend does not infer a replacement path. Apply preserves a restorable preimage in the existing internal subtitle revision area (generalized only as needed) rather than creating adjacent backup sidecars. Publication stages beside the target and uses the shared `publishStagedSubtitleFile` primitive under the existing subtitle publication lock, after revision revalidation. Proofreading-specific revision manifests record the approval provenance without introducing another file-promotion mechanism. Existing OCR approval, translation, sidecar editing, and extraction APIs retain their current contracts. No database migration or new dependency is required.
 
 ## Risks / Trade-offs
 

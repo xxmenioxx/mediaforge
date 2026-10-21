@@ -315,7 +315,7 @@ func publishSubtitleProofreadingContentLocked(path string, expected publishedSub
 	if err != nil || current != expected {
 		return errors.New("subtitle source changed while staging approved text")
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := publishStagedSubtitleFile(tempPath, path); err != nil {
 		return fmt.Errorf("atomically publish approved subtitle: %w", err)
 	}
 	removeTemp = false
