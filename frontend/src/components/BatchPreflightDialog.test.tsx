@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { QueueBatchPreflightInput, QueueBatchPreflightResponse } from '../api/types';
 import { BatchPreflightDialog } from './BatchPreflightDialog';
 
@@ -112,6 +112,8 @@ function candidate(overrides: Partial<QueueBatchPreflightResponse> = {}): QueueB
 }
 
 describe('BatchPreflightDialog', () => {
+  afterEach(() => cleanup());
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.edit.mockImplementation(async (id: string, revision: number) => candidate({ revision: revision + 1, resolved: false }));
@@ -386,6 +388,12 @@ describe('BatchPreflightDialog', () => {
     expect(await screen.findByText(/preview artifact is ready, but the browser could not play it/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Retry exact plan preview' })).toBeTruthy();
 
+    mocks.waitPreview.mockResolvedValueOnce({ state: 'ready', leaseToken: 'lease-2', ownerId: 'owner-1' });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry exact plan preview' }));
+    await waitFor(() => expect(mocks.preview).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe('/preview/preview-1'));
+    await waitFor(() => expect(mocks.cancelPreview).toHaveBeenCalledWith('preview-1', 'owner-1', 'lease-1'));
+
     fireEvent.click(screen.getByRole('button', { name: 'Test Encode exact plan' }));
     await waitFor(() => expect(mocks.testEncode).toHaveBeenCalledWith(expect.objectContaining({
       sourcePath: '/raw/Season 1/Episode 1.mkv',
@@ -399,8 +407,56 @@ describe('BatchPreflightDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open LAB with candidate context' }));
     expect(mocks.open).toHaveBeenLastCalledWith('/profile-lab?preflightCandidateId=candidate-1&preflightRevision=1&assetId=asset-1', '_blank', 'noopener,noreferrer');
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    await waitFor(() => expect(mocks.cancelPreview).toHaveBeenCalledWith('preview-1', 'owner-1', 'lease-1'));
+    await waitFor(() => expect(mocks.cancelPreview).toHaveBeenCalledWith('preview-1', 'owner-1', 'lease-2'));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('plays an exact-plan cache hit that is already ready without acquiring or releasing a lease', async () => {
+    const onClose = vi.fn();
+    mocks.waitPreview.mockResolvedValueOnce({ state: 'ready', cacheHit: true });
+    render(<BatchPreflightDialog candidate={candidate()} onClose={onClose} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview exact plan' }));
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe('/preview/preview-1'));
+    expect(screen.queryByText('Compatible Preview did not return a releasable lifecycle lease.')).toBeNull();
+    expect(mocks.preview).toHaveBeenCalledTimes(1);
+    expect(mocks.cancelPreview).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(mocks.cancelPreview).not.toHaveBeenCalled();
+  });
+
+  it('keeps a fresh ready response without a lease blocked unless it is a cache hit', async () => {
+    mocks.waitPreview.mockResolvedValueOnce({ state: 'ready', cacheHit: false });
+    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview exact plan' }));
+
+    expect(await screen.findByText('Preview lifecycle failed: Compatible Preview did not return a releasable lifecycle lease.')).toBeTruthy();
+    expect(document.querySelector('video')).toBeNull();
+    expect(mocks.cancelPreview).not.toHaveBeenCalled();
+  });
+
+  it('shows a lifecycle error and retries the same frozen candidate plan', async () => {
+    mocks.waitPreview.mockRejectedValueOnce(Object.assign(new Error('worker failed'), { state: 'failed' }));
+    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview exact plan' }));
+    expect(await screen.findByText('Preview lifecycle failed: worker failed')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry exact plan preview' }));
+
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe('/preview/preview-1'));
+    expect(mocks.preview).toHaveBeenCalledTimes(2);
+    for (const [input] of mocks.preview.mock.calls) {
+      expect(input).toMatchObject({
+        path: '/raw/Season 1/Episode 1.mkv',
+        profile,
+        preflightCandidateId: 'candidate-1',
+        preflightRevision: 1,
+        preflightAssetId: 'asset-1',
+      });
+    }
   });
 
   it('shows stale candidate context distinctly and offers to reload the latest candidate', async () => {
@@ -424,6 +480,21 @@ describe('BatchPreflightDialog', () => {
     expect(signal.aborted).toBe(true);
     resolveReady({ state: 'ready', leaseToken: 'lease-1' });
     await waitFor(() => expect(mocks.cancelPreview).toHaveBeenCalledWith('preview-1', 'owner-1', 'lease-1'));
+  });
+
+  it('cancels an in-progress preview and releases a lease that arrives after cancellation', async () => {
+    let resolveReady!: (value: { state: string; leaseToken: string }) => void;
+    mocks.waitPreview.mockImplementationOnce(() => new Promise((resolve) => { resolveReady = resolve; }));
+    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Preview exact plan' }));
+    await waitFor(() => expect(mocks.waitPreview).toHaveBeenCalled());
+    const signal = mocks.waitPreview.mock.calls[0][1] as AbortSignal;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel preview' }));
+    expect(signal.aborted).toBe(true);
+    resolveReady({ state: 'ready', leaseToken: 'lease-after-cancel' });
+    await waitFor(() => expect(mocks.cancelPreview).toHaveBeenCalledWith('preview-1', 'owner-1', 'lease-after-cancel'));
+    await waitFor(() => expect(document.querySelector('video')).toBeNull());
   });
 
   it('keeps Close, Discard candidate, and Discard edits as separate actions', async () => {

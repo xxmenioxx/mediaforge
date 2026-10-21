@@ -26,3 +26,4 @@
 
 - [x] 5.1 Keep exact-plan preview in a visible browser-safe review surface with actionable request, lifecycle, and playback states.
 - [x] 5.2 Preserve candidate-bound inputs and release preview leases on cancellation, retry, close, and unmount; test popup denial and close behavior.
+- [x] 5.3 Accept an already-ready cache hit without a lease token, while preserving cancellation and renewal for owned leases; cover generation, retry, error, cancel, and close.

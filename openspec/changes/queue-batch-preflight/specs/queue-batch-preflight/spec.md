@@ -48,7 +48,8 @@ The system MUST pass exact candidate identity, revision, asset identity, and res
 - **THEN** the existing Compatible Preview flow receives the candidate ID, revision, asset ID, source path, and frozen plan
 - **AND** the preview is shown in the review surface without relying on an asynchronous popup
 - **AND** a stale candidate or lifecycle/playback failure is shown as an actionable preview state
-- **AND** canceling, closing, or unmounting the preview releases its lifecycle lease without creating or mutating a QueueJob
+- **AND** a ready cache hit without a lease token is playable without requiring ownership of a new lifecycle lease
+- **AND** canceling, closing, or unmounting releases an acquired lifecycle lease without creating or mutating a QueueJob
 
 ### Requirement: Queue compatibility and bounded review
 

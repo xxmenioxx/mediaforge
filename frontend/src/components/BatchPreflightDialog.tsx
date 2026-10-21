@@ -337,8 +337,8 @@ export function BatchPreflightDialog({
       setPreviewState('encoding');
       const ready = await waitForCompatiblePreviewReady(preview.requestId, controller.signal, ownerId);
       if (ready.state !== 'ready') throw new Error('Compatible Preview did not produce a ready artifact.');
-      if (!ready.leaseToken) throw new Error('Compatible Preview did not return a releasable lifecycle lease.');
-      const lease = { requestId: preview.requestId, ownerId, leaseToken: ready.leaseToken };
+      if (!ready.leaseToken && ready.cacheHit !== true) throw new Error('Compatible Preview did not return a releasable lifecycle lease.');
+      const lease = ready.leaseToken ? { requestId: preview.requestId, ownerId, leaseToken: ready.leaseToken } : null;
       if (controller.signal.aborted) {
         releaseCompatiblePreviewLease(lease);
         if (previewController.current === controller) setPreviewState('idle');

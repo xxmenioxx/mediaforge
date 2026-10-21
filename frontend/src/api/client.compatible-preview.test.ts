@@ -139,6 +139,24 @@ describe('compatible preview request transport', () => {
     expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({ ownerId: 'owner-a' });
   });
 
+  it('returns an already-ready cache hit without requiring a lease token', async () => {
+    const requestId = 'f'.repeat(64);
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      requestId,
+      code: 'ready',
+      state: 'ready',
+      cacheHit: true,
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ready = await waitForCompatiblePreviewReady(requestId, undefined, 'owner-cache-hit');
+
+    expect(ready).toMatchObject({ state: 'ready', cacheHit: true });
+    expect(ready.leaseToken).toBeFalsy();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(`/api/assets/preview/compatible/requests/${requestId}/start`);
+  });
+
   it('re-reads canonical status when renewal loses a terminal transition race', async () => {
     vi.useFakeTimers();
     const requestId = 'e'.repeat(64);
