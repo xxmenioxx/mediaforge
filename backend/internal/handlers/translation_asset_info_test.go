@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -539,6 +540,141 @@ func TestAssetInfoTranslationEntryPointExternalSRTAndASS(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("translated %s sidecar was not published: %v", testCase.name, published)
+			}
+		})
+	}
+}
+
+func TestAssetInfoTranslationCapabilityAllowsPublishedLibraryVariants(t *testing.T) {
+	for _, status := range []string{"converted", "published_as_is", "accepted"} {
+		t.Run(status, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "episode.mkv")
+			sourcePath := filepath.Join(root, "episode.eng.srt")
+			writeTestFile(t, mediaPath, "media fixture")
+			writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+			db := translationSourceTestDB(t, root, mediaPath)
+			if err := db.Model(&models.AssetRecord{}).Where("path = ?", mediaPath).Update("status", status).Error; err != nil {
+				t.Fatal(err)
+			}
+			handler := AssetHandler{db: db}
+			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath)
+			capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, request)
+			if capabilityStatus != http.StatusOK {
+				t.Fatalf("capability status=%d body=%s", capabilityStatus, capabilityBody)
+			}
+			var capability subtitleTranslationCapabilityResponse
+			if err := json.Unmarshal([]byte(capabilityBody), &capability); err != nil {
+				t.Fatal(err)
+			}
+			if !capability.Eligible || capability.Source.ExternalPath != sourcePath || capability.Source.SourceRevision == "" {
+				t.Fatalf("published lifecycle %q was not independently eligible for its exact source: %#v", status, capability)
+			}
+		})
+	}
+}
+
+func TestAssetInfoTranslationCapabilityAndStartRejectActiveWork(t *testing.T) {
+	for _, kind := range []string{"queue", "maintenance"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "episode.mkv")
+			sourcePath := filepath.Join(root, "episode.eng.srt")
+			writeTestFile(t, mediaPath, "media fixture")
+			writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+			db := translationSourceTestDB(t, root, mediaPath)
+			if err := db.AutoMigrate(&models.QueueJob{}, &models.AssetMaintenanceOperation{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Model(&models.AssetRecord{}).Where("path = ?", mediaPath).Update("status", "converted").Error; err != nil {
+				t.Fatal(err)
+			}
+			var record models.AssetRecord
+			if err := db.Where("path = ?", mediaPath).First(&record).Error; err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "queue":
+				if err := db.Create(&models.QueueJob{
+					MediaPath: mediaPath, PublishedPath: mediaPath, LibraryID: 1,
+					Status: JobStatusQueued, Stage: JobStageQueued,
+				}).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "maintenance":
+				if err := db.Create(&models.AssetMaintenanceOperation{
+					ID: "maintenance-test", AssetRecordID: record.ID, AssetPath: mediaPath,
+					Status: maintenanceStatusRunning, Phase: "running",
+				}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			handler := AssetHandler{db: db}
+			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath)
+			capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, request)
+			if capabilityStatus != http.StatusUnprocessableEntity {
+				t.Fatalf("capability status=%d body=%s", capabilityStatus, capabilityBody)
+			}
+			var capability subtitleTranslationCapabilityResponse
+			if err := json.Unmarshal([]byte(capabilityBody), &capability); err != nil {
+				t.Fatal(err)
+			}
+			if capability.Eligible || !strings.Contains(capability.Reason, "active Queue or maintenance") {
+				t.Fatalf("active %s work did not block capability with a concrete reason: %#v", kind, capability)
+			}
+
+			startRequest := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"auto","targetLocale":"es-419"}`, mediaPath, sourcePath)
+			startStatus, startBody := postAssetInfoTranslationStart(t, handler, startRequest)
+			if startStatus != http.StatusUnprocessableEntity || !strings.Contains(startBody, "active Queue or maintenance") {
+				t.Fatalf("active %s work start status=%d body=%s", kind, startStatus, startBody)
+			}
+		})
+	}
+}
+
+func TestAssetInfoTranslationCapabilityRejectsMissingUnsupportedAndArchivedSources(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		selectedName   string
+		writeSelected  bool
+		assetStatus    string
+		wantReasonPart string
+	}{
+		{name: "missing exact sidecar", selectedName: "episode.jpn.srt", assetStatus: "converted"},
+		{name: "unsupported format", selectedName: "episode.eng.vtt", writeSelected: true, assetStatus: "converted"},
+		{name: "archive original", selectedName: "episode.eng.srt", writeSelected: true, assetStatus: "archive", wantReasonPart: "archived originals"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "episode.mkv")
+			writeTestFile(t, mediaPath, "media fixture")
+			if testCase.writeSelected {
+				writeTestFile(t, filepath.Join(root, testCase.selectedName), "subtitle fixture")
+			}
+			if testCase.name == "missing exact sidecar" {
+				writeTestFile(t, filepath.Join(root, "episode.eng.srt"), "1\n00:00:01,000 --> 00:00:02,000\nSibling\n")
+			}
+			db := translationSourceTestDB(t, root, mediaPath)
+			if err := db.Model(&models.AssetRecord{}).Where("path = ?", mediaPath).Update("status", testCase.assetStatus).Error; err != nil {
+				t.Fatal(err)
+			}
+			handler := AssetHandler{db: db}
+			selectedPath := filepath.Join(root, testCase.selectedName)
+			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, selectedPath)
+			capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, request)
+			if capabilityStatus != http.StatusUnprocessableEntity {
+				t.Fatalf("capability status=%d body=%s", capabilityStatus, capabilityBody)
+			}
+			var capability subtitleTranslationCapabilityResponse
+			if err := json.Unmarshal([]byte(capabilityBody), &capability); err != nil {
+				t.Fatal(err)
+			}
+			if capability.Eligible || capability.Source.ExternalPath == selectedPath {
+				t.Fatalf("blocked source was accepted or substituted: %#v", capability)
+			}
+			if testCase.wantReasonPart != "" && !strings.Contains(capability.Reason, testCase.wantReasonPart) {
+				t.Fatalf("reason=%q does not identify archived source", capability.Reason)
 			}
 		})
 	}

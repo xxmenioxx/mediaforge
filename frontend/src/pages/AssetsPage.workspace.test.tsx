@@ -5,21 +5,24 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Asset, AssetGroup, AssetInventory, AssetPath, AssetSourceGroup, Library, ProfileAssignment, ScanResult } from '../api/types';
+import type { Asset, AssetGroup, AssetInventory, AssetPath, AssetSourceGroup, ExternalSubtitle, Library, ProfileAssignment, ScanResult } from '../api/types';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return {
+    ApiRequestError: actual.ApiRequestError,
     api: {
       ...actual.api,
       queueJobs: vi.fn(), assets: vi.fn(), profiles: vi.fn(), libraries: vi.fn(), settings: vi.fn(), snapshotOperations: vi.fn(),
       profileAssignments: vi.fn(), assetScopeConfigurations: vi.fn(), latestSnapshot: vi.fn(), testEncodes: vi.fn(), jellyfinOutcomes: vi.fn(), effectiveAssetConfigurations: vi.fn(), deleteConvertedAsset: vi.fn(),
       runtimeState: vi.fn(), createQueueJob: vi.fn(), createQueueBatchPreflight: vi.fn(),
+      externalAssetSubtitles: vi.fn(), assetMetadataSidecars: vi.fn(), subtitleEligibility: vi.fn(), trackMaintenanceInventory: vi.fn(),
+      subtitleExtractionOperations: vi.fn(), subtitleTranslationCapability: vi.fn(), startSubtitleTranslation: vi.fn(),
     },
   };
 });
 
-import { api } from '../api/client';
+import { api, ApiRequestError } from '../api/client';
 import { AssetsPage, ReportsPage } from './AssetsPage';
 import { assetLabHref } from '../components/assetsActionRoutes';
 
@@ -51,6 +54,22 @@ function asset(id: number, fileName: string, tags: string[] = []): Asset {
   };
 }
 
+function publishedAssetForTranslation(status: string, provenance: string, fileName: string): Asset {
+  return {
+    ...asset(1, fileName),
+    status,
+    lifecycle: {
+      location: 'library', lifecycle: 'published', provenance, validation: 'passed', publication: 'published', original: 'archived',
+      actions: {
+        manageSubtitles: { allowed: true },
+        manageTracks: { allowed: true },
+        rename: { allowed: true },
+        deleteArchivedOriginal: { allowed: false, reason: 'original_unavailable' },
+      },
+    },
+  } as Asset;
+}
+
 function inventory(assets: Asset[]): AssetInventory {
   const review = assets[0]?.review ?? { requiresReview: false, reason: '', source: '', tags: [], updatedAt: '' };
   const metadata = assets[0]?.metadata ?? { categories: [], tags: [], updatedAt: '' };
@@ -66,6 +85,30 @@ function inventory(assets: Asset[]): AssetInventory {
     sync: { lastSyncedAt: '2026-09-30T10:00:00Z', totalRecords: assets.length, missingFiles: 0, missingActionable: 0, missingHistorical: 0 },
     counts: { raw: 0, library: assets.length, processing: 1, needsReview: 0, validationReview: 0, publicationBlocked: 0, converted: 3, originalsArchived: 0, missing: 0, historicalPaths: 0 },
   } as unknown as AssetInventory;
+}
+
+function subtitleSidecar(mediaPath: string, suffix = 'eng'): ExternalSubtitle {
+  const pathValue = `${mediaPath.slice(0, mediaPath.lastIndexOf('/') + 1)}Episode 01.${suffix}.ass`;
+  return {
+    path: pathValue,
+    fileName: pathValue.slice(pathValue.lastIndexOf('/') + 1),
+    format: 'ass', language: 'eng', default: false, forced: suffix.includes('forced'), sizeBytes: 100, modifiedAt: '',
+  };
+}
+
+function translationCapabilityFor(mediaPath: string, sidecar: ExternalSubtitle, eligible: boolean, available: boolean, reason: string) {
+  return {
+    source: {
+      type: 'external', sourceIdentity: `external:${sidecar.path}:revision-1`, sourceRevision: 'revision-1',
+      representation: 'ass', externalPath: sidecar.path, artifactId: `external-subtitle:${sidecar.path}`,
+      codec: 'ass', language: 'eng', default: false, sourceForced: false, effectiveForced: false,
+      role: 'unknown', sourcePath: mediaPath,
+    },
+    eligible, available, reason,
+    sourceLanguages: ['auto'], targetLocales: ['es-419', 'es-ES'],
+    provider: { name: 'ollama', modelSelectable: false }, outputRepresentations: ['ass'],
+    context: { status: 'unavailable', source: 'none' },
+  } as never;
 }
 
 function rawWorkspaceInventory(): AssetInventory {
@@ -264,7 +307,125 @@ describe('Library Assets workspace', () => {
     vi.mocked(api.effectiveAssetConfigurations).mockImplementation(async (assetIds) => effectiveConfigurationsForIds(assetIds) as never);
     vi.mocked(api.createQueueJob).mockResolvedValue({ id: 99 } as never);
     vi.mocked(api.createQueueBatchPreflight).mockResolvedValue({ id: 'candidate-1', revision: 1, resolved: true, status: 'active', batchId: 'batch-1', batchName: 'Single asset Queue review', assets: [] } as never);
+    vi.mocked(api.externalAssetSubtitles).mockResolvedValue([]);
+    vi.mocked(api.assetMetadataSidecars).mockResolvedValue([]);
+    vi.mocked(api.subtitleEligibility).mockResolvedValue({ embedded: [], external: [], composition: { policyVersion: 'test', primaryCandidates: [], supplementalCandidates: [], eligible: false, maxSupplementals: 0, reason: 'test' } } as never);
+    vi.mocked(api.trackMaintenanceInventory).mockResolvedValue({ path: '', fingerprint: '', streams: [], chapters: 0, durationSeconds: 0, maintenanceAllowed: true } as never);
+    vi.mocked(api.subtitleExtractionOperations).mockResolvedValue({ operations: [] } as never);
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue({} as never);
+    vi.mocked(api.startSubtitleTranslation).mockResolvedValue({} as never);
   });
+
+  it.each([
+    { status: 'converted', provenance: 'converted' },
+    { status: 'published_as_is', provenance: 'published_as_is' },
+    { status: 'accepted', provenance: 'imported' },
+  ])('opens exact sidecar translation for the $status lifecycle', async ({ status, provenance }) => {
+    const user = userEvent.setup();
+    const filename = 'Episode 01.mkv';
+    const published = publishedAssetForTranslation(status, provenance, filename);
+    const sidecar = subtitleSidecar(published.path);
+    const sibling = subtitleSidecar(published.path, 'eng.forced');
+    vi.mocked(api.assets).mockResolvedValue(inventory([published]));
+    vi.mocked(api.subtitleEligibility).mockResolvedValue({ embedded: [], external: [sidecar, sibling], composition: { policyVersion: 'test', primaryCandidates: [], supplementalCandidates: [], eligible: false, maxSupplementals: 0, reason: 'test' } } as never);
+    vi.mocked(api.externalAssetSubtitles).mockResolvedValue([sidecar, sibling]);
+    vi.mocked(api.subtitleTranslationCapability).mockResolvedValue(translationCapabilityFor(
+      published.path,
+      sidecar,
+      true,
+      false,
+      'Subtitle translation is disabled. Enable it in Settings to translate subtitles.',
+    ));
+
+    renderLibraryPage();
+    const rowText = await screen.findByText(filename);
+    await user.click(rowText);
+    const details = await screen.findByTestId('selected-asset-detail');
+    await user.click(within(details).getByRole('button', { name: `More actions for ${filename}` }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Asset Info' }));
+    const assetInfo = await screen.findByRole('dialog');
+    await user.click(within(assetInfo).getByRole('tab', { name: 'Tracks' }));
+
+    const translate = await screen.findByRole('button', { name: `Translate ${sidecar.fileName}` });
+    expect(translate).toHaveProperty('disabled', false);
+    await user.click(translate);
+    await screen.findByText('Translate subtitle');
+    const dialog = screen.getAllByRole('dialog').at(-1)!;
+    expect(await within(dialog).findByText('Subtitle translation is disabled. Enable it in Settings to translate subtitles.')).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Start translation' })).toHaveProperty('disabled', true);
+    expect(api.subtitleTranslationCapability).toHaveBeenCalledWith({
+      path: published.path,
+      source: { type: 'external', external: { subtitlePath: sidecar.path } },
+    });
+    expect(api.startSubtitleTranslation).not.toHaveBeenCalled();
+  }, 15000);
+
+  it('keeps active-work blockers visible and leaves adjacent sidecar mutations disabled', async () => {
+    const user = userEvent.setup();
+    const filename = 'Episode 01.mkv';
+    const published = publishedAssetForTranslation('converted', 'converted', filename);
+    const sidecar = subtitleSidecar(published.path);
+    published.lifecycle = {
+      ...published.lifecycle!,
+      actions: {
+        ...published.lifecycle!.actions,
+        manageSubtitles: { allowed: false, reason: 'active_work' },
+      },
+    } as never;
+    vi.mocked(api.assets).mockResolvedValue(inventory([published]));
+    vi.mocked(api.subtitleEligibility).mockResolvedValue({ embedded: [], external: [sidecar], composition: { policyVersion: 'test', primaryCandidates: [], supplementalCandidates: [], eligible: false, maxSupplementals: 0, reason: 'test' } } as never);
+    vi.mocked(api.externalAssetSubtitles).mockResolvedValue([sidecar]);
+
+    renderLibraryPage();
+    const rowText = await screen.findByText(filename);
+    await user.click(rowText);
+    const details = await screen.findByTestId('selected-asset-detail');
+    await user.click(within(details).getByRole('button', { name: `More actions for ${filename}` }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Asset Info' }));
+    const assetInfo = await screen.findByRole('dialog');
+    await user.click(within(assetInfo).getByRole('tab', { name: 'Tracks' }));
+
+    const translate = await screen.findByRole('button', { name: `Translate ${sidecar.fileName}` });
+    expect(translate).toHaveProperty('disabled', true);
+    await user.hover(translate.parentElement!);
+    expect(await screen.findByText('An active Queue or maintenance operation must finish before subtitle translation is available.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Rename subtitle file' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Edit subtitle text' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Delete external subtitle' })).toHaveProperty('disabled', true);
+    expect(api.subtitleTranslationCapability).not.toHaveBeenCalled();
+    expect(api.startSubtitleTranslation).not.toHaveBeenCalled();
+  }, 15000);
+
+  it('shows exact backend source blockers in the dialog without enabling Start', async () => {
+    const user = userEvent.setup();
+    const filename = 'Episode 01.mkv';
+    const published = publishedAssetForTranslation('converted', 'converted', filename);
+    const sidecar = subtitleSidecar(published.path);
+    vi.mocked(api.assets).mockResolvedValue(inventory([published]));
+    vi.mocked(api.subtitleEligibility).mockResolvedValue({ embedded: [], external: [sidecar], composition: { policyVersion: 'test', primaryCandidates: [], supplementalCandidates: [], eligible: false, maxSupplementals: 0, reason: 'test' } } as never);
+    vi.mocked(api.externalAssetSubtitles).mockResolvedValue([sidecar]);
+    vi.mocked(api.subtitleTranslationCapability).mockRejectedValue(new ApiRequestError(
+      'Archived originals cannot manage external subtitles.',
+      422,
+      { reason: 'Archived originals cannot manage external subtitles.' },
+    ));
+
+    renderLibraryPage();
+    const rowText = await screen.findByText(filename);
+    await user.click(rowText);
+    const details = await screen.findByTestId('selected-asset-detail');
+    await user.click(within(details).getByRole('button', { name: `More actions for ${filename}` }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Asset Info' }));
+    const assetInfo = await screen.findByRole('dialog');
+    await user.click(within(assetInfo).getByRole('tab', { name: 'Tracks' }));
+    await user.click(await screen.findByRole('button', { name: `Translate ${sidecar.fileName}` }));
+
+    await screen.findByText('Translate subtitle');
+    const dialog = screen.getAllByRole('dialog').at(-1)!;
+    expect(await within(dialog).findByText('Archived originals cannot manage external subtitles.')).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Start translation' })).toHaveProperty('disabled', true);
+    expect(api.startSubtitleTranslation).not.toHaveBeenCalled();
+  }, 15000);
 
   it('creates no row thumbnail requests and only one image request per selected asset', async () => {
     const user = userEvent.setup();
@@ -1117,7 +1278,7 @@ describe('RAW Assets workspace', () => {
     await waitFor(() => expect(api.createQueueBatchPreflight).toHaveBeenCalledWith(expect.objectContaining({ jobs: [expect.objectContaining({ profileId: 8, resolveProfileAssignments: true, libraryId: 1 })] })));
     discardDraft.mockRestore();
     suggest.mockRestore(); assign.mockRestore(); createTest.mockRestore();
-  });
+  }, 10000);
 
   it('shows compact individual Queue failure feedback outside Asset Info', async () => {
     const user = userEvent.setup();

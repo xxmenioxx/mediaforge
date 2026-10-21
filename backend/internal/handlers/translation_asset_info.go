@@ -69,9 +69,20 @@ func (h AssetHandler) resolveSubtitleTranslationAssetSource(
 	if err := validateSubtitleTranslationSourceSelector(selector); err != nil {
 		return "", subtitleTranslationSourceResponse{}, err
 	}
-	mediaPath, _, err := h.resolveOwnedSubtitleAsset(path)
+	mediaPath, record, err := h.resolveOwnedSubtitleAsset(path)
 	if err != nil {
 		return "", subtitleTranslationSourceResponse{}, err
+	}
+	projections, err := h.assetLifecycleProjections([]models.AssetRecord{record})
+	if err != nil {
+		return "", subtitleTranslationSourceResponse{}, fmt.Errorf("unable to verify subtitle translation safety: %w", err)
+	}
+	projection := projections[record.ID]
+	if projection == nil {
+		return "", subtitleTranslationSourceResponse{}, errors.New("asset lifecycle state is unavailable for subtitle translation")
+	}
+	if !projection.Actions.Subtitles.Allowed {
+		return "", subtitleTranslationSourceResponse{}, subtitleTranslationLifecycleBlocker(projection.Actions.Subtitles.Reason)
 	}
 
 	switch strings.ToLower(strings.TrimSpace(selector.Type)) {
@@ -83,6 +94,21 @@ func (h AssetHandler) resolveSubtitleTranslationAssetSource(
 		return mediaPath, response, err
 	default:
 		return "", subtitleTranslationSourceResponse{}, fmt.Errorf("unsupported subtitle translation source type %q", selector.Type)
+	}
+}
+
+func subtitleTranslationLifecycleBlocker(reason string) error {
+	switch reason {
+	case assetActionReasonActiveWork:
+		return errors.New("an active Queue or maintenance operation must finish before subtitle translation")
+	case assetActionReasonMissing:
+		return errors.New("the asset file is missing")
+	case assetActionReasonIdentityUnresolved:
+		return errors.New("asset identity is unavailable for subtitle translation")
+	case assetActionReasonUnsafeRoot:
+		return errors.New("asset is outside configured media roots")
+	default:
+		return errors.New("subtitle translation is unavailable for this asset")
 	}
 }
 

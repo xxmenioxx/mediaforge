@@ -527,7 +527,7 @@ func ResolveAssetActionCapabilities(state AssetActionGuardContext) AssetActionCa
 	if state.HasActiveQueue || state.HasActiveMaintenance {
 		setAssetActionCapabilityReasons(&capabilities, assetActionReasonActiveWork,
 			&capabilities.Move, &capabilities.Reconvert,
-			&capabilities.Archive, &capabilities.Restore, &capabilities.DeleteOriginal)
+			&capabilities.Subtitles, &capabilities.Archive, &capabilities.Restore, &capabilities.DeleteOriginal)
 		reason := assetActionReasonActiveWork
 		if state.OriginalArchiveActive && !state.PublicationConflict {
 			reason = assetActionReasonOriginalArchiveActive

@@ -3589,6 +3589,14 @@ function assetActionReasonMessage(capability: { reason?: string }, fallback = ''
   return capability.reason ? messages[capability.reason] ?? fallback : fallback;
 }
 
+function subtitleTranslationActionReason(capability: { allowed: boolean; reason?: string }) {
+  if (capability.allowed) return undefined;
+  if (capability.reason === 'active_work') {
+    return 'An active Queue or maintenance operation must finish before subtitle translation is available.';
+  }
+  return assetActionReasonMessage(capability, 'Subtitle translation is unavailable for this asset.');
+}
+
 function AssetMetadataSidecars({ values, loading }: { values: AssetMetadataSidecar[]; loading: boolean }) {
   return (
     <Stack spacing={0.75} data-testid="asset-metadata-sidecars">
@@ -4259,6 +4267,8 @@ function AssetRow({
   const isJobInformationTab = jobInformationTabs.includes(snapshotTab);
   const assetInfoMainTab = isJobInformationTab ? 'job-information' : snapshotTab === 'tracks' ? 'tracks' : 'overview';
   const rowLocked = hasOpenJob || createJob.isPending || (isConverted && !isLibraryReplacement) || isPublishedAsIs || isAccepted;
+  const subtitleTranslationCapability = assetInfoCapability(asset, 'manageSubtitles');
+  const subtitleTranslationReason = subtitleTranslationActionReason(subtitleTranslationCapability);
   const renameLocked = hasOpenJob || createJob.isPending || isPublishedAsIs || isAccepted;
   const pipelineState = assetPipelineState(asset, associatedJob, createJob.isPending);
   const pipelineTone = pipelineState.label.toLowerCase().includes('queue') || pipelineState.color === 'warning'
@@ -6168,7 +6178,8 @@ async function generateExternalSubtitle(
                       onRegenerate={regenerateEmbeddedSubtitle}
                       onCancel={cancelExternalSubtitle}
                       disabled={hasOpenJob || !assetInfoCapability(asset, 'manageSubtitles').allowed}
-                      translationDisabled={rowLocked || !assetInfoCapability(asset, 'manageSubtitles').allowed}
+                      translationDisabled={!subtitleTranslationCapability.allowed}
+                      translationDisabledReason={subtitleTranslationReason}
                       onTranslate={(streamIndex) => openTranslation({ type: 'embedded', embedded: { streamIndex } })}
                     />
                     <Typography variant="h4">Sidecars</Typography>
@@ -6180,7 +6191,8 @@ async function generateExternalSubtitle(
                         deleting={deleteExternalSubtitle.isPending}
                         renaming={renameExternalSubtitle.isPending}
                         disabled={hasOpenJob || !assetInfoCapability(asset, 'manageSubtitles').allowed}
-                        translationDisabled={rowLocked || !assetInfoCapability(asset, 'manageSubtitles').allowed}
+                        translationDisabled={!subtitleTranslationCapability.allowed}
+                        translationDisabledReason={subtitleTranslationReason}
                         onTranslate={(subtitle) => openTranslation({ type: 'external', external: { subtitlePath: subtitle.path } })}
                         onAnalyze={analyzeExternalSubtitle}
                         qualityReports={subtitleQualityReports}
@@ -6741,6 +6753,29 @@ function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; a
   );
 }
 
+function SubtitleTranslateAction({
+  label,
+  disabled,
+  reason,
+  onClick,
+}: {
+  label: string;
+  disabled: boolean;
+  reason?: string;
+  onClick: () => void;
+}) {
+  const button = (
+    <Button size="small" variant="outlined" aria-label={label} disabled={disabled} onClick={onClick}>
+      Translate...
+    </Button>
+  );
+  return disabled ? (
+    <Tooltip title={reason || 'Subtitle translation is unavailable for this asset.'}>
+      <span>{button}</span>
+    </Tooltip>
+  ) : button;
+}
+
 export function EmbeddedSubtitleActions({
   streams,
   eligibility,
@@ -6752,6 +6787,7 @@ export function EmbeddedSubtitleActions({
   srtFallbackEnabled = false,
   disabled = false,
   translationDisabled = false,
+  translationDisabledReason,
 }: {
   streams: MediaStreamInfo[];
   eligibility?: SubtitleSourceEligibility[];
@@ -6771,6 +6807,7 @@ export function EmbeddedSubtitleActions({
   srtFallbackEnabled?: boolean;
   disabled?: boolean;
   translationDisabled?: boolean;
+  translationDisabledReason?: string;
 }) {
   const [ocrLanguages, setOcrLanguages] = useState<Record<number, string>>({});
   const [ocrModes, setOcrModes] = useState<Record<number, 'raw' | 'clean' | 'accurate'>>({});
@@ -6850,7 +6887,14 @@ export function EmbeddedSubtitleActions({
                   <Button size="small" variant="outlined" disabled={ disabled || generations[subtitleGenerationKey(stream.index, 'srt')]?.status === 'running' } onClick={() => onGenerate(stream.index, 'srt', bitmap ? ocrLanguages[stream.index] : undefined, bitmap ? ocrModes[stream.index] : undefined)}>Generate SRT</Button>
                   <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onGenerate(stream.index, 'ass', bitmap ? ocrLanguages[stream.index] : undefined, bitmap ? ocrModes[stream.index] : undefined)}>Generate ASS</Button>
                   {onRegenerate && regenerateAllowed ? <Button size="small" variant="outlined" disabled={disabled || generations[subtitleGenerationKey(stream.index, 'ass')]?.status === 'running'} onClick={() => onRegenerate(stream.index)}>Regenerate styled ASS</Button> : null}
-                  {onTranslate ? <Button size="small" variant="outlined" aria-label={`Translate subtitle stream ${stream.index}`} disabled={translationDisabled} onClick={() => onTranslate(stream.index)}>Translate...</Button> : null}
+                  {onTranslate ? (
+                    <SubtitleTranslateAction
+                      label={`Translate subtitle stream ${stream.index}`}
+                      disabled={translationDisabled}
+                      reason={translationDisabledReason}
+                      onClick={() => onTranslate(stream.index)}
+                    />
+                  ) : null}
                   {originalStyledFormat ? (
                     <Button
                       size="small"
@@ -6983,6 +7027,7 @@ export function ExternalSubtitleList({
   renaming,
   disabled,
   translationDisabled = false,
+  translationDisabledReason,
   onRename,
   onEdit,
   onDelete,
@@ -7004,6 +7049,7 @@ export function ExternalSubtitleList({
   renaming: boolean;
   disabled?: boolean;
   translationDisabled?: boolean;
+  translationDisabledReason?: string;
   onRename: (subtitle: ExternalSubtitle) => void;
   onEdit: (subtitle: ExternalSubtitle) => void;
   onDelete: (subtitle: ExternalSubtitle) => void;
@@ -7071,15 +7117,22 @@ export function ExternalSubtitleList({
                 {onRestyle && restyleAllowed ? <Button size="small" variant="outlined" disabled={disabled || restyleOperation?.status === 'running'} onClick={() => openRestyleDialog(subtitle, 'restyle')}>Restyle</Button> : null}
                 {onRestyle && srtToAssAllowed ? <Button size="small" variant="outlined" disabled={disabled || restyleOperation?.status === 'running'} onClick={() => openRestyleDialog(subtitle, 'srt_to_ass')}>Generate ASS</Button> : null}
                 {onAnalyze && subtitle.ocrAnalysisAvailable ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onAnalyze(subtitle)}>Analyze OCR</Button> : null}
-                {onTranslate ? <Button size="small" variant="outlined" aria-label={`Translate ${subtitle.fileName}`} disabled={translationDisabled} onClick={() => onTranslate(subtitle)}>Translate...</Button> : null}
+                {onTranslate ? (
+                  <SubtitleTranslateAction
+                    label={`Translate ${subtitle.fileName}`}
+                    disabled={translationDisabled}
+                    reason={translationDisabledReason}
+                    onClick={() => onTranslate(subtitle)}
+                  />
+                ) : null}
                 <Tooltip title="Rename subtitle file">
-                  <IconButton size="small" color="primary" disabled={disabled || renaming} onClick={() => onRename(subtitle)} ><DriveFileRenameOutlineIcon /></IconButton>
+                  <span><IconButton aria-label="Rename subtitle file" size="small" color="primary" disabled={disabled || renaming} onClick={() => onRename(subtitle)} ><DriveFileRenameOutlineIcon /></IconButton></span>
                 </Tooltip>
                 <Tooltip title="Edit subtitle text">
-                  <IconButton size="small" color="primary" disabled={disabled} onClick={() => onEdit(subtitle)} ><EditIcon /></IconButton>
+                  <span><IconButton aria-label="Edit subtitle text" size="small" color="primary" disabled={disabled} onClick={() => onEdit(subtitle)} ><EditIcon /></IconButton></span>
                 </Tooltip>
                 <Tooltip title="Delete external subtitle">
-                  <IconButton size="small" color="error" disabled={disabled || deleting} onClick={() => onDelete(subtitle)}><DeleteForeverIcon /></IconButton>
+                  <span><IconButton aria-label="Delete external subtitle" size="small" color="error" disabled={disabled || deleting} onClick={() => onDelete(subtitle)}><DeleteForeverIcon /></IconButton></span>
                 </Tooltip>
               </Stack>
             </Stack>

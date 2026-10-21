@@ -305,7 +305,7 @@ func TestResolveAssetLifecycleProjectionActionCapabilitiesAreAdvisory(t *testing
 		IdentityKnown: true, Location: AssetLocationLibrary, RootSafe: true,
 		ProvenanceKnown: true, HasCurrentPublication: true, OriginalAvailable: true,
 	})
-	if !allowed.Rename.Allowed || !allowed.Reconvert.Allowed || !allowed.Archive.Allowed {
+	if !allowed.Rename.Allowed || !allowed.Reconvert.Allowed || !allowed.Archive.Allowed || !allowed.Subtitles.Allowed {
 		t.Fatalf("safe supported actions were not exposed: %#v", allowed)
 	}
 
@@ -313,8 +313,15 @@ func TestResolveAssetLifecycleProjectionActionCapabilitiesAreAdvisory(t *testing
 		IdentityKnown: true, Location: AssetLocationLibrary, RootSafe: true,
 		ProvenanceKnown: true, HasCurrentPublication: true, HasActiveQueue: true,
 	})
-	if active.Rename.Allowed || active.Archive.Allowed || !active.Cancel.Allowed || active.Rename.Reason != assetActionReasonActiveWork {
+	if active.Rename.Allowed || active.Archive.Allowed || active.Subtitles.Allowed || !active.Cancel.Allowed || active.Rename.Reason != assetActionReasonActiveWork || active.Subtitles.Reason != assetActionReasonActiveWork {
 		t.Fatalf("active-work capability guard=%#v", active)
+	}
+	maintenanceActive := ResolveAssetActionCapabilities(AssetActionGuardContext{
+		IdentityKnown: true, Location: AssetLocationLibrary, RootSafe: true,
+		ProvenanceKnown: true, HasCurrentPublication: true, HasActiveMaintenance: true,
+	})
+	if maintenanceActive.Subtitles.Allowed || maintenanceActive.Subtitles.Reason != assetActionReasonActiveWork {
+		t.Fatalf("active-maintenance subtitle capability guard=%#v", maintenanceActive.Subtitles)
 	}
 	archiveActive := ResolveAssetActionCapabilities(AssetActionGuardContext{
 		IdentityKnown: true, Location: AssetLocationLibrary, RootSafe: true,
