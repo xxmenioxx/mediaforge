@@ -8,6 +8,9 @@ Asset Info currently applies conversion and profile editing locks to the indepen
 - Use the canonical subtitle action guard for active Queue/maintenance conflicts and show a concrete blocker when it denies translation.
 - Open the existing translation dialog to check the exact selected source and backend provider readiness; keep Start disabled when the backend reports an ineligible or unavailable source/provider.
 - Preserve exact source identity, existing text/bitmap support boundaries, and separate atomic translated-sidecar publication.
+- Fail closed for Translation when the current publication authority, Library identity, or raw-source provenance is conflicting or unresolved; keep the general `Subtitles` lifecycle capability policy unchanged.
+- Build the per-asset Translation lifecycle projection from bounded QueueJob, DirectPublication, active maintenance, Library, and referenced AssetRecord queries while reusing the canonical projection resolver.
+- Revalidate lifecycle identity again at the existing publication barrier so a conflict introduced during provider execution cannot publish a translated sidecar.
 
 Out of scope: changing Queue/profile editing permissions, unlocking rename/delete/track or other sidecar mutations, authorizing archive originals, changing provider configuration, or adding a translation/OCR path.
 

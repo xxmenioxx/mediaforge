@@ -15,6 +15,17 @@ published-as-is, or accepted provenance, Asset Info SHALL expose the action
 when no active source-operation guard blocks it. Translation SHALL remain
 independent of video conversion and publication lifecycle.
 
+The generic `Subtitles` lifecycle capability SHALL retain its existing policy;
+a publication conflict alone SHALL NOT change that capability. Translation
+itself SHALL fail closed when publication authorities conflict, the current
+publication does not identify the selected Library asset and path, or the
+source provenance cannot be resolved to one physical raw asset. A recognized
+`accepted` Library asset without Queue or DirectPublication evidence remains
+eligible. The same canonical lifecycle projection SHALL be built using
+asset-scoped publication and reference queries; Translation SHALL NOT load all
+historical QueueJobs, DirectPublications, or ScanResults for a selected asset
+request.
+
 #### Scenario: Embedded English text subtitle can be translated
 
 - **WHEN** Asset Info starts translation for an embedded English text subtitle
@@ -45,6 +56,44 @@ independent of video conversion and publication lifecycle.
   provenance and no active conflicting operation
 - **THEN** Asset Info leaves `Translate...` available regardless of conversion
   or profile editing locks and opens the dialog for that exact sidecar
+
+#### Scenario: Generic subtitle actions remain advisory during publication conflict
+
+- **WHEN** the canonical lifecycle projection reports conflicting Queue and
+  DirectPublication authorities for an asset
+- **THEN** `ResolveAssetActionCapabilities.Subtitles` keeps its existing
+  capability behavior for other subtitle operations, while Translation applies
+  its own publication identity guard
+
+#### Scenario: Translation fails closed for ambiguous publication provenance
+
+- **WHEN** a converted or published-as-is Library asset has conflicting
+  authorities, a mismatched current destination, or no resolvable physical
+  source AssetRecord
+- **THEN** capability, Start, Retry, and publication revalidation reject
+  Translation with an actionable reason and no translated sidecar is published
+
+#### Scenario: Accepted Library asset remains eligible without publication rows
+
+- **WHEN** the selected asset is in the Library with recognized `accepted`
+  status and has no conflicting publication evidence
+- **THEN** Translation remains eligible without requiring an artificial Queue
+  or DirectPublication record
+
+#### Scenario: Translation lifecycle lookup stays asset-scoped
+
+- **WHEN** an asset is translated while the database contains many unrelated
+  historical QueueJobs, DirectPublications, and ScanResults
+- **THEN** lifecycle projection queries load only rows linked to that asset,
+  its current destination, active maintenance, and referenced source records,
+  while still detecting a relevant active operation or publication conflict
+
+#### Scenario: Publication conflict introduced during provider execution blocks output
+
+- **WHEN** publication identity is unambiguous at Start but becomes conflicting
+  before the translation publication barrier
+- **THEN** the barrier's repeated canonical lifecycle check rejects publication
+  and leaves the video, original sidecar, and Publisher evidence unchanged
 
 #### Scenario: Translation is not automatic Queue behavior
 

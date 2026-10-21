@@ -323,6 +323,13 @@ func TestResolveAssetLifecycleProjectionActionCapabilitiesAreAdvisory(t *testing
 	if maintenanceActive.Subtitles.Allowed || maintenanceActive.Subtitles.Reason != assetActionReasonActiveWork {
 		t.Fatalf("active-maintenance subtitle capability guard=%#v", maintenanceActive.Subtitles)
 	}
+	publicationConflict := ResolveAssetActionCapabilities(AssetActionGuardContext{
+		IdentityKnown: true, Location: AssetLocationLibrary, RootSafe: true,
+		ProvenanceKnown: true, HasCurrentPublication: true, PublicationConflict: true,
+	})
+	if !publicationConflict.Subtitles.Allowed || publicationConflict.Rename.Allowed || publicationConflict.Publish.Allowed {
+		t.Fatalf("publication conflict changed generic subtitle policy or left guarded actions enabled: %#v", publicationConflict)
+	}
 	archiveActive := ResolveAssetActionCapabilities(AssetActionGuardContext{
 		IdentityKnown: true, Location: AssetLocationLibrary, RootSafe: true,
 		ProvenanceKnown: true, HasCurrentPublication: true, HasActiveQueue: true,

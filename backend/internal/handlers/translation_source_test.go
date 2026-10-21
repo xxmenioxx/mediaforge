@@ -172,7 +172,7 @@ func translationSourceTestDB(t *testing.T, root, mediaPath string) *gorm.DB {
 	if err := db.Create(&models.Library{Name: "Test", SourcePath: root, DestinationPath: root, Type: "movies"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.AssetRecord{Path: mediaPath, RootPath: root, RelativePath: filepath.Base(mediaPath), FileName: filepath.Base(mediaPath), LibraryID: 1, LibraryName: "Test", Status: "unprocessed"}).Error; err != nil {
+	if err := db.Create(&models.AssetRecord{Path: mediaPath, RootPath: root, RelativePath: filepath.Base(mediaPath), FileName: filepath.Base(mediaPath), LibraryID: 1, LibraryName: "Test", Status: "accepted"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	return db
