@@ -548,7 +548,7 @@ export function AssetsPage() {
           {tab === 'raw' ? (
             <AssetsErrorBoundary boundaryKey="raw">
               <RawAssetsView
-                key={assetQuery}
+                key={`${assetQuery}:${rawSelectionContext === null ? 'invalid-selection' : 'valid-selection'}`}
                 summaryStrip={summaryStrip}
                 filterContent={filterContent}
                 activeFilterCount={activeFilterCount}
@@ -1377,7 +1377,7 @@ function RawAssetsView({ summaryStrip, filterContent, activeFilterCount, syncDet
     ];
   const setSelectedAssetPath = (path: string) => setSelectedAssetPathState({ identity: contextIdentity, path });
   const setPage = (nextPage: number) => setPageState({ identity: contextIdentity, page: nextPage });
-  const scopedSelectedAssets = selectedSelectableAssetsForLogicalGroups(contextLogicalGroups, selectedAssetIds);
+  const scopedSelectedAssets = selectionInvalid ? [] : selectedSelectableAssetsForLogicalGroups(contextLogicalGroups, selectedAssetIds);
   const updateSelectedAssets = (assetIds: number[], selected: boolean) => {
     const current = selectedAssetIdsState.identity === selectionIdentity ? selectedAssetIdsState.ids : new Set<number>();
     const next = new Set(current);

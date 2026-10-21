@@ -21,3 +21,4 @@
 
 - [x] 5.1 Keep explicit stale RAW and Library URL selections scoped and empty instead of substituting search matches or unrelated locations.
 - [x] 5.2 Cover same-name nodes, nested and sibling paths, selection changes, browser Back/Forward, and invalid deep links.
+- [x] 5.3 Clear stale All RAW bulk selection on invalid deep links and verify no bulk action survives Back/Forward restoration.

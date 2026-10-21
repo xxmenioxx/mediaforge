@@ -178,6 +178,7 @@ function SearchProbe() {
     <output data-testid="asset-query">{useLocation().search}</output>
     <button data-testid="history-back" onClick={() => navigate(-1)}>Back</button>
     <button data-testid="history-forward" onClick={() => navigate(1)}>Forward</button>
+    <button data-testid="invalid-raw-deep-link" onClick={() => navigate('/assets?location=raw&sourceGroup=999&logicalGroup=missing&path=%2Fmedia%2Fraw%2Fmissing')}>Invalid RAW deep link</button>
   </>;
 }
 
@@ -1125,6 +1126,34 @@ describe('RAW Assets workspace', () => {
     expect(query.get('location')).toBe('raw');
     expect(query.get('sourceGroup')).toBe('999');
     expect(query.get('search')).toBe('Attack');
+  });
+
+  it('clears All RAW bulk selection before showing an invalid deep link', async () => {
+    const user = userEvent.setup();
+    renderRawPage('/assets?location=raw&rawScope=all');
+
+    const table = await screen.findByRole('table', { name: 'RAW assets' });
+    await user.click(within(table).getByRole('checkbox', { name: 'Select all visible RAW assets' }));
+    expect(await screen.findByRole('button', { name: 'Queue selected' })).toBeTruthy();
+    expect((within(table).getByRole('checkbox', { name: 'Select asset S01E01.mkv' }) as HTMLInputElement).checked).toBe(true);
+
+    await user.click(screen.getByTestId('invalid-raw-deep-link'));
+
+    expect(await screen.findByText('The requested RAW location is no longer available.')).toBeTruthy();
+    expect(screen.queryByRole('table', { name: 'RAW assets' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Queue selected' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Queue Remaining' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Configure selected' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Select all visible RAW assets' })).toBeNull();
+
+    await user.click(screen.getByTestId('history-back'));
+    const restoredTable = await screen.findByRole('table', { name: 'RAW assets' });
+    expect((within(restoredTable).getByRole('checkbox', { name: 'Select all visible RAW assets' }) as HTMLInputElement).checked).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Queue selected' })).toBeNull();
+
+    await user.click(screen.getByTestId('history-forward'));
+    expect(await screen.findByText('The requested RAW location is no longer available.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Queue selected' })).toBeNull();
   });
 
   it('keeps a missing Library deep link empty instead of broadening to all libraries', async () => {
