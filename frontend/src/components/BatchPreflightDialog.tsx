@@ -22,13 +22,19 @@ import { SourceBitrateQualityEvidence } from './SourceBitrateQualityEvidence';
 import type {
   QueueBatchPreflightAsset,
   QueueBatchPreflightInput,
+  QueueBatchPreflightPlan,
   QueueBatchPreflightResponse,
   QueueJobInput,
   SnapshotOperation,
 } from '../api/types';
 
-function recordText(record: Record<string, unknown>, key: string) {
-  const value = record[key];
+function asRecord<T extends object = Record<string, unknown>>(value: unknown): T | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as T;
+}
+
+function recordText(record: unknown, key: string) {
+  const value = asRecord<Record<string, unknown>>(record)?.[key];
   if (value === undefined || value === null || value === '') return '';
   return typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
@@ -37,8 +43,14 @@ function planSummary(asset: QueueBatchPreflightAsset) {
   const plan = asset.plan;
   if (!plan) return null;
   const profile = plan.profile as unknown as Record<string, unknown>;
-  const workerConfig = (profile.workerConfig && typeof profile.workerConfig === 'object' ? profile.workerConfig : {}) as Record<string, unknown>;
-  const cadenceSnapshot = (plan.profileSnapshot.cadenceAnalysisSnapshot && typeof plan.profileSnapshot.cadenceAnalysisSnapshot === 'object' ? plan.profileSnapshot.cadenceAnalysisSnapshot : {}) as Record<string, unknown>;
+  const workerConfig = asRecord(profile.workerConfig) ?? {};
+  const profileSnapshot = asRecord(plan.profileSnapshot);
+  const cadenceSnapshot = asRecord(profileSnapshot?.cadenceAnalysisSnapshot) ?? {};
+  const profileResolution = asRecord(plan.profileResolution);
+  const audioProfileSnapshot = asRecord(plan.audioProfileSnapshot);
+  const trackProfileSnapshot = asRecord(plan.trackProfileSnapshot);
+  const trackResolution = asRecord(profileResolution?.tracks);
+  const qualityEvidence = asRecord<NonNullable<QueueBatchPreflightPlan['qualityEvidence']>>(plan.qualityEvidence);
   const cadenceMode = recordText(workerConfig, 'cadenceMode');
   const effectiveCadenceOperation = recordText(workerConfig, 'effectiveCadenceOperation') || cadenceMode;
   const outputFrameRate = workerConfig.effectiveOutputFrameRateUnknown === true
@@ -46,15 +58,22 @@ function planSummary(asset: QueueBatchPreflightAsset) {
     : recordText(workerConfig, 'effectiveOutputFrameRate') || (cadenceMode === 'preserve' && recordText(cadenceSnapshot, 'declaredFrameRate')
       ? `${recordText(cadenceSnapshot, 'declaredFrameRate')} · source cadence preserved`
       : 'from frozen plan');
-  const destination = plan.destination;
-  const provenance = Object.entries(plan.profileResolution).flatMap(([domain, decision]) => {
-    if (!decision || typeof decision !== 'object') return [];
-    const source = recordText(decision as Record<string, unknown>, 'source');
+  const destination = asRecord(plan.destination);
+  const provenance = Object.entries(profileResolution ?? {}).flatMap(([domain, decision]) => {
+    if (!asRecord(decision)) return [];
+    const source = recordText(decision, 'source');
     return source ? [`${domain}: ${source}`] : [];
   }).join(' · ');
+  const trackSelectionDisabled = recordText(trackResolution, 'selection') === 'disabled';
+  const trackSource = recordText(trackResolution, 'source');
+  const trackSummary = trackSelectionDisabled
+    ? trackSource === 'source_group' ? 'No Track Profile selected (disabled at Source Group)' : 'No Track Profile selected (disabled)'
+    : trackProfileSnapshot
+      ? Object.keys(trackProfileSnapshot).length ? 'Frozen track selection and subtitle policy' : 'Preserved by track snapshot'
+      : 'Track Profile snapshot unavailable';
   const items = [
     ['Profile', recordText(profile, 'name') || `Profile ${asset.input.profileId}`],
-    ['Profile provenance', provenance || 'Frozen effective resolution'],
+    ['Profile provenance', provenance || (profileResolution ? 'Frozen effective resolution' : 'Profile resolution unavailable')],
     ['Profile version', `v${plan.profileVersion}${plan.profileCapturedAt ? ` · captured ${plan.profileCapturedAt}` : ''}`],
     ['Encoder / codec', `${plan.selectedEncoder} / ${recordText(profile, 'videoCodec') || recordText(workerConfig, 'videoCodec') || 'configured codec'}`],
     ['Quality', [recordText(profile, 'qualityMode'), recordText(profile, 'qualityValue') || recordText(workerConfig, 'qualityValue')].filter(Boolean).join(' ') || 'from frozen profile'],
@@ -67,8 +86,8 @@ function planSummary(asset: QueueBatchPreflightAsset) {
     ['SAR / DAR', `${recordText(profile, 'sampleAspectRatio') || 'source'} / ${recordText(profile, 'displayAspectRatio') || 'resolved'}`],
     ['Color / HDR', [recordText(profile, 'colorPolicy'), recordText(workerConfig, 'colorPolicy')].filter(Boolean).join(' · ') || 'preserved/resolved in snapshot'],
     ['Restoration', recordText(workerConfig, 'restoration') || 'preserved/resolved in snapshot'],
-    ['Audio actions', recordText(plan.audioProfileSnapshot, 'key') || (Object.keys(plan.audioProfileSnapshot).length ? 'Frozen audio profile' : 'Preserved by audio snapshot')],
-    ['Tracks / subtitles', Object.keys(plan.trackProfileSnapshot).length ? 'Frozen track selection and subtitle policy' : 'Preserved by track snapshot'],
+    ['Audio actions', recordText(audioProfileSnapshot, 'key') || (audioProfileSnapshot ? Object.keys(audioProfileSnapshot).length ? 'Frozen audio profile' : 'Preserved by audio snapshot' : 'Audio profile snapshot unavailable')],
+    ['Tracks / subtitles', trackSummary],
     ['Destination', recordText(destination, 'destinationRoot') || 'Unavailable'],
     ['Publish mode', plan.publishMode],
   ];
@@ -77,9 +96,9 @@ function planSummary(asset: QueueBatchPreflightAsset) {
       <Typography variant="caption" color="text.secondary">{label}</Typography>
       <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{value}</Typography>
     </Grid>)}
-    {plan.qualityEvidence ? <Grid size={{ xs: 12 }}>
-      <SourceBitrateQualityEvidence source={plan.qualityEvidence.sourceBitrateEvidence} assessment={plan.qualityEvidence.bpppfAssessment} />
-      {plan.qualityEvidence.profileQualification ? <ProfileQualificationPreflightEvidence qualification={plan.qualityEvidence.profileQualification} /> : null}
+    {qualityEvidence ? <Grid size={{ xs: 12 }}>
+      <SourceBitrateQualityEvidence source={qualityEvidence.sourceBitrateEvidence ?? undefined} assessment={qualityEvidence.bpppfAssessment ?? undefined} />
+      {qualityEvidence.profileQualification ? <ProfileQualificationPreflightEvidence qualification={qualityEvidence.profileQualification} /> : null}
     </Grid> : null}
     <Grid size={{ xs: 12 }}>
       <Typography variant="caption" color="text.secondary">Frozen plan evidence</Typography>
