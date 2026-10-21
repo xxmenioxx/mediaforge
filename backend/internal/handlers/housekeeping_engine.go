@@ -1159,7 +1159,8 @@ func protectedRawDirectoryReferences(db *gorm.DB, root string) (map[string][]Hou
 					continue
 				}
 				fieldState, fieldReason := state, reason
-				if !asset.Missing && !field.directory && (field.name == "path" || field.name == "source_path") {
+				if !asset.Missing && !field.directory && (field.name == "path" || field.name == "source_path") &&
+					pathWithin(root, canonicalHousekeepingPath(field.path)) {
 					info, statErr := os.Lstat(field.path)
 					if errors.Is(statErr, os.ErrNotExist) {
 						fieldState = "stale_reference_suspected"
@@ -1272,7 +1273,8 @@ func protectedRawDirectoryReferences(db *gorm.DB, root string) (map[string][]Hou
 		}
 		for _, operation := range operations {
 			backupNeedsRecovery := false
-			if strings.TrimSpace(operation.BackupPath) != "" {
+			if strings.TrimSpace(operation.BackupPath) != "" &&
+				pathWithin(root, canonicalHousekeepingPath(operation.BackupPath)) {
 				if _, err := os.Lstat(operation.BackupPath); err == nil || !errors.Is(err, os.ErrNotExist) {
 					backupNeedsRecovery = true
 				}

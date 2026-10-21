@@ -120,7 +120,7 @@ describe('Settings housekeeping preview authorization', () => {
     });
     render(<HousekeepingCard value={value} saving={false} preview={preview} busy={false} onSave={() => undefined} onPreview={() => undefined} onRun={() => undefined} />);
 
-    expect(screen.getByText(/AssetRecord #42/)).toBeTruthy();
+    expect(screen.getAllByText(/AssetRecord #42/)).toHaveLength(2);
     expect(screen.getByText(/Re-scan or reconcile inventory/)).toBeTruthy();
     expect(screen.getByText(/AssetRecord #7/)).toBeTruthy();
     expect(screen.getByText(/completed \/ completed/)).toBeTruthy();
