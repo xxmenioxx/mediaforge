@@ -70,10 +70,43 @@ function queueJob(archiveStatus: 'pending' | 'archiving' | 'complete', archivedP
   } as QueueJob;
 }
 
-function renderAssetsPage() {
+function renderAssetsPage(initialEntry = '/') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<MemoryRouter><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
+  render(<MemoryRouter initialEntries={[initialEntry]}><QueryClientProvider client={queryClient}><AssetsPage /></QueryClientProvider></MemoryRouter>);
   return queryClient;
+}
+
+function libraryAsset(fileName: string, id: number, archivedOriginals?: unknown[]): Asset {
+  const libraryAsset = {
+    ...asset(),
+    id,
+    libraryId: 1,
+    libraryName: 'Library',
+    path: `/media/library/${fileName}`,
+    relativePath: fileName,
+    groupPath: '/media/library',
+    fileName,
+    status: 'library',
+  } as Asset;
+  if (archivedOriginals !== undefined) {
+    libraryAsset.lifecycle = {
+      location: 'library', lifecycle: 'available', provenance: 'converted', validation: 'passed', publication: 'published', original: 'archived',
+      currentPublication: { authority: 'queue_job', id: id + 400, state: 'PUBLISHED', publishedPath: libraryAsset.path },
+      archivedOriginals,
+    } as never;
+  }
+  return libraryAsset;
+}
+
+function libraryInventory(rows: Asset[]): AssetInventory {
+  const base = inventory();
+  const group = {
+    id: '/media/library', libraryId: 1, libraryName: 'Library', path: '/media/library', relativePath: '', status: 'library',
+    fileCount: rows.length, sizeBytes: rows.length * 1024, modifiedAt: '2026-08-28T00:00:00Z', assets: rows,
+    review: base.unprocessed[0].review, pathReview: base.unprocessed[0].review,
+    metadata: base.unprocessed[0].metadata, pathMetadata: base.unprocessed[0].metadata,
+  };
+  return { ...base, library: rows, libraryGroups: [group] } as unknown as AssetInventory;
 }
 
 describe('Assets page original archive lifecycle', () => {
@@ -149,6 +182,60 @@ describe('Assets page original archive lifecycle', () => {
     expect(await within(dialog).findByText(archivedPath)).toBeTruthy();
     expect(within(dialog).getByText('Original archive · Complete')).toBeTruthy();
   }, 10000);
+
+  it('shows the compact Library indicator only for current available originals and reflects refreshed lifecycle data', async () => {
+    const currentAvailable = {
+      assetRecordId: 801, queueJobId: 401, path: '/media/archive/current.mkv', sizeBytes: 1024,
+      availability: 'available', relationship: 'current', retentionState: 'retained',
+      provenance: { authority: 'queue_job', recordId: 401, sourcePath: '/media/raw/current.mkv', publishedPath: '/media/library/Available.mkv', sourceAssetRecordId: 1, current: true },
+      restore: { allowed: false, reason: 'active_work' },
+    };
+    const libraryRows = [
+      libraryAsset('Available.mkv', 1, [currentAvailable]),
+      libraryAsset('Historical.mkv', 2, [{ ...currentAvailable, relationship: 'historical' }]),
+      libraryAsset('SourceReplaced.mkv', 3, [{ ...currentAvailable, relationship: 'historical', queueJobId: 402 }]),
+      libraryAsset('Missing.mkv', 4, [{ ...currentAvailable, availability: 'missing' }]),
+      libraryAsset('Unresolved.mkv', 5, [{ ...currentAvailable, relationship: 'unresolved' }]),
+      libraryAsset('NoArchive.mkv', 6, []),
+      libraryAsset('NoLifecycle.mkv', 7),
+    ];
+    vi.mocked(api.assets).mockResolvedValueOnce(libraryInventory(libraryRows)).mockResolvedValue(libraryInventory(libraryRows.slice(1)));
+
+    const queryClient = renderAssetsPage('/assets?location=library');
+    await waitFor(() => expect(queryClient.getQueryData(['assets'])).toBeDefined());
+    const indicator = await screen.findByRole('img', { name: 'Original disponible en Archive' });
+    expect(screen.getAllByRole('img', { name: 'Original disponible en Archive' })).toHaveLength(1);
+    expect(indicator.closest('td')?.textContent).toContain('Available.mkv');
+    const rows = screen.getAllByTestId('asset-list-row');
+    expect(rows).toHaveLength(libraryRows.length);
+    expect(new Set(rows.map((row) => row.querySelectorAll(':scope > td').length)).size).toBe(1);
+    expect(vi.mocked(api.assets)).toHaveBeenCalledTimes(1);
+
+    const availableRow = indicator.closest('[data-testid="asset-list-row"]');
+    expect(availableRow).toBeTruthy();
+    const user = userEvent.setup();
+    await user.hover(indicator);
+    expect((await screen.findByRole('tooltip')).textContent).toBe('Original disponible en Archive');
+    await user.click(screen.getByText('Available.mkv'));
+    expect(availableRow?.getAttribute('aria-selected')).toBe('true');
+
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['assets'] }); });
+    await waitFor(() => expect(screen.queryByRole('img', { name: 'Original disponible en Archive' })).toBeNull());
+  });
+
+  it('does not show the Library indicator for RAW assets', async () => {
+    const rawInventory = inventory();
+    rawInventory.unprocessed[0].lifecycle = {
+      location: 'raw', lifecycle: 'available', provenance: 'converted', validation: 'passed', publication: 'published', original: 'archived',
+      currentPublication: { authority: 'queue_job', id: 401, state: 'PUBLISHED', publishedPath: '/media/library/Akira.mkv' },
+      archivedOriginals: [{ relationship: 'current', availability: 'available' }],
+    } as never;
+    vi.mocked(api.assets).mockResolvedValue(rawInventory);
+
+    renderAssetsPage('/assets?location=raw');
+    await screen.findByRole('button', { name: 'Expand Akira' });
+    expect(screen.queryByRole('img', { name: 'Original disponible en Archive' })).toBeNull();
+  });
 
   it('shows a temporary Rename explanation during canonical archival and unlocks after the lifecycle refresh', async () => {
     const pendingInventory = inventory();

@@ -29,6 +29,9 @@
 - [x] 3.2 Present missing, stale/historical, and unresolved evidence without
   relabeling it or attaching it to another asset; do not add an Archived
   inventory table or location.
+- [x] 3.3 Show a small Archive availability indicator beside compact Library
+  filenames only for current, available projected originals; add no action or
+  inventory structure.
 
 ## 4. Safe actions
 
@@ -56,6 +59,9 @@
 - [x] 5.4 Cover stale capabilities, changed roots/identities, active work,
   symlink/non-regular/out-of-root paths, RAW traversal/collision, explicit
   delete confirmation, and preservation of the current Library publication.
+- [x] 5.5 Cover current+available evidence despite denied restore permission,
+  historical/source-replaced, missing, unresolved, absent lifecycle, refresh,
+  and RAW rows for the compact Library indicator.
 
 ## 6. Final verification
 
@@ -67,3 +73,5 @@
   and confirm the change artifacts validate.
 - [x] 6.4 Run `./scripts/verify.sh --auto` and require the final result
   `ALL CHECKS PASSED`.
+- [ ] 6.5 Re-run the canonical verifier for the compact Library indicator and
+  require the final result `ALL CHECKS PASSED`.

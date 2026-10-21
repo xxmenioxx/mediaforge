@@ -46,6 +46,17 @@ records only. Asset Info for a canonically related Library asset SHALL show
 archived-original path, size, archive time, provenance, retention
 state/deadline, availability, and action reasons in context.
 
+The compact Library inventory row SHALL show a small Archive icon beside the
+filename in its existing name cell only when the lifecycle projection contains
+at least one archived original with `relationship: current` and
+`availability: available`. The indicator SHALL be derived only from
+`lifecycle.archivedOriginals`; historical or unresolved entries, missing
+files, absent lifecycle data, and RAW rows SHALL show no indicator. Restore
+permission SHALL NOT control the indicator, because it reports availability
+rather than recovery permission. The indicator SHALL add no column, row,
+per-asset request, or action, and the filename SHALL retain its existing
+truncation and tooltip.
+
 Contextual restore and delete SHALL reuse the existing recover and
 archive-delete mutations. The request SHALL carry the archive `AssetRecord` ID
 and expected Library asset ID as identity preconditions; existing path
@@ -68,6 +79,19 @@ intact; delete MUST preserve job/publication provenance.
 - **THEN** its archived original is shown under the related Library asset with
   the owning record IDs, recorded metadata, and existing retention evidence,
   without appearing as another inventory row
+
+#### Scenario: Current available original has restore temporarily blocked
+
+- **WHEN** a Library asset has an archived-original entry with current
+  relationship and available file state, but restore is disallowed
+- **THEN** the filename cell shows the Archive indicator without enabling or
+  adding a recovery action
+
+#### Scenario: No current available original exists
+
+- **WHEN** lifecycle data is absent or contains only historical, unresolved,
+  or missing archived originals, or the asset is in RAW
+- **THEN** the filename cell shows no Archive indicator
 
 #### Scenario: Paths match but canonical identity does not resolve
 
