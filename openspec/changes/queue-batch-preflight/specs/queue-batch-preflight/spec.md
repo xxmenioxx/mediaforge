@@ -42,6 +42,14 @@ The system MUST pass exact candidate identity, revision, asset identity, and res
 - **THEN** the existing canonical validation flow receives that candidate asset's resolved configuration
 - **AND** validation does not create or mutate a QueueJob
 
+#### Scenario: Preview the exact candidate plan in a browser-safe surface
+
+- **WHEN** an operator previews an asset from the current candidate revision
+- **THEN** the existing Compatible Preview flow receives the candidate ID, revision, asset ID, source path, and frozen plan
+- **AND** the preview is shown in the review surface without relying on an asynchronous popup
+- **AND** a stale candidate or lifecycle/playback failure is shown as an actionable preview state
+- **AND** canceling, closing, or unmounting the preview releases its lifecycle lease without creating or mutating a QueueJob
+
 ### Requirement: Queue compatibility and bounded review
 
 Every batch or multi-asset Queue creation path MUST require Preflight acceptance. Existing QueueJobs and snapshots MUST remain readable without rewrite, and candidate review MUST reuse persisted evidence without full-library scans or unnecessary repeated ffprobe work.

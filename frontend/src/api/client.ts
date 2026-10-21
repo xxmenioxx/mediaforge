@@ -989,6 +989,11 @@ function abortableCompatiblePreviewDelay(milliseconds: number, signal?: AbortSig
 export async function waitForCompatiblePreviewReady(requestId: string, signal?: AbortSignal, ownerId = createCompatiblePreviewOwnerId()) {
   let leaseToken = '';
   let response: CompatiblePreviewLifecycleResponse;
+  const withLease = (value: CompatiblePreviewLifecycleResponse) => ({
+    ...value,
+    leaseToken: value.leaseToken ?? leaseToken,
+    ownerId: value.ownerId ?? ownerId,
+  });
   try {
     let startDelay = 1_000;
     for (let attempt = 0; ; attempt += 1) {
@@ -1002,7 +1007,7 @@ export async function waitForCompatiblePreviewReady(requestId: string, signal?: 
       }
     }
     leaseToken = response.leaseToken ?? '';
-    if (response.state === 'ready') return response;
+    if (response.state === 'ready') return withLease(response);
     let delay = 1_000;
     let nextRenewal = Date.now() + 15_000;
     for (;;) {
@@ -1013,7 +1018,7 @@ export async function waitForCompatiblePreviewReady(requestId: string, signal?: 
       });
       if (status) {
         response = status;
-        if (status.state === 'ready') return status;
+        if (status.state === 'ready') return withLease(status);
         if (['failed', 'canceled', 'interrupted', 'stale', 'expired', 'unknown'].includes(status.state)) {
           throw new ApiRequestError(status.reason ?? `Compatible Preview is ${status.state}`, status.state === 'expired' ? 410 : status.state === 'unknown' ? 404 : 409, {
             code: status.code,
@@ -1032,7 +1037,7 @@ export async function waitForCompatiblePreviewReady(requestId: string, signal?: 
         } catch (error) {
           if (error instanceof ApiRequestError && ['invalid_lease', 'lease_expired'].includes(error.code ?? error.state ?? '')) {
             const afterRenewal = await api.compatiblePreviewStatus(requestId, signal).catch(() => undefined);
-            if (afterRenewal?.state === 'ready') return afterRenewal;
+            if (afterRenewal?.state === 'ready') return withLease(afterRenewal);
             if (afterRenewal && ['failed', 'canceled', 'interrupted', 'stale', 'expired', 'unknown'].includes(afterRenewal.state)) {
               throw new ApiRequestError(afterRenewal.reason ?? `Compatible Preview is ${afterRenewal.state}`, afterRenewal.state === 'expired' ? 410 : afterRenewal.state === 'unknown' ? 404 : 409, {
                 code: afterRenewal.code,

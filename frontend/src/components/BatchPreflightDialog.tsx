@@ -17,7 +17,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { api, waitForCompatiblePreviewReady } from '../api/client';
+import { api, createCompatiblePreviewOwnerId, waitForCompatiblePreviewReady } from '../api/client';
 import { SourceBitrateQualityEvidence } from './SourceBitrateQualityEvidence';
 import type {
   QueueBatchPreflightAsset,
@@ -145,6 +145,17 @@ function ProfileQualificationPreflightEvidence({ qualification }: { qualificatio
   );
 }
 
+type CompatiblePreviewLease = {
+  requestId: string;
+  ownerId: string;
+  leaseToken: string;
+};
+
+function releaseCompatiblePreviewLease(lease: CompatiblePreviewLease | null) {
+  if (!lease) return;
+  void api.cancelCompatiblePreview(lease.requestId, lease.ownerId, lease.leaseToken).catch(() => undefined);
+}
+
 export function BatchPreflightDialog({
   candidate: initialCandidate,
   onClose,
@@ -172,8 +183,14 @@ export function BatchPreflightDialog({
   const [previewAsset, setPreviewAsset] = useState<QueueBatchPreflightAsset | null>(null);
   const [previewError, setPreviewError] = useState('');
   const previewController = useRef<AbortController | null>(null);
+  const previewLease = useRef<CompatiblePreviewLease | null>(null);
 
-  useEffect(() => () => previewController.current?.abort(), []);
+  useEffect(() => () => {
+    previewController.current?.abort();
+    const lease = previewLease.current;
+    previewLease.current = null;
+    releaseCompatiblePreviewLease(lease);
+  }, []);
 
   useEffect(() => {
     if (!initialCandidate) {
@@ -294,8 +311,12 @@ export function BatchPreflightDialog({
   const runPreview = async (asset: QueueBatchPreflightAsset) => {
     if (!asset.plan || busy) return;
     previewController.current?.abort();
+    const previousLease = previewLease.current;
+    previewLease.current = null;
+    releaseCompatiblePreviewLease(previousLease);
     const controller = new AbortController();
     previewController.current = controller;
+    const ownerId = createCompatiblePreviewOwnerId();
     const timeout = window.setTimeout(() => controller.abort(new DOMException('Compatible Preview timed out after 5 minutes.', 'TimeoutError')), 5 * 60 * 1000);
     let requestCreated = false;
     setPreviewAsset(asset);
@@ -314,8 +335,16 @@ export function BatchPreflightDialog({
       }, controller.signal);
       requestCreated = true;
       setPreviewState('encoding');
-      const ready = await waitForCompatiblePreviewReady(preview.requestId, controller.signal);
+      const ready = await waitForCompatiblePreviewReady(preview.requestId, controller.signal, ownerId);
       if (ready.state !== 'ready') throw new Error('Compatible Preview did not produce a ready artifact.');
+      if (!ready.leaseToken) throw new Error('Compatible Preview did not return a releasable lifecycle lease.');
+      const lease = { requestId: preview.requestId, ownerId, leaseToken: ready.leaseToken };
+      if (controller.signal.aborted) {
+        releaseCompatiblePreviewLease(lease);
+        if (previewController.current === controller) setPreviewState('idle');
+        return;
+      }
+      previewLease.current = lease;
       if (!controller.signal.aborted) {
         setPreviewUrl(api.compatibleAssetPreviewUrl(preview.requestId));
         setPreviewState('ready');
@@ -346,6 +375,9 @@ export function BatchPreflightDialog({
 
   const closeDialog = () => {
     previewController.current?.abort();
+    const lease = previewLease.current;
+    previewLease.current = null;
+    releaseCompatiblePreviewLease(lease);
     onClose();
   };
 
@@ -574,11 +606,11 @@ export function BatchPreflightDialog({
       <Button color="error" disabled={busy || candidate.status !== 'active'} onClick={() => setConfirmingDiscard(true)}>Discard candidate</Button>
       {editing ? <>
         <Button disabled={busy} onClick={() => void discardEdits()}>Discard edits &amp; re-resolve</Button>
-        <Button disabled={busy} onClick={onClose}>Close</Button>
+        <Button disabled={busy} onClick={closeDialog}>Close</Button>
         <Button variant="contained" disabled={busy || jobs.length === 0} onClick={() => void resolveEdits()}>Resolve Preflight again</Button>
       </> : <>
         <Button disabled={busy || !candidate.resolved || unresolvedCount === 0} onClick={() => void beginEdit()}>Edit</Button>
-        <Button disabled={busy} onClick={onClose}>Close</Button>
+        <Button disabled={busy} onClick={closeDialog}>Close</Button>
         <Button variant="contained" disabled={busy || !candidate.resolved || selected.length === 0} onClick={() => void accept()}>Accept &amp; Queue {selected.length ? `(${selected.length})` : ''}</Button>
       </>}
     </DialogActions>

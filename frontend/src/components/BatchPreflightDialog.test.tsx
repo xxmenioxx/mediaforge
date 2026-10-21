@@ -18,7 +18,9 @@ const mocks = vi.hoisted(() => ({
   startSnapshotOperation: vi.fn(),
   snapshotOperation: vi.fn(),
   cancelSnapshotOperation: vi.fn(),
+  cancelPreview: vi.fn(),
   waitPreview: vi.fn(),
+  previewOwnerId: vi.fn(),
   previewURL: vi.fn(),
   open: vi.fn(),
 }));
@@ -36,8 +38,10 @@ vi.mock('../api/client', () => ({
     startSnapshotOperation: mocks.startSnapshotOperation,
     snapshotOperation: mocks.snapshotOperation,
     cancelSnapshotOperation: mocks.cancelSnapshotOperation,
+    cancelCompatiblePreview: mocks.cancelPreview,
     compatibleAssetPreviewUrl: mocks.previewURL,
   },
+  createCompatiblePreviewOwnerId: mocks.previewOwnerId,
   waitForCompatiblePreviewReady: mocks.waitPreview,
 }));
 
@@ -117,7 +121,9 @@ describe('BatchPreflightDialog', () => {
     mocks.discard.mockImplementation(async (_id: string, revision: number) => candidate({ revision: revision + 1, status: 'discarded', assets: [] }));
     mocks.getCandidate.mockImplementation(async () => candidate());
     mocks.preview.mockResolvedValue({ requestId: 'preview-1' });
-    mocks.waitPreview.mockResolvedValue({ state: 'ready' });
+    mocks.waitPreview.mockResolvedValue({ state: 'ready', leaseToken: 'lease-1', ownerId: 'owner-1' });
+    mocks.previewOwnerId.mockReturnValue('owner-1');
+    mocks.cancelPreview.mockResolvedValue({ state: 'ready', leaseReleased: true });
     mocks.previewURL.mockReturnValue('/preview/preview-1');
     mocks.testEncode.mockResolvedValue({ id: 5 });
     mocks.open.mockReturnValue({ location: { href: '' } });
@@ -358,8 +364,9 @@ describe('BatchPreflightDialog', () => {
   });
 
   it('passes the exact candidate snapshot to an inline preview player and preserves Test Encode and LAB flows', async () => {
-    const view = render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
-    let resolveReady!: (value: { state: string }) => void;
+    const onClose = vi.fn();
+    const view = render(<BatchPreflightDialog candidate={candidate()} onClose={onClose} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+    let resolveReady!: (value: { state: string; leaseToken: string }) => void;
     mocks.waitPreview.mockImplementationOnce(() => new Promise((resolve) => { resolveReady = resolve; }));
 
     mocks.open.mockReturnValue(null);
@@ -369,12 +376,13 @@ describe('BatchPreflightDialog', () => {
       path: '/raw/Season 1/Episode 1.mkv', profile, ephemeral: true,
       preflightCandidateId: 'candidate-1', preflightRevision: 1, preflightAssetId: 'asset-1',
     }), expect.any(AbortSignal)));
+    expect(mocks.waitPreview).toHaveBeenCalledWith('preview-1', expect.any(AbortSignal), 'owner-1');
     expect(await screen.findByText('Preview is encoding. This may take a few minutes…')).toBeTruthy();
-    resolveReady({ state: 'ready' });
-    await waitFor(() => expect(view.container.querySelector('video')?.getAttribute('src')).toBe('/preview/preview-1'));
+    resolveReady({ state: 'ready', leaseToken: 'lease-1' });
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe('/preview/preview-1'));
     expect(mocks.preview).toHaveBeenCalledTimes(1);
     expect(mocks.open).not.toHaveBeenCalled();
-    fireEvent.error(view.container.querySelector('video')!);
+    fireEvent.error(document.querySelector('video')!);
     expect(await screen.findByText(/preview artifact is ready, but the browser could not play it/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Retry exact plan preview' })).toBeTruthy();
 
@@ -390,6 +398,9 @@ describe('BatchPreflightDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open LAB with candidate context' }));
     expect(mocks.open).toHaveBeenLastCalledWith('/profile-lab?preflightCandidateId=candidate-1&preflightRevision=1&assetId=asset-1', '_blank', 'noopener,noreferrer');
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(mocks.cancelPreview).toHaveBeenCalledWith('preview-1', 'owner-1', 'lease-1'));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('shows stale candidate context distinctly and offers to reload the latest candidate', async () => {
@@ -403,7 +414,7 @@ describe('BatchPreflightDialog', () => {
   });
 
   it('aborts the preview lifecycle when the dialog unmounts', async () => {
-    let resolveReady!: (value: { state: string }) => void;
+    let resolveReady!: (value: { state: string; leaseToken: string }) => void;
     mocks.waitPreview.mockImplementationOnce(() => new Promise((resolve) => { resolveReady = resolve; }));
     const view = render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Preview exact plan' }));
@@ -411,7 +422,8 @@ describe('BatchPreflightDialog', () => {
     const signal = mocks.waitPreview.mock.calls[0][1] as AbortSignal;
     view.unmount();
     expect(signal.aborted).toBe(true);
-    resolveReady({ state: 'ready' });
+    resolveReady({ state: 'ready', leaseToken: 'lease-1' });
+    await waitFor(() => expect(mocks.cancelPreview).toHaveBeenCalledWith('preview-1', 'owner-1', 'lease-1'));
   });
 
   it('keeps Close, Discard candidate, and Discard edits as separate actions', async () => {

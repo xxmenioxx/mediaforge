@@ -157,7 +157,7 @@ describe('compatible preview request transport', () => {
 
     const pending = waitForCompatiblePreviewReady(requestId, undefined, 'owner-a');
     await vi.advanceTimersByTimeAsync(18_000);
-    await expect(pending).resolves.toMatchObject({ state: 'ready' });
+    await expect(pending).resolves.toMatchObject({ state: 'ready', leaseToken: 'lease-a', ownerId: 'owner-a' });
     expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit).method === 'POST' && String((init as RequestInit).body).includes('lease-a'))).toBe(true);
   });
 
