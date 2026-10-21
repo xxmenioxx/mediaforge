@@ -73,5 +73,5 @@
   and confirm the change artifacts validate.
 - [x] 6.4 Run `./scripts/verify.sh --auto` and require the final result
   `ALL CHECKS PASSED`.
-- [ ] 6.5 Re-run the canonical verifier for the compact Library indicator and
+- [x] 6.5 Re-run the canonical verifier for the compact Library indicator and
   require the final result `ALL CHECKS PASSED`.
