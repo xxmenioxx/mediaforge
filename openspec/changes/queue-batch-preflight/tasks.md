@@ -21,3 +21,9 @@
 - [x] 4.1 Add focused backend tests for all batch creation paths, canonical plan fidelity, snapshots, stale candidates, blockers, partial acceptance, and historical compatibility.
 - [x] 4.2 Run focused backend/frontend tests, changed-file lint, frontend build, and `openspec validate queue-batch-preflight --strict`.
 - [x] 4.3 Run the canonical repository verifier and address only its reported failures.
+
+## 5. Issue #379 exact plan preview reliability
+
+- [x] 5.1 Keep exact-plan preview in a visible browser-safe review surface with actionable request, lifecycle, and playback states.
+- [x] 5.2 Preserve candidate-bound inputs and release preview leases on cancellation, retry, close, and unmount; test popup denial and close behavior.
+- [x] 5.3 Accept an already-ready cache hit without a lease token, while preserving cancellation and renewal for owned leases; cover generation, retry, error, cancel, and close.
