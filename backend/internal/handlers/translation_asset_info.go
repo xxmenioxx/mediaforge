@@ -69,20 +69,94 @@ func (h AssetHandler) resolveSubtitleTranslationAssetSource(
 	if err := validateSubtitleTranslationSourceSelector(selector); err != nil {
 		return "", subtitleTranslationSourceResponse{}, err
 	}
-	mediaPath, _, err := h.resolveOwnedSubtitleAsset(path)
+	mediaPath, record, err := h.resolveOwnedSubtitleAsset(path)
 	if err != nil {
 		return "", subtitleTranslationSourceResponse{}, err
 	}
+	projection, err := h.assetLifecycleProjectionForTranslation(record)
+	if err != nil {
+		return "", subtitleTranslationSourceResponse{}, fmt.Errorf("unable to verify subtitle translation safety: %w", err)
+	}
+	if projection == nil {
+		return "", subtitleTranslationSourceResponse{}, errors.New("asset lifecycle state is unavailable for subtitle translation")
+	}
+	if !projection.Actions.Subtitles.Allowed {
+		return "", subtitleTranslationSourceResponse{}, subtitleTranslationLifecycleBlocker(projection.Actions.Subtitles.Reason)
+	}
 
+	var response subtitleTranslationSourceResponse
 	switch strings.ToLower(strings.TrimSpace(selector.Type)) {
 	case "embedded":
-		response, err := h.resolveEmbeddedSubtitleTranslationSource(ctx, mediaPath, selector.Embedded.StreamIndex)
-		return mediaPath, response, err
+		response, err = h.resolveEmbeddedSubtitleTranslationSource(ctx, mediaPath, selector.Embedded.StreamIndex)
 	case "external":
-		response, err := resolveExternalSubtitleTranslationSource(mediaPath, selector.External.SubtitlePath)
-		return mediaPath, response, err
+		response, err = resolveExternalSubtitleTranslationSource(mediaPath, selector.External.SubtitlePath)
 	default:
 		return "", subtitleTranslationSourceResponse{}, fmt.Errorf("unsupported subtitle translation source type %q", selector.Type)
+	}
+	if err != nil {
+		return "", subtitleTranslationSourceResponse{}, err
+	}
+	if err := subtitleTranslationPublicationIdentityBlocker(record, *projection); err != nil {
+		return "", subtitleTranslationSourceResponse{}, err
+	}
+	return mediaPath, response, nil
+}
+
+func subtitleTranslationPublicationIdentityBlocker(record models.AssetRecord, projection AssetLifecycleProjection) error {
+	switch projection.CurrentPublication.State {
+	case assetCurrentPublicationConflict:
+		return errors.New("conflicting publication identities must be resolved before subtitle translation")
+	case assetCurrentPublicationPublished:
+		if projection.Provenance == AssetProvenanceLegacyOrUnknown ||
+			projection.CurrentPublication.ID == 0 ||
+			projection.CurrentPublication.LibraryAssetID != record.ID ||
+			cleanAssetLifecyclePath(projection.CurrentPublication.PublishedPath) != cleanAssetLifecyclePath(record.Path) ||
+			projection.CurrentRawCorrelation.State != assetCorrelationResolved ||
+			projection.CurrentRawCorrelation.RawAssetRecordID == 0 ||
+			projection.CurrentRawCorrelation.LibraryAssetID != record.ID {
+			return errors.New("current publication identity or source provenance is ambiguous for subtitle translation")
+		}
+		if projection.Provenance == AssetProvenanceConverted && projection.CurrentPublication.Authority != assetPublicationAuthorityQueue {
+			return errors.New("converted publication authority is ambiguous for subtitle translation")
+		}
+		if projection.Provenance == AssetProvenancePublishedAsIs && projection.CurrentPublication.Authority != assetPublicationAuthorityDirect {
+			return errors.New("published-as-is authority is ambiguous for subtitle translation")
+		}
+		if projection.Provenance != AssetProvenanceConverted && projection.Provenance != AssetProvenancePublishedAsIs {
+			return errors.New("current publication provenance is ambiguous for subtitle translation")
+		}
+	case assetCurrentPublicationUnpublished:
+		if projection.Location == AssetLocationRaw && record.LibraryID == 0 {
+			return nil
+		}
+		if projection.Location == AssetLocationLibrary &&
+			strings.EqualFold(strings.TrimSpace(record.Status), "accepted") &&
+			projection.Provenance == AssetProvenanceImported {
+			return nil
+		}
+		return errors.New("published asset identity or provenance is unavailable for subtitle translation")
+	default:
+		return errors.New("asset publication identity is unavailable for subtitle translation")
+	}
+	return nil
+}
+
+func subtitleTranslationLifecycleBlocker(reason string) error {
+	switch reason {
+	case assetActionReasonActiveWork:
+		return errors.New("an active Queue or maintenance operation must finish before subtitle translation")
+	case assetActionReasonMissing:
+		return errors.New("the asset file is missing")
+	case assetActionReasonIdentityUnresolved:
+		return errors.New("asset identity is unavailable for subtitle translation")
+	case assetActionReasonUnsafeRoot:
+		return errors.New("asset is outside configured media roots")
+	case assetActionReasonPublicationConflict:
+		return errors.New("conflicting publication identities must be resolved before subtitle translation")
+	case assetActionReasonUnknownProvenance:
+		return errors.New("asset publication provenance is unknown for subtitle translation")
+	default:
+		return errors.New("subtitle translation is unavailable for this asset")
 	}
 }
 

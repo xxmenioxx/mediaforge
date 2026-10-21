@@ -10,10 +10,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -388,6 +391,84 @@ func configureAssetInfoTranslationFixture(t *testing.T, dbPath, endpoint string)
 	return db
 }
 
+func seedTranslationRawSource(t *testing.T, db *gorm.DB, mediaPath string) models.AssetRecord {
+	t.Helper()
+	root := filepath.Dir(mediaPath)
+	rawRoot := filepath.Join(filepath.Dir(root), "raw-"+filepath.Base(root))
+	rawPath := filepath.Join(rawRoot, filepath.Base(mediaPath))
+	raw := models.AssetRecord{
+		Path: rawPath, RootPath: rawRoot, RelativePath: filepath.Base(rawPath),
+		FileName: filepath.Base(rawPath), Status: "unprocessed",
+	}
+	if err := db.Create(&raw).Error; err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func seedTranslationQueuePublication(t *testing.T, db *gorm.DB, mediaPath string) (models.AssetRecord, models.QueueJob) {
+	t.Helper()
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.DirectPublication{}, &models.PublisherPublication{}); err != nil {
+		t.Fatal(err)
+	}
+	var asset models.AssetRecord
+	if err := db.Where("path = ?", mediaPath).First(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.AssetRecord{}).Where("id = ?", asset.ID).Update("status", "converted").Error; err != nil {
+		t.Fatal(err)
+	}
+	asset.Status = "converted"
+	raw := seedTranslationRawSource(t, db, mediaPath)
+	publishedAt := time.Now().UTC().Truncate(time.Second)
+	job := models.QueueJob{
+		MediaPath: raw.Path, SourceAssetRecordID: &raw.ID, LibraryID: asset.LibraryID,
+		Status: JobStatusCompleted, Stage: JobStageCompleted, OutputPath: mediaPath,
+		PublishedPath: mediaPath, PublishedAt: &publishedAt, PublicationID: "translation-fixture-publication",
+		PublicationState: PublicationPublished, PublishedFingerprint: "fixture-output-fingerprint", PublishedSizeBytes: 16,
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	return raw, job
+}
+
+func seedTranslationDirectPublication(t *testing.T, db *gorm.DB, mediaPath string, raw models.AssetRecord) models.DirectPublication {
+	t.Helper()
+	if err := db.AutoMigrate(&models.DirectPublication{}); err != nil {
+		t.Fatal(err)
+	}
+	var asset models.AssetRecord
+	if err := db.Where("path = ?", mediaPath).First(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	publication := models.DirectPublication{
+		SourcePath: raw.Path, SourceAssetRecordID: &raw.ID, PublishedPath: mediaPath,
+		LibraryID: asset.LibraryID, PublishedFingerprint: "direct-fixture-fingerprint",
+		PublishedSizeBytes: 16, PublishedAt: time.Now().UTC().Truncate(time.Second),
+	}
+	if err := db.Create(&publication).Error; err != nil {
+		t.Fatal(err)
+	}
+	return publication
+}
+
+func seedTranslationPublisherEvidence(t *testing.T, db *gorm.DB, mediaPath string, raw models.AssetRecord, job models.QueueJob) models.PublisherPublication {
+	t.Helper()
+	evidence := models.PublisherPublication{
+		PublicationID: job.PublicationID, QueueJobID: job.ID, ExecutionNumber: 1,
+		ExecutionPlanID: 31, ExecutionPlanVersion: 1, ExecutionPlanFingerprint: "fixture-plan-fingerprint",
+		LibraryID: job.LibraryID, DestinationRoot: filepath.Dir(mediaPath), DestinationPath: mediaPath,
+		PublishMode: "standard", ResultArtifactID: "fixture-result", ResultGenerationToken: "fixture-generation",
+		ResultGenerationVersion: 1, ResultOutputRevision: "fixture-output-revision", ValidationRunID: "fixture-validation",
+		SourceAssetRecordID: &raw.ID, SourcePath: raw.Path, State: "published", Manifest: models.JSONList{},
+	}
+	if err := db.Create(&evidence).Error; err != nil {
+		t.Fatal(err)
+	}
+	return evidence
+}
+
 func assetInfoPublishedFiles(t *testing.T, root, mediaPath string) map[string][]byte {
 	t.Helper()
 	entries, err := os.ReadDir(root)
@@ -539,6 +620,732 @@ func TestAssetInfoTranslationEntryPointExternalSRTAndASS(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("translated %s sidecar was not published: %v", testCase.name, published)
+			}
+		})
+	}
+}
+
+func TestAssetInfoTranslationCapabilityAllowsPublishedLibraryVariants(t *testing.T) {
+	for _, status := range []string{"converted", "published_as_is", "accepted"} {
+		t.Run(status, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "episode.mkv")
+			sourcePath := filepath.Join(root, "episode.eng.srt")
+			writeTestFile(t, mediaPath, "media fixture")
+			writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+			db := translationLibrarySourceTestDB(t, root, mediaPath)
+			if err := db.Model(&models.AssetRecord{}).Where("path = ?", mediaPath).Update("status", status).Error; err != nil {
+				t.Fatal(err)
+			}
+			switch status {
+			case "converted":
+				seedTranslationQueuePublication(t, db, mediaPath)
+			case "published_as_is":
+				raw := seedTranslationRawSource(t, db, mediaPath)
+				seedTranslationDirectPublication(t, db, mediaPath, raw)
+			}
+			handler := AssetHandler{db: db}
+			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath)
+			capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, request)
+			if capabilityStatus != http.StatusOK {
+				t.Fatalf("capability status=%d body=%s", capabilityStatus, capabilityBody)
+			}
+			var capability subtitleTranslationCapabilityResponse
+			if err := json.Unmarshal([]byte(capabilityBody), &capability); err != nil {
+				t.Fatal(err)
+			}
+			if !capability.Eligible || capability.Source.ExternalPath != sourcePath || capability.Source.SourceRevision == "" {
+				t.Fatalf("published lifecycle %q was not independently eligible for its exact source: %#v", status, capability)
+			}
+		})
+	}
+}
+
+func TestAssetInfoTranslationConvertedPublishedWithArchivedOriginalCompletesWithoutMutatingEvidence(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	mediaPath := filepath.Join(root, "episode.mkv")
+	sourcePath := filepath.Join(root, "episode.eng.srt")
+	mediaBefore := []byte("synthetic video bytes")
+	sourceBefore := []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
+	writeTestFile(t, mediaPath, string(mediaBefore))
+	writeTestFile(t, sourcePath, string(sourceBefore))
+	db := translationLibrarySourceTestDB(t, root, mediaPath)
+	raw, job := seedTranslationQueuePublication(t, db, mediaPath)
+	archiveRoot := filepath.Join(root, "archive")
+	archivedPath := filepath.Join(archiveRoot, "episode.mkv")
+	archivedBytes := []byte("preserved archived original bytes")
+	writeTestFile(t, archivedPath, string(archivedBytes))
+	archivedRecord := models.AssetRecord{
+		Path: archivedPath, RootPath: archiveRoot, RelativePath: "episode.mkv",
+		FileName: "episode.mkv", Status: "archive", SizeBytes: int64(len(archivedBytes)),
+	}
+	if err := db.Create(&archivedRecord).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.QueueJob{}).Where("id = ?", job.ID).Update("original_archived_path", archivedPath).Error; err != nil {
+		t.Fatal(err)
+	}
+	publisherEvidence := seedTranslationPublisherEvidence(t, db, mediaPath, raw, job)
+	persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
+	fixture := newAssetInfoTranslationOllamaFixture()
+	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
+	body := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
+
+	capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath))
+	if capabilityStatus != http.StatusOK {
+		t.Fatalf("published Queue capability status=%d body=%s", capabilityStatus, capabilityBody)
+	}
+	var capability subtitleTranslationCapabilityResponse
+	if err := json.Unmarshal([]byte(capabilityBody), &capability); err != nil {
+		t.Fatal(err)
+	}
+	if !capability.Eligible || capability.Source.ExternalPath != sourcePath {
+		t.Fatalf("published Queue sidecar was not eligible by exact identity: %#v", capability)
+	}
+	var jobBefore models.QueueJob
+	if err := db.First(&jobBefore, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var publisherBefore models.PublisherPublication
+	if err := db.First(&publisherBefore, publisherEvidence.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var archivedBefore models.AssetRecord
+	if err := db.First(&archivedBefore, archivedRecord.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if archivedBefore.Status != "archive" || archivedBefore.Path != archivedPath {
+		t.Fatalf("fixture must represent an available archived original: %#v", archivedBefore)
+	}
+	operation := startAssetInfoTranslationAndWait(t, handler, body)
+	if operation.Result == nil || len(operation.Result.Created) != 1 || len(operation.Result.Artifacts) != 1 {
+		t.Fatalf("published Queue translation did not complete with one artifact: %#v", operation.Result)
+	}
+	files := assetInfoPublishedFiles(t, root, mediaPath)
+	if len(files) != 2 {
+		t.Fatalf("sidecars after translation=%v, want original and translated", files)
+	}
+	if got, err := os.ReadFile(mediaPath); err != nil || !bytes.Equal(got, mediaBefore) {
+		t.Fatalf("video changed during sidecar translation: err=%v", err)
+	}
+	if got, err := os.ReadFile(sourcePath); err != nil || !bytes.Equal(got, sourceBefore) {
+		t.Fatalf("original sidecar changed during translation: err=%v", err)
+	}
+	if got, err := os.ReadFile(archivedPath); err != nil || !bytes.Equal(got, archivedBytes) {
+		t.Fatalf("archived original changed during translation: err=%v", err)
+	}
+	translatedFound := false
+	for name, content := range files {
+		if strings.Contains(strings.ToLower(name), ".es-419.") {
+			translatedFound = strings.Contains(string(content), "Hola")
+		}
+	}
+	if !translatedFound {
+		t.Fatalf("completed translation sidecar is missing or has unexpected content: %v", files)
+	}
+	var jobAfter models.QueueJob
+	if err := db.First(&jobAfter, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(jobBefore, jobAfter) {
+		t.Fatalf("translation changed Queue publication evidence: before=%#v after=%#v", jobBefore, jobAfter)
+	}
+	var publisherAfter models.PublisherPublication
+	if err := db.First(&publisherAfter, publisherEvidence.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(publisherBefore, publisherAfter) {
+		t.Fatalf("translation changed Publisher evidence: before=%#v after=%#v", publisherBefore, publisherAfter)
+	}
+	var archivedAfter models.AssetRecord
+	if err := db.First(&archivedAfter, archivedRecord.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(archivedBefore, archivedAfter) {
+		t.Fatalf("translation changed archived-original inventory: before=%#v after=%#v", archivedBefore, archivedAfter)
+	}
+	var directPublicationCount int64
+	if err := db.Model(&models.DirectPublication{}).Count(&directPublicationCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if directPublicationCount != 0 {
+		t.Fatalf("translation unexpectedly created DirectPublication evidence: count=%d", directPublicationCount)
+	}
+}
+
+func TestAssetInfoTranslationRawUnprocessedCapabilityStartCompletes(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	mediaPath := filepath.Join(root, "episode.mkv")
+	sourcePath := filepath.Join(root, "episode.eng.srt")
+	mediaBefore := []byte("raw synthetic video bytes")
+	sourceBefore := []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
+	writeTestFile(t, mediaPath, string(mediaBefore))
+	writeTestFile(t, sourcePath, string(sourceBefore))
+	db := translationSourceTestDB(t, root, mediaPath)
+	var raw models.AssetRecord
+	if err := db.Where("path = ?", mediaPath).First(&raw).Error; err != nil {
+		t.Fatal(err)
+	}
+	if raw.LibraryID != 0 || raw.Status != "unprocessed" {
+		t.Fatalf("fixture must represent unprocessed RAW inventory, got LibraryID=%d status=%q", raw.LibraryID, raw.Status)
+	}
+	persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
+	fixture := newAssetInfoTranslationOllamaFixture()
+	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
+	request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
+
+	capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath))
+	if capabilityStatus != http.StatusOK {
+		t.Fatalf("RAW capability status=%d body=%s", capabilityStatus, capabilityBody)
+	}
+	var capability subtitleTranslationCapabilityResponse
+	if err := json.Unmarshal([]byte(capabilityBody), &capability); err != nil {
+		t.Fatal(err)
+	}
+	if !capability.Eligible || capability.Source.ExternalPath != sourcePath || capability.Source.SourceRevision == "" {
+		t.Fatalf("exact RAW sidecar was not eligible with a captured revision: %#v", capability)
+	}
+
+	operation := startAssetInfoTranslationAndWait(t, handler, request)
+	if operation.Result == nil || len(operation.Result.Created) != 1 || len(operation.Result.Artifacts) != 1 {
+		t.Fatalf("RAW translation did not complete with one sidecar: %#v", operation)
+	}
+	if got, err := os.ReadFile(mediaPath); err != nil || !bytes.Equal(got, mediaBefore) {
+		t.Fatalf("RAW video changed during translation: err=%v", err)
+	}
+	if got, err := os.ReadFile(sourcePath); err != nil || !bytes.Equal(got, sourceBefore) {
+		t.Fatalf("RAW source sidecar changed during translation: err=%v", err)
+	}
+	files := assetInfoPublishedFiles(t, root, mediaPath)
+	if len(files) != 2 {
+		t.Fatalf("RAW sidecar output set=%v, want original and one translated sidecar", files)
+	}
+}
+
+func TestAssetInfoTranslationRawBlocksMissingMediaAndStaleSource(t *testing.T) {
+	t.Run("missing media", func(t *testing.T) {
+		root := t.TempDir()
+		mediaPath := filepath.Join(root, "episode.mkv")
+		sourcePath := filepath.Join(root, "episode.eng.srt")
+		writeTestFile(t, mediaPath, "raw synthetic video bytes")
+		writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+		db := translationSourceTestDB(t, root, mediaPath)
+		if err := os.Remove(mediaPath); err != nil {
+			t.Fatal(err)
+		}
+		handler := AssetHandler{db: db}
+		request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath)
+		for name, call := range map[string]func() (int, string){
+			"Capability": func() (int, string) { return postAssetInfoTranslationCapability(t, handler, request) },
+			"Start":      func() (int, string) { return postAssetInfoTranslationStart(t, handler, request) },
+		} {
+			status, body := call()
+			if status < http.StatusBadRequest || !strings.Contains(body, "not readable") {
+				t.Fatalf("%s accepted missing RAW media: status=%d body=%s", name, status, body)
+			}
+		}
+	})
+
+	t.Run("source changes before publication", func(t *testing.T) {
+		root := t.TempDir()
+		t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+		mediaPath := filepath.Join(root, "episode.mkv")
+		sourcePath := filepath.Join(root, "episode.eng.srt")
+		mediaBefore := []byte("raw synthetic video bytes")
+		sourceBefore := []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
+		writeTestFile(t, mediaPath, string(mediaBefore))
+		writeTestFile(t, sourcePath, string(sourceBefore))
+		db := translationSourceTestDB(t, root, mediaPath)
+		persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
+		provider := &assetInfoTranslationProviderStub{}
+		providerStarted := make(chan struct{})
+		releaseProvider := make(chan struct{})
+		provider.fn = func(batch TranslationBatch) TranslationBatchResult {
+			close(providerStarted)
+			<-releaseProvider
+			return provider.resultFor(batch)
+		}
+		handler := AssetHandler{db: db, translationProviderFactory: func(translationSettings) (TranslationProvider, error) { return provider, nil }}
+		request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
+		status, body := postAssetInfoTranslationStart(t, handler, request)
+		if status != http.StatusAccepted {
+			t.Fatalf("RAW translation start status=%d body=%s", status, body)
+		}
+		var started struct {
+			Operation subtitleExtractionOperation `json:"operation"`
+		}
+		if err := json.Unmarshal([]byte(body), &started); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-providerStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("RAW translation provider did not reach the publication barrier")
+		}
+		sourceChanged := []byte("1\n00:00:01,000 --> 00:00:02,000\nChanged after Start\n\n")
+		if err := os.WriteFile(sourcePath, sourceChanged, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		close(releaseProvider)
+		waitForSubtitleTranslationOperation(t, started.Operation.ID, "error")
+		if _, err := os.Stat(filepath.Join(root, "episode.es-419.srt")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale RAW translation published output: stat err=%v", err)
+		}
+		if got, err := os.ReadFile(mediaPath); err != nil || !bytes.Equal(got, mediaBefore) {
+			t.Fatalf("RAW video changed after stale-source rejection: err=%v", err)
+		}
+		if got, err := os.ReadFile(sourcePath); err != nil || !bytes.Equal(got, sourceChanged) {
+			t.Fatalf("changed source was overwritten: err=%v", err)
+		}
+	})
+}
+
+func TestAssetInfoTranslationCapabilityStartAndRetryRejectConflictingPublications(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	mediaPath := filepath.Join(root, "episode.mkv")
+	sourcePath := filepath.Join(root, "episode.eng.srt")
+	writeTestFile(t, mediaPath, "synthetic video bytes")
+	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
+	db := translationLibrarySourceTestDB(t, root, mediaPath)
+	raw, _ := seedTranslationQueuePublication(t, db, mediaPath)
+	persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
+	fixture := newAssetInfoTranslationOllamaFixture()
+	fixture.failures = []error{context.Canceled}
+	handler := AssetHandler{db: db, translationProviderFactory: fixture.factory()}
+	request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
+	status, body := postAssetInfoTranslationStart(t, handler, request)
+	if status != http.StatusAccepted {
+		t.Fatalf("initial cancellable translation status=%d body=%s", status, body)
+	}
+	var started struct {
+		Operation subtitleExtractionOperation `json:"operation"`
+	}
+	if err := json.Unmarshal([]byte(body), &started); err != nil {
+		t.Fatal(err)
+	}
+	if operation := waitForSubtitleTranslationOperation(t, started.Operation.ID, "cancelled"); operation.Translation == nil || !operation.Translation.Retryable {
+		t.Fatalf("cancelled operation is not retryable: %#v", operation.Translation)
+	}
+	seedTranslationDirectPublication(t, db, mediaPath, raw)
+
+	capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath))
+	if capabilityStatus != http.StatusUnprocessableEntity || !strings.Contains(capabilityBody, "conflicting publication identities") {
+		t.Fatalf("conflicting publication capability status=%d body=%s", capabilityStatus, capabilityBody)
+	}
+	startStatus, startBody := postAssetInfoTranslationStart(t, handler, request)
+	if startStatus != http.StatusUnprocessableEntity || !strings.Contains(startBody, "conflicting publication identities") {
+		t.Fatalf("conflicting publication Start status=%d body=%s", startStatus, startBody)
+	}
+	retryStatus, retryBody := postAssetInfoTranslationRetry(t, handler, started.Operation.ID)
+	if retryStatus != http.StatusUnprocessableEntity || !strings.Contains(retryBody, "conflicting publication identities") {
+		t.Fatalf("conflicting publication Retry status=%d body=%s", retryStatus, retryBody)
+	}
+}
+
+func TestAssetInfoTranslationRevalidatesPublicationIdentityBeforePublishing(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	mediaPath := filepath.Join(root, "episode.mkv")
+	sourcePath := filepath.Join(root, "episode.eng.srt")
+	mediaBefore := []byte("synthetic video bytes")
+	sourceBefore := []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
+	writeTestFile(t, mediaPath, string(mediaBefore))
+	writeTestFile(t, sourcePath, string(sourceBefore))
+	db := translationLibrarySourceTestDB(t, root, mediaPath)
+	raw, job := seedTranslationQueuePublication(t, db, mediaPath)
+	publisherEvidence := seedTranslationPublisherEvidence(t, db, mediaPath, raw, job)
+	var jobBefore models.QueueJob
+	if err := db.First(&jobBefore, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var publisherBefore models.PublisherPublication
+	if err := db.First(&publisherBefore, publisherEvidence.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	persistTranslationSettingsFixture(t, db, readyAssetInfoTranslationSettings("http://nas:11434"))
+	provider := &assetInfoTranslationProviderStub{}
+	providerStarted := make(chan struct{})
+	releaseProvider := make(chan struct{})
+	provider.fn = func(batch TranslationBatch) TranslationBatchResult {
+		close(providerStarted)
+		<-releaseProvider
+		return provider.resultFor(batch)
+	}
+	handler := AssetHandler{db: db, translationProviderFactory: func(translationSettings) (TranslationProvider, error) { return provider, nil }}
+	request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
+	status, body := postAssetInfoTranslationStart(t, handler, request)
+	if status != http.StatusAccepted {
+		t.Fatalf("translation start status=%d body=%s", status, body)
+	}
+	var started struct {
+		Operation subtitleExtractionOperation `json:"operation"`
+	}
+	if err := json.Unmarshal([]byte(body), &started); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-providerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("translation provider did not reach the publication revalidation barrier")
+	}
+	seedTranslationDirectPublication(t, db, mediaPath, raw)
+	close(releaseProvider)
+	waitForSubtitleTranslationOperation(t, started.Operation.ID, "error")
+	if _, err := os.Stat(filepath.Join(root, "episode.es-419.srt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("translation output was published after lifecycle identity changed: stat err=%v", err)
+	}
+	if got, err := os.ReadFile(mediaPath); err != nil || !bytes.Equal(got, mediaBefore) {
+		t.Fatalf("video changed during rejected translation: err=%v", err)
+	}
+	if got, err := os.ReadFile(sourcePath); err != nil || !bytes.Equal(got, sourceBefore) {
+		t.Fatalf("source sidecar changed during rejected translation: err=%v", err)
+	}
+	var jobAfter models.QueueJob
+	if err := db.First(&jobAfter, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(jobBefore, jobAfter) {
+		t.Fatalf("rejected translation changed Queue evidence: before=%#v after=%#v", jobBefore, jobAfter)
+	}
+	var publisherAfter models.PublisherPublication
+	if err := db.First(&publisherAfter, publisherEvidence.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(publisherBefore, publisherAfter) {
+		t.Fatalf("rejected translation changed Publisher evidence: before=%#v after=%#v", publisherBefore, publisherAfter)
+	}
+}
+
+type translationLifecycleQueryRows struct {
+	mu   sync.Mutex
+	rows map[string]int64
+}
+
+func trackTranslationLifecycleQueryRows(t *testing.T, db *gorm.DB) *translationLifecycleQueryRows {
+	t.Helper()
+	stats := &translationLifecycleQueryRows{rows: map[string]int64{}}
+	callbackName := fmt.Sprintf("test:translation_lifecycle_rows_%p", stats)
+	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		stats.mu.Lock()
+		stats.rows[tx.Statement.Table] += tx.RowsAffected
+		stats.mu.Unlock()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Query().Remove(callbackName) })
+	return stats
+}
+
+func (stats *translationLifecycleQueryRows) snapshotAndReset() map[string]int64 {
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+	result := make(map[string]int64, len(stats.rows))
+	for table, rows := range stats.rows {
+		result[table] = rows
+	}
+	stats.rows = map[string]int64{}
+	return result
+}
+
+func TestAssetInfoTranslationLifecycleQueriesAreBoundedAndPreserveConflictsAndActiveWork(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "episode.mkv")
+	sourcePath := filepath.Join(root, "episode.eng.srt")
+	writeTestFile(t, mediaPath, "synthetic video bytes")
+	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
+	db := translationLibrarySourceTestDB(t, root, mediaPath)
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.DirectPublication{}, &models.ScanResult{}, &models.AssetMaintenanceOperation{}); err != nil {
+		t.Fatal(err)
+	}
+	retiredAt := time.Now().UTC().Truncate(time.Second)
+	const historyCount = 256
+	jJobs := make([]models.QueueJob, 0, historyCount)
+	directs := make([]models.DirectPublication, 0, historyCount)
+	scans := make([]models.ScanResult, 0, historyCount)
+	for index := 0; index < historyCount; index++ {
+		jobPath := filepath.Join(root, "history", fmt.Sprintf("queue-%03d.mkv", index))
+		jJobs = append(jJobs, models.QueueJob{
+			MediaPath: jobPath, PublishedPath: filepath.Join(root, "history-library", fmt.Sprintf("queue-%03d.mkv", index)),
+			LibraryID: 1, Status: JobStatusFailed, PublicationRetiredAt: &retiredAt,
+		})
+		directs = append(directs, models.DirectPublication{
+			SourcePath: jobPath, PublishedPath: filepath.Join(root, "history-direct", fmt.Sprintf("direct-%03d.mkv", index)),
+			LibraryID: 1, PublishedAt: retiredAt, ReturnedAt: &retiredAt,
+		})
+		scans = append(scans, models.ScanResult{Path: jobPath, FileName: filepath.Base(jobPath)})
+	}
+	if err := db.CreateInBatches(&jJobs, 64).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateInBatches(&directs, 64).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateInBatches(&scans, 64).Error; err != nil {
+		t.Fatal(err)
+	}
+	stats := trackTranslationLifecycleQueryRows(t, db)
+	handler := AssetHandler{db: db}
+	request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath)
+	status, body := postAssetInfoTranslationCapability(t, handler, request)
+	if status != http.StatusOK {
+		t.Fatalf("accepted asset with unrelated history status=%d body=%s", status, body)
+	}
+	rows := stats.snapshotAndReset()
+	if rows["queue_jobs"] != 0 || rows["direct_publications"] != 0 || rows["scan_results"] != 0 {
+		t.Fatalf("translation lookup loaded unrelated history rows: %#v", rows)
+	}
+
+	raw, _ := seedTranslationQueuePublication(t, db, mediaPath)
+	direct := seedTranslationDirectPublication(t, db, mediaPath, raw)
+	pathAlias := root + string(filepath.Separator) + "legacy" + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(mediaPath)
+	if err := db.Model(&models.DirectPublication{}).Where("id = ?", direct.ID).Updates(map[string]any{
+		"published_path":     pathAlias,
+		"published_path_key": models.CanonicalPublicationPathKey(pathAlias),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	status, body = postAssetInfoTranslationCapability(t, handler, request)
+	if status != http.StatusUnprocessableEntity || !strings.Contains(body, "conflicting publication identities") {
+		t.Fatalf("conflicting publication was omitted or allowed: status=%d body=%s", status, body)
+	}
+	rows = stats.snapshotAndReset()
+	if rows["queue_jobs"] != 1 || rows["direct_publications"] != 1 || rows["scan_results"] != 0 {
+		t.Fatalf("conflict lookup did not stay bounded to its relevant evidence: %#v", rows)
+	}
+
+	var target models.AssetRecord
+	if err := db.Where("path = ?", mediaPath).First(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	activeJob := models.QueueJob{MediaPath: mediaPath, SourceAssetRecordID: &target.ID, LibraryID: target.LibraryID, Status: JobStatusQueued, Stage: JobStageQueued}
+	if err := db.Create(&activeJob).Error; err != nil {
+		t.Fatal(err)
+	}
+	status, body = postAssetInfoTranslationCapability(t, handler, request)
+	if status != http.StatusUnprocessableEntity || !strings.Contains(body, "active Queue or maintenance") {
+		t.Fatalf("active Queue operation was omitted: status=%d body=%s", status, body)
+	}
+	rows = stats.snapshotAndReset()
+	if rows["queue_jobs"] != 2 || rows["direct_publications"] != 1 || rows["scan_results"] != 0 {
+		t.Fatalf("active-work lookup loaded unrelated history or missed evidence: %#v", rows)
+	}
+}
+
+func TestAssetInfoTranslationPublicationCandidateOverflowFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "episode.mkv")
+	sourcePath := filepath.Join(root, "episode.eng.srt")
+	writeTestFile(t, mediaPath, "synthetic video bytes")
+	writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n")
+	db := translationLibrarySourceTestDB(t, root, mediaPath)
+	if err := db.AutoMigrate(&models.QueueJob{}); err != nil {
+		t.Fatal(err)
+	}
+	retiredAt := time.Now().UTC().Truncate(time.Second)
+	jobs := make([]models.QueueJob, 0, assetLifecycleTranslationCandidateLimit+1)
+	for index := 0; index <= assetLifecycleTranslationCandidateLimit; index++ {
+		pathAlias := root + string(filepath.Separator) + fmt.Sprintf("alias-%03d", index) + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(mediaPath)
+		jobs = append(jobs, models.QueueJob{
+			MediaPath:     filepath.Join(root, "history", fmt.Sprintf("source-%03d.mkv", index)),
+			PublishedPath: pathAlias,
+			LibraryID:     1, Status: JobStatusFailed, PublicationRetiredAt: &retiredAt,
+		})
+	}
+	if err := db.CreateInBatches(&jobs, 64).Error; err != nil {
+		t.Fatal(err)
+	}
+	request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath)
+	status, body := postAssetInfoTranslationCapability(t, AssetHandler{db: db}, request)
+	if status != http.StatusUnprocessableEntity || !strings.Contains(body, "too many Queue records") {
+		t.Fatalf("ambiguous candidate overflow was not blocked: status=%d body=%s", status, body)
+	}
+}
+
+func TestAssetInfoTranslationPublicationPathQueryPlansUseScopedIndexes(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "episode.mkv")
+	db := translationLibrarySourceTestDB(t, root, mediaPath)
+	if err := db.AutoMigrate(&models.QueueJob{}, &models.DirectPublication{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []struct {
+		table, predicate, index string
+		args                    []any
+	}{
+		{table: "queue_jobs", predicate: "library_id = ? AND published_path_key = ?", index: "idx_queue_jobs_library_published_path_key", args: []any{1, models.CanonicalPublicationPathKey(mediaPath)}},
+		{table: "direct_publications", predicate: "library_id = ? AND published_path_key = ?", index: "idx_direct_publications_library_published_path_key", args: []any{1, models.CanonicalPublicationPathKey(mediaPath)}},
+		{table: "queue_jobs", predicate: "media_path_key = ?", index: "idx_queue_jobs_media_path_key", args: []any{models.CanonicalPublicationPathKey(mediaPath)}},
+	} {
+		var plans []struct {
+			Detail string `gorm:"column:detail"`
+		}
+		sql := fmt.Sprintf("EXPLAIN QUERY PLAN SELECT * FROM %s WHERE %s LIMIT ?", query.table, query.predicate)
+		args := append(append([]any(nil), query.args...), assetLifecycleTranslationCandidateLimit+1)
+		if err := db.Raw(sql, args...).Scan(&plans).Error; err != nil {
+			t.Fatalf("EXPLAIN QUERY PLAN for %s: %v", query.table, err)
+		}
+		details := make([]string, 0, len(plans))
+		for _, plan := range plans {
+			details = append(details, plan.Detail)
+		}
+		plan := strings.Join(details, "; ")
+		t.Logf("EXPLAIN QUERY PLAN %s: %s", query.table, plan)
+		if len(plans) == 0 || !strings.Contains(plan, query.index) || strings.Contains(plan, "SCAN "+query.table) {
+			t.Fatalf("%s candidate lookup must use its library/path-key index: %s", query.table, plan)
+		}
+	}
+}
+
+func TestAssetInfoTranslationCapabilityAndStartRejectActiveWork(t *testing.T) {
+	for _, kind := range []string{"queue", "maintenance"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "episode.mkv")
+			sourcePath := filepath.Join(root, "episode.eng.srt")
+			writeTestFile(t, mediaPath, "media fixture")
+			writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+			db := translationSourceTestDB(t, root, mediaPath)
+			if err := db.AutoMigrate(&models.QueueJob{}, &models.AssetMaintenanceOperation{}); err != nil {
+				t.Fatal(err)
+			}
+			var record models.AssetRecord
+			if err := db.Where("path = ?", mediaPath).First(&record).Error; err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "queue":
+				if err := db.Create(&models.QueueJob{
+					MediaPath: mediaPath, SourceAssetRecordID: &record.ID,
+					Status: JobStatusQueued, Stage: JobStageQueued,
+				}).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "maintenance":
+				if err := db.Create(&models.AssetMaintenanceOperation{
+					ID: "maintenance-test", AssetRecordID: record.ID, AssetPath: mediaPath,
+					Status: maintenanceStatusRunning, Phase: "running",
+				}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			handler := AssetHandler{db: db}
+			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath)
+			capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, request)
+			if capabilityStatus != http.StatusUnprocessableEntity {
+				t.Fatalf("capability status=%d body=%s", capabilityStatus, capabilityBody)
+			}
+			var capability subtitleTranslationCapabilityResponse
+			if err := json.Unmarshal([]byte(capabilityBody), &capability); err != nil {
+				t.Fatal(err)
+			}
+			if capability.Eligible || !strings.Contains(capability.Reason, "active Queue or maintenance") {
+				t.Fatalf("active %s work did not block capability with a concrete reason: %#v", kind, capability)
+			}
+
+			startRequest := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"auto","targetLocale":"es-419"}`, mediaPath, sourcePath)
+			startStatus, startBody := postAssetInfoTranslationStart(t, handler, startRequest)
+			if startStatus != http.StatusUnprocessableEntity || !strings.Contains(startBody, "active Queue or maintenance") {
+				t.Fatalf("active %s work start status=%d body=%s", kind, startStatus, startBody)
+			}
+		})
+	}
+}
+
+func TestAssetInfoTranslationCapabilityRejectsMissingUnsupportedAndArchivedSources(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		selectedName   string
+		writeSelected  bool
+		assetStatus    string
+		wantReasonPart string
+	}{
+		{name: "missing exact sidecar", selectedName: "episode.jpn.srt", assetStatus: "converted"},
+		{name: "unsupported format", selectedName: "episode.eng.vtt", writeSelected: true, assetStatus: "converted"},
+		{name: "archive original", selectedName: "episode.eng.srt", writeSelected: true, assetStatus: "archive", wantReasonPart: "archived originals"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "episode.mkv")
+			writeTestFile(t, mediaPath, "media fixture")
+			if testCase.writeSelected {
+				writeTestFile(t, filepath.Join(root, testCase.selectedName), "subtitle fixture")
+			}
+			if testCase.name == "missing exact sidecar" {
+				writeTestFile(t, filepath.Join(root, "episode.eng.srt"), "1\n00:00:01,000 --> 00:00:02,000\nSibling\n")
+			}
+			db := translationSourceTestDB(t, root, mediaPath)
+			if err := db.Model(&models.AssetRecord{}).Where("path = ?", mediaPath).Update("status", testCase.assetStatus).Error; err != nil {
+				t.Fatal(err)
+			}
+			handler := AssetHandler{db: db}
+			selectedPath := filepath.Join(root, testCase.selectedName)
+			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, selectedPath)
+			capabilityStatus, capabilityBody := postAssetInfoTranslationCapability(t, handler, request)
+			if capabilityStatus != http.StatusUnprocessableEntity {
+				t.Fatalf("capability status=%d body=%s", capabilityStatus, capabilityBody)
+			}
+			var capability subtitleTranslationCapabilityResponse
+			if err := json.Unmarshal([]byte(capabilityBody), &capability); err != nil {
+				t.Fatal(err)
+			}
+			if capability.Eligible || capability.Source.ExternalPath == selectedPath {
+				t.Fatalf("blocked source was accepted or substituted: %#v", capability)
+			}
+			if testCase.wantReasonPart != "" && !strings.Contains(capability.Reason, testCase.wantReasonPart) {
+				t.Fatalf("reason=%q does not identify archived source", capability.Reason)
+			}
+		})
+	}
+}
+
+func TestAssetInfoTranslationRejectsPhysicalArchiveAndUnauthorizedAssetPaths(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		useOutsideRoot bool
+		wantReasonPart string
+	}{
+		{name: "physical Archive record", wantReasonPart: "archived originals"},
+		{name: "asset outside configured roots", useOutsideRoot: true, wantReasonPart: "outside configured media roots"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "episode.mkv")
+			sourcePath := filepath.Join(root, "episode.eng.srt")
+			writeTestFile(t, mediaPath, "media fixture")
+			writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+			db := translationLibrarySourceTestDB(t, root, mediaPath)
+			if !testCase.useOutsideRoot {
+				if err := db.Model(&models.AssetRecord{}).Where("path = ?", mediaPath).Update("status", "archive").Error; err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				outsideRoot := t.TempDir()
+				mediaPath = filepath.Join(outsideRoot, "episode.mkv")
+				sourcePath = filepath.Join(outsideRoot, "episode.eng.srt")
+				writeTestFile(t, mediaPath, "outside media fixture")
+				writeTestFile(t, sourcePath, "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+				if err := db.Create(&models.AssetRecord{
+					Path: mediaPath, RootPath: outsideRoot, RelativePath: "episode.mkv",
+					FileName: "episode.mkv", Status: "unprocessed",
+				}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			handler := AssetHandler{db: db}
+			request := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}},"sourceLanguage":"en","targetLocale":"es-419","outputRepresentation":"srt"}`, mediaPath, sourcePath)
+			capabilityRequest := fmt.Sprintf(`{"path":%q,"source":{"type":"external","external":{"subtitlePath":%q}}}`, mediaPath, sourcePath)
+			for name, call := range map[string]func() (int, string){
+				"Capability": func() (int, string) { return postAssetInfoTranslationCapability(t, handler, capabilityRequest) },
+				"Start":      func() (int, string) { return postAssetInfoTranslationStart(t, handler, request) },
+			} {
+				status, body := call()
+				if status < http.StatusBadRequest || !strings.Contains(body, testCase.wantReasonPart) {
+					t.Fatalf("%s allowed %s: status=%d body=%s", name, testCase.name, status, body)
+				}
 			}
 		})
 	}

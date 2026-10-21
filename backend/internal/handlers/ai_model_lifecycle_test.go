@@ -1077,7 +1077,14 @@ func TestTranslationWaitingRecoveryReconstructsSameOperationAndWaitsWithoutBypas
 	if err := db.AutoMigrate(&models.Library{}, &models.AssetRecord{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.AssetRecord{Path: mediaPath, FileName: filepath.Base(mediaPath), Status: "unprocessed"}).Error; err != nil {
+	library := models.Library{Name: "Translation Fixture", SourcePath: root, DestinationPath: root, Type: "movies"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.AssetRecord{
+		Path: mediaPath, RootPath: root, RelativePath: filepath.Base(mediaPath),
+		FileName: filepath.Base(mediaPath), LibraryID: library.ID, LibraryName: library.Name, Status: "accepted",
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	baseHandler := AssetHandler{db: db}

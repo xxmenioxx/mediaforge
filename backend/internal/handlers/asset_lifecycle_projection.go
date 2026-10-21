@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -527,7 +528,7 @@ func ResolveAssetActionCapabilities(state AssetActionGuardContext) AssetActionCa
 	if state.HasActiveQueue || state.HasActiveMaintenance {
 		setAssetActionCapabilityReasons(&capabilities, assetActionReasonActiveWork,
 			&capabilities.Move, &capabilities.Reconvert,
-			&capabilities.Archive, &capabilities.Restore, &capabilities.DeleteOriginal)
+			&capabilities.Subtitles, &capabilities.Archive, &capabilities.Restore, &capabilities.DeleteOriginal)
 		reason := assetActionReasonActiveWork
 		if state.OriginalArchiveActive && !state.PublicationConflict {
 			reason = assetActionReasonOriginalArchiveActive
@@ -1162,15 +1163,7 @@ func firstNonEmptyAssetText(values ...string) string {
 }
 
 func cleanAssetLifecyclePath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	clean := filepath.Clean(path)
-	if clean == "." {
-		return ""
-	}
-	return clean
+	return models.CanonicalPublicationPathKey(path)
 }
 
 func cloneUintPointer(value *uint) *uint {
@@ -1302,6 +1295,207 @@ func (h AssetHandler) assetLifecycleProjections(records []models.AssetRecord) (m
 		projections[record.ID] = &copyProjection
 	}
 	return projections, nil
+}
+
+// assetLifecycleProjectionForTranslation loads only the evidence needed to
+// project one selected asset's lifecycle. It deliberately reuses the canonical
+// projection resolver while avoiding the historical QueueJob, publication,
+// ScanResult, and review scans used by the full inventory projection.
+func (h AssetHandler) assetLifecycleProjectionForTranslation(record models.AssetRecord) (*AssetLifecycleProjection, error) {
+	if h.db == nil {
+		return nil, errors.New("asset lifecycle database is unavailable")
+	}
+	if record.ID == 0 || cleanAssetLifecyclePath(record.Path) == "" {
+		return nil, errors.New("asset identity is unavailable for subtitle translation")
+	}
+
+	pathCandidates := assetLifecycleProjectionPathCandidates(record.Path)
+	publicationPathKey := models.CanonicalPublicationPathKey(record.Path)
+	var libraries []models.Library
+	if h.db.Migrator().HasTable(&models.Library{}) {
+		query := h.db
+		if record.LibraryID > 0 {
+			query = query.Where("id = ?", record.LibraryID)
+		}
+		if err := query.Find(&libraries).Error; err != nil {
+			return nil, err
+		}
+	}
+	libraryIDs := assetLifecycleTranslationLibraryIDs(record, libraries)
+	librariesByID := make(map[uint]models.Library, len(libraries))
+	for _, library := range libraries {
+		librariesByID[library.ID] = library
+	}
+	location := assetLifecycleLocation(record, librariesByID)
+
+	var jobs []models.QueueJob
+	if h.db.Migrator().HasTable(&models.QueueJob{}) {
+		var bySource []models.QueueJob
+		if err := h.db.Where("source_asset_record_id = ?", record.ID).Limit(assetLifecycleTranslationCandidateLimit + 1).Find(&bySource).Error; err != nil {
+			return nil, err
+		}
+		if len(bySource) > assetLifecycleTranslationCandidateLimit {
+			return nil, assetLifecycleTranslationCandidateLimitError("Queue")
+		}
+		jobs = append(jobs, bySource...)
+		if location == AssetLocationRaw {
+			var byMediaPath []models.QueueJob
+			if err := h.db.Where("media_path_key = ?", models.CanonicalPublicationPathKey(record.Path)).Limit(assetLifecycleTranslationCandidateLimit + 1).Find(&byMediaPath).Error; err != nil {
+				return nil, err
+			}
+			if len(byMediaPath) > assetLifecycleTranslationCandidateLimit {
+				return nil, assetLifecycleTranslationCandidateLimitError("Queue")
+			}
+			jobs = append(jobs, byMediaPath...)
+		}
+		for _, libraryID := range libraryIDs {
+			var byPath []models.QueueJob
+			if err := h.db.Where("library_id = ? AND published_path_key = ?", libraryID, publicationPathKey).Limit(assetLifecycleTranslationCandidateLimit + 1).Find(&byPath).Error; err != nil {
+				return nil, err
+			}
+			if len(byPath) > assetLifecycleTranslationCandidateLimit {
+				return nil, assetLifecycleTranslationCandidateLimitError("Queue")
+			}
+			jobs = append(jobs, byPath...)
+		}
+		jobs = uniqueTranslationQueueJobs(jobs)
+		if len(jobs) > assetLifecycleTranslationCandidateLimit {
+			return nil, assetLifecycleTranslationCandidateLimitError("Queue")
+		}
+	}
+	var directPublications []models.DirectPublication
+	if h.db.Migrator().HasTable(&models.DirectPublication{}) {
+		var bySource []models.DirectPublication
+		if err := h.db.Where("source_asset_record_id = ?", record.ID).Limit(assetLifecycleTranslationCandidateLimit + 1).Find(&bySource).Error; err != nil {
+			return nil, err
+		}
+		if len(bySource) > assetLifecycleTranslationCandidateLimit {
+			return nil, assetLifecycleTranslationCandidateLimitError("DirectPublication")
+		}
+		directPublications = append(directPublications, bySource...)
+		for _, libraryID := range libraryIDs {
+			var byPath []models.DirectPublication
+			if err := h.db.Where("library_id = ? AND published_path_key = ?", libraryID, publicationPathKey).Limit(assetLifecycleTranslationCandidateLimit + 1).Find(&byPath).Error; err != nil {
+				return nil, err
+			}
+			if len(byPath) > assetLifecycleTranslationCandidateLimit {
+				return nil, assetLifecycleTranslationCandidateLimitError("DirectPublication")
+			}
+			directPublications = append(directPublications, byPath...)
+		}
+		directPublications = uniqueTranslationDirectPublications(directPublications)
+		if len(directPublications) > assetLifecycleTranslationCandidateLimit {
+			return nil, assetLifecycleTranslationCandidateLimitError("DirectPublication")
+		}
+	}
+	var maintenance []models.AssetMaintenanceOperation
+	if h.db.Migrator().HasTable(&models.AssetMaintenanceOperation{}) {
+		suffix := assetLifecycleProjectionPathSuffix(record.Path)
+		if err := h.db.Where("status IN ? AND (asset_record_id = ? OR asset_path IN ? OR substr(asset_path, -length(?)) = ?)", []string{maintenanceStatusQueued, maintenanceStatusRunning}, record.ID, pathCandidates, suffix, suffix).Limit(assetLifecycleTranslationCandidateLimit + 1).Find(&maintenance).Error; err != nil {
+			return nil, err
+		}
+		if len(maintenance) > assetLifecycleTranslationCandidateLimit {
+			return nil, assetLifecycleTranslationCandidateLimitError("maintenance")
+		}
+	}
+
+	// Resolve only the physical source records explicitly referenced by this
+	// asset's publication evidence. The canonical projection uses these records
+	// to establish an unambiguous raw-to-Library correlation.
+	referencedIDs := make(map[uint]struct{})
+	for _, job := range jobs {
+		if job.SourceAssetRecordID != nil && *job.SourceAssetRecordID > 0 &&
+			(*job.SourceAssetRecordID == record.ID || cleanAssetLifecyclePath(job.PublishedPath) == cleanAssetLifecyclePath(record.Path)) {
+			referencedIDs[*job.SourceAssetRecordID] = struct{}{}
+		}
+	}
+	for _, publication := range directPublications {
+		if publication.SourceAssetRecordID != nil && *publication.SourceAssetRecordID > 0 &&
+			(*publication.SourceAssetRecordID == record.ID || cleanAssetLifecyclePath(publication.PublishedPath) == cleanAssetLifecyclePath(record.Path)) {
+			referencedIDs[*publication.SourceAssetRecordID] = struct{}{}
+		}
+	}
+	referencedIDs[record.ID] = struct{}{}
+	ids := make([]uint, 0, len(referencedIDs))
+	for id := range referencedIDs {
+		ids = append(ids, id)
+	}
+	var records []models.AssetRecord
+	if len(ids) > 0 {
+		if err := h.db.Where("id IN ?", ids).Find(&records).Error; err != nil {
+			return nil, err
+		}
+	}
+
+	projection := ResolveAssetLifecycleProjection(AssetLifecycleProjectionInput{
+		Record: record, Records: records, Libraries: libraries, QueueJobs: jobs,
+		DirectPublications: directPublications, Maintenance: maintenance,
+		AnalysisSeconds: 20, ArchiveRoot: "/media/originals_archive",
+	})
+	return &projection, nil
+}
+
+const assetLifecycleTranslationCandidateLimit = 256
+
+func assetLifecycleTranslationCandidateLimitError(kind string) error {
+	return errors.New("too many " + kind + " records match this asset's publication identity; translation is blocked for lifecycle review")
+}
+
+func assetLifecycleTranslationLibraryIDs(record models.AssetRecord, libraries []models.Library) []uint {
+	if record.LibraryID > 0 {
+		return []uint{record.LibraryID}
+	}
+	ids := make([]uint, 0, len(libraries))
+	for _, library := range libraries {
+		if pathIsInside(record.Path, library.DestinationPath) {
+			ids = append(ids, library.ID)
+		}
+	}
+	sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
+	return slices.Compact(ids)
+}
+
+func assetLifecycleProjectionPathSuffix(path string) string {
+	return string(filepath.Separator) + filepath.Base(cleanAssetLifecyclePath(path))
+}
+
+func uniqueTranslationQueueJobs(jobs []models.QueueJob) []models.QueueJob {
+	seen := make(map[uint]struct{}, len(jobs))
+	result := make([]models.QueueJob, 0, len(jobs))
+	for _, job := range jobs {
+		if _, ok := seen[job.ID]; ok {
+			continue
+		}
+		seen[job.ID] = struct{}{}
+		result = append(result, job)
+	}
+	return result
+}
+
+func uniqueTranslationDirectPublications(publications []models.DirectPublication) []models.DirectPublication {
+	seen := make(map[uint]struct{}, len(publications))
+	result := make([]models.DirectPublication, 0, len(publications))
+	for _, publication := range publications {
+		if _, ok := seen[publication.ID]; ok {
+			continue
+		}
+		seen[publication.ID] = struct{}{}
+		result = append(result, publication)
+	}
+	return result
+}
+
+func assetLifecycleProjectionPathCandidates(path string) []string {
+	path = strings.TrimSpace(path)
+	cleaned := cleanAssetLifecyclePath(path)
+	result := make([]string, 0, 2)
+	if path != "" {
+		result = append(result, path)
+	}
+	if cleaned != "" && cleaned != path {
+		result = append(result, cleaned)
+	}
+	return result
 }
 
 type assetLifecycleProjectionLoad struct {
