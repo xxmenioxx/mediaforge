@@ -430,6 +430,32 @@ export const api = {
       { method: 'POST', body: JSON.stringify(input) },
     ),
 
+  startSubtitleProofreading: (input: { path: string; subtitlePath: string; mode: 'quick' | 'extended'; expectedRevision?: string }) =>
+    request<{ operationId: string; status: string; phase: string; progress: number; sourceRevision: string }>(
+      '/api/assets/subtitle-proofreading',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+
+  applySubtitleProofreading: (input: {
+    path: string;
+    subtitlePath: string;
+    operationId: string;
+    revision: string;
+    confirmed: true;
+    decisions: Array<{ cueId: string; sourceTextHash: string; action: 'accept' | 'edit' | 'reject' | 'keep_original'; text?: string }>;
+  }) =>
+    request<{ path: string; revisionId: string; affectedCueCount: number; changedCueCount: number; sourceRevision: string; message: string }>(
+      '/api/assets/subtitle-proofreading/apply',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+
+  restoreSubtitleProofreadingRevision: (input: { path: string; subtitlePath: string; revisionId: string; expectedRevision: string }) =>
+    request<{ path: string; revisionId: string; sourceRevision: string; restored: boolean; message: string }>(
+      '/api/assets/subtitle-proofreading/restore',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+
+
   searchOCRDictionary: (input: {
     language?: OCRDictionaryLanguage;
     search?: string;

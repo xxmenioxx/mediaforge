@@ -57,6 +57,33 @@ const externalSidecars: ExternalSubtitle[] = [
 ] as never;
 
 describe('Asset Info translation source controls', () => {
+  it.each(['srt', 'ass', 'ssa'] as const)('routes Review with AI for the exact %s sidecar', async (format) => {
+    const user = userEvent.setup();
+    const onProofread = vi.fn();
+    const exact = {
+      ...sidecar,
+      path: `/media/episode.eng.${format}`,
+      fileName: `episode.eng.${format}`,
+      format,
+    } as ExternalSubtitle;
+    render(
+      <ExternalSubtitleList
+        values={[exact]}
+        loading={false}
+        deleting={false}
+        renaming={false}
+        onRename={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onProofread={onProofread}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Review with AI' }));
+    expect(onProofread).toHaveBeenCalledTimes(1);
+    expect(onProofread).toHaveBeenCalledWith(exact);
+  });
+
   it('passes only the exact embedded stream index to Translate...', async () => {
     const user = userEvent.setup();
     const onTranslate = vi.fn();
