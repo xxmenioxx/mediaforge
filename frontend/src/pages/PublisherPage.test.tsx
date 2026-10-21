@@ -3,6 +3,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import type { PublisherEligibilityResponse, PublisherPublicationSummary } from '../api/types';
@@ -17,12 +18,54 @@ function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <PublisherPage />
+      <MemoryRouter><PublisherPage /></MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
 describe('PublisherPage persisted delivery controls', () => {
+  it('shows eligibility first, identifies bounded windows, and keeps publication evidence on demand', async () => {
+    vi.spyOn(api, 'publisherEligibility').mockResolvedValue({ items: [{ job: {
+      id: 60, executionNumber: 3, mediaPath: '/raw/first.mkv', outputPath: '/stage/first.mkv',
+      publishedPath: '', destinationPath: '/library/first.mkv', validationStatus: 'passed', validationScore: 99, validationRunId: 'v60-3',
+    }, status: 'ALLOWED' }], limit: 100 });
+    vi.spyOn(api, 'publisherPublications').mockResolvedValue({ items: [{
+      publication: { publicationId: 'pub-old', queueJobId: 59, executionNumber: 2, executionPlanId: 1, libraryId: 1,
+        destinationRoot: '/library', destinationPath: '/library/old.mkv', publishMode: 'standard', resultArtifactId: 'result',
+        validationRunId: 'validation-old', state: 'PUBLISHED', attemptCount: 1, fencingGeneration: 1,
+        originalArchiveStatus: 'complete', createdAt: '', updatedAt: '' },
+      attempts: [], evidence: [{ attemptId: 'a', phase: 'delivery', outcome: 'published', createdAt: 'today' }], audit: [],
+    }], limit: 100 });
+    renderPage();
+    const first = await screen.findByText('first.mkv');
+    await userEvent.setup().click(screen.getByRole('combobox', { name: 'State' }));
+    await userEvent.setup().click(screen.getByRole('option', { name: 'Published' }));
+    const old = screen.getByText('old.mkv');
+    expect(first.compareDocumentPosition(old) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText(/Eligibility is limited to 100 jobs/)).toBeTruthy();
+    expect(screen.getByText(/Evidence · 1 attempts/).closest('details')).toHaveProperty('open', false);
+    await userEvent.setup().click(screen.getByText(/Evidence · 1 attempts/));
+    expect(screen.getByText(/delivery: published/)).toBeTruthy();
+  });
+
+  it('does not duplicate an eligibility row for an exact same execution and retains separate publication IDs', async () => {
+    vi.spyOn(api, 'publisherEligibility').mockResolvedValue({ items: [{ job: {
+      id: 60, executionNumber: 3, mediaPath: '/raw/first.mkv', outputPath: '/stage/first.mkv', publishedPath: '',
+      destinationPath: '/library/first.mkv', validationStatus: 'passed', validationScore: 99, validationRunId: 'v60-3',
+    }, status: 'ALLOWED' }], limit: 100 });
+    const publication = (id: string) => ({ publication: {
+      publicationId: id, queueJobId: 60, executionNumber: 3, executionPlanId: 1, libraryId: 1, destinationRoot: '/library',
+      destinationPath: '/library/first.mkv', publishMode: 'standard' as const, resultArtifactId: 'result', validationRunId: 'validation',
+      state: 'FAILED' as const, attemptCount: 1, fencingGeneration: 1, originalArchiveStatus: 'pending', createdAt: '', updatedAt: '',
+    }, attempts: [], evidence: [], audit: [] });
+    vi.spyOn(api, 'publisherPublications').mockResolvedValue({ items: [publication('pub-a'), publication('pub-b')], limit: 100 });
+    renderPage();
+    expect((await screen.findAllByText(/Job #60 · Run 3/)).length).toBe(2);
+    expect(screen.getByText('Publication pub-a')).toBeTruthy();
+    expect(screen.getByText('Publication pub-b')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Discard' })).toBeNull();
+  });
+
   it('shows a stored publication and sends a reasoned hold action without actor input', async () => {
     const publication: PublisherPublicationSummary = {
       publication: {
@@ -94,7 +137,7 @@ describe('PublisherPage persisted delivery controls', () => {
     const user = userEvent.setup();
     renderPage();
 
-    expect(await screen.findByText('ALLOWED_BY_OVERRIDE')).toBeTruthy();
+    expect(await screen.findByText(/Eligibility: ALLOWED_BY_OVERRIDE/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Publish' }));
     expect(await screen.findByText(/Publisher-scoped Validation overrides/i)).toBeTruthy();
     const confirm = screen.getByRole('button', { name: 'Confirm publish' });
