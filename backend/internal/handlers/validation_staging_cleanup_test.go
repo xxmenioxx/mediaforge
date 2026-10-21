@@ -529,3 +529,93 @@ func TestValidationStagingCleanupBlocksEveryActiveReferenceSurface(t *testing.T)
 		})
 	}
 }
+
+func TestValidationStagingReferenceInspectionStreamsLargeHistoryAndPreservesPathEquivalence(t *testing.T) {
+	t.Run("large unrelated history remains unblocked", func(t *testing.T) {
+		fixture := newValidationStagingFixture(t)
+		records := make([]models.AssetRecord, 1200)
+		for index := range records {
+			path := "/synthetic/history/asset-" + strconv.Itoa(index) + ".mkv"
+			records[index] = models.AssetRecord{Path: path, FileName: filepath.Base(path), Status: "library"}
+		}
+		if err := fixture.validation.delivery.db.CreateInBatches(records, 200).Error; err != nil {
+			t.Fatal(err)
+		}
+		if explicitValidationStagingHasActiveReferences(fixture.validation.delivery.db, fixture.validation.delivery.job.ID, fixture.workspace) {
+			t.Fatal("unrelated historical paths were treated as active staging references")
+		}
+	})
+
+	t.Run("normalized path and external symlink alias remain references", func(t *testing.T) {
+		fixture := newValidationStagingFixture(t)
+		db := fixture.validation.delivery.db
+		for index, path := range []string{
+			fixture.workspace + string(os.PathSeparator) + "." + string(os.PathSeparator) + "legacy-reference.mkv",
+			filepath.Join(t.TempDir(), "staging-alias", "referenced.mkv"),
+		} {
+			if index == 1 {
+				alias := filepath.Dir(path)
+				if err := os.Symlink(fixture.workspace, alias); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.Create(&models.AssetRecord{Path: path, FileName: filepath.Base(path), Status: "library"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if !explicitValidationStagingHasActiveReferences(db, fixture.validation.delivery.job.ID, fixture.workspace) {
+				t.Fatalf("staging reference %q was missed", path)
+			}
+			if err := db.Delete(&models.AssetRecord{}, "path = ?", path).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+}
+
+func TestHistorySummaryKeepsConfirmedCleanupAheadOfLaterNoopPreview(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		cleanupWasRecorded bool
+		wantState          string
+	}{
+		{name: "confirmed cleanup wins", cleanupWasRecorded: true, wantState: "cleaned"},
+		{name: "preview noop is fallback without cleanup evidence", wantState: "no_workspace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newValidationStagingFixture(t)
+			db := fixture.validation.delivery.db
+			job := fixture.validation.delivery.job
+			job.ExecutionNumber = nil
+			now := time.Now().UTC()
+			if tc.cleanupWasRecorded {
+				if err := db.Create(&models.ValidationStagingCleanupEvidence{
+					EvidenceID: "history-cleanup-confirmed", AttemptID: "attempt-cleanup-confirmed", JobID: job.ID,
+					ExecutionNumber: 1, ExecutionPlanID: 1, ExecutionPlanVersion: 1, ExecutionPlanFingerprint: "plan-fingerprint",
+					ResultArtifactID: "result-artifact", ResultGenerationToken: "generation-token", ResultGenerationVersion: 1,
+					ResultOutputRevision: "output-revision", ValidationRunID: job.ValidationRunID, PreviewID: "cleanup-preview",
+					TreeIdentity: "tree-identity", Actor: "operator", Action: "dismiss_cleanup", Event: "completed", Outcome: "cleaned",
+					WorkspacePath: fixture.workspace, RemovedPathsJSON: "[]", RecoveredBytes: 50, CreatedAt: now,
+				}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.Create(&models.ValidationStagingCleanupPreview{
+				PreviewID: "later-noop-preview", JobID: job.ID, ExecutionNumber: 1, ExecutionPlanID: 1,
+				ExecutionPlanVersion: 1, ExecutionPlanFingerprint: "plan-fingerprint", ResultArtifactID: "result-artifact",
+				ResultGenerationToken: "generation-token", ResultGenerationVersion: 1, ResultOutputRevision: "output-revision",
+				ValidationRunID: job.ValidationRunID, State: "noop", WorkRoot: fixture.workspace,
+				WorkspacePath: fixture.workspace, TreeIdentity: "tree-identity", ManifestJSON: "[]", TotalBytes: 0,
+				ExpiresAt: now.Add(time.Minute), CreatedAt: now.Add(time.Second),
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			rows, err := historySummaryRows(db, []models.QueueJob{job})
+			if err != nil || len(rows) != 1 || rows[0].StagingState != tc.wantState {
+				t.Fatalf("history staging state=%#v err=%v, want %q", rows, err, tc.wantState)
+			}
+			if tc.cleanupWasRecorded && (rows[0].StagingCleanupOutcome != "cleaned" || rows[0].StagingRecoveredBytes != 50) {
+				t.Fatalf("confirmed cleanup facts were overwritten: %#v", rows[0])
+			}
+		})
+	}
+}

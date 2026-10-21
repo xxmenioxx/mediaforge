@@ -48,6 +48,10 @@ Staging cleanup SHALL occur only after the existing transactional Dismiss has co
 - **WHEN** a Worker/process, reservation, Queue operation, Publisher lease/attempt, maintenance operation, preview, Test Encode, sidecar/artifact, or another job may reference the workspace, or any required reference check cannot complete
 - **THEN** cleanup SHALL fail closed and retain the workspace
 
+#### Scenario: Persisted path resolves through normalization or a symlink alias
+- **WHEN** a persisted reference path is textually different but canonicalizes within or over the staging workspace
+- **THEN** cleanup SHALL still detect the reference and retain the workspace
+
 #### Scenario: Filesystem mutation races with cleanup
 - **WHEN** a path component or entry is replaced, linked, or changed while cleanup is running
 - **THEN** filesystem access SHALL remain rooted to the configured work role, refuse symlink traversal and special files, recheck identities at deletion, and SHALL NOT remove any path outside the exact workspace
@@ -82,6 +86,7 @@ History SHALL retain dismissed QueueJob, Validation, and Result provenance and s
 #### Scenario: Dismissed job remains inspectable after cleanup
 - **WHEN** staging cleanup succeeds for a dismissed job
 - **THEN** History SHALL retain the Dismissed marker, Validation outcome and Result identity
+- **AND** a later no-op cleanup preview SHALL NOT replace the latest confirmed cleanup outcome
 - **AND** unavailable historical output files SHALL not change the recorded Validation quality result
 
 #### Scenario: General Housekeeping runs later

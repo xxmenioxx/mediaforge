@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -359,159 +360,115 @@ func newValidationStagingID(prefix string) (string, error) {
 	return prefix + hex.EncodeToString(value[:]), nil
 }
 
+func validationStagingPathValueReferencesWorkspace(workspace, path string) bool {
+	return housekeepingPathWithin(workspace, path) || housekeepingPathWithin(path, workspace)
+}
+
+func explicitValidationStagingRowsHaveReference(db *gorm.DB, columns, jsonColumns []string, workspace string) bool {
+	selected := append(append([]string(nil), columns...), jsonColumns...)
+	rows, err := db.Select(strings.Join(selected, ", ")).Rows()
+	if err != nil {
+		return true
+	}
+	defer rows.Close()
+	values := make([]sql.NullString, len(selected))
+	destinations := make([]any, len(values))
+	for index := range values {
+		destinations[index] = &values[index]
+	}
+	for rows.Next() {
+		if err := rows.Scan(destinations...); err != nil {
+			return true
+		}
+		for _, value := range values[:len(columns)] {
+			if value.Valid && validationStagingPathValueReferencesWorkspace(workspace, value.String) {
+				return true
+			}
+		}
+		for _, value := range values[len(columns):] {
+			if !value.Valid || strings.TrimSpace(value.String) == "" {
+				continue
+			}
+			var decoded any
+			if err := json.Unmarshal([]byte(value.String), &decoded); err != nil {
+				return true
+			}
+			referenced := false
+			walkHousekeepingJSONStrings(decoded, func(path string) {
+				if validationStagingPathValueReferencesWorkspace(workspace, path) {
+					referenced = true
+				}
+			})
+			if referenced {
+				return true
+			}
+		}
+	}
+	if rows.Err() != nil {
+		return true
+	}
+	return rows.Close() != nil
+}
+
 func explicitValidationStagingHasActiveReferences(db *gorm.DB, jobID uint, workspace string) bool {
 	if !db.Migrator().HasTable(&models.QueueJob{}) || !db.Migrator().HasTable(&models.ExecutionPlan{}) || !db.Migrator().HasTable(&models.AssetRecord{}) || !db.Migrator().HasTable(&models.Library{}) || !db.Migrator().HasTable(&models.SchedulerReservation{}) || !db.Migrator().HasTable(&models.AssetMaintenanceOperation{}) || !db.Migrator().HasTable(&models.PublisherPublication{}) || !db.Migrator().HasTable(&models.PublisherPublicationAttempt{}) || !db.Migrator().HasTable(&models.PublisherAttemptEvidence{}) || !db.Migrator().HasTable(&models.TestEncode{}) || !db.Migrator().HasTable(&models.TestEncodeArtifact{}) || !db.Migrator().HasTable(&models.CompatiblePreviewArtifactRecord{}) {
 		return true
-	}
-	referencesWorkspace := func(path string) bool {
-		return housekeepingPathWithin(workspace, path) || housekeepingPathWithin(path, workspace)
 	}
 	var job models.QueueJob
 	if err := db.First(&job, jobID).Error; err != nil || job.StartedAt != nil && job.FinishedAt == nil {
 		return true
 	}
 	for _, path := range []string{job.MediaPath, job.PublishedPath, job.PlannedPublishedPath, job.ReplacementTargetPath, job.OriginalArchivedPath} {
-		if referencesWorkspace(path) {
+		if validationStagingPathValueReferencesWorkspace(workspace, path) {
 			return true
 		}
 	}
-	var assets []models.AssetRecord
-	if err := db.Select("path, source_path").Find(&assets).Error; err != nil {
+	if explicitValidationStagingRowsHaveReference(db.Model(&models.AssetRecord{}), []string{"path", "source_path"}, nil, workspace) {
 		return true
 	}
-	for _, asset := range assets {
-		if referencesWorkspace(asset.Path) || referencesWorkspace(asset.SourcePath) {
-			return true
-		}
-	}
-	var libraries []models.Library
-	if err := db.Select("source_path, destination_path").Find(&libraries).Error; err != nil {
+	if explicitValidationStagingRowsHaveReference(db.Model(&models.Library{}), []string{"source_path", "destination_path"}, nil, workspace) {
 		return true
-	}
-	for _, library := range libraries {
-		if referencesWorkspace(library.SourcePath) || referencesWorkspace(library.DestinationPath) {
-			return true
-		}
 	}
 	var reservations int64
 	if err := db.Model(&models.SchedulerReservation{}).Where("job_id = ? AND state IN ?", jobID, []string{scheduler.ReservationStateLocked, scheduler.ReservationStateActive}).Count(&reservations).Error; err != nil || reservations != 0 {
 		return true
 	}
-	var operations []models.AssetMaintenanceOperation
-	if err := db.Where("status IN ?", []string{maintenanceStatusQueued, maintenanceStatusRunning}).Find(&operations).Error; err != nil {
+	maintenanceQuery := db.Model(&models.AssetMaintenanceOperation{}).Where("status IN ?", []string{maintenanceStatusQueued, maintenanceStatusRunning})
+	if explicitValidationStagingRowsHaveReference(maintenanceQuery, []string{"asset_path", "temporary_path", "backup_path"}, nil, workspace) {
 		return true
 	}
-	for _, operation := range operations {
-		for _, path := range []string{operation.AssetPath, operation.TemporaryPath, operation.BackupPath} {
-			if housekeepingPathWithin(workspace, path) || housekeepingPathWithin(path, workspace) {
-				return true
-			}
-		}
-	}
-	var publications []models.PublisherPublication
-	if err := db.Find(&publications).Error; err != nil {
+	if explicitValidationStagingRowsHaveReference(db.Model(&models.PublisherPublication{}),
+		[]string{"source_path", "destination_path", "original_archived_path", "original_archive_source_path", "original_archive_temporary_path"},
+		[]string{"manifest"}, workspace) {
 		return true
 	}
-	for _, publication := range publications {
-		for _, path := range []string{publication.SourcePath, publication.DestinationPath, publication.OriginalArchivedPath, publication.OriginalArchiveSourcePath, publication.OriginalArchiveTemporaryPath} {
-			if referencesWorkspace(path) {
-				return true
-			}
-		}
-		referenced := false
-		walkHousekeepingJSONStrings(publication.Manifest, func(path string) {
-			if referencesWorkspace(path) {
-				referenced = true
-			}
-		})
-		if referenced {
-			return true
-		}
-		if publication.QueueJobID == jobID {
-			return true
-		}
-	}
-	var publisherEvidence []models.PublisherAttemptEvidence
-	if err := db.Find(&publisherEvidence).Error; err != nil {
+	var publicationReferences int64
+	if err := db.Model(&models.PublisherPublication{}).Where("queue_job_id = ?", jobID).Limit(1).Count(&publicationReferences).Error; err != nil || publicationReferences > 0 {
 		return true
 	}
-	for _, evidence := range publisherEvidence {
-		referenced := false
-		walkHousekeepingJSONStrings(evidence.Paths, func(path string) {
-			if referencesWorkspace(path) {
-				referenced = true
-			}
-		})
-		if referenced {
-			return true
-		}
-	}
-	var otherPlans []models.ExecutionPlan
-	if err := db.Where("job_id <> ?", jobID).Find(&otherPlans).Error; err != nil {
+	if explicitValidationStagingRowsHaveReference(db.Model(&models.PublisherAttemptEvidence{}), nil, []string{"paths"}, workspace) {
 		return true
 	}
-	for _, plan := range otherPlans {
-		if referencesWorkspace(plan.OutputPath) || referencesWorkspace(plan.DestinationRoot) || referencesWorkspace(plan.DestinationPath) {
-			return true
-		}
-	}
-	var activeTestEncodes []models.TestEncode
-	if err := db.Where("status IN ? AND deleted_at IS NULL", []string{"queued", "running", "processing"}).Find(&activeTestEncodes).Error; err != nil {
+	planQuery := db.Model(&models.ExecutionPlan{}).Where("job_id <> ?", jobID)
+	if explicitValidationStagingRowsHaveReference(planQuery, []string{"output_path", "destination_root", "destination_path"}, nil, workspace) {
 		return true
 	}
-	for _, testEncode := range activeTestEncodes {
-		for _, path := range []string{testEncode.OutputPath, testEncode.TemporaryPath} {
-			if referencesWorkspace(path) {
-				return true
-			}
-		}
-		referenced := false
-		walkHousekeepingJSONStrings(testEncode.SubtitleArtifacts, func(path string) {
-			if referencesWorkspace(path) {
-				referenced = true
-			}
-		})
-		if referenced {
-			return true
-		}
-	}
-	var artifacts []models.TestEncodeArtifact
-	if err := db.Find(&artifacts).Error; err != nil {
+	activeTestEncodes := db.Model(&models.TestEncode{}).Where("status IN ? AND deleted_at IS NULL", []string{"queued", "running", "processing"})
+	if explicitValidationStagingRowsHaveReference(activeTestEncodes, []string{"output_path", "temporary_path"}, []string{"subtitle_artifacts"}, workspace) {
 		return true
 	}
-	for _, artifact := range artifacts {
-		if referencesWorkspace(artifact.Path) {
-			return true
-		}
-	}
-	var previews []models.CompatiblePreviewArtifactRecord
-	if err := db.Where("state = ? OR (state = ? AND expires_at > ?)", compatiblePreviewArtifactGenerating, compatiblePreviewArtifactReady, time.Now().UTC()).Find(&previews).Error; err != nil {
+	if explicitValidationStagingRowsHaveReference(db.Model(&models.TestEncodeArtifact{}), []string{"path"}, nil, workspace) {
 		return true
 	}
-	for _, preview := range previews {
-		if referencesWorkspace(preview.SourcePath) || referencesWorkspace(preview.CachePath) {
-			return true
-		}
-	}
-	var otherJobs []models.QueueJob
-	if err := db.Where("id <> ?", jobID).Find(&otherJobs).Error; err != nil {
+	activePreviews := db.Model(&models.CompatiblePreviewArtifactRecord{}).Where("state = ? OR (state = ? AND expires_at > ?)", compatiblePreviewArtifactGenerating, compatiblePreviewArtifactReady, time.Now().UTC())
+	if explicitValidationStagingRowsHaveReference(activePreviews, []string{"source_path", "cache_path"}, nil, workspace) {
 		return true
 	}
-	for _, other := range otherJobs {
-		for _, path := range []string{other.MediaPath, other.OutputPath, other.PublishedPath, other.PlannedPublishedPath, other.ReplacementTargetPath, other.OriginalArchivedPath} {
-			if referencesWorkspace(path) {
-				return true
-			}
-		}
-		referenced := false
-		walkHousekeepingJSONStrings(other.SubtitleArtifacts, func(path string) {
-			if referencesWorkspace(path) {
-				referenced = true
-			}
-		})
-		if referenced {
-			return true
-		}
+	otherJobs := db.Model(&models.QueueJob{}).Where("id <> ?", jobID)
+	if explicitValidationStagingRowsHaveReference(otherJobs,
+		[]string{"media_path", "output_path", "published_path", "planned_published_path", "replacement_target_path", "original_archived_path"},
+		[]string{"subtitle_artifacts"}, workspace) {
+		return true
 	}
 	return false
 }

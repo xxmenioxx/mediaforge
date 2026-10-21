@@ -1087,6 +1087,7 @@ func historySummaryRows(db *gorm.DB, jobs []models.QueueJob) ([]validationSummar
 		jobIDs = append(jobIDs, job.ID)
 		indexByJob[job.ID] = index
 	}
+	cleanupEvidenceByJob := make(map[uint]struct{}, len(jobs))
 	if db.Migrator().HasTable(&models.ValidationStagingCleanupEvidence{}) {
 		var cleanupEvidence []models.ValidationStagingCleanupEvidence
 		if err := db.Where("id IN (SELECT MAX(id) FROM validation_staging_cleanup_evidences WHERE job_id IN ? GROUP BY job_id)", jobIDs).
@@ -1098,6 +1099,7 @@ func historySummaryRows(db *gorm.DB, jobs []models.QueueJob) ([]validationSummar
 			if !ok {
 				continue
 			}
+			cleanupEvidenceByJob[evidence.JobID] = struct{}{}
 			row := &rows[index]
 			row.StagingCleanupOutcome = evidence.Outcome
 			row.StagingCleanupReason = evidence.Reason
@@ -1126,7 +1128,8 @@ func historySummaryRows(db *gorm.DB, jobs []models.QueueJob) ([]validationSummar
 		}
 		for _, preview := range previews {
 			index, ok := indexByJob[preview.JobID]
-			if !ok || preview.State != "noop" {
+			_, hasCleanupEvidence := cleanupEvidenceByJob[preview.JobID]
+			if !ok || preview.State != "noop" || hasCleanupEvidence {
 				continue
 			}
 			rows[index].StagingState = "no_workspace"
