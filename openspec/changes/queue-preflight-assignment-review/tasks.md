@@ -14,4 +14,4 @@
 ## 3. OpenSpec and validation
 
 - [x] 3.1 Validate this OpenSpec change with `openspec validate queue-preflight-assignment-review --strict`.
-- [ ] 3.2 Run focused backend and frontend regressions, then run `python3 /Users/anuelvs/Documents/mediaforge/.agents/skills/dupla/scripts/dupla.py lock --scope shared-validation -- ./scripts/verify.sh --auto` and confirm `ALL CHECKS PASSED`.
+- [x] 3.2 Run focused backend and frontend regressions, then run `python3 /Users/anuelvs/Documents/mediaforge/.agents/skills/dupla/scripts/dupla.py lock --scope shared-validation -- ./scripts/verify.sh --auto` and confirm `ALL CHECKS PASSED`.

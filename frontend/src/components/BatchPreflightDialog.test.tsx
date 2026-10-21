@@ -145,7 +145,7 @@ describe('BatchPreflightDialog', () => {
       libraries={[{ id: 2, name: 'Preflight library', sourcePath: '/raw', destinationPath: '/library', type: 'video', validationRules: {}, createdAt: '', updatedAt: '' }]}
       settings={[
         { key: 'audioEnhancementProfiles', value: { profiles: [{ key: 'audio-v2', name: 'Dialogue polish' }] }, createdAt: '', updatedAt: '' },
-        { key: 'trackProfiles', value: { profiles: [{ key: 'tracks-v4', name: 'English subtitles' }] }, createdAt: '', updatedAt: '' },
+        { key: 'trackProfiles', value: { profiles: [{ key: 'tracks-v4', name: 'English subtitles' }, { key: 'tracks-v5', name: 'Signs and songs' }] }, createdAt: '', updatedAt: '' },
       ] as never}
       onClose={vi.fn()}
       onAccepted={onAccepted}
@@ -156,7 +156,8 @@ describe('BatchPreflightDialog', () => {
     expect(screen.getByText(/video: path/)).toBeTruthy();
     expect(screen.getByText(/Inherited from Path \/raw\/Season 1/)).toBeTruthy();
     expect(screen.getByText(/Dialogue polish · key audio-v2/)).toBeTruthy();
-    expect(screen.getByText(/Destination library.*Preflight library/)).toBeTruthy();
+    expect(screen.getByText('Destination library')).toBeTruthy();
+    expect(screen.getByText(/Preflight library/)).toBeTruthy();
     expect(screen.getByText(/v3 · captured 2026-09-28/)).toBeTruthy();
     expect(screen.getByText(/Encoder fallback reviewed/)).toBeTruthy();
     expect(screen.getByText('Source video bitrate: 1.10 Mbps')).toBeTruthy();
@@ -167,13 +168,14 @@ describe('BatchPreflightDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     await screen.findByRole('button', { name: 'Resolve Preflight again' });
     expect(mocks.edit).toHaveBeenCalledWith('candidate-1', 1);
-    expect((screen.getByLabelText('Video profile') as HTMLInputElement).value).toBe('7');
-    expect((screen.getByLabelText('Destination library') as HTMLInputElement).value).toBe('2');
-    expect((screen.getByLabelText('Audio profile') as HTMLInputElement).value).toBe('audio-v2');
-    expect((screen.getByLabelText('Track profile') as HTMLInputElement).value).toBe('tracks-v4');
+    expect(screen.getByRole('combobox', { name: 'Video profile' }).textContent).toContain('Frozen profile v3');
+    expect(screen.getByRole('combobox', { name: 'Destination library' }).textContent).toContain('Preflight library');
+    expect(screen.getByRole('combobox', { name: 'Audio profile' }).textContent).toContain('Dialogue polish');
+    expect(screen.getByRole('combobox', { name: 'Track profile' }).textContent).toContain('English subtitles');
 
     fireEvent.change(screen.getByLabelText('Batch name'), { target: { value: 'Season 1 revised' } });
-    fireEvent.change(screen.getByLabelText('Track profile'), { target: { value: 'tracks-v5' } });
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Track profile' }));
+    fireEvent.click(screen.getByRole('option', { name: /Signs and songs · key tracks-v5/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Resolve Preflight again' }));
     await screen.findByRole('button', { name: /Accept & Queue/ });
     expect(mocks.update).toHaveBeenCalledWith('candidate-1', expect.objectContaining({

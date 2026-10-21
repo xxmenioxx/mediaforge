@@ -156,14 +156,15 @@ function currentAssignmentValue(asset: QueueBatchPreflightAsset, domain: string)
 }
 
 function assignmentSummary(asset: QueueBatchPreflightAsset, inventories: { profiles?: Profile[]; libraries?: Library[]; audioProfiles: AudioEnhancementProfile[]; trackProfiles: TrackProfile[] }) {
-  return [
-    ['Effective video profile', currentAssignmentValue(asset, 'video')],
-    ['Effective audio profile', currentAssignmentValue(asset, 'audio')],
-    ['Effective track profile', currentAssignmentValue(asset, 'tracks')],
-    ['Destination library', currentAssignmentValue(asset, 'destination')],
-  ].map(([label, value]) => <Grid key={String(label)} size={{ xs: 12, sm: 6 }}>
+  const rows: Array<[string, QueueBatchPreflightAssignmentValue, 'video' | 'audio' | 'tracks' | 'destination']> = [
+    ['Effective video profile', currentAssignmentValue(asset, 'video'), 'video'],
+    ['Effective audio profile', currentAssignmentValue(asset, 'audio'), 'audio'],
+    ['Effective track profile', currentAssignmentValue(asset, 'tracks'), 'tracks'],
+    ['Destination library', currentAssignmentValue(asset, 'destination'), 'destination'],
+  ];
+  return rows.map(([label, value, domain]) => <Grid key={label} size={{ xs: 12, sm: 6 }}>
     <Typography variant="caption" color="text.secondary">{label}</Typography>
-    <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{assignmentValueLabel(value as QueueBatchPreflightAssignmentValue, label === 'Effective video profile' ? 'video' : label === 'Effective audio profile' ? 'audio' : label === 'Effective track profile' ? 'tracks' : 'destination', inventories)}</Typography>
+    <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>{assignmentValueLabel(value, domain, inventories)}</Typography>
   </Grid>);
 }
 
