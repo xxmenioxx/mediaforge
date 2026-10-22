@@ -29,7 +29,7 @@ const (
 	subtitleSyncAutoMaxWallTime        = 120 * time.Second
 	subtitleSyncAutoMaxAllocation      = 128 << 20
 	subtitleSyncAutoMaxStderrBytes     = 32 << 10
-	subtitleSyncAutoModel              = "audio-activity-correlation-v1"
+	subtitleSyncAutoEngineVersion      = "audio-activity-correlation-v1"
 	subtitleSyncAutoEngine             = "mvforge-audio-activity"
 	subtitleSyncLimitedExecName        = "mvforge-subtitle-sync-limited-exec"
 )
@@ -57,7 +57,10 @@ func (automaticSubtitleSyncEngine) Apply(ctx context.Context, source []byte, pro
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if proposal.Model != subtitleSyncAutoModel || proposal.Engine != subtitleSyncAutoEngine || proposal.EngineVersion != subtitleSyncAutoModel || proposal.Scale != 1 || len(proposal.Segments) != 0 {
+	if err := validateSubtitleSyncProposalShape(proposal); err != nil {
+		return nil, err
+	}
+	if proposal.Model != subtitleSyncModelFixedOffset || proposal.Engine != subtitleSyncAutoEngine || proposal.EngineVersion != subtitleSyncAutoEngineVersion {
 		return nil, errors.New("unsupported automatic subtitle sync proposal")
 	}
 	if proposal.QualityState != "automatic_review" {
@@ -118,10 +121,13 @@ func (engine automaticSubtitleSyncEngine) Analyze(ctx context.Context, input Sub
 	proposal := SubtitleSyncProposal{
 		SubtitlePath: input.SubtitlePath, SourceIdentity: input.SourceIdentity, SourceRevision: input.SourceRevision,
 		Representation: "srt", ReferenceAudio: input.ReferenceAudio,
-		Engine: subtitleSyncAutoEngine, EngineVersion: subtitleSyncAutoModel, Model: subtitleSyncAutoModel,
+		Engine: subtitleSyncAutoEngine, EngineVersion: subtitleSyncAutoEngineVersion, Model: subtitleSyncModelFixedOffset,
 		OffsetMilliseconds: estimate.offsetMilliseconds, Confidence: estimate.confidence, Scale: 1,
 		Segments: []SubtitleSyncSegment{}, QualityState: estimate.qualityState, AnalyzedAt: time.Now().UTC(),
 		Diagnostics: estimate.diagnostics, Preview: subtitleSyncPreview(sourceTimings, proposedTimings),
+	}
+	if err := validateSubtitleSyncProposalShape(proposal); err != nil {
+		return SubtitleSyncProposal{}, err
 	}
 	proposal.ProposalID = subtitleSyncProposalID(proposal)
 	return proposal, nil

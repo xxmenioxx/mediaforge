@@ -5088,7 +5088,7 @@ async function generateExternalSubtitle(
       path: asset.path,
       subtitlePath: proposal.subtitlePath,
       referenceAudioStreamIndex: proposal.referenceAudio.streamIndex,
-      ...(proposal.model === 'audio-activity-correlation-v1' ? { mode: 'automatic' as const } : { offsetMilliseconds: proposal.offsetMilliseconds }),
+      ...(proposal.engine === 'mvforge-audio-activity' ? { mode: 'automatic' as const } : { offsetMilliseconds: proposal.offsetMilliseconds }),
       sourceRevision: proposal.sourceRevision,
       proposalId: proposal.proposalId,
     });

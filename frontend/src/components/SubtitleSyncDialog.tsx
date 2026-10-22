@@ -183,7 +183,7 @@ export function SubtitleSyncDialog({
               {proposal ? (
                 <Stack spacing={1}>
                   <Alert severity="warning">
-                    {proposal.model === 'audio-activity-correlation-v1'
+                    {proposal.engine === 'mvforge-audio-activity'
                       ? `Automatic fixed-offset proposal · ${proposal.offsetMilliseconds >= 0 ? '+' : ''}${proposal.offsetMilliseconds} ms · Confidence ${Math.round((proposal.confidence ?? 0) * 100)}%. Review required; timing is not changed until applied.`
                       : `Manual fixed offset · ${proposal.offsetMilliseconds >= 0 ? '+' : ''}${proposal.offsetMilliseconds} ms · Review recommended. No confidence score is generated for a manual correction.`}
                   </Alert>

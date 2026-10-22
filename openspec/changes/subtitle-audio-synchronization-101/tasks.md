@@ -1,6 +1,6 @@
 ## 1. Canonical proposal and transform
 
-- [ ] 1.1 Add an engine-neutral fixed-offset proposal and timing-transform contract; verify model validation tests cover fixed, affine, and segmented proposal shapes without claiming unsupported engine capability.
+- [x] 1.1 Add an engine-neutral fixed-offset proposal and timing-transform contract; verify model validation tests cover fixed, affine, and segmented proposal shapes without claiming unsupported engine capability.
 - [x] 1.2 Implement SRT and protected ASS/SSA timing-only transforms with byte-preservation and invalid interval checks; verify focused format tests preserve all non-timing content.
 - [x] 1.3 Resolve explicit audio stream identity and bind proposals to current subtitle/audio revisions; verify missing and stale identities fail closed.
 

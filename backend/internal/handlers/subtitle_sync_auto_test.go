@@ -150,7 +150,7 @@ func TestAutomaticSubtitleSyncAnalyzeBuildsReviewableCanonicalSRTProposal(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proposal.QualityState != "automatic_review" || proposal.OffsetMilliseconds != wantOffset || proposal.Confidence <= 0 || proposal.ProposalID == "" {
+	if proposal.Model != subtitleSyncModelFixedOffset || proposal.Engine != subtitleSyncAutoEngine || proposal.EngineVersion != subtitleSyncAutoEngineVersion || proposal.QualityState != "automatic_review" || proposal.OffsetMilliseconds != wantOffset || proposal.Confidence <= 0 || proposal.ProposalID == "" {
 		t.Fatalf("expected reviewable fixed-offset proposal, got %#v", proposal)
 	}
 	if proposal.Representation != "srt" || proposal.Scale != 1 || len(proposal.Segments) != 0 || len(proposal.Preview) == 0 || proposal.Preview[0].CurrentStartMs != 5_000 || proposal.Preview[0].ProposedStartMs != proposal.Preview[0].CurrentStartMs+wantOffset {
@@ -170,7 +170,7 @@ func TestAutomaticSubtitleSyncAnalyzeBuildsReviewableCanonicalSRTProposal(t *tes
 
 func TestAutomaticSubtitleSyncApplyRejectsLowConfidenceAndForgedProposal(t *testing.T) {
 	engine := automaticSubtitleSyncEngine{}
-	proposal := SubtitleSyncProposal{Engine: subtitleSyncAutoEngine, EngineVersion: subtitleSyncAutoModel, Model: subtitleSyncAutoModel, OffsetMilliseconds: 500, Scale: 1, QualityState: "low_confidence_review"}
+	proposal := SubtitleSyncProposal{Engine: subtitleSyncAutoEngine, EngineVersion: subtitleSyncAutoEngineVersion, Model: subtitleSyncModelFixedOffset, OffsetMilliseconds: 500, Scale: 1, QualityState: "low_confidence_review"}
 	proposal.ProposalID = subtitleSyncProposalID(proposal)
 	if _, err := engine.Apply(context.Background(), []byte("1\n00:00:01,000 --> 00:00:02,000\ncue\n"), proposal); err == nil {
 		t.Fatal("expected low-confidence automatic proposal to remain review-only")

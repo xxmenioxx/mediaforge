@@ -118,10 +118,13 @@ func (fixedOffsetSubtitleSyncEngine) Analyze(ctx context.Context, input Subtitle
 		SubtitlePath: input.SubtitlePath, SourceIdentity: input.SourceIdentity, SourceRevision: input.SourceRevision,
 		Representation: strings.ToLower(strings.TrimSpace(input.Representation)), ReferenceAudio: input.ReferenceAudio,
 		Engine: subtitleSyncEngineName, EngineVersion: subtitleSyncEngineVersion,
-		Model: "fixed_offset", OffsetMilliseconds: input.OffsetMilliseconds, Scale: 1,
+		Model: subtitleSyncModelFixedOffset, OffsetMilliseconds: input.OffsetMilliseconds, Scale: 1,
 		Segments: []SubtitleSyncSegment{}, QualityState: "manual_review", AnalyzedAt: time.Now().UTC(),
 		Diagnostics: []string{"Manual fixed offset; review the proposed cue times before applying."},
 		Preview:     subtitleSyncPreview(sourceTimings, proposedTimings),
+	}
+	if err := validateSubtitleSyncProposalShape(proposal); err != nil {
+		return SubtitleSyncProposal{}, err
 	}
 	proposal.ProposalID = subtitleSyncProposalID(proposal)
 	return proposal, nil
@@ -131,7 +134,10 @@ func (fixedOffsetSubtitleSyncEngine) Apply(ctx context.Context, source []byte, p
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if proposal.Model != "fixed_offset" || proposal.Engine != subtitleSyncEngineName || proposal.EngineVersion != subtitleSyncEngineVersion || proposal.Scale != 1 || len(proposal.Segments) != 0 {
+	if err := validateSubtitleSyncProposalShape(proposal); err != nil {
+		return nil, err
+	}
+	if proposal.Model != subtitleSyncModelFixedOffset || proposal.Engine != subtitleSyncEngineName || proposal.EngineVersion != subtitleSyncEngineVersion {
 		return nil, errors.New("unsupported subtitle sync proposal")
 	}
 	if proposal.ProposalID == "" || proposal.ProposalID != subtitleSyncProposalID(proposal) {
@@ -153,6 +159,7 @@ type subtitleSyncProposalIdentity struct {
 	Confidence         float64                    `json:"confidence,omitempty"`
 	Scale              float64                    `json:"scale"`
 	QualityState       string                     `json:"qualityState"`
+	Segments           []SubtitleSyncSegment      `json:"segments"`
 }
 
 func subtitleSyncProposalID(proposal SubtitleSyncProposal) string {
@@ -161,7 +168,7 @@ func subtitleSyncProposalID(proposal SubtitleSyncProposal) string {
 		Representation: proposal.Representation, ReferenceAudio: proposal.ReferenceAudio,
 		Engine: proposal.Engine, EngineVersion: proposal.EngineVersion, Model: proposal.Model,
 		OffsetMilliseconds: proposal.OffsetMilliseconds, Confidence: proposal.Confidence, Scale: proposal.Scale,
-		QualityState: proposal.QualityState,
+		QualityState: proposal.QualityState, Segments: proposal.Segments,
 	}
 	encoded, _ := json.Marshal(identity)
 	hash := sha256.Sum256(encoded)
@@ -251,7 +258,7 @@ func (h AssetHandler) SubtitleSyncCapability(c *gin.Context) {
 	engines := []gin.H{{"name": subtitleSyncEngineName, "version": subtitleSyncEngineVersion}}
 	automaticReason := subtitleSyncAutomaticUnavailableReason()
 	if automaticAvailable {
-		engines = append(engines, gin.H{"name": "mvforge-audio-activity", "version": subtitleSyncAutoModel})
+		engines = append(engines, gin.H{"name": subtitleSyncAutoEngine, "version": subtitleSyncAutoEngineVersion})
 		automaticReason = ""
 	}
 	c.JSON(200, gin.H{
@@ -462,7 +469,7 @@ func (h AssetHandler) runSubtitleSyncOperation(ctx context.Context, operationID,
 	defer cleanupSubtitleOperationWorkspace(workspace)
 	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
 		message := "Applying fixed offset to canonical subtitle timing"
-		if proposal.Model == subtitleSyncAutoModel {
+		if proposal.Engine == subtitleSyncAutoEngine {
 			message = "Applying reviewed automatic fixed-offset proposal to canonical subtitle timing"
 		}
 		operation.Phase, operation.Progress, operation.Message = "validating", 25, message
@@ -474,7 +481,7 @@ func (h AssetHandler) runSubtitleSyncOperation(ctx context.Context, operationID,
 	var output []byte
 	if err == nil {
 		var engine SubtitleSyncEngine = fixedOffsetSubtitleSyncEngine{}
-		if proposal.Model == subtitleSyncAutoModel {
+		if proposal.Engine == subtitleSyncAutoEngine {
 			engine = automaticSubtitleSyncEngine{}
 		}
 		output, err = engine.Apply(ctx, content, proposal)

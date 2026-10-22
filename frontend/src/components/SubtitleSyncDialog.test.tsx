@@ -70,7 +70,7 @@ const automaticProposal: SubtitleSyncProposal = {
   proposalId: 'automatic-proposal-1',
   engine: 'mvforge-audio-activity',
   engineVersion: 'audio-activity-correlation-v1',
-  model: 'audio-activity-correlation-v1',
+  model: 'fixed_offset',
   confidence: 0.74,
   qualityState: 'automatic_review',
   diagnostics: ['Audio activity correlation supports a reviewable fixed offset.'],
@@ -145,7 +145,7 @@ describe('SubtitleSyncDialog', () => {
       automaticAlignment: true,
       automaticFormats: ['srt'],
       segmentedAlignment: false,
-      engines: [{ name: 'mvforge-audio-activity', version: 'mvforge-audio-activity-v1' }],
+      engines: [{ name: 'mvforge-audio-activity', version: 'audio-activity-correlation-v1' }],
     });
     vi.mocked(api.previewSubtitleSync).mockResolvedValue(automaticProposal);
     const { onApply } = renderDialog();
