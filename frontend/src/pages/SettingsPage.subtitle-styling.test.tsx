@@ -57,7 +57,94 @@ describe('subtitle styling settings', () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
-  it('deduplicates saved colors, bounds the visible palette, and renders all preview roles/backgrounds', async () => {
+  it('shows persisted numeric values, switches presets, and previews ASS units and zero outline/shadow', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const value = subtitleStylingValue({ subtitleStyling: { builtInOverrides: {
+      MVF_Default: { fontSize: 34, outlineWidth: 0, shadowDepth: 0 },
+      MVF_Top: { fontSize: 28, outlineWidth: 3, shadowDepth: 1 },
+    } } });
+    render(<SubtitleStylingCard value={value} saving={false} onSave={onSave} />);
+
+    const fontSize = screen.getByRole('spinbutton', { name: 'Font size (ASS units)' }) as HTMLInputElement;
+    const outline = screen.getByRole('spinbutton', { name: 'Outline width (ASS units)' }) as HTMLInputElement;
+    const shadow = screen.getByRole('spinbutton', { name: 'Shadow depth (ASS units)' }) as HTMLInputElement;
+    expect(fontSize.value).toBe('34');
+    expect(outline.value).toBe('0');
+    expect(shadow.value).toBe('0');
+    expect(screen.getByText(/Saved: 34 ASS units/)).toBeTruthy();
+    expect(screen.getAllByText(/Saved: 0 · draft: 0/)).toHaveLength(2);
+    expect(screen.getByText(/384×288 PlayRes reference/)).toBeTruthy();
+    expect(screen.getAllByText('We need to leave before sunrise.')).toHaveLength(2);
+
+    const darkPreview = screen.getByRole('img', { name: 'Dark background dialogue preview' });
+    const previewText = darkPreview.querySelector('text');
+    expect(previewText?.getAttribute('font-size')).toBe('34');
+    expect(previewText?.getAttribute('stroke-width')).toBe('0');
+    expect(previewText?.getAttribute('filter')).toBeNull();
+
+    await user.click(screen.getByRole('combobox', { name: 'Style preset' }));
+    await user.click(screen.getByRole('option', { name: /Top/ }));
+    expect(fontSize.value).toBe('28');
+    expect(outline.value).toBe('3');
+    expect(shadow.value).toBe('1');
+    expect(darkPreview.querySelector('text')?.getAttribute('stroke-width')).toBe('6');
+    expect(darkPreview.querySelector('text')?.getAttribute('filter')).toBe('url(#subtitle-shadow-dark)');
+    expect(darkPreview.querySelector('filter feDropShadow')?.getAttribute('dx')).toBe('1');
+    await user.clear(fontSize);
+    await user.type(fontSize, '42');
+    await user.clear(outline);
+    await user.type(outline, '0');
+    await user.clear(shadow);
+    await user.type(shadow, '0');
+    await user.click(screen.getByRole('switch', { name: 'Auto font size (fixed 20-unit fallback)' }));
+    await user.click(screen.getByRole('switch', { name: 'Bold' }));
+    await user.click(screen.getByRole('button', { name: 'Use #00FFFF' }));
+
+    expect(screen.getByText(/Auto font size is a legacy fixed fallback/)).toBeTruthy();
+    expect(screen.getByText(/draft output: 20 ASS units/)).toBeTruthy();
+    const updatedPreviewText = darkPreview.querySelector('text');
+    expect(updatedPreviewText?.getAttribute('font-size')).toBe('20');
+    expect(updatedPreviewText?.getAttribute('stroke-width')).toBe('0');
+    expect(updatedPreviewText?.getAttribute('font-weight')).toBe('700');
+    expect(updatedPreviewText?.getAttribute('fill')).toBe('#00FFFF');
+    expect(updatedPreviewText?.getAttribute('filter')).toBeNull();
+
+    await user.click(screen.getByRole('combobox', { name: 'Style preset' }));
+    await user.click(screen.getByRole('option', { name: /Default/ }));
+    expect(fontSize.value).toBe('34');
+    await user.click(screen.getByRole('combobox', { name: 'Style preset' }));
+    await user.click(screen.getByRole('option', { name: /Top/ }));
+    await user.click(screen.getByRole('button', { name: 'Save Subtitle Styling' }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      builtInOverrides: expect.objectContaining({
+        MVF_Top: expect.objectContaining({ fontSize: 42, autoFontSize: true, outlineWidth: 0, shadowDepth: 0, bold: true, primaryColor: '#00FFFF' }),
+      }),
+    }));
+  });
+
+  it('resets a local draft to defaults and saves only after explicit confirmation', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const value = subtitleStylingValue({ subtitleStyling: {
+      enabled: true,
+      builtInOverrides: { MVF_Default: { fontSize: 44, outlineWidth: 8, shadowDepth: 5 } },
+      customPresets: [{ id: 'custom_saved', displayName: 'Saved custom', primaryColor: '#FFFFFF', outlineColor: '#000000', shadowBackColor: '#000000', opacity: 100, fontFamily: 'Arial', fontSize: 20, autoFontSize: false, bold: false, outlineWidth: 2, shadowDepth: 0, alignmentBehavior: 'bottom', provenance: 'custom' }],
+    } });
+    render(<SubtitleStylingCard value={value} saving={false} onSave={onSave} />);
+
+    await user.click(screen.getByRole('button', { name: 'Reset to defaults' }));
+    expect(screen.getByRole('switch', { name: 'Enable position-aware styling' })).toHaveProperty('checked', false);
+    expect(screen.getByRole('spinbutton', { name: 'Font size (ASS units)' })).toHaveProperty('value', '20');
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Reset to defaults' })).toHaveProperty('disabled', true);
+
+    await user.click(screen.getByRole('button', { name: 'Save Subtitle Styling' }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ enabled: false, builtInOverrides: {}, customPresets: [] }));
+  });
+
+  it('deduplicates saved colors, bounds the visible palette, and renders dialogue on light and dark backgrounds', async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
     render(<SubtitleStylingCard value={subtitleStylingValue(undefined)} saving={false} onSave={onSave} />);
@@ -65,9 +152,9 @@ describe('subtitle styling settings', () => {
     await user.click(screen.getByRole('button', { name: 'Save current color' }));
     expect(screen.getByText('Saved colors (1/32)')).toBeTruthy();
     expect(screen.getByText('Recent colors (0/12): none')).toBeTruthy();
-    for (const label of ['Dark background', 'Light background', 'Mixed background', 'Top note', 'Dialogue', 'Lyrics', 'Sign']) {
-      expect(screen.getAllByText(label).length).toBeGreaterThan(0);
-    }
+    expect(screen.getByText('Dark background')).toBeTruthy();
+    expect(screen.getByText('Light background')).toBeTruthy();
+    expect(screen.getAllByText('We need to leave before sunrise.')).toHaveLength(2);
     await user.click(screen.getByRole('button', { name: 'Use #FFFF00' }));
     expect(onSave).not.toHaveBeenCalled();
   });
