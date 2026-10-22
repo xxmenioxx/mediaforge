@@ -357,25 +357,53 @@ func validateRemuxedTrackInventory(expected []TrackMaintenanceStream, actual Tra
 }
 
 func activeAssetMaintenance(db *gorm.DB, path string) (bool, error) {
+	active, _, err := activeAssetMaintenanceWithMetrics(db, path)
+	return active, err
+}
+
+type assetMaintenanceCheckMetrics struct {
+	filesystemChecks   int
+	filesystemDuration time.Duration
+}
+
+func activeAssetMaintenanceWithMetrics(db *gorm.DB, path string) (bool, assetMaintenanceCheckMetrics, error) {
+	metrics := assetMaintenanceCheckMetrics{}
 	if db == nil || !db.Migrator().HasTable(&models.AssetMaintenanceOperation{}) {
-		return false, nil
+		return false, metrics, nil
 	}
 	var operations []models.AssetMaintenanceOperation
 	if err := db.Where("status IN ?", []string{maintenanceStatusQueued, maintenanceStatusRunning}).Find(&operations).Error; err != nil {
-		return false, err
+		return false, metrics, err
 	}
-	requested, statErr := os.Stat(filepath.Clean(path))
+	cleanPath := filepath.Clean(path)
 	for _, operation := range operations {
-		if filepath.Clean(operation.AssetPath) == filepath.Clean(path) {
-			return true, nil
-		}
-		if statErr == nil {
-			if candidate, err := os.Stat(operation.AssetPath); err == nil && os.SameFile(requested, candidate) {
-				return true, nil
-			}
+		if filepath.Clean(operation.AssetPath) == cleanPath {
+			return true, metrics, nil
 		}
 	}
-	return false, nil
+	if len(operations) == 0 {
+		return false, metrics, nil
+	}
+	started := time.Now()
+	requested, statErr := os.Stat(cleanPath)
+	metrics.filesystemChecks++
+	metrics.filesystemDuration += time.Since(started)
+	if statErr != nil {
+		return false, metrics, nil
+	}
+	for _, operation := range operations {
+		if filepath.Clean(operation.AssetPath) == cleanPath {
+			continue
+		}
+		started = time.Now()
+		candidate, err := os.Stat(operation.AssetPath)
+		metrics.filesystemChecks++
+		metrics.filesystemDuration += time.Since(started)
+		if err == nil && os.SameFile(requested, candidate) {
+			return true, metrics, nil
+		}
+	}
+	return false, metrics, nil
 }
 
 type removeTracksInput struct {

@@ -1,8 +1,8 @@
 import type { Asset, AssetGroup, AssetInventory, AssetMetadataState, AssetSourceGroup, AssetConversionOverrideState } from '../api/types';
 
 export type AssetInventoryPatch = {
-  metadata: AssetMetadataState;
-  conversion: AssetConversionOverrideState;
+  metadata?: AssetMetadataState;
+  conversion?: AssetConversionOverrideState;
 };
 
 export function patchAssetInventoryAsset(
@@ -10,6 +10,7 @@ export function patchAssetInventoryAsset(
   path: string,
   patch: AssetInventoryPatch,
 ): AssetInventory {
+  if (patch.metadata === undefined && patch.conversion === undefined) return inventory;
   const normalizedPath = normalizePath(path);
   let changed = false;
 
@@ -75,7 +76,11 @@ function patchAssets(
   const next = assets.map((asset) => {
     if (normalizePath(asset.path) !== path) return asset;
     changed = true;
-    return { ...asset, metadata: patch.metadata, conversion: patch.conversion };
+    return {
+      ...asset,
+      ...(patch.metadata ? { metadata: patch.metadata } : {}),
+      ...(patch.conversion ? { conversion: patch.conversion } : {}),
+    };
   });
   return { assets: changed ? next : assets, changed };
 }

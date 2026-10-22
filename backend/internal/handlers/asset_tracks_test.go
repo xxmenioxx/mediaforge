@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +19,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func assetTracksPatchRequest(t *testing.T, router http.Handler, path, body string) *httptest.ResponseRecorder {
+func assetTracksPatchRequest(t testing.TB, router http.Handler, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPatch, "/api/assets/tracks?path="+url.QueryEscape(path), bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -26,7 +28,7 @@ func assetTracksPatchRequest(t *testing.T, router http.Handler, path, body strin
 	return response
 }
 
-func newAssetTracksTestServer(t *testing.T) (*gorm.DB, *gin.Engine, string) {
+func newAssetTracksTestServer(t testing.TB) (*gorm.DB, *gin.Engine, string) {
 	t.Helper()
 	db, router, root := newAssetEditTestServer(t)
 	if err := db.AutoMigrate(&models.QueueJob{}, &models.AssetMaintenanceOperation{}); err != nil {
@@ -67,6 +69,84 @@ func TestAssetTracksPatchChangesOnlySuppliedTracksFields(t *testing.T) {
 	}
 	if got.VideoCodec != "x265" || got.QualityValue != 18 {
 		t.Fatalf("unrelated conversion values changed: codec=%q quality=%d", got.VideoCodec, got.QualityValue)
+	}
+}
+
+func TestAssetTracksPatchConcurrentDifferentAssetsPreservesEntries(t *testing.T) {
+	db, router, root := newAssetTracksTestServer(t)
+	pathA := filepath.Join(root, "a.mkv")
+	pathB := filepath.Join(root, "b.mkv")
+	writeTestFile(t, pathA, "a")
+	writeTestFile(t, pathB, "b")
+	otherPath := filepath.Join(root, "other.mkv")
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
+		filepath.Clean(pathA):     {VideoCodec: "x265", KeepAudioStreams: []int{0}},
+		filepath.Clean(pathB):     {VideoCodec: "x265", KeepSubtitleStreams: []int{0}},
+		filepath.Clean(otherPath): {VideoCodec: "x265", QualityValue: 18},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	inputs := []struct {
+		path string
+		body string
+	}{
+		{pathA, `{"keepAudioStreams":[1]}`},
+		{pathB, `{"keepSubtitleStreams":[2]}`},
+	}
+	responses := make([]*httptest.ResponseRecorder, len(inputs))
+	var wait sync.WaitGroup
+	for index, input := range inputs {
+		wait.Add(1)
+		go func(index int, input struct{ path, body string }) {
+			defer wait.Done()
+			<-start
+			responses[index] = assetTracksPatchRequest(t, router, input.path, input.body)
+		}(index, input)
+	}
+	close(start)
+	wait.Wait()
+	for index, response := range responses {
+		if response.Code != http.StatusOK {
+			t.Fatalf("request %d status=%d body=%s", index, response.Code, response.Body.String())
+		}
+	}
+
+	entries := assetConversionOverrides(db)
+	if !reflect.DeepEqual(entries[filepath.Clean(pathA)].KeepAudioStreams, []int{1}) || len(entries[filepath.Clean(pathA)].KeepSubtitleStreams) != 0 {
+		t.Fatalf("asset A conversion was lost or changed: %#v", entries[filepath.Clean(pathA)])
+	}
+	if !reflect.DeepEqual(entries[filepath.Clean(pathB)].KeepSubtitleStreams, []int{2}) || len(entries[filepath.Clean(pathB)].KeepAudioStreams) != 0 {
+		t.Fatalf("asset B conversion was lost or changed: %#v", entries[filepath.Clean(pathB)])
+	}
+	if entries[filepath.Clean(otherPath)].QualityValue != 18 {
+		t.Fatalf("unrelated conversion entry was lost: %#v", entries[filepath.Clean(otherPath)])
+	}
+}
+
+func TestAssetConversionOverridesBulkDecodeSkipsMalformedEntries(t *testing.T) {
+	db, _, _ := newAssetEditTestServer(t)
+	validA := filepath.Clean("/media/a.mkv")
+	malformed := filepath.Clean("/media/b.mkv")
+	validC := filepath.Clean("/media/c.mkv")
+	if err := db.Create(&models.AppSetting{
+		Key: "assetConversionOverrides",
+		Value: models.JSONMap{"entries": map[string]any{
+			validA:    map[string]any{"keepAudioStreams": []int{1}},
+			malformed: map[string]any{"keepAudioStreams": "invalid"},
+			validC:    map[string]any{"keepSubtitleStreams": []int{3}},
+		}},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	entries := assetConversionOverrides(db)
+	if !reflect.DeepEqual(entries[validA].KeepAudioStreams, []int{1}) || !reflect.DeepEqual(entries[validC].KeepSubtitleStreams, []int{3}) {
+		t.Fatalf("valid entries were not retained: %#v", entries)
+	}
+	if _, ok := entries[malformed]; ok {
+		t.Fatalf("malformed conversion entry was retained: %#v", entries[malformed])
 	}
 }
 
@@ -244,6 +324,39 @@ func TestAssetTracksPatchRejectsActiveMaintenanceWithoutMutation(t *testing.T) {
 	}
 	if got := assetConversionOverrides(db)[cleanPath]; !reflect.DeepEqual(got, original) {
 		t.Fatalf("active maintenance mutated conversion overrides: before=%#v after=%#v", original, got)
+	}
+}
+
+func TestAssetTracksPatchRejectsActiveMaintenanceForSameFileAlias(t *testing.T) {
+	db, router, root := newAssetTracksTestServer(t)
+	path := filepath.Join(root, "movie.mkv")
+	alias := filepath.Join(root, "movie-alias.mkv")
+	writeTestFile(t, path, "media")
+	if err := os.Link(path, alias); err != nil {
+		t.Skipf("hard links are unavailable in this test filesystem: %v", err)
+	}
+	operation := models.AssetMaintenanceOperation{
+		ID: "active-tracks-patch-maintenance-alias", OperationType: "remove_tracks", AssetPath: alias,
+		Status: maintenanceStatusRunning, Phase: "rewriting",
+	}
+	if err := db.Create(&operation).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := assetTracksPatchRequest(t, router, path, `{"keepAudioStreams":[1]}`)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "asset has an active maintenance operation and Tracks cannot be modified") {
+		t.Fatalf("tracks patch status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestActiveAssetMaintenanceSkipsFilesystemChecksWhenNoOperations(t *testing.T) {
+	db, _, root := newAssetTracksTestServer(t)
+	active, metrics, err := activeAssetMaintenanceWithMetrics(db, filepath.Join(root, "missing.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active || metrics.filesystemChecks != 0 {
+		t.Fatalf("no-operation maintenance check = active:%t metrics:%#v, want no filesystem checks", active, metrics)
 	}
 }
 

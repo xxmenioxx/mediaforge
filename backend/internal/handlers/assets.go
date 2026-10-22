@@ -7788,14 +7788,29 @@ func assetConversionOverrides(db *gorm.DB) map[string]AssetConversionOverrideSta
 		return map[string]AssetConversionOverrideState{}
 	}
 
+	encoded, err := json.Marshal(rawEntries)
+	if err != nil {
+		return map[string]AssetConversionOverrideState{}
+	}
 	entries := map[string]AssetConversionOverrideState{}
-	for rawPath, rawValue := range rawEntries {
-		bytes, err := json.Marshal(rawValue)
-		if err != nil {
-			continue
+	decoded := map[string]AssetConversionOverrideState{}
+	if err := json.Unmarshal(encoded, &decoded); err == nil {
+		for rawPath, override := range decoded {
+			override.ProcessingMode = ""
+			entries[filepath.Clean(rawPath)] = override
 		}
+		return entries
+	}
+
+	// Retain valid entries when one malformed legacy entry prevents typed bulk
+	// decoding, matching the previous per-entry skip behavior.
+	var rawValues map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &rawValues); err != nil {
+		return entries
+	}
+	for rawPath, rawValue := range rawValues {
 		var override AssetConversionOverrideState
-		if err := json.Unmarshal(bytes, &override); err != nil {
+		if err := json.Unmarshal(rawValue, &override); err != nil {
 			continue
 		}
 		// Work mode is no longer a per-asset setting. Queue selection derives
@@ -7815,16 +7830,11 @@ func saveAssetConversionOverrides(db *gorm.DB, overrides map[string]AssetConvers
 		entries[filepath.Clean(path)] = override
 	}
 
-	setting := models.AppSetting{}
-	value := models.JSONMap{"entries": entries}
-	if err := db.First(&setting, "key = ?", "assetConversionOverrides").Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return db.Create(&models.AppSetting{Key: "assetConversionOverrides", Value: value}).Error
-		}
-		return err
-	}
-	setting.Value = value
-	return db.Save(&setting).Error
+	setting := models.AppSetting{Key: "assetConversionOverrides", Value: models.JSONMap{"entries": entries}}
+	return db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+	}).Create(&setting).Error
 }
 
 func resetRecoveredAssetOverrides(db *gorm.DB, paths ...string) error {
