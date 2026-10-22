@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -85,6 +86,56 @@ func TestApplySubtitleTranslationQualityTextPreservesSRTCueStructure(t *testing.
 	cues := parseSRTBitmapSubtitleCues(string(updated))
 	if len(cues) != 2 || cues[0].SourceOrdinal != 0 || cues[1].SourceOrdinal != 1 || cues[0].Text != "Hola" || cues[1].Text != "Hasta luego" || cues[1].Start != 3 || cues[1].End != 4 {
 		t.Fatalf("edit changed cue structure: %#v", cues)
+	}
+}
+
+func TestApplySubtitleTranslationQualityTextPreservesASSCueStructure(t *testing.T) {
+	content := []byte("[Script Info]\nTitle: Quality edit fixture\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Custom,Arial,42,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,1,1,2,0,8,20,30,40,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 2,0:00:01.25,0:00:03.50,Custom,Speaker,11,12,13,Effect,{\\an8}Hola\\Nsegunda línea{\\pos(100,200)}\nDialogue: 0,0:00:04.00,0:00:05.00,Default,,0,0,0,,Otro\n")
+	sourceIdentity := "external:/media/movie.ass"
+	before, err := parseTranslationASSDocument(translationRepresentationASS, string(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeCues := before.TranslationSourceCues(sourceIdentity, "")
+	if len(beforeCues) != 2 {
+		t.Fatalf("unexpected ASS fixture cues: %#v", beforeCues)
+	}
+	beforeEnvelopes := translationCueEnvelopesForSourceCues(sourceIdentity, translationRepresentationASS, "", beforeCues)
+	finding := subtitleTranslationQualityFinding{CueID: beforeEnvelopes[0].StableID, SourceOrdinal: 0}
+	editText := strings.Replace(beforeCues[0].Text, "Hola", "Buenos días", 1)
+	updated, err := applySubtitleTranslationQualityText(translationRepresentationASS, subtitleTranslationSourceResponse{SourceIdentity: sourceIdentity}, content, finding, editText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(updated)
+	for _, want := range []string{
+		"Style: Custom,Arial,42,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,1,1,2,0,8,20,30,40,1",
+		"Dialogue: 2,0:00:01.25,0:00:03.50,Custom,Speaker,11,12,13,Effect,{\\an8}Buenos días\\Nsegunda línea{\\pos(100,200)}",
+		"Dialogue: 0,0:00:04.00,0:00:05.00,Default,,0,0,0,,Otro",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("ASS edit lost protected structure %q in output:\n%s", want, output)
+		}
+	}
+	after, err := parseTranslationASSDocument(translationRepresentationASS, output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterCues := after.TranslationSourceCues(sourceIdentity, "")
+	if len(beforeCues) != 2 || len(afterCues) != 2 {
+		t.Fatalf("ASS edit changed cue count: before=%#v after=%#v", beforeCues, afterCues)
+	}
+	afterEnvelopes := translationCueEnvelopesForSourceCues(sourceIdentity, translationRepresentationASS, "", afterCues)
+	for i := range beforeCues {
+		if beforeCues[i].SourceOrdinal != afterCues[i].SourceOrdinal || beforeCues[i].Start != afterCues[i].Start || beforeCues[i].End != afterCues[i].End {
+			t.Fatalf("ASS edit changed cue identity or timestamps at %d: before=%#v after=%#v", i, beforeCues[i], afterCues[i])
+		}
+		if beforeEnvelopes[i].StableID != afterEnvelopes[i].StableID {
+			t.Fatalf("ASS edit changed stable cue ID at %d: before=%q after=%q", i, beforeEnvelopes[i].StableID, afterEnvelopes[i].StableID)
+		}
+	}
+	if afterCues[0].Text != editText || afterCues[1].Text != beforeCues[1].Text {
+		t.Fatalf("ASS edit changed the wrong cue text: before=%#v after=%#v", beforeCues, afterCues)
 	}
 }
 
