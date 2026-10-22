@@ -1,9 +1,13 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +16,7 @@ import (
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
+	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -94,6 +99,185 @@ func TestFixedOffsetSubtitleSyncProposalRequiresReferenceAndPreviewsBoundedCues(
 	cancel()
 	if _, err := engine.Analyze(cancelled, input); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation, got %v", err)
+	}
+}
+
+func TestSubtitleSyncCapabilityReportsWhyAutomaticAlignmentIsUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newSubtitleSyncTestContext(t, nil)
+	(AssetHandler{}).SubtitleSyncCapability(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected capability status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var capability struct {
+		Enabled                  bool   `json:"enabled"`
+		FixedOffset              bool   `json:"fixedOffset"`
+		AutomaticAlignment       bool   `json:"automaticAlignment"`
+		AutomaticAlignmentReason string `json:"automaticAlignmentReason"`
+		SegmentedAlignment       bool   `json:"segmentedAlignment"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &capability); err != nil {
+		t.Fatal(err)
+	}
+	if !capability.Enabled || !capability.FixedOffset || capability.AutomaticAlignment || capability.SegmentedAlignment || capability.AutomaticAlignmentReason != subtitleSyncAutomaticUnavailableReason {
+		t.Fatalf("unexpected subtitle sync capability: %#v", capability)
+	}
+}
+
+func TestSubtitleSyncPreviewIsReadOnlyAndApplyUsesReviewedProposal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "episode.mkv")
+	subtitlePath := filepath.Join(root, "episode.es.srt")
+	original := "1\n00:00:01,000 --> 00:00:02,000\nHola\n"
+	expected := "1\n00:00:02,000 --> 00:00:03,000\nHola\n"
+	writeTestFile(t, mediaPath, "media fixture")
+	writeTestFile(t, subtitlePath, original)
+	installSubtitleSyncFFProbe(t, root)
+	db := translationLibrarySourceTestDB(t, root, mediaPath)
+	if err := db.AutoMigrate(&models.SubtitleSyncProvenance{}); err != nil {
+		t.Fatal(err)
+	}
+	handler := AssetHandler{db: db}
+
+	previewInput := map[string]any{
+		"path": mediaPath, "subtitlePath": subtitlePath, "referenceAudioStreamIndex": 1, "offsetMilliseconds": 1000,
+	}
+	previewContext, previewRecorder := newSubtitleSyncTestContext(t, previewInput)
+	handler.AnalyzeSubtitleSync(previewContext)
+	if previewRecorder.Code != http.StatusOK {
+		t.Fatalf("preview failed with %d: %s", previewRecorder.Code, previewRecorder.Body.String())
+	}
+	var proposal SubtitleSyncProposal
+	if err := json.Unmarshal(previewRecorder.Body.Bytes(), &proposal); err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Model != "fixed_offset" || proposal.OffsetMilliseconds != 1000 || proposal.ReferenceAudio.StreamIndex != 1 || len(proposal.Preview) != 1 || proposal.Preview[0].ProposedStartMs != 2000 {
+		t.Fatalf("preview omitted the requested decision evidence: %#v", proposal)
+	}
+	current, err := os.ReadFile(subtitlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(current) != original {
+		t.Fatalf("preview mutated the subtitle: %s", current)
+	}
+
+	invalidInput := map[string]any{
+		"path": mediaPath, "subtitlePath": subtitlePath, "referenceAudioStreamIndex": 1, "offsetMilliseconds": -2000,
+	}
+	invalidContext, invalidRecorder := newSubtitleSyncTestContext(t, invalidInput)
+	handler.AnalyzeSubtitleSync(invalidContext)
+	if invalidRecorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected invalid timing to fail closed, got %d: %s", invalidRecorder.Code, invalidRecorder.Body.String())
+	}
+	current, err = os.ReadFile(subtitlePath)
+	if err != nil || string(current) != original {
+		t.Fatalf("invalid preview changed the source: content=%q err=%v", current, err)
+	}
+
+	applyInput := map[string]any{
+		"path": mediaPath, "subtitlePath": subtitlePath, "referenceAudioStreamIndex": 1, "offsetMilliseconds": 1000,
+		"sourceRevision": proposal.SourceRevision, "proposalId": proposal.ProposalID,
+	}
+	applyContext, applyRecorder := newSubtitleSyncTestContext(t, applyInput)
+	handler.StartSubtitleSync(applyContext)
+	if applyRecorder.Code != http.StatusAccepted {
+		t.Fatalf("apply failed with %d: %s", applyRecorder.Code, applyRecorder.Body.String())
+	}
+	var started struct {
+		OperationID string `json:"operationId"`
+	}
+	if err := json.Unmarshal(applyRecorder.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	if started.OperationID == "" {
+		t.Fatal("apply did not return an operation identity")
+	}
+	t.Cleanup(func() {
+		subtitleExtractionOperations.Lock()
+		if operation := subtitleExtractionOperations.items[started.OperationID]; operation != nil && operation.cancel != nil {
+			operation.cancel()
+		}
+		delete(subtitleExtractionOperations.items, started.OperationID)
+		subtitleExtractionOperations.Unlock()
+	})
+
+	deadline := time.NewTimer(5 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	for {
+		subtitleExtractionOperations.RLock()
+		operation := cloneSubtitleExtractionOperationSnapshot(subtitleExtractionOperations.items[started.OperationID])
+		subtitleExtractionOperations.RUnlock()
+		if operation.ID == "" {
+			t.Fatal("subtitle sync operation disappeared before completion")
+		}
+		if operation.Status != "running" {
+			if operation.Status != "completed" {
+				t.Fatalf("sync operation ended as %s: %s", operation.Status, operation.Error)
+			}
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("subtitle sync operation did not complete")
+		case <-ticker.C:
+		}
+	}
+	published, err := os.ReadFile(subtitlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(published) != expected {
+		t.Fatalf("apply did not use the reviewed proposal exactly: %q", published)
+	}
+	var provenance models.SubtitleSyncProvenance
+	if err := db.First(&provenance, "operation_id = ?", started.OperationID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if provenance.SourceRevision != proposal.SourceRevision || provenance.ReferenceAudioStreamID != proposal.ReferenceAudio.StreamID || provenance.OffsetMilliseconds != proposal.OffsetMilliseconds {
+		t.Fatalf("applied provenance does not match the reviewed proposal: %#v", provenance)
+	}
+}
+
+func TestStartSubtitleSyncRejectsStaleProposalWithoutMutation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "episode.mkv")
+	subtitlePath := filepath.Join(root, "episode.es.srt")
+	original := "1\n00:00:01,000 --> 00:00:02,000\nHola\n"
+	changed := "1\n00:00:01,000 --> 00:00:02,000\nEdited after preview\n"
+	writeTestFile(t, mediaPath, "media fixture")
+	writeTestFile(t, subtitlePath, original)
+	installSubtitleSyncFFProbe(t, root)
+	handler := AssetHandler{db: translationLibrarySourceTestDB(t, root, mediaPath)}
+	previewContext, previewRecorder := newSubtitleSyncTestContext(t, map[string]any{
+		"path": mediaPath, "subtitlePath": subtitlePath, "referenceAudioStreamIndex": 1, "offsetMilliseconds": 1000,
+	})
+	handler.AnalyzeSubtitleSync(previewContext)
+	if previewRecorder.Code != http.StatusOK {
+		t.Fatalf("preview failed with %d: %s", previewRecorder.Code, previewRecorder.Body.String())
+	}
+	var proposal SubtitleSyncProposal
+	if err := json.Unmarshal(previewRecorder.Body.Bytes(), &proposal); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subtitlePath, []byte(changed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applyContext, applyRecorder := newSubtitleSyncTestContext(t, map[string]any{
+		"path": mediaPath, "subtitlePath": subtitlePath, "referenceAudioStreamIndex": 1, "offsetMilliseconds": 1000,
+		"sourceRevision": proposal.SourceRevision, "proposalId": proposal.ProposalID,
+	})
+	handler.StartSubtitleSync(applyContext)
+	if applyRecorder.Code != http.StatusConflict {
+		t.Fatalf("expected stale proposal rejection, got %d: %s", applyRecorder.Code, applyRecorder.Body.String())
+	}
+	actual, err := os.ReadFile(subtitlePath)
+	if err != nil || string(actual) != changed {
+		t.Fatalf("stale proposal changed the current subtitle: content=%q err=%v", actual, err)
 	}
 }
 
@@ -215,6 +399,121 @@ func TestPublishSubtitleSyncStageRejectsStaleSourceWithoutReplacement(t *testing
 	}
 }
 
+func TestPublishSubtitleSyncStageRejectsStaleAudioWithoutReplacement(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "episode.mkv")
+	subtitlePath := filepath.Join(root, "episode.es.srt")
+	original := "1\n00:00:01,000 --> 00:00:02,000\nOriginal\n"
+	writeTestFile(t, mediaPath, "media fixture")
+	writeTestFile(t, subtitlePath, original)
+	installSubtitleSyncFFProbe(t, root)
+	db, err := gorm.Open(sqlite.Open("file:subtitle-sync-stale-audio-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.SubtitleSyncProvenance{}); err != nil {
+		t.Fatal(err)
+	}
+	handler := AssetHandler{db: db}
+	source, err := resolveExternalSubtitleTranslationSource(mediaPath, subtitlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audio, err := resolveSubtitleSyncAudio(context.Background(), mediaPath, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := (fixedOffsetSubtitleSyncEngine{}).Analyze(context.Background(), SubtitleSyncAnalysisInput{
+		SubtitlePath: subtitlePath, SourceIdentity: source.SourceIdentity, SourceRevision: source.SourceRevision, Representation: "srt",
+		ReferenceAudio: audio, OffsetMilliseconds: 1000, Source: []byte(original),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := (fixedOffsetSubtitleSyncEngine{}).Apply(context.Background(), []byte(original), proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := os.MkdirTemp(root, ".mvforge-subtitle-sync-stale-audio-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(workspace)
+	stagePath := filepath.Join(workspace, "output.srt")
+	if err := os.WriteFile(stagePath, output, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probeResponse := `{"streams":[{"index":1,"id":"0x4","codec_type":"audio","codec_name":"aac","tags":{"language":"spa","title":"Spanish"}}]}`
+	probeScript := "#!/bin/sh\nprintf '%s\\n' '" + probeResponse + "'\n"
+	if err := os.WriteFile(filepath.Join(root, "ffprobe"), []byte(probeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.publishSubtitleSyncStage(context.Background(), "sync-stale-audio-operation", workspace, mediaPath, source, proposal, stagePath); !errors.Is(err, errTranslationSourceStale) {
+		t.Fatalf("expected stale audio identity error, got %v", err)
+	}
+	actual, err := os.ReadFile(subtitlePath)
+	if err != nil || string(actual) != original {
+		t.Fatalf("stale audio identity changed the current subtitle: content=%q err=%v", actual, err)
+	}
+	var count int64
+	if err := db.Model(&models.SubtitleSyncProvenance{}).Where("operation_id = ?", "sync-stale-audio-operation").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("stale audio identity persisted provenance: count=%d", count)
+	}
+}
+
+func TestPublishSubtitleSyncStageRollsBackWhenProvenanceWriteFails(t *testing.T) {
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "episode.mkv")
+	subtitlePath := filepath.Join(root, "episode.es.srt")
+	original := "1\n00:00:01,000 --> 00:00:02,000\nOriginal\n"
+	writeTestFile(t, mediaPath, "media fixture")
+	writeTestFile(t, subtitlePath, original)
+	installSubtitleSyncFFProbe(t, root)
+	db, err := gorm.Open(sqlite.Open("file:subtitle-sync-rollback-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := resolveExternalSubtitleTranslationSource(mediaPath, subtitlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audio, err := resolveSubtitleSyncAudio(context.Background(), mediaPath, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := (fixedOffsetSubtitleSyncEngine{}).Analyze(context.Background(), SubtitleSyncAnalysisInput{
+		SubtitlePath: subtitlePath, SourceIdentity: source.SourceIdentity, SourceRevision: source.SourceRevision, Representation: "srt",
+		ReferenceAudio: audio, OffsetMilliseconds: 1000, Source: []byte(original),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := (fixedOffsetSubtitleSyncEngine{}).Apply(context.Background(), []byte(original), proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := os.MkdirTemp(root, ".mvforge-subtitle-sync-rollback-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(workspace)
+	stagePath := filepath.Join(workspace, "output.srt")
+	if err := os.WriteFile(stagePath, output, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = (AssetHandler{db: db}).publishSubtitleSyncStage(context.Background(), "sync-provenance-failure", workspace, mediaPath, source, proposal, stagePath)
+	if err == nil {
+		t.Fatal("expected provenance persistence failure")
+	}
+	actual, readErr := os.ReadFile(subtitlePath)
+	if readErr != nil || string(actual) != original {
+		t.Fatalf("publication failure did not restore the original subtitle: content=%q err=%v", actual, readErr)
+	}
+}
+
 func installSubtitleSyncFFProbe(t *testing.T, directory string) {
 	t.Helper()
 	probePath := filepath.Join(directory, "ffprobe")
@@ -223,6 +522,19 @@ func installSubtitleSyncFFProbe(t *testing.T, directory string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func newSubtitleSyncTestContext(t *testing.T, input any) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	payload, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/assets/subtitle-sync", bytes.NewReader(payload))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	return ctx, recorder
 }
 
 func TestSubtitleSyncProvenanceTimesAreWrittenInUTC(t *testing.T) {

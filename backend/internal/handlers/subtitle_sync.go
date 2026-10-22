@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	subtitleSyncEngineName    = "manual"
-	subtitleSyncEngineVersion = "fixed-offset-v1"
-	maxSubtitleSyncOffsetMs   = int64(12 * 60 * 60 * 1000)
-	maxSubtitleSyncPreview    = 12
+	subtitleSyncEngineName                 = "manual"
+	subtitleSyncEngineVersion              = "fixed-offset-v1"
+	subtitleSyncAutomaticUnavailableReason = "Automatic alignment is disabled until resource use is bounded for supported NAS deployments."
+	maxSubtitleSyncOffsetMs                = int64(12 * 60 * 60 * 1000)
+	maxSubtitleSyncPreview                 = 12
 )
 
 type SubtitleSyncAudioReference struct {
@@ -183,7 +184,8 @@ type subtitleSyncOperationView struct {
 func (h AssetHandler) SubtitleSyncCapability(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"enabled": true, "fixedOffset": true, "automaticAlignment": false, "segmentedAlignment": false,
-		"engines": []gin.H{{"name": subtitleSyncEngineName, "version": subtitleSyncEngineVersion}},
+		"automaticAlignmentReason": subtitleSyncAutomaticUnavailableReason,
+		"engines":                  []gin.H{{"name": subtitleSyncEngineName, "version": subtitleSyncEngineVersion}},
 	})
 }
 

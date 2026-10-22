@@ -749,6 +749,7 @@ export type SubtitleSyncCapability = {
   enabled: boolean;
   fixedOffset: boolean;
   automaticAlignment: boolean;
+  automaticAlignmentReason?: string;
   segmentedAlignment: boolean;
   engines: Array<{ name: string; version: string }>;
 };

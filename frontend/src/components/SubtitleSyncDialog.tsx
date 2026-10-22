@@ -152,7 +152,7 @@ export function SubtitleSyncDialog({
                 helperText={subtitle.format === 'srt' ? 'Positive values move cues later; negative values move them earlier.' : 'ASS/SSA use centisecond timestamps, so offsets must use 10 ms increments.'}
               />
               {capability.data && !capability.data.automaticAlignment ? (
-                <Alert severity="info">Automatic alignment is unavailable on this server. Fixed offset is available without an external engine.</Alert>
+                <Alert severity="info">{capability.data.automaticAlignmentReason || 'Automatic alignment is unavailable on this server.'} Fixed offset remains available without an external engine.</Alert>
               ) : null}
               {capability.isLoading ? <LinearProgress /> : null}
               {capability.isError ? <Alert severity="warning">{errorMessage(capability.error)}</Alert> : null}

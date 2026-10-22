@@ -89,6 +89,7 @@ describe('SubtitleSyncDialog', () => {
       enabled: true,
       fixedOffset: true,
       automaticAlignment: false,
+      automaticAlignmentReason: 'Automatic alignment is disabled until resource use is bounded for supported NAS deployments.',
       segmentedAlignment: false,
       engines: [],
     });
@@ -102,7 +103,7 @@ describe('SubtitleSyncDialog', () => {
     const analyzeButton = await screen.findByRole('button', { name: 'Preview offset' });
     expect(analyzeButton).toHaveProperty('disabled', true);
     expect(screen.queryByRole('button', { name: 'Apply Sync' })).toBeNull();
-    expect(screen.getByText(/Automatic alignment is unavailable/)).toBeTruthy();
+    expect(screen.getByText(/Automatic alignment is disabled until resource use is bounded/)).toBeTruthy();
 
     await user.click(screen.getByRole('combobox', { name: 'Reference audio' }));
     await user.click(await screen.findByRole('option', { name: '#2 · spa · AC3 · Spanish 5.1' }));
