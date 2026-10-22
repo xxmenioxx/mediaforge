@@ -23,13 +23,11 @@ import {
   RadioGroup,
   Stack,
   Switch,
-  Tab,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableRow,
-  Tabs,
   TextField,
   Tooltip,
   Typography,
@@ -42,18 +40,42 @@ import ArticleIcon from '@mui/icons-material/Article';
 import InfoIcon from '@mui/icons-material/Info';
 import SaveIcon from '@mui/icons-material/Save';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { Link as RouterLink, useSearchParams } from 'react-router-dom';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { Link as RouterLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import type { Dispatch, SetStateAction } from 'react';
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
-import { AssetDefaultsCard } from '../components/AssetDefaultsCard';
-import { JellyfinSettingsCard } from '../components/JellyfinSettingsCard';
 import { ValidationPolicySettingsCard } from '../components/ValidationPolicySettingsCard';
 import { TestEncodeSettingsDomain } from './TestEncodeSettingsDomain';
 import { LegacyAnalysisRecords } from '../components/LegacyAnalysisRecords';
-import type { AppSetting, HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
-import { defaultMVForgePreferences, getMVForgePreferences } from '../mvforgePreferences';
+import { AdvancedSettings } from './settings/AdvancedSettings';
+import { GeneralSettingsDomain } from './settings/GeneralSettings';
+import { ProvidersIntegrationsSettingsDomain } from './settings/ProvidersIntegrationsSettings';
+import { AssetDefaultsSettingsDomain } from './settings/AssetDefaultsSettings';
+import { ArchiveSettingsDomain } from './settings/ArchiveSettings';
+import { AnalysisSettingsDomain, analysisPolicyValue, profileSampleEstimatePolicyValue } from './settings/AnalysisSettings';
+import type { AnalysisMode, AnalysisPolicyValue, ProfileSampleEstimatePolicyValue } from './settings/AnalysisSettings';
+import {
+  resolveSettingsSection,
+  SettingsSectionHeader,
+  SettingsSidebar,
+  settingsSectionDefinitions,
+  type SettingsDraftSection,
+  type SettingsSection,
+} from './settings/SettingsNavigation';
+import { SettingsSaveBar, type SettingsSaveState } from './settings/SettingsSaveBar';
+import {
+  dirtySettingsDraftSections,
+  equalSettingsDrafts,
+  mergeSettingsDraftSection,
+  mergeSettingsDraftSections,
+  readStoredSettingsDraft,
+  settingsDraftSectionForRoute,
+  settingsDraftSnapshot,
+  settingsDraftStorageKey,
+} from './settings/settingsDrafts';
+import type { AppSetting, HousekeepingReport, Library, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
+import { getMVForgePreferences } from '../mvforgePreferences';
 import { encoderNamesForWorker } from '../utils/workerEncoders';
 import { liveRuntimeStateLabel, runtimeRefreshSuccessMessage } from '../utils/runtimeStatePresentation';
 import {
@@ -106,9 +128,6 @@ type WorkingHoursValue = {
 };
 type WorkspaceValue = { preferredMode: 'copy_to_work_disk' | 'direct_mode'; fallbackMode: 'wait' | 'direct_mode'; allowDirectMode: boolean; estimateRequiredSpace: boolean };
 type DirectPlayValue = { enabled: boolean; strategy: string; targetClients: string[]; minimumScore: number; enforcement: 'warn' | 'block' };
-type AnalysisMode = 'fast' | 'balanced' | 'thorough' | 'custom';
-type AnalysisPolicyValue = { mode: AnalysisMode; adaptiveAnalysis: boolean; earlyConfidenceEnabled: boolean; earlyConfidenceThreshold: number; initialWindows: number; maximumWindows: number; windowSeconds: number; positions: number[]; interlaceValidation: 'automatic' | 'always'; cropDepth: 'reduced' | 'normal' | 'full'; reuseSnapshots: boolean; incrementalRefresh: boolean; concurrentAssets: number };
-type ProfileSampleEstimatePolicyValue = { hardwareWindows: number; softwareWindows: number; operationTimeoutMinutes: number };
 type HousekeepingValue = {
   autoEnabled: boolean;
   intervalHours: number;
@@ -294,15 +313,10 @@ function remoteExecutorsValue(value: unknown): RemoteExecutorsValue {
   };
 }
 
-const settingsSections = ['overview', 'general', 'providers-integrations', 'pipeline', 'subtitles', 'analysis', 'runtime', 'assets', 'asset-defaults', 'archive', 'test-encode', 'operations'] as const;
-type SettingsSection = (typeof settingsSections)[number];
-
-function isSettingsSection(value: string | null): value is SettingsSection {
-  return value !== null && settingsSections.includes(value as SettingsSection);
-}
-
 export function SettingsPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
@@ -317,11 +331,25 @@ export function SettingsPage() {
     : undefined;
   const legacyAnalysisRecords = settings.data?.find((item) => item.key === 'analysisRecords')?.value.records;
   const hasLegacyAnalysisRecords = Array.isArray(legacyAnalysisRecords) && legacyAnalysisRecords.length > 0;
-  const [tab, setTab] = useState<'general' | 'advanced'>('general');
   const requestedSection = searchParams.get('section');
-  const [section, setSection] = useState<SettingsSection>(() => isSettingsSection(requestedSection) ? requestedSection : 'overview');
-  const changeSection = (next: SettingsSection) => { setSection(next); setSearchParams(next === 'overview' ? {} : { section: next }); };
-  const [form, setForm] = useState<SettingsForm>(initialSettings);
+  const storedDraftRef = useRef(readStoredSettingsDraft());
+  const restoredDraft = storedDraftRef.current;
+  const requestedSectionOrDraft = requestedSection ?? restoredDraft?.section ?? null;
+  const section: SettingsSection = requestedSectionOrDraft === 'pipeline' && location.hash === '#validation'
+    ? 'validation'
+    : resolveSettingsSection(requestedSectionOrDraft);
+  const [form, setForm] = useState<SettingsForm>(() => restoredDraft?.form ?? initialSettings);
+  const [savedForm, setSavedForm] = useState<SettingsForm>(() => restoredDraft?.baseline ?? initialSettings);
+  const [externalSettingsChanged, setExternalSettingsChanged] = useState(false);
+  const [advancedJsonError, setAdvancedJsonError] = useState<string>();
+  const formRef = useRef(form);
+  const savedFormRef = useRef(savedForm);
+  const dirtySections = dirtySettingsDraftSections(form, savedForm);
+  const activeDraftSection = settingsDraftSectionForRoute(section);
+  const activeDraftIsDirty = activeDraftSection ? dirtySections.includes(activeDraftSection) : false;
+  const changeSection = (next: SettingsSection) => {
+    navigate({ pathname: location.pathname, search: `?section=${next}`, hash: '' });
+  };
   const [showTypeForm, setShowTypeForm] = useState(false);
   const [editingTypeKey, setEditingTypeKey] = useState<string | null>(null);
   const [typeDraft, setTypeDraft] = useState<LibraryTypeDraft>(emptyDraft);
@@ -357,20 +385,75 @@ export function SettingsPage() {
   });
 
   const saveCoreSettings = useMutation({
-    mutationFn: async (nextForm: SettingsForm) => {
+    mutationFn: async ({
+      section: draftSection,
+      nextForm,
+      baseline,
+    }: {
+      section: SettingsDraftSection;
+      nextForm: SettingsForm;
+      baseline: SettingsForm;
+    }) => {
       const storageRoles = storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value);
-      storageRoles.originals_archive = { path: nextForm.paths.originalsArchivePath };
-      return api.updateSettingsBatch({ settings: [
-        { key: 'paths', value: nextForm.paths },
-        { key: 'storageRoles', value: storageRoles },
-        { key: 'workers', value: workerSettingsPayload(nextForm.workers) },
-        { key: 'pipelineAutomation', value: nextForm.pipelineAutomation },
-        { key: 'assetInventory', value: nextForm.assetInventory },
-        { key: 'cancellationPolicy', value: nextForm.cancellationPolicy },
-        { key: 'originalRetentionPolicy', value: nextForm.originalRetentionPolicy },
-        { key: 'assetTypes', value: { types: nextForm.assetTypes } },
-        { key: 'assetCategories', value: { categories: nextForm.assetCategories } },
-      ] });
+      const persistedPaths = { ...baseline.paths };
+      const pathSettings = draftSection === 'advanced'
+        ? nextForm.paths
+        : draftSection === 'archive'
+          ? { ...persistedPaths, originalsArchivePath: nextForm.paths.originalsArchivePath }
+          : draftSection === 'assets'
+            ? {
+                ...persistedPaths,
+                rawRoot: nextForm.paths.rawRoot,
+                libraryRoot: nextForm.paths.libraryRoot,
+                stagingPath: nextForm.paths.stagingPath,
+                asIsReportsPath: nextForm.paths.asIsReportsPath,
+                resultsReportsPath: nextForm.paths.resultsReportsPath,
+                logsPath: nextForm.paths.logsPath,
+              }
+            : undefined;
+      const batch: Array<{ key: string; value: Record<string, unknown> }> = [];
+
+      if (draftSection === 'pipeline') {
+        batch.push({ key: 'pipelineAutomation', value: nextForm.pipelineAutomation as unknown as Record<string, unknown> });
+      }
+      if (draftSection === 'runtime') {
+        batch.push({ key: 'workers', value: workerSettingsPayload(nextForm.workers) as unknown as Record<string, unknown> });
+      }
+      if (draftSection === 'assets') {
+        batch.push(
+          { key: 'paths', value: pathSettings as unknown as Record<string, unknown> },
+          { key: 'assetInventory', value: nextForm.assetInventory as unknown as Record<string, unknown> },
+          { key: 'assetTypes', value: { types: nextForm.assetTypes } },
+          { key: 'assetCategories', value: { categories: nextForm.assetCategories } },
+        );
+      }
+      if (draftSection === 'archive') {
+        storageRoles.originals_archive = { path: nextForm.paths.originalsArchivePath };
+        batch.push(
+          { key: 'paths', value: pathSettings as unknown as Record<string, unknown> },
+          { key: 'storageRoles', value: storageRoles as unknown as Record<string, unknown> },
+          { key: 'originalRetentionPolicy', value: nextForm.originalRetentionPolicy as unknown as Record<string, unknown> },
+        );
+      }
+      if (draftSection === 'operations') {
+        batch.push({ key: 'cancellationPolicy', value: nextForm.cancellationPolicy as unknown as Record<string, unknown> });
+      }
+      if (draftSection === 'advanced') {
+        storageRoles.originals_archive = { path: nextForm.paths.originalsArchivePath };
+        batch.push(
+          { key: 'paths', value: nextForm.paths as unknown as Record<string, unknown> },
+          { key: 'storageRoles', value: storageRoles as unknown as Record<string, unknown> },
+          { key: 'workers', value: workerSettingsPayload(nextForm.workers) as unknown as Record<string, unknown> },
+          { key: 'pipelineAutomation', value: nextForm.pipelineAutomation as unknown as Record<string, unknown> },
+          { key: 'assetInventory', value: nextForm.assetInventory as unknown as Record<string, unknown> },
+          { key: 'cancellationPolicy', value: nextForm.cancellationPolicy as unknown as Record<string, unknown> },
+          { key: 'originalRetentionPolicy', value: nextForm.originalRetentionPolicy as unknown as Record<string, unknown> },
+          { key: 'assetTypes', value: { types: nextForm.assetTypes } },
+          { key: 'assetCategories', value: { categories: nextForm.assetCategories } },
+        );
+      }
+
+      return api.updateSettingsBatch({ settings: batch });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
@@ -406,39 +489,149 @@ export function SettingsPage() {
   const runHousekeeping = useMutation({ mutationFn: api.runHousekeeping, onSuccess: () => previewHousekeeping.reset() });
 
   useEffect(() => {
+    formRef.current = form;
+  }, [form]);
+
+  useEffect(() => {
+    savedFormRef.current = savedForm;
+  }, [savedForm]);
+
+  useEffect(() => {
     if (!settings.data) {
       return;
     }
 
-    const timer = window.setTimeout(() => {
-      setForm(settingsToForm(settings.data));
-    }, 0);
+    const persistedForm = settingsToForm(settings.data);
+    const currentForm = formRef.current;
+    const currentBaseline = savedFormRef.current;
+    const dirty = dirtySettingsDraftSections(currentForm, currentBaseline);
 
-    return () => window.clearTimeout(timer);
+    if (dirty.length === 0) {
+      formRef.current = persistedForm;
+      savedFormRef.current = persistedForm;
+      setForm(persistedForm);
+      setSavedForm(persistedForm);
+      setExternalSettingsChanged(false);
+      return;
+    }
+
+    const changedDraft = dirty.some((draftSection) => !equalSettingsDrafts(
+      settingsDraftSnapshot(currentBaseline, draftSection),
+      settingsDraftSnapshot(persistedForm, draftSection),
+    ));
+    const mergedForm = mergeSettingsDraftSections(persistedForm, currentForm, dirty);
+    formRef.current = mergedForm;
+    savedFormRef.current = persistedForm;
+    setForm(mergedForm);
+    setSavedForm(persistedForm);
+    setExternalSettingsChanged(changedDraft);
   }, [settings.data]);
 
   useEffect(() => {
-    if (isSettingsSection(requestedSection) && section !== requestedSection) {
-      setSection(requestedSection);
+    if (requestedSection !== section) {
+      navigate({ pathname: location.pathname, search: `?section=${section}`, hash: location.hash }, { replace: true });
     }
-    if (requestedSection !== 'pipeline' || window.location.hash !== '#validation') {
+    if (section !== 'validation' || location.hash !== '#validation') {
       return;
     }
-    setTab('general');
     const timer = window.setTimeout(() => {
       document.getElementById('validation-settings')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }, 50);
     return () => window.clearTimeout(timer);
-  }, [requestedSection, searchParams, section, settings.data]);
+  }, [location.hash, location.pathname, navigate, requestedSection, section]);
 
-  function saveSettings(nextForm = form) {
-    if (workerProgressPercentError(nextForm.workers.startNextJobAtProgressPercent)) {
+  useEffect(() => {
+    const dirty = dirtySettingsDraftSections(form, savedForm);
+    if (dirty.length === 0) {
+      window.sessionStorage.removeItem(settingsDraftStorageKey);
       return;
     }
-    saveCoreSettings.mutate(nextForm);
+
+    const activeDraftSection = settingsDraftSectionForRoute(section);
+    const draftSection = activeDraftSection && dirty.includes(activeDraftSection) ? activeDraftSection : dirty[0];
+    window.sessionStorage.setItem(settingsDraftStorageKey, JSON.stringify({
+      version: 1,
+      form,
+      baseline: savedForm,
+      section: draftSection,
+    }));
+  }, [form, savedForm, section]);
+
+  useEffect(() => {
+    if (dirtySections.length === 0) return;
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeLeaving);
+    return () => window.removeEventListener('beforeunload', warnBeforeLeaving);
+  }, [dirtySections.length]);
+
+  function discardDraftSection(draftSection: SettingsDraftSection) {
+    setForm((current) => mergeSettingsDraftSection(current, savedFormRef.current, draftSection));
+    setExternalSettingsChanged(false);
   }
 
-  function saveAdvancedSettings() {
+  async function reloadPersistedSettings() {
+    if (!settings.data) return;
+    const persistedForm = settingsToForm(settings.data);
+    formRef.current = persistedForm;
+    savedFormRef.current = persistedForm;
+    setForm(persistedForm);
+    setSavedForm(persistedForm);
+    setExternalSettingsChanged(false);
+    window.sessionStorage.removeItem(settingsDraftStorageKey);
+  }
+
+  async function saveDraftSection(draftSection: SettingsDraftSection, nextForm = form) {
+    if ((draftSection === 'runtime' || draftSection === 'advanced') && workerProgressPercentError(nextForm.workers.startNextJobAtProgressPercent)) {
+      return false;
+    }
+
+    try {
+      await saveCoreSettings.mutateAsync({ section: draftSection, nextForm, baseline: savedFormRef.current });
+      const nextBaseline = draftSection === 'advanced'
+        ? nextForm
+        : mergeSettingsDraftSection(savedFormRef.current, nextForm, draftSection);
+      savedFormRef.current = nextBaseline;
+      setSavedForm(nextBaseline);
+      setForm((current) => draftSection === 'advanced' ? nextForm : mergeSettingsDraftSection(current, nextForm, draftSection));
+      setExternalSettingsChanged(false);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function saveLibraryTypes(nextForm: SettingsForm) {
+    setForm(nextForm);
+    try {
+      await updateSettingsBatch.mutateAsync({ settings: [
+        { key: 'assetTypes', value: { types: nextForm.assetTypes } },
+      ] });
+      const nextBaseline: SettingsForm = {
+        ...savedFormRef.current,
+        assetTypes: nextForm.assetTypes,
+        advancedJson: { ...savedFormRef.current.advancedJson, assetTypes: nextForm.advancedJson.assetTypes },
+      };
+      savedFormRef.current = nextBaseline;
+      setSavedForm(nextBaseline);
+      setExternalSettingsChanged(false);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function saveAdvancedSettings() {
+    const invalidJsonKey = (Object.keys(form.advancedJson) as Array<keyof SettingsForm['advancedJson']>)
+      .find((key) => !isJsonObject(form.advancedJson[key]));
+    if (invalidJsonKey) {
+      setAdvancedJsonError(`${invalidJsonKey} must contain a valid JSON object.`);
+      return false;
+    }
+    setAdvancedJsonError(undefined);
+
     const paths = parseJsonObject(form.advancedJson.paths, form.paths);
     const workers = parseJsonObject(form.advancedJson.workers, form.workers);
     const pipelineAutomation = parseJsonObject(form.advancedJson.pipelineAutomation, form.pipelineAutomation);
@@ -553,7 +746,7 @@ export function SettingsPage() {
     });
 
     setForm(next);
-    saveSettings(next);
+    return saveDraftSection('advanced', next);
   }
 
   function openAddType() {
@@ -568,7 +761,7 @@ export function SettingsPage() {
     setShowTypeForm(true);
   }
 
-  function submitType(event: FormEvent<HTMLFormElement>) {
+  async function submitType(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const key = editingTypeKey ?? slugify(typeDraft.key || typeDraft.label);
     const nextType = {
@@ -587,8 +780,8 @@ export function SettingsPage() {
       : [...form.assetTypes, nextType];
 
     const next = rebuildAssetTypes(form, nextTypes);
-    setForm(next);
-    saveSettings(next);
+    const saved = await saveLibraryTypes(next);
+    if (!saved) return;
     setShowTypeForm(false);
     setEditingTypeKey(null);
     setTypeDraft(emptyDraft);
@@ -620,7 +813,7 @@ export function SettingsPage() {
     setReassignTo(form.assetTypes.find((candidate) => candidate.key !== type.key)?.key ?? '');
   }
 
-  function confirmDeleteType() {
+  async function confirmDeleteType() {
     if (!deleteTarget) {
       return;
     }
@@ -638,46 +831,78 @@ export function SettingsPage() {
       form,
       form.assetTypes.filter((type) => type.key !== deleteTarget.key),
     );
-    setForm(next);
-    saveSettings(next);
+    const saved = await saveLibraryTypes(next);
+    if (!saved) return;
     setDeleteTarget(null);
     setReassignTo('');
   }
+
+  const settingKeysBySection: Partial<Record<SettingsSection, string[]>> = {
+    general: ['mvforgePreferences'],
+    pipeline: ['workingHours', 'pipelineAutomation'],
+    analysis: ['analysisPolicy', 'profileSampleEstimatePolicy'],
+    runtime: ['runtimePolicy', 'remoteExecutors', 'directPlay'],
+    assets: ['storageRoles', 'workspace', 'assetTypes', 'assetCategories', 'paths', 'assetInventory'],
+    'asset-defaults': ['assetDefaults'],
+    validation: ['validation'],
+    'providers-integrations': ['jellyfin'],
+    archive: ['originalRetentionPolicy', 'storageRoles'],
+    operations: ['housekeeping', 'cancellationPolicy'],
+    subtitles: ['subtitleSettings', 'subtitleTranslationSettings'],
+    'test-encode': ['testEncodePolicy'],
+  };
+  const currentSectionKeys = settingKeysBySection[section] ?? [];
+  const singleSettingMatches = currentSectionKeys.includes(updateSetting.variables?.key ?? '');
+  const batchSettingMatches = (updateSettingsBatch.variables?.settings ?? []).some((setting) => currentSectionKeys.includes(setting.key));
+  const directSavePending = (updateSetting.isPending && singleSettingMatches) || (updateSettingsBatch.isPending && batchSettingMatches);
+  const directSaveSucceeded = (updateSetting.isSuccess && singleSettingMatches) || (updateSettingsBatch.isSuccess && batchSettingMatches) || (section === 'assets' && updateLibrary.isSuccess);
+  const directSaveFailed = (updateSetting.isError && singleSettingMatches) || (updateSettingsBatch.isError && batchSettingMatches) || (section === 'assets' && updateLibrary.isError);
+  const coreSavePending = Boolean(activeDraftSection && saveCoreSettings.isPending && saveCoreSettings.variables?.section === activeDraftSection);
+  const coreSaveFailed = Boolean(activeDraftSection && saveCoreSettings.isError && saveCoreSettings.variables?.section === activeDraftSection);
+  const currentSaveState: SettingsSaveState | undefined = coreSavePending || directSavePending
+    ? 'saving'
+    : coreSaveFailed || directSaveFailed || (activeDraftSection === 'advanced' && Boolean(advancedJsonError))
+      ? 'failed'
+      : activeDraftIsDirty
+        ? 'dirty'
+        : activeDraftSection || directSaveSucceeded
+          ? 'saved'
+          : undefined;
+  const settingsSectionLabel = (value: SettingsSection) => settingsSectionDefinitions.find((definition) => definition.key === value)?.title ?? value;
+  const headerSaveState = currentSaveState
+    ? { label: currentSaveState === 'saving' ? 'Saving…' : currentSaveState === 'failed' ? 'Save failed' : currentSaveState === 'dirty' ? 'Unsaved changes' : 'Saved', color: currentSaveState === 'failed' ? 'error' as const : currentSaveState === 'dirty' ? 'warning' as const : currentSaveState === 'saved' ? 'success' as const : 'default' as const }
+    : undefined;
 
   return (
     <>
       <PageHeader title="Settings" eyebrow="System configuration">
         <Typography color="text.secondary" sx={{ mt: 1, maxWidth: 780 }}>
-          Simple defaults stay up front; technical JSON and runtime details stay available when needed.
+          Browse configuration by domain. Draft changes remain available if you switch sections or visit another page in this tab.
         </Typography>
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         {settings.isError ? <Alert severity="warning">Unable to load settings.</Alert> : null}
-        {updateSetting.isSuccess || updateSettingsBatch.isSuccess || saveCoreSettings.isSuccess ? (
-          <Alert severity="success" sx={{ mb: 2 }}>
-            Settings saved.
-          </Alert>
-        ) : null}
-        {updateSetting.isError || updateSettingsBatch.isError || saveCoreSettings.isError || updateLibrary.isError ? (
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            Settings could not be fully saved.
-          </Alert>
-        ) : null}
-
-        <Card sx={{ mb: 2 }}>
-          <CardContent sx={{ pb: 0 }}>
-            <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1}>
-              <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ minHeight: 44 }}>
-                <Tab label="General" value="general" />
-                <Tab label="Advanced" value="advanced" />
-              </Tabs>
-            </Stack>
-          </CardContent>
-        </Card>
-
-        {tab === 'general' ? (
-          <Stack spacing={2}>
-            <SettingsDomainNavigation section={section} onChange={changeSection} />
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: '260px minmax(0, 1fr)' }, alignItems: 'start', gap: { xs: 2, md: 3 } }}>
+          <SettingsSidebar section={section} dirtySections={dirtySections} onChange={changeSection} />
+          <Box sx={{ minWidth: 0 }}>
+            <SettingsSectionHeader section={section} saveState={headerSaveState} />
+            {externalSettingsChanged ? (
+              <Alert
+                severity="warning"
+                sx={{ mb: 2 }}
+                action={<Button color="inherit" size="small" onClick={reloadPersistedSettings}>Reload persisted settings</Button>}
+              >
+                Settings changed elsewhere. Your draft is preserved; reload the persisted values or save your draft over them.
+              </Alert>
+            ) : null}
+            {restoredDraft && dirtySections.length > 0 ? (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                An unsaved settings draft was restored from this tab session.
+              </Alert>
+            ) : null}
+            {directSaveSucceeded ? <Alert severity="success" sx={{ mb: 2 }}>{settingsSectionLabel(section)} settings saved.</Alert> : null}
+            {directSaveFailed ? <Alert severity="warning" sx={{ mb: 2 }}>{settingsSectionLabel(section)} settings could not be saved.</Alert> : null}
+            <Stack spacing={2}>
 
             {section === 'general' ? (
               <GeneralSettingsDomain
@@ -705,7 +930,7 @@ export function SettingsPage() {
                 saveError={updateSetting.isError && updateSetting.variables?.key === 'jellyfin'
                   ? updateSetting.error instanceof Error ? updateSetting.error.message : 'Please try again.'
                   : undefined}
-                onSave={(value) => updateSetting.mutateAsync({ key: 'jellyfin', value })}
+                onSave={async (value) => { await updateSetting.mutateAsync({ key: 'jellyfin', value }); }}
               />
             ) : null}
 
@@ -875,7 +1100,7 @@ export function SettingsPage() {
               </DialogContent>
             </Dialog>
 
-            {section === 'pipeline' ? (
+            {section === 'subtitles' ? (
               <SubtitleCompatibilityCard
                 key={JSON.stringify(subtitleSRTFallbackValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value))}
                 value={subtitleSRTFallbackValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value)}
@@ -893,7 +1118,7 @@ export function SettingsPage() {
               />
             ) : null}
 
-            {section === 'pipeline' ? (
+            {section === 'subtitles' ? (
               <SubtitleTranslationSettingsCard
                 key={JSON.stringify(subtitleTranslationSettingsValue(settings.data?.find((item) => item.key === 'subtitleTranslationSettings')?.value))}
                 value={subtitleTranslationSettingsValue(settings.data?.find((item) => item.key === 'subtitleTranslationSettings')?.value)}
@@ -903,23 +1128,20 @@ export function SettingsPage() {
             ) : null}
 
             {section === 'pipeline' ? (
-              <Grid container spacing={2}>
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <WorkersCard form={form} setForm={setForm} />
-                </Grid>
-                <Grid size={{ xs: 12, md: 6 }}>
-                  <PipelineAutomationCard form={form} setForm={setForm} />
-                </Grid>
-              </Grid>
+              <PipelineAutomationCard form={form} setForm={setForm} />
             ) : null}
 
-            {section === 'pipeline' ? (
+            {section === 'validation' ? (
               <ValidationPolicySettingsCard
                 value={settings.data?.find((item) => item.key === 'validation')?.value}
                 saving={updateSetting.isPending}
                 autoPublisherEnabled={autoPublisherEnabled}
                 onSave={(value) => updateSetting.mutate({ key: 'validation', value })}
               />
+            ) : null}
+
+            {section === 'runtime' ? (
+              <WorkersCard form={form} setForm={setForm} />
             ) : null}
 
             {section === 'runtime' ? (
@@ -950,7 +1172,7 @@ export function SettingsPage() {
               />
             ) : null}
             
-            {section === 'pipeline' ? (
+            {section === 'runtime' ? (
               <DirectPlayCard
                 key={JSON.stringify(directPlayValue(settings.data?.find((item) => item.key === 'directPlay')?.value))}
                 value={directPlayValue(settings.data?.find((item) => item.key === 'directPlay')?.value)}
@@ -1137,26 +1359,23 @@ export function SettingsPage() {
               </Grid>
             ) : null}
 
-            {section !== 'providers-integrations' ? (
-              <Button
-                startIcon={<SaveIcon />}
-                variant="contained"
-                onClick={() => saveSettings()}
-                disabled={
-                  updateSetting.isPending ||
-                  updateSettingsBatch.isPending ||
-                  saveCoreSettings.isPending ||
-                  Boolean(workerProgressPercentError(form.workers.startNextJobAtProgressPercent))
-                }
-                sx={{ alignSelf: 'flex-start' }}
-              >
-                Save Settings
-              </Button>
+            {section === 'advanced' ? <AdvancedSettings form={form} setForm={setForm} error={advancedJsonError} /> : null}
+            {activeDraftSection ? (
+              <SettingsSaveBar
+                state={currentSaveState ?? 'saved'}
+                onDiscard={() => discardDraftSection(activeDraftSection)}
+                onSave={() => {
+                  if (activeDraftSection === 'advanced') {
+                    void saveAdvancedSettings();
+                  } else {
+                    void saveDraftSection(activeDraftSection);
+                  }
+                }}
+              />
             ) : null}
-          </Stack>
-        ) : (
-          <AdvancedSettings form={form} setForm={setForm} onSave={saveAdvancedSettings} isSaving={updateSetting.isPending || updateSettingsBatch.isPending || saveCoreSettings.isPending} />
-        )}
+            </Stack>
+          </Box>
+        </Box>
       </Box>
 
       <Dialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} maxWidth="sm" fullWidth>
@@ -1201,136 +1420,6 @@ export function SettingsPage() {
       </Dialog>
     </>
   );
-}
-
-function SettingsDomainNavigation({ section, onChange }: { section: SettingsSection; onChange: (section: SettingsSection) => void }) {
-  const domains = [
-    { key: 'general' as const, title: 'General', description: 'Application-wide defaults and shared behavior.', color: 'primary.main' },
-    { key: 'providers-integrations' as const, title: 'Providers & Integrations', description: 'Connected services and protected provider credentials.', color: 'secondary.main' },
-    { key: 'pipeline' as const, title: 'Pipeline', description: 'Scheduler workflow, workers, automation, working hours, DirectPlay and validation.', color: 'primary.main' },
-    { key: 'subtitles' as const, title: 'Subtitles', description: 'ASS/SSA style presets for generated and explicitly restyled subtitles.', color: 'secondary.main' },
-    { key: 'analysis' as const, title: 'Analysis', description: 'Snapshot analysis strategy, confidence, cache reuse and workload limits.', color: 'info.dark' },
-    { key: 'runtime' as const, title: 'Runtime', description: 'Effective runtime profiles, host detection, resources, disks, power and FFmpeg encoders.', color: 'info.main' },
-    { key: 'assets' as const, title: 'Assets & Storage', description: 'Asset types, categories, inventory, controlled paths, storage roles and workspace strategy.', color: 'success.main' },
-    { key: 'asset-defaults' as const, title: 'Asset Defaults', description: 'Non-destructive fallback policies for video, audio, tracks, subtitles and attachments.', color: 'warning.main' },
-    { key: 'archive' as const, title: 'Original Archive', description: 'Archive locations, retention period and safe automatic deletion policy.', color: 'secondary.main' },
-    { key: 'test-encode' as const, title: 'Test Encode', description: 'Test defaults, retained runs, artifact reconciliation and cleanup.', color: 'info.main' },
-    { key: 'operations' as const, title: 'Operations', description: 'Scheduler recovery, cancellation cleanup, housekeeping and system-wide logs.', color: 'warning.main' },
-  ];
-  return <Stack spacing={2}>
-    {section !== 'overview' ? <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1}><Stack><Typography variant="h2">{domains.find((domain) => domain.key === section)?.title}</Typography><Typography color="text.secondary">{domains.find((domain) => domain.key === section)?.description}</Typography></Stack><Button onClick={() => onChange('overview')}>Back to settings dashboard</Button></Stack> : <Stack><Typography variant="h2">Configuration dashboard</Typography><Typography color="text.secondary">Choose an operational area. Related controls stay together on one page.</Typography></Stack>}
-    {section === 'overview' ? <Grid container spacing={2}>{domains.map((domain) => <Grid size={{ xs: 12, sm: 6, lg: 4 }} key={domain.key}><Card sx={{ height: '100%', borderTop: 3, borderTopColor: domain.color }}><CardContent><Stack spacing={1.5} sx={{ height: '100%' }}><Typography variant="h3">{domain.title}</Typography><Typography color="text.secondary" sx={{ flex: 1 }}>{domain.description}</Typography><Button variant="contained" onClick={() => onChange(domain.key)}>Open {domain.title}</Button>{domain.key === 'operations' ? <Button component={RouterLink} to="/logs">Open logs directly</Button> : null}</Stack></CardContent></Card></Grid>)}</Grid> : null}
-  </Stack>;
-}
-
-function GeneralSettingsDomain({ value, availableEncoders, saving, onSave }: {
-  value: MVForgePreferences;
-  availableEncoders: string[];
-  saving: boolean;
-  onSave: (value: MVForgePreferences) => void;
-}) {
-  return (
-    <Grid container spacing={2}>
-      <Grid size={{ xs: 12 }}>
-        <MVForgePreferencesCard
-          key={JSON.stringify(value)}
-          value={value}
-          availableEncoders={availableEncoders}
-          saving={saving}
-          onSave={onSave}
-        />
-      </Grid>
-    </Grid>
-  );
-}
-
-function ProvidersIntegrationsSettingsDomain({ value, libraries, saving, saveError, onSave }: {
-  value: Record<string, unknown> | undefined;
-  libraries: Parameters<typeof JellyfinSettingsCard>[0]['libraries'];
-  saving: boolean;
-  saveError?: string;
-  onSave: (value: Record<string, unknown>) => void;
-}) {
-  return (
-    <Grid container spacing={2}>
-      <Grid size={{ xs: 12 }}>
-        <JellyfinSettingsCard
-          value={value}
-          libraries={libraries}
-          saving={saving}
-          saveError={saveError}
-          onSave={onSave}
-        />
-      </Grid>
-    </Grid>
-  );
-}
-
-function AssetDefaultsSettingsDomain(props: Parameters<typeof AssetDefaultsCard>[0]) {
-  return <AssetDefaultsCard {...props} key={JSON.stringify(props.value)} />;
-}
-
-function ArchiveSettingsDomain(props: Parameters<typeof OriginalArchiveCard>[0]) {
-  return <OriginalArchiveCard {...props} />;
-}
-
-function AnalysisSettingsDomain({ analysisPolicy, profileSamplePolicy, saving, onSaveAnalysisPolicy, onSaveProfileSamplePolicy }: {
-  analysisPolicy: Parameters<typeof AnalysisPolicyCard>[0]['value'];
-  profileSamplePolicy: Parameters<typeof ProfileSampleEstimatePolicyCard>[0]['value'];
-  saving: boolean;
-  onSaveAnalysisPolicy: Parameters<typeof AnalysisPolicyCard>[0]['onSave'];
-  onSaveProfileSamplePolicy: Parameters<typeof ProfileSampleEstimatePolicyCard>[0]['onSave'];
-}) {
-  return (
-    <Stack spacing={2}>
-      <AnalysisPolicyCard key={JSON.stringify(analysisPolicy)} value={analysisPolicy} saving={saving} onSave={onSaveAnalysisPolicy} />
-      <ProfileSampleEstimatePolicyCard key={JSON.stringify(profileSamplePolicy)} value={profileSamplePolicy} saving={saving} onSave={onSaveProfileSamplePolicy} />
-    </Stack>
-  );
-}
-
-function MVForgePreferencesCard({ value, availableEncoders, saving, onSave }: { value: MVForgePreferences; availableEncoders: string[]; saving: boolean; onSave: (value: MVForgePreferences) => void }) {
-  const [draft, setDraft] = useState<MVForgePreferences>(value);
-  const candidates = draft.executionPreference === 'hardware'
-    ? [
-        { value: 'auto', label: 'Auto · first available hardware encoder' },
-        { value: 'hevc_qsv', label: 'HEVC Quick Sync' },
-        { value: 'hevc_videotoolbox', label: 'HEVC VideoToolbox' },
-        { value: 'hevc_nvenc', label: 'HEVC NVENC' },
-      ]
-    : [
-        { value: 'auto', label: 'Auto · software encoder for codec' },
-        { value: 'libx265', label: 'libx265' },
-        { value: 'libx264', label: 'libx264' },
-        { value: 'libsvtav1', label: 'SVT-AV1' },
-      ];
-  const encoderOptions = candidates.filter((option) => option.value === 'auto' || availableEncoders.includes(option.value));
-  const selectedEncoder = encoderOptions.some((option) => option.value === draft.preferredVideoEncoder) ? draft.preferredVideoEncoder : 'auto';
-  return <Card><CardContent><Stack spacing={2}>
-    <Stack>
-      <Typography variant="h3">MVForge draft preferences</Typography>
-      <Typography color="text.secondary" variant="body2">
-        These values initialize new LAB, Profile, and Asset Override drafts. Queue and Worker never read this setting.
-      </Typography>
-    </Stack>
-    <Grid container spacing={1.5}>
-      <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Quality / storage preference" value={draft.qualityGoal} onChange={(event) => setDraft((current) => ({ ...current, qualityGoal: event.target.value as MVForgePreferences['qualityGoal'] }))}>
-        <MenuItem value="maximum_savings">Maximum space saving</MenuItem><MenuItem value="balanced">Balanced</MenuItem><MenuItem value="conservative">Conservative quality</MenuItem><MenuItem value="maximum_quality">Maximum quality</MenuItem><MenuItem value="archive">Archive</MenuItem>
-      </TextField></Grid>
-      <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Preferred execution" value={draft.executionPreference} onChange={(event) => setDraft((current) => ({ ...current, executionPreference: event.target.value as MVForgePreferences['executionPreference'], preferredVideoEncoder: 'auto' }))}>
-        <MenuItem value="software">Software preferred</MenuItem><MenuItem value="hardware">Hardware preferred</MenuItem>
-      </TextField></Grid>
-      <Grid size={{ xs: 12, md: 4 }}><TextField select fullWidth label="Preferred video encoder" value={selectedEncoder} onChange={(event) => setDraft((current) => ({ ...current, preferredVideoEncoder: event.target.value }))}>
-        {encoderOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
-      </TextField></Grid>
-      {encoderOptions.length === 1 ? <Grid size={{ xs: 12 }}><Alert severity="info">No worker currently reports a compatible {draft.executionPreference} encoder. Auto remains available as a draft preference and Advisor will flag unavailable hardware instead of substituting it silently.</Alert></Grid> : null}
-      <Grid size={{ xs: 12 }}><Autocomplete multiple freeSolo options={['jpn', 'spa', 'eng', 'fra', 'deu', 'ita', 'por', 'kor', 'zho']} value={draft.preferredLanguages} onChange={(_, languages) => setDraft((current) => ({ ...current, preferredLanguages: [...new Set(languages.map((language) => language.trim().toLowerCase()).filter(Boolean))] }))} renderInput={(params) => <TextField {...params} label="Preferred languages" helperText="Ordered favorites used to prefill language fields; they do not select or remove tracks automatically." />} /></Grid>
-    </Grid>
-    <Stack direction="row" spacing={1}>
-      <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || draft.preferredLanguages.length === 0} onClick={() => onSave({ ...draft, preferredVideoEncoder: selectedEncoder })}>Save preferences</Button>
-      <Button disabled={saving} onClick={() => setDraft(defaultMVForgePreferences)}>Restore defaults</Button>
-    </Stack>
-  </Stack></CardContent></Card>;
 }
 
 function SchedulerRecoveryCard({ report, loading, error, running, runError, onRun }: { report?: SchedulerRecoveryReport; loading: boolean; error: boolean; running: boolean; runError: Error | null; onRun: () => void }) {
@@ -1613,54 +1702,6 @@ function directPlayValue(value: Record<string, unknown> | undefined): DirectPlay
     targetClients: arrayValue(value?.targetClients, directPlayClients).filter((client): client is string => typeof client === 'string'),
     minimumScore: numberValue(value?.minimumScore, 70), enforcement: value?.enforcement === 'block' ? 'block' : 'warn',
   };
-}
-
-function analysisPolicyValue(value: Record<string, unknown> | undefined): AnalysisPolicyValue {
-  const mode: AnalysisMode = ['fast', 'balanced', 'thorough', 'custom'].includes(String(value?.mode)) ? value?.mode as AnalysisMode : 'balanced';
-  const positions = Array.isArray(value?.positions) ? value.positions.map(Number).filter((item) => Number.isFinite(item) && item > 0 && item < 1) : [];
-  return { mode, adaptiveAnalysis: booleanValue(value?.adaptiveAnalysis, true), earlyConfidenceEnabled: booleanValue(value?.earlyConfidenceEnabled, true), earlyConfidenceThreshold: Math.max(0.9, Math.min(1, numberValue(value?.earlyConfidenceThreshold, 0.98))), initialWindows: Math.max(3, Math.min(5, numberValue(value?.initialWindows, 3))), maximumWindows: Math.max(3, Math.min(5, numberValue(value?.maximumWindows, 5))), windowSeconds: Math.max(5, Math.min(60, numberValue(value?.windowSeconds, 20))), positions: positions.length ? positions : [0.08, 0.27, 0.5, 0.73, 0.92], interlaceValidation: value?.interlaceValidation === 'always' ? 'always' : 'automatic', cropDepth: value?.cropDepth === 'reduced' || value?.cropDepth === 'full' ? value.cropDepth : 'normal', reuseSnapshots: booleanValue(value?.reuseSnapshots, true), incrementalRefresh: booleanValue(value?.incrementalRefresh, true), concurrentAssets: Math.max(1, Math.min(4, numberValue(value?.concurrentAssets, 1))) };
-}
-
-function AnalysisPolicyCard({ value, saving, onSave }: { value: AnalysisPolicyValue; saving: boolean; onSave: (value: AnalysisPolicyValue) => void }) {
-  const [draft, setDraft] = useState(value);
-  const custom = draft.mode === 'custom';
-  const summaries: Record<Exclude<AnalysisMode, 'custom'>, string> = { fast: '3 windows, reduced crop and automatic interlace validation.', balanced: '3 → 5 windows, 98% early confidence, normal crop and automatic interlace validation.', thorough: '5 windows, no early stop, full crop and always validate interlace.' };
-  return <Card><CardContent><Stack spacing={2}>
-    <Stack><Typography variant="h3">Snapshot analysis policy</Typography><Typography color="text.secondary" variant="body2">Choose intent first. Low-level sampling controls are available only in Custom mode.</Typography></Stack>
-    <TextField select label="Analysis mode" value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as AnalysisMode })} fullWidth><MenuItem value="fast">Fast</MenuItem><MenuItem value="balanced">Balanced (default)</MenuItem><MenuItem value="thorough">Thorough</MenuItem><MenuItem value="custom">Custom</MenuItem></TextField>
-    {!custom ? <Alert severity="info">{summaries[draft.mode as Exclude<AnalysisMode, 'custom'>]}</Alert> : null}
-    {custom ? <><Grid container spacing={1.5}>
-      <Grid size={{ xs: 12, sm: 4 }}><TextField type="number" label="Initial windows" value={draft.initialWindows} inputProps={{ min: 3, max: 5 }} onChange={(event) => setDraft({ ...draft, initialWindows: Math.max(3, Math.min(5, Number(event.target.value))) })} fullWidth /></Grid>
-      <Grid size={{ xs: 12, sm: 4 }}><TextField type="number" label="Maximum windows" value={draft.maximumWindows} inputProps={{ min: draft.initialWindows, max: 5 }} onChange={(event) => setDraft({ ...draft, maximumWindows: Math.max(draft.initialWindows, Math.min(5, Number(event.target.value))) })} fullWidth /></Grid>
-      <Grid size={{ xs: 12, sm: 4 }}><TextField type="number" label="Window length (seconds)" value={draft.windowSeconds} inputProps={{ min: 5, max: 60 }} onChange={(event) => setDraft({ ...draft, windowSeconds: Math.max(5, Math.min(60, Number(event.target.value))) })} fullWidth /></Grid>
-      <Grid size={{ xs: 12 }}><TextField label="Window centers (%)" value={draft.positions.map((position) => Math.round(position * 100)).join(', ')} onChange={(event) => setDraft({ ...draft, positions: event.target.value.split(',').map((item) => Number(item.trim()) / 100).filter((item) => Number.isFinite(item) && item > 0 && item < 1) })} helperText="At least one position per maximum window; for example 8, 27, 50, 73, 92." fullWidth /></Grid>
-      <Grid size={{ xs: 12, sm: 6 }}><TextField select label="Interlace validation" value={draft.interlaceValidation} onChange={(event) => setDraft({ ...draft, interlaceValidation: event.target.value as AnalysisPolicyValue['interlaceValidation'] })} fullWidth><MenuItem value="automatic">Automatic</MenuItem><MenuItem value="always">Always deep</MenuItem></TextField></Grid>
-      <Grid size={{ xs: 12, sm: 6 }}><TextField select label="Crop sampling" value={draft.cropDepth} onChange={(event) => setDraft({ ...draft, cropDepth: event.target.value as AnalysisPolicyValue['cropDepth'] })} fullWidth><MenuItem value="reduced">Reduced</MenuItem><MenuItem value="normal">Normal</MenuItem><MenuItem value="full">Full</MenuItem></TextField></Grid>
-    </Grid><Stack><FormControlLabel control={<Switch checked={draft.adaptiveAnalysis} onChange={(event) => setDraft({ ...draft, adaptiveAnalysis: event.target.checked })} />} label="Adaptive Analysis" /><Typography color="text.secondary" variant="body2">Start with the initial sampling windows and collect additional windows only when evidence is uncertain. Sampling duration may also adapt to asset length.</Typography></Stack><FormControlLabel control={<Switch checked={draft.earlyConfidenceEnabled} onChange={(event) => setDraft({ ...draft, earlyConfidenceEnabled: event.target.checked })} />} label="Stop early when evidence is stable" />{draft.earlyConfidenceEnabled ? <TextField type="number" label="Early confidence threshold" value={draft.earlyConfidenceThreshold} inputProps={{ min: 0.9, max: 1, step: 0.01 }} onChange={(event) => setDraft({ ...draft, earlyConfidenceThreshold: Math.max(0.9, Math.min(1, Number(event.target.value))) })} /> : null}</> : null}
-    <Divider /><Typography variant="h4">Cache and workload</Typography><FormControlLabel control={<Switch checked={draft.reuseSnapshots} onChange={(event) => setDraft({ ...draft, reuseSnapshots: event.target.checked })} />} label="Reuse valid snapshots" /><FormControlLabel control={<Switch checked={draft.incrementalRefresh} disabled={!draft.reuseSnapshots} onChange={(event) => setDraft({ ...draft, incrementalRefresh: event.target.checked })} />} label="Refresh only stale analysis components" /><TextField type="number" label="Concurrent assets" value={draft.concurrentAssets} inputProps={{ min: 1, max: 4 }} onChange={(event) => setDraft({ ...draft, concurrentAssets: Math.max(1, Math.min(4, Number(event.target.value))) })} helperText="Applies to snapshot operations started from the API. Default: 1." />
-    <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || (custom && (draft.maximumWindows < draft.initialWindows || draft.positions.length < draft.maximumWindows))} onClick={() => onSave(draft)}>Save analysis policy</Button>
-  </Stack></CardContent></Card>;
-}
-
-function profileSampleEstimatePolicyValue(value: Record<string, unknown> | undefined): ProfileSampleEstimatePolicyValue {
-  return {
-    hardwareWindows: Math.max(1, Math.min(10, numberValue(value?.hardwareWindows, 5))),
-    softwareWindows: Math.max(1, Math.min(10, numberValue(value?.softwareWindows, 3))),
-    operationTimeoutMinutes: Math.max(5, Math.min(120, numberValue(value?.operationTimeoutMinutes, 30))),
-  };
-}
-
-function ProfileSampleEstimatePolicyCard({ value, saving, onSave }: { value: ProfileSampleEstimatePolicyValue; saving: boolean; onSave: (value: ProfileSampleEstimatePolicyValue) => void }) {
-  const [draft, setDraft] = useState(value);
-  return <Card><CardContent><Stack spacing={2}>
-    <Stack><Typography variant="h3">Profile LAB sample estimate</Typography><Typography color="text.secondary" variant="body2">Control distributed sample coverage and the safety limit for background Profile LAB estimates.</Typography></Stack>
-    <Grid container spacing={1.5}>
-      <Grid size={{ xs: 12, md: 4 }}><TextField type="number" label="Hardware sample windows" value={draft.hardwareWindows} inputProps={{ min: 1, max: 10, step: 1 }} onChange={(event) => setDraft({ ...draft, hardwareWindows: Math.max(1, Math.min(10, Number(event.target.value))) })} helperText="Number of distributed samples used with hardware encoders such as QSV." fullWidth /></Grid>
-      <Grid size={{ xs: 12, md: 4 }}><TextField type="number" label="Software sample windows" value={draft.softwareWindows} inputProps={{ min: 1, max: 10, step: 1 }} onChange={(event) => setDraft({ ...draft, softwareWindows: Math.max(1, Math.min(10, Number(event.target.value))) })} helperText="Number of distributed samples used with software encoders such as libx265. Fewer samples reduce long CPU-bound LAB estimates." fullWidth /></Grid>
-      <Grid size={{ xs: 12, md: 4 }}><TextField type="number" label="Maximum estimate runtime" value={draft.operationTimeoutMinutes} inputProps={{ min: 5, max: 120, step: 1 }} onChange={(event) => setDraft({ ...draft, operationTimeoutMinutes: Math.max(5, Math.min(120, Number(event.target.value))) })} helperText="Safety watchdog for the complete background sample estimate operation (minutes)." fullWidth /></Grid>
-    </Grid>
-    <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save Profile LAB estimate policy</Button>
-  </Stack></CardContent></Card>;
 }
 
 function DirectPlayCard({ value, saving, onSave }: { value: DirectPlayValue; saving: boolean; onSave: (value: DirectPlayValue) => void }) {
@@ -2713,98 +2754,6 @@ function AssetInventoryCard({ form, setForm }: SettingsCardProps) {
   );
 }
 
-function OriginalArchiveCard({ form, setForm }: SettingsCardProps) {
-  const automaticDeletion = form.originalRetentionPolicy.autoDeleteEnabled;
-  return (
-    <Card>
-      <CardContent>
-        <Stack spacing={2}>
-          <Stack>
-            <Typography variant="h3">Original Archive</Typography>
-            <Typography color="text.secondary" variant="body2">
-              One place for archive locations, retention, and physical deletion policy.
-            </Typography>
-          </Stack>
-          <Grid container spacing={2}>
-            <Grid size={{ xs: 12, md: 6 }}>
-              <TextField
-                label="Original Archive root"
-                value={form.paths.originalsArchivePath}
-                onChange={(event) => setForm((current) => ({
-                  ...current,
-                  paths: { ...current.paths, originalsArchivePath: event.target.value },
-                }))}
-                helperText="Controlled root. MVForge will never apply this policy outside this path."
-                fullWidth
-              />
-            </Grid>
-            <Grid size={{ xs: 12, md: 6 }}>
-              <TextField
-                label="Processed originals path"
-                value={form.originalRetentionPolicy.processedOriginalsPath}
-                onChange={(event) => setForm((current) => ({
-                  ...current,
-                  originalRetentionPolicy: {
-                    ...current.originalRetentionPolicy,
-                    processedOriginalsPath: event.target.value,
-                  },
-                }))}
-                helperText="Destination for originals archived after a successful publication."
-                fullWidth
-              />
-            </Grid>
-            <Grid size={{ xs: 12, md: 6 }}>
-              <TextField
-                label="Keep originals for days"
-                type="number"
-                value={form.originalRetentionPolicy.keepOriginalsDays}
-                onChange={(event) => {
-                  const days = Math.max(0, Number(event.target.value));
-                  setForm((current) => ({
-                    ...current,
-                    originalRetentionPolicy: {
-                      ...current.originalRetentionPolicy,
-                      keepOriginalsDays: days,
-                      autoDeleteEnabled: days === 0 ? false : current.originalRetentionPolicy.autoDeleteEnabled,
-                    },
-                  }));
-                }}
-                helperText="0 keeps originals indefinitely and disables automatic deletion."
-                inputProps={{ min: 0, max: 3650 }}
-                fullWidth
-              />
-            </Grid>
-          </Grid>
-          <Divider />
-          <FormControlLabel
-            control={
-              <Switch
-                checked={automaticDeletion}
-                disabled={form.originalRetentionPolicy.keepOriginalsDays === 0}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    originalRetentionPolicy: {
-                      ...current.originalRetentionPolicy,
-                      autoDeleteEnabled: event.target.checked,
-                    },
-                  }))
-                }
-              />
-            }
-            label="Automatically delete expired originals during inventory sync"
-          />
-          <Alert severity={automaticDeletion ? 'warning' : 'info'}>
-            {automaticDeletion
-              ? 'Physical deletion is enabled. MVForge only deletes an expired original when it is linked to an active completed job, validation passed or warned, and the published replacement still exists. Logs, reports, snapshots, and untracked archive files are preserved.'
-              : 'Physical deletion is disabled. Expiration dates remain visible for tracked originals, but sync only reconciles inventory and does not remove media.'}
-          </Alert>
-        </Stack>
-      </CardContent>
-    </Card>
-  );
-}
-
 function RemoteExecutorsCard({
   value,
   saving,
@@ -3110,53 +3059,6 @@ function RemoteExecutorsCard({
   );
 }
 
-function AdvancedSettings({
-  form,
-  setForm,
-  onSave,
-  isSaving,
-}: {
-  form: SettingsForm;
-  setForm: Dispatch<SetStateAction<SettingsForm>>;
-  onSave: () => void;
-  isSaving: boolean;
-}) {
-  return (
-    <Card>
-      <CardContent>
-        <Stack spacing={2}>
-          <Stack>
-            <Typography variant="h3">Advanced JSON</Typography>
-            <Typography color="text.secondary" variant="body2">
-              Direct configuration editing for technical workflows.
-            </Typography>
-          </Stack>
-          <Divider />
-          {(['paths', 'workers', 'pipelineAutomation', 'assetInventory', 'cancellationPolicy', 'originalRetentionPolicy', 'assetTypes', 'assetCategories'] as const).map((key) => (
-            <TextField
-              key={key}
-              label={key}
-              value={form.advancedJson[key]}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  advancedJson: { ...current.advancedJson, [key]: event.target.value },
-                }))
-              }
-              multiline
-              minRows={key === 'assetTypes' ? 10 : 5}
-              fullWidth
-            />
-          ))}
-          <Button startIcon={<SaveIcon />} variant="contained" onClick={onSave} disabled={isSaving} sx={{ alignSelf: 'flex-start' }}>
-            Save Advanced Settings
-          </Button>
-        </Stack>
-      </CardContent>
-    </Card>
-  );
-}
-
 type SettingsCardProps = {
   form: SettingsForm;
   setForm: Dispatch<SetStateAction<SettingsForm>>;
@@ -3311,5 +3213,14 @@ function parseJsonObject(value: string, fallback: Record<string, unknown>) {
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback;
   } catch {
     return fallback;
+  }
+}
+
+function isJsonObject(value: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
   }
 }
