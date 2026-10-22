@@ -99,6 +99,10 @@ import type {
   SubtitleTranslationCapabilityInput,
   SubtitleTranslationReadiness,
   StartSubtitleTranslationInput,
+  SubtitleTranslationQualityDecisionInput,
+  SubtitleTranslationQualityDecisionResponse,
+  SubtitleTranslationQualityReviewResponse,
+  SubtitleTranslationQualityReviewListItem,
   RemoteExecutorConfig,
   RemoteExecutorProbe,
   TrackProfileResolutionPreview,
@@ -417,6 +421,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
+  decideSubtitleTranslationQuality: (operationId: string, input: SubtitleTranslationQualityDecisionInput) =>
+    request<SubtitleTranslationQualityDecisionResponse>(`/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/translation-quality-review`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  getSubtitleTranslationQualityReview: (operationId: string) =>
+    request<SubtitleTranslationQualityReviewResponse>(`/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/translation-quality-review`),
+  listSubtitleTranslationQualityReviews: (assetPath: string, sourceIdentity: string) =>
+    request<{ reviews: SubtitleTranslationQualityReviewListItem[] }>(`/api/assets/subtitle-translation/quality-reviews?assetPath=${encodeURIComponent(assetPath)}&sourceIdentity=${encodeURIComponent(sourceIdentity)}`),
 
   analyzeSubtitleOCR: (input: {
     mediaPath?: string;

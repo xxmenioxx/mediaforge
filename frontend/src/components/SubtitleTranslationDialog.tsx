@@ -74,6 +74,23 @@ function TranslationOperationStatus({
   onRetry: () => void;
   onReviewOCR?: (operation: SubtitleExtractionOperation) => void;
 }) {
+  const [reviewedCueIDs, setReviewedCueIDs] = useState<Set<string>>(() => new Set());
+  const [editingCueID, setEditingCueID] = useState<string | null>(null);
+  const [editedText, setEditedText] = useState('');
+  const qualityReview = useQuery({
+    queryKey: ['subtitleTranslationQualityReview', operation.id],
+    queryFn: () => api.getSubtitleTranslationQualityReview(operation.id),
+    enabled: Boolean(operation.translation?.quality?.persisted),
+  });
+  const qualityDecision = useMutation({
+    mutationFn: (input: { cueId: string; action: 'keep' | 'edit'; text?: string }) =>
+      api.decideSubtitleTranslationQuality(operation.id, input),
+    onSuccess: (response) => {
+      setReviewedCueIDs((current) => new Set(current).add(response.cueId));
+      setEditingCueID(null);
+      void qualityReview.refetch();
+    },
+  });
   const running = operation.status === 'running';
   const cancelled = operation.status === 'cancelled';
   const completed = operation.status === 'completed';
@@ -110,6 +127,51 @@ function TranslationOperationStatus({
       ) : null}
       {operationError ? <Alert severity="warning">{apiErrorMessage(operationError, 'Could not poll subtitle translation.')}</Alert> : null}
       {completed ? <Alert severity="success">Translation completed.</Alert> : null}
+      {operation.translation?.quality ? (
+        <Stack spacing={1}>
+          <Alert severity={operation.translation.quality.reviewCount > 0 ? 'warning' : 'success'}>
+            <AlertTitle>Translation quality</AlertTitle>
+            {operation.translation.quality.cueCount} cues · {operation.translation.quality.cleanCount} clean · {operation.translation.quality.warningCount} warnings · {operation.translation.quality.reviewCount} for review. These signals are advisory and do not assess OCR source accuracy.
+          </Alert>
+          {operation.translation.quality.reviewer ? (
+            <Alert severity={operation.translation.quality.reviewer.state === 'completed' ? 'info' : 'warning'}>
+              Independent reviewer: {operation.translation.quality.reviewer.state}
+              {operation.translation.quality.reviewer.model ? ` · ${operation.translation.quality.reviewer.model}` : ''}
+            </Alert>
+          ) : null}
+          {(operation.translation.quality.findings ?? []).map((finding) => (
+            <Alert key={finding.cueId} severity="info">
+              <AlertTitle>Cue {finding.cueId} · {finding.reasons.join(', ')}</AlertTitle>
+              <Typography variant="caption" component="div">Source: {finding.sourceText}</Typography>
+              {operation.translation?.quality?.reviewer?.findings?.find((item) => item.cueId === finding.cueId)?.suggestedText ? (
+                <>
+                  <Typography variant="caption" component="div">Reviewer suggestion (advisory): {operation.translation.quality.reviewer.findings.find((item) => item.cueId === finding.cueId)?.suggestedText}</Typography>
+                  <Button size="small" onClick={() => { const suggestion = operation.translation?.quality?.reviewer?.findings?.find((item) => item.cueId === finding.cueId)?.suggestedText; if (suggestion) { setEditingCueID(finding.cueId); setEditedText(suggestion); } }}>Review suggestion</Button>
+                </>
+              ) : null}
+              {editingCueID === finding.cueId ? (
+                <TextField fullWidth size="small" label="Edit translation" value={editedText} onChange={(event) => setEditedText(event.target.value)} sx={{ mt: 1 }} />
+              ) : <Typography variant="caption" component="div">Translation: {finding.translatedText}</Typography>}
+              {reviewedCueIDs.has(finding.cueId) || qualityReview.data?.decisions.some((decision) => decision.cueId === finding.cueId) ? (
+                <Chip size="small" label="Reviewed" sx={{ mt: 1 }} />
+              ) : editingCueID === finding.cueId ? (
+                <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                  <Button size="small" variant="contained" disabled={qualityDecision.isPending || !editedText.trim()} onClick={() => qualityDecision.mutate({ cueId: finding.cueId, action: 'edit', text: editedText })}>Save edit</Button>
+                  <Button size="small" onClick={() => setEditingCueID(null)}>Cancel</Button>
+                </Stack>
+              ) : (
+                <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                  <Button size="small" disabled={qualityDecision.isPending} onClick={() => qualityDecision.mutate({ cueId: finding.cueId, action: 'keep' })}>Keep translation</Button>
+                  <Button size="small" disabled={qualityDecision.isPending} onClick={() => { setEditingCueID(finding.cueId); setEditedText(finding.translatedText); }}>Edit</Button>
+                </Stack>
+              )}
+            </Alert>
+          ))}
+          {operation.translation.quality.truncated ? <Typography variant="caption" color="text.secondary">Additional flagged cues were omitted from this bounded review summary.</Typography> : null}
+          {operation.translation.quality.persistenceWarning ? <Alert severity="warning">{operation.translation.quality.persistenceWarning}</Alert> : null}
+          {qualityDecision.isError ? <Alert severity="warning">{apiErrorMessage(qualityDecision.error, 'Could not save the translation review decision.')}</Alert> : null}
+        </Stack>
+      ) : null}
       {cancelled ? <Alert severity="info">Translation cancelled.</Alert> : null}
       {operation.status === 'error' ? (
         ocrReviewRequired ? (
@@ -185,7 +247,7 @@ export function SubtitleTranslationDialog({
   const operationQuery = useQuery({
     queryKey: ['subtitleOperation', operation?.id ?? ''],
     queryFn: () => api.subtitleOperation(operation!.id),
-    enabled: open && Boolean(operation?.id),
+    enabled: open && Boolean(operation?.id) && operation?.kind !== 'quality_review_resume',
     retry: false,
     refetchInterval: (query) => query.state.data?.status === 'running' ? 500 : false,
   });
@@ -216,6 +278,12 @@ export function SubtitleTranslationDialog({
   }, [operationQuery.data, path, queryClient]);
 
   const value: SubtitleTranslationCapability | undefined = capability.data;
+  const savedQualityReviews = useQuery({
+    queryKey: ['subtitleTranslationQualityReviews', path, value?.source.sourceIdentity ?? ''],
+    queryFn: () => api.listSubtitleTranslationQualityReviews(path, value!.source.sourceIdentity),
+    enabled: open && !operation && Boolean(value?.source.sourceIdentity),
+    retry: false,
+  });
   const outputRepresentations = value?.outputRepresentations ?? [];
   const selectedSourceLanguage = value
     ? value.sourceLanguages.includes(sourceLanguage)
@@ -274,6 +342,23 @@ export function SubtitleTranslationDialog({
           {!currentOperation && value && !value.eligible ? <Alert severity="warning">{value.reason || 'This subtitle cannot be translated.'}</Alert> : null}
           {!currentOperation && value && value.eligible && !value.available ? (
             <Alert severity="warning">{value.reason || 'Translation is currently unavailable.'}</Alert>
+          ) : null}
+          {!currentOperation && (savedQualityReviews.data?.reviews.length ?? 0) > 0 ? (
+            <Stack spacing={0.5}>
+              <Typography variant="subtitle2">Saved translation reviews</Typography>
+              {savedQualityReviews.data!.reviews.map((review) => (
+                <Stack key={review.operationId} direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+                  <Typography variant="caption">{review.quality.reviewCount} cues for review · {new Date(review.updatedAt).toLocaleString()}</Typography>
+                  <Button size="small" onClick={() => setOperation({
+                    id: review.operationId, assetPath: path, status: 'completed', phase: 'completed', progress: 100,
+                    processed: 0, total: 0, streamIndex: 0, format: 'original', kind: 'quality_review_resume',
+                    message: 'Resumed saved translation review',
+                    createdAt: review.updatedAt, updatedAt: review.updatedAt,
+                    translation: { retryable: false, cancellable: false, quality: review.quality },
+                  })}>Resume review</Button>
+                </Stack>
+              ))}
+            </Stack>
           ) : null}
           {!currentOperation && value && value.eligible && value.available && outputRepresentations.length === 0 ? (
             <Alert severity="warning">No valid translation output is available for this subtitle.</Alert>

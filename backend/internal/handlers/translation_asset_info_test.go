@@ -128,6 +128,9 @@ func TestExecuteTextTranslationSRTUsesExactCueContract(t *testing.T) {
 	if !strings.Contains(string(result.Outputs["srt"]), "00:00:01,000 --> 00:00:02,000") {
 		t.Fatalf("translated SRT lost canonical timing: %q", result.Outputs["srt"])
 	}
+	if result.Quality.State != "clean" || result.Quality.CueCount != 1 || result.Quality.PolicyVersion != subtitleTranslationQualityPolicyVersion {
+		t.Fatalf("unexpected post-validation quality report: %#v", result.Quality)
+	}
 }
 
 func TestExecuteTextTranslationAutoAmbiguityStopsBeforeProvider(t *testing.T) {

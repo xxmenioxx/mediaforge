@@ -24,20 +24,21 @@ const (
 )
 
 type translationSettings struct {
-	Provider            string
-	OllamaEndpoint      string
-	ConfigurationState  string
-	OllamaModel         string
-	MaxCuesPerRequest   int
-	MaxRequestBytes     int
-	MaxContextCues      int
-	MaxContextChars     int
-	Enabled             bool
-	Readiness           translationProviderReadinessState
-	ReadinessIdentity   string
-	ReadinessCheckedAt  string
-	ReadinessDiagnostic string
-	Extra               models.JSONMap
+	Provider             string
+	OllamaEndpoint       string
+	ConfigurationState   string
+	OllamaModel          string
+	QualityReviewerModel string
+	MaxCuesPerRequest    int
+	MaxRequestBytes      int
+	MaxContextCues       int
+	MaxContextChars      int
+	Enabled              bool
+	Readiness            translationProviderReadinessState
+	ReadinessIdentity    string
+	ReadinessCheckedAt   string
+	ReadinessDiagnostic  string
+	Extra                models.JSONMap
 }
 
 func defaultTranslationSettings() translationSettings {
@@ -185,6 +186,19 @@ func translationSettingsFromValue(value models.JSONMap, strict bool) (translatio
 		}
 		return settings, nil
 	}
+	settings.QualityReviewerModel, valid = optionalStringSettingValue(value, "qualityReviewerModel")
+	if !valid {
+		if strict {
+			return translationSettings{}, fmt.Errorf("qualityReviewerModel must be a string")
+		}
+		return settings, nil
+	}
+	if len(settings.QualityReviewerModel) > 256 {
+		if strict {
+			return translationSettings{}, fmt.Errorf("qualityReviewerModel exceeds 256 characters")
+		}
+		return defaultTranslationSettings(), nil
+	}
 	if raw, present := value[translationSettingsReadinessKey]; present {
 		readiness, ok := raw.(string)
 		readiness = strings.TrimSpace(readiness)
@@ -272,6 +286,7 @@ func translationSettingsValue(settings translationSettings) models.JSONMap {
 	knownValues := models.JSONMap{
 		"provider":                                settings.Provider,
 		"ollamaModel":                             settings.OllamaModel,
+		"qualityReviewerModel":                    settings.QualityReviewerModel,
 		"maxCuesPerRequest":                       settings.MaxCuesPerRequest,
 		"maxRequestBytes":                         settings.MaxRequestBytes,
 		"maxContextCues":                          settings.MaxContextCues,
@@ -292,7 +307,7 @@ func translationSettingsValue(settings translationSettings) models.JSONMap {
 
 func translationSettingsExtraFields(value models.JSONMap) models.JSONMap {
 	known := map[string]struct{}{
-		"provider": {}, "ollamaEndpoint": {}, "ollamaModel": {},
+		"provider": {}, "ollamaEndpoint": {}, "ollamaModel": {}, "qualityReviewerModel": {},
 		"maxCuesPerRequest": {}, "maxRequestBytes": {}, "maxContextCues": {}, "maxContextChars": {},
 		translationSettingsEnabledKey: {}, translationSettingsReadinessKey: {},
 		translationSettingsReadinessIdentityKey: {}, translationSettingsReadinessCheckedAtKey: {},

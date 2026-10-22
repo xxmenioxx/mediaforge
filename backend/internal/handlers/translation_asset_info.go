@@ -59,6 +59,7 @@ type subtitleTranslationExecutionResult struct {
 	Outputs           map[string][]byte
 	EffectiveLanguage string
 	Metrics           TranslationProviderMetrics
+	Quality           subtitleTranslationQualityReport
 }
 
 func (h AssetHandler) resolveSubtitleTranslationAssetSource(
@@ -643,6 +644,7 @@ func (h AssetHandler) runAssetInfoSubtitleTranslation(
 	var outputs map[string][]byte
 	var effectiveLanguage string
 	var metrics TranslationProviderMetrics
+	qualityReport := subtitleTranslationQualityReport{PolicyVersion: subtitleTranslationQualityPolicyVersion, State: "not_analyzed"}
 	if source.Representation == translationRepresentationBitmap {
 		if stream == nil {
 			return errors.New("embedded bitmap subtitle stream is unavailable")
@@ -696,6 +698,8 @@ func (h AssetHandler) runAssetInfoSubtitleTranslation(
 		outputs = result.Outputs
 		effectiveLanguage = result.EffectiveLanguage
 		metrics = result.Metrics
+		qualityReport = result.Quality
+		setSubtitleTranslationQuality(operationID, result.Quality)
 	}
 	if len(outputs) == 0 {
 		return errors.New("translation produced no output")
@@ -741,6 +745,14 @@ func (h AssetHandler) runAssetInfoSubtitleTranslation(
 	})
 	if err == nil {
 		setSubtitleTranslationResult(operationID, publishedArtifacts)
+		if qualityReport.State != "not_analyzed" {
+			if persistErr := persistSubtitleTranslationQualityReview(h.db, operationID, request, qualityReport, publishedArtifacts); persistErr != nil {
+				qualityReport.PersistenceWarning = "Quality findings could not be saved for later review."
+			} else {
+				qualityReport.Persisted = true
+			}
+			setSubtitleTranslationQuality(operationID, qualityReport)
+		}
 	}
 	return err
 }
@@ -934,7 +946,11 @@ func executeTextTranslation(
 			return subtitleTranslationExecutionResult{}, fmt.Errorf("translated %s output failed validation", format)
 		}
 	}
-	return subtitleTranslationExecutionResult{Outputs: outputs, EffectiveLanguage: language.EffectiveLanguage, Metrics: metrics}, nil
+	quality := analyzeSubtitleTranslationQuality(cues, envelopes, translated)
+	if strings.TrimSpace(settings.QualityReviewerModel) != "" && quality.State != "not_analyzed" {
+		quality.Reviewer = requestSubtitleTranslationQualitySecondOpinion(ctx, settings.OllamaEndpoint, settings.QualityReviewerModel, settings.OllamaModel, request.TargetLocale, quality.Findings)
+	}
+	return subtitleTranslationExecutionResult{Outputs: outputs, EffectiveLanguage: language.EffectiveLanguage, Metrics: metrics, Quality: quality}, nil
 }
 
 func translationSourceRevisionForResolvedSource(source subtitleTranslationSourceResponse, stream *FFProbeStream) (translationSourceRevision, error) {

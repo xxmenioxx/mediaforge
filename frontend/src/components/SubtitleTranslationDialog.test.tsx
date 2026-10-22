@@ -15,6 +15,9 @@ vi.mock('../api/client', () => ({
     subtitleOperation: vi.fn(),
     cancelSubtitleOperation: vi.fn(),
     retrySubtitleTranslation: vi.fn(),
+    decideSubtitleTranslationQuality: vi.fn(),
+    getSubtitleTranslationQualityReview: vi.fn(),
+    listSubtitleTranslationQualityReviews: vi.fn(),
   },
 }));
 
@@ -102,6 +105,7 @@ describe('SubtitleTranslationDialog', () => {
     vi.mocked(api.subtitleOperation).mockResolvedValue(operation());
     vi.mocked(api.cancelSubtitleOperation).mockResolvedValue(operation({ status: 'cancelled', phase: 'cancelled', translation: { targetLocale: 'es-419', outputRepresentation: 'srt', retryable: true, cancellable: false } }));
     vi.mocked(api.retrySubtitleTranslation).mockResolvedValue({ operation: operation({ id: 'translation-2' }) });
+    vi.mocked(api.listSubtitleTranslationQualityReviews).mockResolvedValue({ reviews: [] });
   });
 
   it('requests capability for the exact embedded stream selector', async () => {
@@ -603,6 +607,62 @@ describe('SubtitleTranslationDialog', () => {
     expect(await screen.findByText('translation_failed: Translation failed.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Cancel translation' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Retry translation' })).toBeNull();
+  });
+
+  it('shows bounded advisory translation-quality findings separately from OCR uncertainty', async () => {
+    const user = userEvent.setup();
+    const completed = operation({
+      status: 'completed', phase: 'completed', progress: 100,
+      translation: {
+        targetLocale: 'es-419', outputRepresentation: 'srt', retryable: false, cancellable: false,
+        quality: {
+          policyVersion: 'translation-quality-v1', state: 'review_required', cueCount: 2,
+          cleanCount: 1, warningCount: 1, reviewCount: 1,
+          findings: [{ cueId: 'cue-15', sourceOrdinal: 0, sourceText: '会うまでは', translatedText: 'hasta que vuelva a ver...', reasons: ['unusually_short_translation'] }],
+        },
+      },
+    });
+    vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: completed });
+    vi.mocked(api.subtitleOperation).mockResolvedValue(completed);
+    vi.mocked(api.decideSubtitleTranslationQuality).mockResolvedValue({ operationId: completed.id, cueId: 'cue-15', status: 'reviewed' });
+    renderDialog();
+
+    await user.click(await screen.findByRole('button', { name: 'Start translation' }));
+    expect(await screen.findByText(/2 cues · 1 clean · 1 warnings · 1 for review/)).toBeTruthy();
+    expect(screen.getByText('Source: 会うまでは')).toBeTruthy();
+    expect(screen.getByText('Translation: hasta que vuelva a ver...')).toBeTruthy();
+    expect(screen.getByText(/do not assess OCR source accuracy/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    const edit = screen.getByRole('textbox', { name: 'Edit translation' });
+    await user.clear(edit);
+    await user.type(edit, 'Hasta que conocí a esa persona...');
+    await user.click(screen.getByRole('button', { name: 'Save edit' }));
+    await waitFor(() => expect(api.decideSubtitleTranslationQuality).toHaveBeenCalledWith(completed.id, {
+      cueId: 'cue-15', action: 'edit', text: 'Hasta que conocí a esa persona...',
+    }));
+    expect(await screen.findByText('Reviewed')).toBeTruthy();
+  });
+
+  it('rediscovers and resumes a persisted review after the operation is no longer in memory', async () => {
+    const user = userEvent.setup();
+    const quality = {
+      policyVersion: 'translation-quality-v1', state: 'review_required', cueCount: 1,
+      cleanCount: 0, warningCount: 1, reviewCount: 1, persisted: true,
+      findings: [{ cueId: 'cue-1', sourceOrdinal: 0, sourceText: 'Hello', translatedText: '', reasons: ['empty_translation'] }],
+    };
+    vi.mocked(api.listSubtitleTranslationQualityReviews).mockResolvedValue({ reviews: [{
+      operationId: 'old-translation', status: 'open', quality, decisions: [], updatedAt: '2026-10-20T00:00:00Z',
+    }] });
+    vi.mocked(api.getSubtitleTranslationQualityReview).mockResolvedValue({
+      operationId: 'old-translation', status: 'open', quality, decisions: [],
+    });
+    renderDialog();
+
+    await user.click(await screen.findByRole('button', { name: 'Resume review' }));
+    expect(await screen.findByText('Source: Hello')).toBeTruthy();
+    expect(api.subtitleOperation).not.toHaveBeenCalledWith('old-translation');
+    await user.click(screen.getByRole('button', { name: 'Keep translation' }));
+    await waitFor(() => expect(api.decideSubtitleTranslationQuality).toHaveBeenCalledWith('old-translation', { cueId: 'cue-1', action: 'keep' }));
   });
 
   it.each([

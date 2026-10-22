@@ -2383,6 +2383,7 @@ function subtitleTranslationConfigurationPayload(value: SubtitleTranslationSetti
     'provider',
     'ollamaEndpoint',
     'ollamaModel',
+    'qualityReviewerModel',
     'maxCuesPerRequest',
     'maxRequestBytes',
     'maxContextCues',
@@ -2401,6 +2402,7 @@ function subtitleTranslationConfigurationPayload(value: SubtitleTranslationSetti
     provider: value.provider,
     ollamaEndpoint: value.ollamaEndpoint,
     ollamaModel: value.ollamaModel,
+    qualityReviewerModel: value.qualityReviewerModel,
     maxCuesPerRequest: value.maxCuesPerRequest,
     maxRequestBytes: value.maxRequestBytes,
     maxContextCues: value.maxContextCues,
@@ -2466,7 +2468,7 @@ export function SubtitleTranslationSettingsCard({
 
   const persistedReadiness = subtitleTranslationReadinessForSettings(value);
   const readiness = readinessOverride ?? persistedReadiness;
-  const dirty = draft.provider !== value.provider || draft.ollamaEndpoint !== value.ollamaEndpoint || draft.ollamaModel !== value.ollamaModel;
+  const dirty = draft.provider !== value.provider || draft.ollamaEndpoint !== value.ollamaEndpoint || draft.ollamaModel !== value.ollamaModel || draft.qualityReviewerModel !== value.qualityReviewerModel;
   const structurallyConfigured = draft.provider === 'ollama' && Boolean(draft.ollamaEndpoint.trim()) && Boolean(draft.ollamaModel.trim());
   const canTest = structurallyConfigured && !dirty && !testConnection.isPending;
   const canEnable = structurallyConfigured && !dirty && !readiness.enabled && !enable.isPending;
@@ -2505,6 +2507,13 @@ export function SubtitleTranslationSettingsCard({
                 placeholder="qwen2.5:7b"
                 value={draft.ollamaModel}
                 onChange={(event) => setDraft((current) => ({ ...current, ollamaModel: event.target.value }))}
+                fullWidth
+              />
+              <TextField
+                label="Independent quality reviewer model (optional)"
+                helperText="Uses a separate installed Ollama model. No model is downloaded automatically, and reviewer suggestions always require your decision."
+                value={draft.qualityReviewerModel}
+                onChange={(event) => setDraft((current) => ({ ...current, qualityReviewerModel: event.target.value }))}
                 fullWidth
               />
             </>

@@ -83,6 +83,7 @@ func Migrate(db *gorm.DB) error {
 		&models.AIResourceAdmissionRecord{},
 		&models.AIResourceAdmissionCounter{},
 		&models.TranslationOperationCheckpoint{},
+		&models.SubtitleTranslationQualityReview{},
 	); err != nil {
 		return err
 	}
