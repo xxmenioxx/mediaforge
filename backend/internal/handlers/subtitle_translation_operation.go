@@ -292,6 +292,17 @@ func cloneSubtitleExtractionOperationSnapshot(operation *subtitleExtractionOpera
 		composition.Provenance.Counts = cloneCompositionCounts(operation.Composition.Provenance.Counts)
 		snapshot.Composition = &composition
 	}
+	if operation.SubtitleSync != nil {
+		syncSnapshot := *operation.SubtitleSync
+		syncSnapshot.Proposal.Segments = append([]SubtitleSyncSegment(nil), operation.SubtitleSync.Proposal.Segments...)
+		syncSnapshot.Proposal.Diagnostics = append([]string(nil), operation.SubtitleSync.Proposal.Diagnostics...)
+		syncSnapshot.Proposal.Preview = append([]SubtitleSyncCuePreview(nil), operation.SubtitleSync.Proposal.Preview...)
+		if operation.SubtitleSync.AppliedAt != nil {
+			appliedAt := *operation.SubtitleSync.AppliedAt
+			syncSnapshot.AppliedAt = &appliedAt
+		}
+		snapshot.SubtitleSync = &syncSnapshot
+	}
 	if operation.Result != nil {
 		result := *operation.Result
 		result.Created = append([]string(nil), operation.Result.Created...)

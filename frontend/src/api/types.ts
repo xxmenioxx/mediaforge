@@ -745,6 +745,83 @@ export type StartSubtitleTranslationInput = {
   outputRepresentation: string;
 };
 
+export type SubtitleSyncCapability = {
+  enabled: boolean;
+  fixedOffset: boolean;
+  automaticAlignment: boolean;
+  segmentedAlignment: boolean;
+  engines: Array<{ name: string; version: string }>;
+};
+
+export type SubtitleSyncAudioReference = {
+  streamIndex: number;
+  streamId?: string;
+  codec: string;
+  language?: string;
+  title?: string;
+};
+
+export type SubtitleSyncCuePreview = {
+  cueIndex: number;
+  currentStartMs: number;
+  currentEndMs: number;
+  proposedStartMs: number;
+  proposedEndMs: number;
+};
+
+export type SubtitleSyncProposal = {
+  proposalId: string;
+  subtitlePath: string;
+  sourceIdentity: string;
+  sourceRevision: string;
+  representation: string;
+  referenceAudio: SubtitleSyncAudioReference;
+  engine: string;
+  engineVersion: string;
+  model: 'fixed_offset' | 'affine' | 'segmented' | string;
+  offsetMilliseconds: number;
+  scale: number;
+  segments: Array<{ startMilliseconds?: number; endMilliseconds?: number; offsetMilliseconds: number; scale: number }>;
+  qualityState: string;
+  analyzedAt: string;
+  diagnostics: string[];
+  preview: SubtitleSyncCuePreview[];
+};
+
+export type SubtitleSyncInput = {
+  path: string;
+  subtitlePath: string;
+  referenceAudioStreamIndex: number;
+  offsetMilliseconds: number;
+};
+
+export type SubtitleSyncApplyInput = SubtitleSyncInput & {
+  sourceRevision: string;
+  proposalId: string;
+};
+
+export type SubtitleSyncProvenance = {
+  operationId: string;
+  assetPath: string;
+  subtitlePath: string;
+  sourceIdentity: string;
+  sourceRevision: string;
+  referenceAudioStreamIndex: number;
+  referenceAudioStreamId?: string;
+  referenceAudioCodec: string;
+  referenceAudioLanguage?: string;
+  referenceAudioTitle?: string;
+  engine: string;
+  engineVersion: string;
+  model: string;
+  offsetMilliseconds: number;
+  scale: number;
+  segmentsJson: string;
+  qualityState: string;
+  analysisAt: string;
+  appliedAt: string;
+};
+
 export type StreamMetadataOverride = {
   title?: string;
   language?: string;
@@ -3457,6 +3534,10 @@ export type SubtitleExtractionOperation = {
     outputIdentity: string;
     outputPath: string;
     provenance?: Record<string, unknown>;
+  };
+  subtitleSync?: {
+    proposal: SubtitleSyncProposal;
+    appliedAt?: string;
   };
   translation?: {
     provider?: string;

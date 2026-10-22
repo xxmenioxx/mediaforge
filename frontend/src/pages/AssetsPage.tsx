@@ -78,12 +78,13 @@ import { assetPathWithin, formatDurationSummary, type LibraryTreeSelection, type
 import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
+import { SubtitleSyncDialog } from '../components/SubtitleSyncDialog';
 import { SubtitleOCRReviewDialog } from '../components/SubtitleOCRReviewDialog';
 import { SubtitleProofreadingDialog } from '../components/SubtitleProofreadingDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
 import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
 import { createSingleQueueBatchID, invalidateQueueBatchPreflightReference, getSavedQueueBatchPreflightCandidateID, openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_OPEN_EVENT } from '../utils/queueBatchPreflightEvents';
-import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AssetTracksUpdateInput, AudioEnhancementProfile, CanonicalOCRReviewTarget, EffectiveAssetConfiguration, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
+import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AssetTracksUpdateInput, AudioEnhancementProfile, CanonicalOCRReviewTarget, EffectiveAssetConfiguration, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleSyncProposal, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
 import { qsvQualityHelper, qsvQualityRangeForCrf } from '../utils/qsv';
 import { applyHardwareQualityPreset as applySharedHardwareQualityPreset, hardwareQualityPresetOptions, qsvAssetQualitySummary } from '../utils/hardwareQualityPresets';
@@ -3854,6 +3855,8 @@ function AssetRow({
   const [subtitleQualityMessages, setSubtitleQualityMessages] = useState<Record<string, string>>({});
   const [subtitleRestyleMessages, setSubtitleRestyleMessages] = useState<Record<string, string>>({});
   const [subtitleRestyleOperations, setSubtitleRestyleOperations] = useState<Record<string, SubtitleRestyleOperationState>>({});
+  const [subtitleSyncSource, setSubtitleSyncSource] = useState<ExternalSubtitle | null>(null);
+  const [subtitleSyncOperations, setSubtitleSyncOperations] = useState<Record<string, SubtitleExtractionOperation>>({});
   const [subtitleCompositionOperation, setSubtitleCompositionOperation] = useState<SubtitleExtractionOperation | null>(null);
   const [subtitleCompositionError, setSubtitleCompositionError] = useState('');
   const [translationSource, setTranslationSource] = useState<SubtitleTranslationSourceSelector | null>(null);
@@ -4707,6 +4710,43 @@ function AssetRow({
   }
   }, [setSubtitleGenerations]);
 
+  const waitForSubtitleSyncOperation = useCallback(async (operationId: string, subtitlePath: string) => {
+    if (subtitleOperationPollers.current.has(operationId)) return;
+    subtitleOperationPollers.current.add(operationId);
+    try {
+      while (true) {
+        const operation = await api.subtitleOperation(operationId);
+        setSubtitleSyncOperations((current) => ({ ...current, [subtitlePath]: operation }));
+        if (subtitleOperationStopsPolling(operation.status)) {
+          if (operation.status === 'completed') {
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: ['externalSubtitles', asset.path] }),
+              queryClient.invalidateQueries({ queryKey: ['subtitleEligibility', asset.path] }),
+            ]);
+          }
+          return;
+        }
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+      }
+    } catch (error) {
+      setSubtitleSyncOperations((current) => {
+        const operation = current[subtitlePath];
+        if (!operation) return current;
+        return {
+          ...current,
+          [subtitlePath]: {
+            ...operation,
+            status: 'error',
+            phase: 'error',
+            error: error instanceof Error ? error.message : 'Could not poll subtitle synchronization.',
+          },
+        };
+      });
+    } finally {
+      subtitleOperationPollers.current.delete(operationId);
+    }
+  }, [asset.path, queryClient]);
+
   const restoreSubtitleOperations = useCallback(async () => {
   try {
     const response = await api.subtitleExtractionOperations(asset.path);
@@ -4717,6 +4757,14 @@ function AssetRow({
 
     for (const operation of runningOperations) {
       if (operation.kind === 'proofreading') {
+        continue;
+      }
+      if (operation.kind === 'subtitle_sync') {
+        const subtitlePath = operation.subtitleSync?.proposal.subtitlePath;
+        if (subtitlePath) {
+          setSubtitleSyncOperations((current) => ({ ...current, [subtitlePath]: operation }));
+          void waitForSubtitleSyncOperation(operation.id, subtitlePath);
+        }
         continue;
       }
       if (operation.kind === 'compose') {
@@ -4768,7 +4816,7 @@ function AssetRow({
       error,
     );
   }
-  }, [asset.path, setSubtitleCompositionOperation, setSubtitleGenerations, waitForSubtitleOperation]);
+  }, [asset.path, setSubtitleCompositionOperation, setSubtitleGenerations, waitForSubtitleOperation, waitForSubtitleSyncOperation]);
 
   useEffect(() => {
     if (!showSnapshotDialog || snapshotTab !== 'tracks' || asset.missing) return;
@@ -5033,6 +5081,52 @@ async function generateExternalSubtitle(
     setTranslationReviewTarget(target);
     setTranslationDialogOpen(false);
     setTranslationReviewDialogOpen(true);
+  }
+
+  async function applySubtitleSyncProposal(proposal: SubtitleSyncProposal) {
+    const started = await api.startSubtitleSync({
+      path: asset.path,
+      subtitlePath: proposal.subtitlePath,
+      referenceAudioStreamIndex: proposal.referenceAudio.streamIndex,
+      offsetMilliseconds: proposal.offsetMilliseconds,
+      sourceRevision: proposal.sourceRevision,
+      proposalId: proposal.proposalId,
+    });
+    const now = new Date().toISOString();
+    const initial: SubtitleExtractionOperation = {
+      id: started.operationId,
+      assetPath: asset.path,
+      status: 'running',
+      phase: started.phase as SubtitleExtractionOperation['phase'],
+      progress: started.progress,
+      processed: 0,
+      total: 0,
+      streamIndex: -1,
+      format: proposal.representation as SubtitleExtractionOperation['format'],
+      kind: 'subtitle_sync',
+      createdAt: now,
+      updatedAt: now,
+      subtitleSync: { proposal },
+    };
+    setSubtitleSyncOperations((current) => ({ ...current, [proposal.subtitlePath]: initial }));
+    void waitForSubtitleSyncOperation(started.operationId, proposal.subtitlePath);
+  }
+
+  async function cancelSubtitleSync(subtitle: ExternalSubtitle) {
+    const operation = subtitleSyncOperations[subtitle.path];
+    if (!operation || operation.status !== 'running') return;
+    try {
+      const updated = await api.cancelSubtitleOperation(operation.id);
+      setSubtitleSyncOperations((current) => ({ ...current, [subtitle.path]: updated }));
+    } catch (error) {
+      setSubtitleSyncOperations((current) => ({
+        ...current,
+        [subtitle.path]: {
+          ...operation,
+          message: error instanceof Error ? error.message : 'Could not cancel subtitle synchronization.',
+        },
+      }));
+    }
   }
 
   async function restyleExternalSubtitle(sidecar: ExternalSubtitle, mode: 'restyle' | 'srt_to_ass', options: { replace?: boolean; overrideExistingASSStyles?: boolean } = {}) {
@@ -6226,6 +6320,9 @@ async function generateExternalSubtitle(
                         disabled={hasOpenJob || !assetInfoCapability(asset, 'manageSubtitles').allowed}
                         translationDisabled={!subtitleTranslationCapability.allowed}
                         translationDisabledReason={subtitleTranslationReason}
+                        syncOperations={subtitleSyncOperations}
+                        onSync={setSubtitleSyncSource}
+                        onCancelSync={cancelSubtitleSync}
                         onTranslate={(subtitle) => openTranslation({ type: 'external', external: { subtitlePath: subtitle.path } })}
                         onAnalyze={analyzeExternalSubtitle}
                         onProofread={(subtitle) => setProofreadingSubtitle(subtitle)}
@@ -6700,6 +6797,17 @@ async function generateExternalSubtitle(
           onReviewOCR={reviewTranslationOCR}
         />
       ) : null}
+      {subtitleSyncSource ? (
+        <SubtitleSyncDialog
+          key={`${asset.path}:${subtitleSyncSource.path}`}
+          open
+          path={asset.path}
+          subtitle={subtitleSyncSource}
+          audioStreams={snapshotData?.audioStreams ?? []}
+          onClose={() => setSubtitleSyncSource(null)}
+          onApply={applySubtitleSyncProposal}
+        />
+      ) : null}
       <SubtitleOCRReviewDialog
         open={translationReviewDialogOpen}
         mediaPath={asset.path}
@@ -7082,8 +7190,11 @@ export function ExternalSubtitleList({
   qualityMessages = {},
   restyleMessages = {},
   restyleOperations = {},
+  syncOperations = {},
   onCancelRestyle,
   onRetryRestyle,
+  onSync,
+  onCancelSync,
   onApplyCorrection,
   onApplyCorrections,
   onRestyle,
@@ -7105,8 +7216,11 @@ export function ExternalSubtitleList({
   qualityMessages?: Record<string, string>;
   restyleMessages?: Record<string, string>;
   restyleOperations?: Record<string, SubtitleRestyleOperationState>;
+  syncOperations?: Record<string, SubtitleExtractionOperation>;
   onCancelRestyle?: (subtitle: ExternalSubtitle) => void;
   onRetryRestyle?: (subtitle: ExternalSubtitle) => void;
+  onSync?: (subtitle: ExternalSubtitle) => void;
+  onCancelSync?: (subtitle: ExternalSubtitle) => void;
   onApplyCorrection?: (subtitle: ExternalSubtitle, report: SubtitleOCRQualityReport, finding: SubtitleOCRQualityFinding, text: string) => void;
   onApplyCorrections?: (subtitle: ExternalSubtitle, report: SubtitleOCRQualityReport, corrections: Array<{ cueId: number; suggestion: string }>) => void;
   onRestyle?: (subtitle: ExternalSubtitle, mode: 'restyle' | 'srt_to_ass', options?: { replace?: boolean; overrideExistingASSStyles?: boolean }) => void;
@@ -7135,6 +7249,7 @@ export function ExternalSubtitleList({
           const restyleAllowed = eligibility ? eligibility.restyle.eligible : true;
           const srtToAssAllowed = eligibility ? eligibility.srtToAss.eligible : true;
           const restyleOperation = restyleOperations[subtitle.path];
+          const syncOperation = syncOperations[subtitle.path];
           const logicalSiblings = subtitle.logicalTransformKey
             ? values.filter((candidate) => candidate.logicalTransformKey === subtitle.logicalTransformKey)
             : [];
@@ -7164,6 +7279,7 @@ export function ExternalSubtitleList({
                 {onRestyle && srtToAssAllowed ? <Button size="small" variant="outlined" disabled={disabled || restyleOperation?.status === 'running'} onClick={() => openRestyleDialog(subtitle, 'srt_to_ass')}>Generate ASS</Button> : null}
                 {onAnalyze && subtitle.ocrAnalysisAvailable ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onAnalyze(subtitle)}>Analyze OCR</Button> : null}
                 {onProofread ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onProofread(subtitle)}>Review with AI</Button> : null}
+                {onSync ? <Button size="small" variant="outlined" disabled={disabled || syncOperation?.status === 'running'} onClick={() => onSync(subtitle)}>Sync</Button> : null}
                 {onTranslate ? (
                   <SubtitleTranslateAction
                     label={`Translate ${subtitle.fileName}`}
@@ -7192,6 +7308,18 @@ export function ExternalSubtitleList({
                 <LinearProgress variant="determinate" value={restyleOperation.progress} aria-label={`Subtitle operation for ${subtitle.fileName}`} />
                 {onCancelRestyle ? <Button size="small" color="warning" variant="outlined" disabled={disabled} onClick={() => onCancelRestyle(subtitle)}>Cancel</Button> : null}
               </Stack> : <Stack direction="row" spacing={1} alignItems="center"><Alert severity={restyleOperation.status === 'completed' ? 'success' : restyleOperation.status === 'cancelled' ? 'info' : 'warning'} sx={{ py: 0, flex: 1 }}>{restyleOperation.error || restyleOperation.message || (restyleOperation.status === 'completed' ? 'Subtitle operation completed.' : 'Subtitle operation failed.')}</Alert>{restyleOperation.retryable && onRetryRestyle ? <Button size="small" variant="outlined" onClick={() => onRetryRestyle(subtitle)}>Retry</Button> : null}</Stack>}
+            </Box> : null}
+            {syncOperation ? <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 1 }}>
+              {syncOperation.status === 'running' ? <Stack spacing={0.5}>
+                <Stack direction="row" justifyContent="space-between"><Typography variant="caption">{syncOperation.message || syncOperation.phase || 'Subtitle synchronization running'}</Typography><Typography variant="caption">{Math.round(syncOperation.progress)}%</Typography></Stack>
+                <LinearProgress variant="determinate" value={syncOperation.progress} aria-label={`Subtitle synchronization for ${subtitle.fileName}`} />
+                {onCancelSync ? <Button size="small" color="warning" variant="outlined" disabled={disabled} onClick={() => onCancelSync(subtitle)}>Cancel sync</Button> : null}
+              </Stack> : <Stack direction="row" spacing={1} alignItems="center">
+                <Alert severity={syncOperation.status === 'completed' ? 'success' : syncOperation.status === 'cancelled' ? 'info' : 'warning'} sx={{ py: 0, flex: 1 }}>
+                  {syncOperation.error || syncOperation.message || (syncOperation.status === 'completed' ? 'Subtitle synchronization completed.' : syncOperation.status === 'cancelled' ? 'Subtitle synchronization cancelled.' : 'Subtitle synchronization failed.')}
+                </Alert>
+                {onSync && !disabled ? <Button size="small" variant="outlined" onClick={() => onSync(subtitle)}>Sync again</Button> : null}
+              </Stack>}
             </Box> : null}
             {showReport && report ? <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 1 }}>
               <Typography variant="subtitle2">OCR quality</Typography>
