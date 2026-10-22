@@ -65,7 +65,7 @@ func TestSubtitleTranslationQualityEditPublishesThroughCanonicalPipeline(t *test
 	mediaPath := filepath.Join(root, "episode.mkv")
 	sourcePath := filepath.Join(root, "episode.en.srt")
 	sourceContent := []byte("1\n00:00:01,000 --> 00:00:02,000\nWe waited until the train arrived.\n\n")
-	translatedContent := []byte("1\n00:00:01,000 --> 00:00:02,000\nEsperamos hasta que llegó el tren.\n\n")
+	translatedContent := []byte("1\n00:00:01,000 --> 00:00:02,000\nEl tren llegó tarde.\n\n")
 	if err := os.WriteFile(mediaPath, []byte("synthetic media identity"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestSubtitleTranslationQualityEditPublishesThroughCanonicalPipeline(t *test
 		ReviewCount:   1,
 		Findings: []subtitleTranslationQualityFinding{{
 			CueID: "cue-1", SourceOrdinal: 0, SourceText: "We waited until the train arrived.",
-			TranslatedText: "Esperamos hasta que llegó el tren.", Reasons: []string{"meaning_drift"},
+			TranslatedText: "El tren llegó tarde.", Reasons: []string{"meaning_drift"},
 		}},
 	}
 	if err := persistSubtitleTranslationQualityReview(db, operationID, request, report, []SubtitleArtifact{artifact}); err != nil {
@@ -133,7 +133,7 @@ func TestSubtitleTranslationQualityEditPublishesThroughCanonicalPipeline(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(updated), "00:00:01,000 --> 00:00:02,000") || !strings.Contains(string(updated), "Esperamos hasta que llegó el tren.") {
+	if !strings.Contains(string(updated), "00:00:01,000 --> 00:00:02,000") || !strings.Contains(string(updated), "Esperamos hasta que llegó el tren.") || strings.Contains(string(updated), "El tren llegó tarde.") {
 		t.Fatalf("canonical publisher did not preserve SRT timing and publish the approved cue: %q", updated)
 	}
 	if got, err := os.ReadFile(sourcePath); err != nil || string(got) != string(sourceContent) {
