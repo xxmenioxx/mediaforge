@@ -304,21 +304,38 @@ type QueueBatchPreflightCadenceWindow struct {
 }
 
 type QueueBatchPreflightPlan struct {
-	Profile              models.Profile `json:"profile"`
-	ProfileSnapshot      models.JSONMap `json:"profileSnapshot"`
-	ProfileVersion       int            `json:"profileVersion"`
-	ProfileCapturedAt    *time.Time     `json:"profileCapturedAt,omitempty"`
-	ProfileResolution    models.JSONMap `json:"profileResolution"`
-	AudioProfileSnapshot models.JSONMap `json:"audioProfileSnapshot"`
-	TrackProfileSnapshot models.JSONMap `json:"trackProfileSnapshot"`
-	Constraints          models.JSONMap `json:"constraints"`
-	QualityEvidence      models.JSONMap `json:"qualityEvidence,omitempty"`
-	SelectedEncoder      string         `json:"selectedEncoder"`
-	RuntimeSnapshotID    uint           `json:"runtimeSnapshotId"`
-	RuntimeProfile       string         `json:"runtimeProfile"`
-	DestinationSnapshot  models.JSONMap `json:"destination"`
-	PublishMode          string         `json:"publishMode"`
-	ProcessingMode       string         `json:"processingMode"`
+	Profile              models.Profile                   `json:"profile"`
+	ProfileSnapshot      models.JSONMap                   `json:"profileSnapshot"`
+	ProfileVersion       int                              `json:"profileVersion"`
+	ProfileCapturedAt    *time.Time                       `json:"profileCapturedAt,omitempty"`
+	ProfileResolution    models.JSONMap                   `json:"profileResolution"`
+	AudioProfileSnapshot models.JSONMap                   `json:"audioProfileSnapshot"`
+	TrackProfileSnapshot models.JSONMap                   `json:"trackProfileSnapshot"`
+	Constraints          models.JSONMap                   `json:"constraints"`
+	QualityEvidence      models.JSONMap                   `json:"qualityEvidence,omitempty"`
+	SelectedEncoder      string                           `json:"selectedEncoder"`
+	RuntimeSnapshotID    uint                             `json:"runtimeSnapshotId"`
+	RuntimeProfile       string                           `json:"runtimeProfile"`
+	DestinationSnapshot  models.JSONMap                   `json:"destination"`
+	PublishMode          string                           `json:"publishMode"`
+	ProcessingMode       string                           `json:"processingMode"`
+	SubtitlePlan         *QueueBatchPreflightSubtitlePlan `json:"subtitlePlan,omitempty"`
+}
+
+type QueueBatchPreflightSubtitlePlan struct {
+	Version                int                     `json:"version"`
+	State                  string                  `json:"state"`
+	SourceStreamCount      int                     `json:"sourceStreamCount"`
+	KeptInMKV              int                     `json:"keptInMKV"`
+	SidecarStreams         int                     `json:"sidecarStreams"`
+	KeepAndExtract         int                     `json:"keepAndExtract"`
+	Removed                int                     `json:"removed"`
+	PolicySource           string                  `json:"policySource,omitempty"`
+	ExplicitAssetSelection bool                    `json:"explicitAssetSelection"`
+	Decisions              []ResolvedSubtitleTrack `json:"decisions"`
+	Sidecars               []ResolvedTrackSidecar  `json:"sidecars"`
+	DefaultSubtitle        ResolvedDefaultTrack    `json:"defaultSubtitle"`
+	Warnings               []string                `json:"warnings,omitempty"`
 }
 
 type QueueBatchPreflightAssignmentValue struct {
@@ -360,6 +377,7 @@ type QueueBatchPreflightAssetResponse struct {
 	ID                string                                `json:"id"`
 	MediaPath         string                                `json:"mediaPath"`
 	AssetRecordID     *uint                                 `json:"assetRecordId,omitempty"`
+	SourceRevision    string                                `json:"sourceRevision,omitempty"`
 	BatchID           string                                `json:"batchId"`
 	BatchName         string                                `json:"batchName"`
 	Input             QueueJobInput                         `json:"input"`
@@ -429,6 +447,96 @@ func queuePreflightSourceRevision(path string) (string, error) {
 	return string(encoded), nil
 }
 
+func queuePreflightSubtitlePolicySource(job models.QueueJob) string {
+	trackResolution := settingProfileObject(job.ProfileResolution["tracks"])
+	source := strings.ToLower(strings.TrimSpace(workerStringValue(trackResolution["source"])))
+	switch source {
+	case "asset":
+		return "Asset assignment"
+	case "path":
+		return "Path assignment"
+	case "logical_group":
+		return "Logical Group assignment"
+	case "source_group":
+		return "Source Group assignment"
+	case "global":
+		return "Global Asset Defaults"
+	}
+	if strings.TrimSpace(job.TrackProfileKey) == assetDefaultsCustomTracksKey || workerStringValue(job.TrackProfileSnapshot[subtitleTrackSourceKey]) == "global_settings" {
+		return "Global Asset Defaults"
+	}
+	if strings.TrimSpace(job.TrackProfileKey) != "" {
+		return "Track Profile"
+	}
+	return "Built-in fallback"
+}
+
+func queuePreflightSubtitlePlan(job models.QueueJob) *QueueBatchPreflightSubtitlePlan {
+	projection := &QueueBatchPreflightSubtitlePlan{
+		Version: resolvedSubtitleDecisionProjectionVersion, State: "unavailable",
+		Decisions: []ResolvedSubtitleTrack{}, Sidecars: []ResolvedTrackSidecar{}, Warnings: []string{},
+		PolicySource: queuePreflightSubtitlePolicySource(job),
+	}
+	plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
+	if !ok || plan.DecisionProjectionVersion != resolvedSubtitleDecisionProjectionVersion {
+		return projection
+	}
+	projection.Decisions = append(projection.Decisions, plan.SubtitleStreams...)
+	projection.Sidecars = append(projection.Sidecars, plan.SidecarOutputs...)
+	projection.DefaultSubtitle = plan.DefaultSubtitle
+	projection.SourceStreamCount = len(plan.SubtitleStreams)
+	allRemoved := len(plan.SubtitleStreams) > 0
+	projection.ExplicitAssetSelection = false
+	fallbackStreams := []ResolvedSubtitleTrack{}
+	languages := map[string]bool{}
+	for _, decision := range plan.SubtitleStreams {
+		switch decision.Action {
+		case SubtitleDispositionKeep:
+			projection.KeptInMKV++
+			allRemoved = false
+		case SubtitleDispositionExtract:
+			projection.SidecarStreams++
+			allRemoved = false
+		case SubtitleDispositionKeepAndExtract:
+			projection.KeptInMKV++
+			projection.SidecarStreams++
+			projection.KeepAndExtract++
+			allRemoved = false
+		case SubtitleDispositionRemove:
+			projection.Removed++
+		}
+		if decision.SelectionSource == "explicit_asset_tracks" {
+			projection.ExplicitAssetSelection = true
+		}
+		if decision.ActionSource == "subtitle_disposition" && decision.Action.ExtractsSidecar() {
+			fallbackStreams = append(fallbackStreams, decision)
+			language := strings.ToUpper(strings.TrimSpace(decision.Language))
+			if language == "" {
+				language = "UND"
+			}
+			languages[language] = true
+		}
+	}
+	projection.State = "planned"
+	if len(plan.SubtitleStreams) == 0 {
+		projection.State = "no_subtitle_streams"
+	} else if allRemoved {
+		projection.State = "no_subtitle_tracks_selected"
+	}
+	if len(fallbackStreams) > 0 && strings.EqualFold(workerStringValue(job.TrackProfileSnapshot["subtitleDisposition"]), string(SubtitleDispositionExtract)) {
+		languageCodes := make([]string, 0, len(languages))
+		for language := range languages {
+			languageCodes = append(languageCodes, language)
+		}
+		sort.Strings(languageCodes)
+		projection.Warnings = append(projection.Warnings, fmt.Sprintf(
+			"%d additional subtitle streams across %d languages (%s) will also be extracted because Subtitle action = Extract.",
+			len(fallbackStreams), len(languageCodes), strings.Join(languageCodes, ", "),
+		))
+	}
+	return projection
+}
+
 func queuePreflightResponse(record models.QueueBatchPreflight, state queueBatchPreflightState) QueueBatchPreflightResponse {
 	response := QueueBatchPreflightResponse{
 		ID: record.ID, Revision: record.Revision, Resolved: record.Resolved, Status: record.Status,
@@ -444,7 +552,7 @@ func queuePreflightResponse(record models.QueueBatchPreflight, state queueBatchP
 			}
 		}
 		item := QueueBatchPreflightAssetResponse{
-			ID: asset.ID, MediaPath: asset.MediaPath, AssetRecordID: asset.AssetRecordID,
+			ID: asset.ID, MediaPath: asset.MediaPath, AssetRecordID: asset.AssetRecordID, SourceRevision: asset.SourceRevision,
 			BatchID: asset.BatchID, BatchName: asset.BatchName, Input: asset.Input,
 			Status: asset.Status, ReviewCode: reviewCode, CadenceReview: cadenceReview, Blockers: asset.Blockers, Warnings: asset.Warnings, QueuedJobID: asset.QueuedJobID,
 			AssignmentReview: asset.AssignmentReview,
@@ -462,6 +570,7 @@ func queuePreflightResponse(record models.QueueBatchPreflight, state queueBatchP
 					RuntimeSnapshotID: state.RuntimeSnapshotID, RuntimeProfile: asset.RuntimeProfile,
 					DestinationSnapshot: job.ResolvedDestinationSnapshot,
 					PublishMode:         job.PublishMode, ProcessingMode: job.ProcessingMode,
+					SubtitlePlan: queuePreflightSubtitlePlan(*job),
 				}
 			}
 		}
@@ -792,6 +901,64 @@ func queuePreflightHasPendingAssets(state queueBatchPreflightState) bool {
 		}
 	}
 	return false
+}
+
+func (h QueueHandler) applyQueuePreflightSubtitleDispositions(
+	job *models.QueueJob,
+	scan models.ScanResult,
+	sourceRevision string,
+	overrides []CandidateSubtitleDispositionOverride,
+) error {
+	if job == nil || len(job.TrackProfileSnapshot) == 0 {
+		if len(overrides) > 0 {
+			return fmt.Errorf("candidate subtitle actions require a canonical Track Profile snapshot")
+		}
+		return nil
+	}
+	_, hadExistingOverrides := job.TrackProfileSnapshot[queueCandidateSubtitleDispositionsKey]
+	if len(overrides) == 0 && !hadExistingOverrides {
+		return nil
+	}
+	if _, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); !ok {
+		if len(overrides) > 0 {
+			return fmt.Errorf("candidate subtitle actions require a canonical resolved subtitle plan")
+		}
+		delete(job.TrackProfileSnapshot, queueCandidateSubtitleDispositionsKey)
+		return nil
+	}
+	profile := make(map[string]any, len(job.TrackProfileSnapshot))
+	for key, value := range job.TrackProfileSnapshot {
+		if key != resolvedTrackPlanSnapshotKey && key != queueCandidateSubtitleDispositionsKey {
+			profile[key] = value
+		}
+	}
+	if len(overrides) > 0 {
+		for _, override := range overrides {
+			if strings.TrimSpace(override.SourceRevision) == "" || override.SourceRevision != sourceRevision {
+				return fmt.Errorf("candidate subtitle stream %d source revision changed; resolve Queue Preflight again", override.StreamIndex)
+			}
+		}
+		profile[queueCandidateSubtitleDispositionsKey] = overrides
+	}
+	plan, err := resolveTrackPlan(scan, profile)
+	if err != nil {
+		return err
+	}
+	planMap, err := resolvedTrackPlanMap(plan)
+	if err != nil {
+		return fmt.Errorf("freeze candidate subtitle actions: %w", err)
+	}
+	job.TrackProfileSnapshot[resolvedTrackPlanSnapshotKey] = planMap
+	if len(overrides) > 0 {
+		job.TrackProfileSnapshot[queueCandidateSubtitleDispositionsKey] = overrides
+	} else {
+		delete(job.TrackProfileSnapshot, queueCandidateSubtitleDispositionsKey)
+	}
+	// prepareBatchQueueJob may have generated this list from the inherited plan.
+	// Keep the accepted job's artifact manifest aligned with the candidate plan,
+	// including the empty result when the last sidecar is removed.
+	job.SubtitleArtifacts = plannedSidecarArtifactsJSON(*job)
+	return nil
 }
 
 func (h QueueHandler) CreateBatchPreflight(c *gin.Context) {
@@ -1415,8 +1582,14 @@ func (h QueueHandler) resolveQueueBatchPreflight(input QueueBatchPreflightInput,
 			continue
 		}
 		input.validationContext = validation
+		input.allowCandidateSubtitleDispositionOverrides = true
 		job, _, err := h.prepareBatchQueueJob(input)
 		if err != nil {
+			item.Blockers = append(item.Blockers, err.Error())
+			state.Assets = append(state.Assets, item)
+			continue
+		}
+		if err := h.applyQueuePreflightSubtitleDispositions(&job, sourceScans[filepath.Clean(job.MediaPath)], item.SourceRevision, input.CandidateSubtitleDispositions); err != nil {
 			item.Blockers = append(item.Blockers, err.Error())
 			state.Assets = append(state.Assets, item)
 			continue

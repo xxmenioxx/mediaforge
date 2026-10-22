@@ -23,12 +23,14 @@ import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
 import type {
   AppSetting,
   AudioEnhancementProfile,
+  CandidateSubtitleDispositionOverride,
   Library,
   Profile,
   QueueBatchPreflightAsset,
   QueueBatchPreflightAssignmentValue,
   QueueBatchPreflightPlan,
   QueueBatchPreflightResponse,
+  QueueBatchPreflightSubtitleDecision,
   QueueBatchPreflightUpdateInput,
   QueueJobInput,
   SnapshotOperation,
@@ -256,6 +258,148 @@ function planSummary(asset: QueueBatchPreflightAsset) {
   </Grid>;
 }
 
+function subtitleActionLabel(action: QueueBatchPreflightSubtitleDecision['action'] | 'inherit') {
+  if (action === 'keep') return 'Keep in output MKV';
+  if (action === 'extract') return 'Extract sidecar';
+  if (action === 'keep_and_extract') return 'Keep + Extract';
+  if (action === 'remove') return 'Remove / Skip';
+  return 'Inherit';
+}
+
+function subtitleCodecLabel(codec?: string) {
+  const normalized = codec?.toLowerCase() ?? '';
+  if (normalized === 'hdmv_pgs_subtitle') return 'PGS';
+  if (normalized === 'dvd_subtitle' || normalized === 'vobsub') return 'VobSub';
+  if (normalized === 'subrip') return 'SRT';
+  if (normalized === 'ass' || normalized === 'ssa') return normalized.toUpperCase();
+  return codec?.toUpperCase() || 'Codec unknown';
+}
+
+function subtitleActionSourceLabel(decision: QueueBatchPreflightSubtitleDecision, policySource?: string) {
+  if (decision.actionSource === 'candidate_override') return 'Candidate-only override';
+  if (decision.actionSource === 'explicit_asset_tracks') return 'Explicit Asset Tracks';
+  if (decision.actionSource === 'track_selection') return 'Track Profile selection';
+  if (decision.actionSource === 'subtitle_rule') return 'Track Profile rule';
+  if (decision.actionSource === 'preferred_subtitle_language') return 'Preferred subtitle rule';
+  if (decision.actionSource === 'subtitle_disposition') return `${policySource || 'Policy'} fallback`;
+  if (decision.actionSource === 'operation_override') return 'Subtitle operation override';
+  return policySource || 'Fallback policy';
+}
+
+function SubtitleDecisionReview({
+  asset,
+  input,
+  customizing,
+  busy,
+  onCustomize,
+  onAction,
+  onSave,
+  onDiscard,
+  onRevertAll,
+}: {
+  asset: QueueBatchPreflightAsset;
+  input: QueueJobInput;
+  customizing: boolean;
+  busy: boolean;
+  onCustomize: () => void;
+  onAction: (decision: QueueBatchPreflightSubtitleDecision, action: CandidateSubtitleDispositionOverride['action'] | 'inherit') => void;
+  onSave: () => void;
+  onDiscard: () => void;
+  onRevertAll: () => void;
+}) {
+  const subtitlePlan = asset.plan?.subtitlePlan;
+  const overrides = input.candidateSubtitleDispositions ?? [];
+  const changed = overrides.length > 0;
+  const [showAllDecisions, setShowAllDecisions] = useState(false);
+  if (!subtitlePlan || subtitlePlan.version !== 1 || subtitlePlan.state === 'unavailable') {
+    return <Alert severity="info" variant="outlined" data-testid="subtitle-plan-unavailable">
+      Subtitle plan unavailable from this frozen candidate snapshot.
+    </Alert>;
+  }
+  if (subtitlePlan.state === 'no_subtitle_streams') {
+    return <Alert severity="info" variant="outlined" data-testid="subtitle-plan-empty">
+      No source subtitle streams were found. No subtitle preparation, OCR, or sidecars are planned.
+    </Alert>;
+  }
+  const languages = [...new Set(subtitlePlan.decisions.map((decision) => decision.language || 'und'))];
+
+  return <Stack spacing={0.75} data-testid="subtitle-plan-summary">
+    <Stack direction="row" flexWrap="wrap" useFlexGap gap={0.75}>
+      <Chip size="small" label={`Kept in MKV ${subtitlePlan.keptInMKV}`} />
+      <Chip size="small" label={`Sidecar streams ${subtitlePlan.sidecarStreams}`} />
+      <Chip size="small" label={`Removed ${subtitlePlan.removed}`} />
+      {subtitlePlan.keepAndExtract > 0 ? <Chip size="small" label={`Keep + Extract ${subtitlePlan.keepAndExtract}`} /> : null}
+      {subtitlePlan.explicitAssetSelection ? <Chip size="small" color="info" label="Explicit Asset Tracks selection" /> : null}
+      {changed ? <Chip size="small" color="warning" label="Candidate-only override" /> : null}
+      {subtitlePlan.policySource ? <Chip size="small" variant="outlined" label={subtitlePlan.policySource} /> : null}
+    </Stack>
+    <Typography variant="caption" color="text.secondary">Languages: {languages.join(' · ')}</Typography>
+    <Typography variant="caption" color="text.secondary">
+      Preferred subtitle languages are action rules, not a stream filter. Default subtitle language affects the output default flag, not stream selection.
+    </Typography>
+    {subtitlePlan.warnings?.map((warning) => <Alert key={warning} severity="warning" variant="outlined">{warning}</Alert>)}
+    {subtitlePlan.state === 'no_subtitle_tracks_selected' ? <Alert severity="info" variant="outlined">
+      No subtitle tracks selected. This plan schedules zero subtitle preparation, OCR, or sidecar output.
+    </Alert> : null}
+    <Box sx={{ mt: 0.25 }}>
+      <Button size="small" aria-expanded={showAllDecisions} onClick={() => setShowAllDecisions((expanded) => !expanded)}>
+        {showAllDecisions ? 'Hide subtitle decisions' : `View all subtitle decisions (${subtitlePlan.sourceStreamCount} source streams)`}
+      </Button>
+      {showAllDecisions ? <Stack spacing={0.75} sx={{ mt: 0.75, maxHeight: 360, overflowY: 'auto' }}>
+        {subtitlePlan.decisions.map((decision) => {
+          const override = overrides.find((item) => item.streamIndex === decision.streamIndex && item.streamSignature === decision.streamSignature);
+          const action = override?.action ?? 'inherit';
+          const inherited = decision.inheritedAction ?? decision.action;
+          const displayedAction = override?.action ?? (customizing ? inherited : decision.action);
+          const sidecars = subtitlePlan.sidecars.filter((item) => item.streamIndex === decision.streamIndex);
+          const plannedDefault = subtitlePlan.defaultSubtitle.streamIndex === decision.streamIndex;
+          const metadata = [
+            decision.language || 'und',
+            subtitleCodecLabel(decision.codec),
+            decision.title,
+            decision.forced || decision.effectiveForced ? 'Forced' : '',
+            decision.sourceDefault ? 'Source default' : '',
+            plannedDefault ? 'Planned output default' : '',
+            decision.role && decision.role !== 'unknown' ? decision.role : '',
+          ].filter(Boolean).join(' · ');
+          const sidecarText = sidecars.length === 0
+            ? 'No sidecar planned'
+            : sidecars.map((sidecar) => `${sidecar.format?.toUpperCase() || 'Original'}${sidecar.mode === 'converted' ? ' converted' : ''}${sidecar.ocrRequired ? ` · OCR ${sidecar.ocrLanguage || 'auto'} / ${sidecar.ocrMode || 'accurate'}` : ''}`).join(' · ');
+          return <Box key={`${decision.streamIndex}-${decision.streamSignature}`} sx={{ p: 1, border: 1, borderColor: 'divider', borderRadius: 1 }} data-testid="subtitle-decision-row">
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ sm: 'flex-start' }}>
+              <Stack spacing={0.25} sx={{ minWidth: 0, flex: 1 }}>
+                <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>
+                  Stream {decision.streamIndex} · {metadata}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">{subtitleActionLabel(displayedAction)} · {override ? 'Candidate-only override' : customizing ? 'Inherited decision' : subtitleActionSourceLabel(decision, subtitlePlan.policySource)}</Typography>
+                <Typography variant="caption" color="text.secondary">Planned outputs: {sidecarText}. Requested outputs have not been generated.</Typography>
+                {override ? <Typography variant="caption" color="warning.main" data-testid="subtitle-override-diff">
+                  Candidate-only override: {subtitleActionLabel(inherited)} → {subtitleActionLabel(override.action)}
+                </Typography> : null}
+              </Stack>
+              {customizing ? <TextField select size="small" label={`Queue action for stream ${decision.streamIndex}`} value={action} onChange={(event) => onAction(decision, event.target.value as CandidateSubtitleDispositionOverride['action'] | 'inherit')} sx={{ minWidth: 220 }}>
+                <MenuItem value="inherit">Inherit · {subtitleActionLabel(inherited)}</MenuItem>
+                <MenuItem value="keep" disabled={!decision.queueOverrideAllowed}>Keep</MenuItem>
+                <MenuItem value="extract" disabled={!decision.queueOverrideAllowed}>Extract</MenuItem>
+                <MenuItem value="keep_and_extract" disabled={!decision.queueOverrideAllowed}>Keep + Extract</MenuItem>
+                <MenuItem value="remove" disabled={!decision.queueOverrideAllowed}>Remove</MenuItem>
+              </TextField> : null}
+            </Stack>
+            {customizing && !decision.queueOverrideAllowed ? <Typography variant="caption" color="text.secondary">{decision.queueOverrideReason || 'The canonical policy controls this stream.'}</Typography> : null}
+          </Box>;
+        })}
+      </Stack> : null}
+    </Box>
+    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+      {!customizing ? <Button size="small" disabled={busy || subtitlePlan.state === 'no_subtitle_streams'} onClick={() => { setShowAllDecisions(true); onCustomize(); }}>Customize for this Queue</Button> : <>
+        <Button size="small" variant="contained" disabled={busy} onClick={onSave}>Save Queue-only choices</Button>
+        <Button size="small" disabled={busy} onClick={onDiscard}>Discard edits</Button>
+        {changed ? <Button size="small" disabled={busy} onClick={onRevertAll}>Revert all to Inherit</Button> : null}
+      </>}
+    </Stack>
+  </Stack>;
+}
+
 function ProfileQualificationPreflightEvidence({ qualification }: { qualification: NonNullable<NonNullable<NonNullable<QueueBatchPreflightAsset['plan']>['qualityEvidence']>['profileQualification']> }) {
   const status = qualification.status;
   const severity = status === 'PASS' ? 'success' : status === 'FAIL' ? 'error' : status === 'PASS_WITH_WARNINGS' ? 'warning' : 'warning';
@@ -329,6 +473,7 @@ export function BatchPreflightDialog({
   const [deepOperationPath, setDeepOperationPath] = useState('');
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const [editBaseline, setEditBaseline] = useState<{ batchName: string; jobs: QueueJobInput[] } | null>(null);
+  const [subtitleCustomizeAssetId, setSubtitleCustomizeAssetId] = useState<string | null>(null);
   const [previewState, setPreviewState] = useState<'idle' | 'creating' | 'encoding' | 'ready' | 'error'>('idle');
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewAsset, setPreviewAsset] = useState<QueueBatchPreflightAsset | null>(null);
@@ -355,6 +500,7 @@ export function BatchPreflightDialog({
     setJobs(initialCandidate.assets.filter((asset) => asset.status !== 'queued').map((asset) => ({ ...asset.input })));
     setEditing(!initialCandidate.resolved);
     setConfirmingDiscard(false);
+    setSubtitleCustomizeAssetId(null);
     setEditBaseline(initialCandidate.resolved ? null : {
       batchName: initialCandidate.batchName,
       jobs: initialCandidate.assets.filter((asset) => asset.status !== 'queued').map((asset) => ({ ...asset.input })),
@@ -368,7 +514,58 @@ export function BatchPreflightDialog({
     setJobs((current) => current.map((job, jobIndex) => jobIndex === index ? { ...job, ...patch } : job));
   };
 
+  const candidateInputForAsset = (asset: QueueBatchPreflightAsset) => jobs.find((job) => job.mediaPath === asset.mediaPath) ?? asset.input;
+
+  const updateSubtitleDisposition = (
+    asset: QueueBatchPreflightAsset,
+    decision: QueueBatchPreflightSubtitleDecision,
+    action: CandidateSubtitleDispositionOverride['action'] | 'inherit',
+  ) => {
+    setJobs((current) => current.map((job) => {
+      if (job.mediaPath !== asset.mediaPath) return job;
+      const next = (job.candidateSubtitleDispositions ?? []).filter((item) => item.streamIndex !== decision.streamIndex);
+      if (action !== 'inherit' && decision.streamSignature && asset.sourceRevision) {
+        next.push({ streamIndex: decision.streamIndex, streamSignature: decision.streamSignature, sourceRevision: asset.sourceRevision, action });
+      }
+      return { ...job, candidateSubtitleDispositions: next.length ? next : undefined };
+    }));
+  };
+
+  const discardSubtitleDispositionEdits = (asset: QueueBatchPreflightAsset) => {
+    setJobs((current) => current.map((job) => job.mediaPath === asset.mediaPath ? { ...asset.input } : job));
+    setSubtitleCustomizeAssetId(null);
+  };
+
+  const revertSubtitleDispositionEdits = (asset: QueueBatchPreflightAsset) => {
+    setJobs((current) => current.map((job) => job.mediaPath === asset.mediaPath
+      ? { ...job, candidateSubtitleDispositions: undefined }
+      : job));
+  };
+
+  const saveSubtitleDispositionEdits = async () => {
+    if (!subtitleCustomizeAssetId || busy) return;
+    setBusy(true); setError('');
+    try {
+      const candidateJobs = candidate.assets
+        .filter((asset) => asset.status !== 'queued')
+        .map((asset) => ({ ...candidateInputForAsset(asset) }));
+      const resolved = await api.updateQueueBatchPreflight(candidate.id, {
+        revision: candidate.revision,
+        batchId: candidate.batchId,
+        batchName: candidate.batchName,
+        jobs: candidateJobs,
+      });
+      setCandidate(resolved);
+      setJobs(resolved.assets.filter((asset) => asset.status !== 'queued').map((asset) => ({ ...asset.input })));
+      setReviewedAssignmentChanges(false);
+      setSubtitleCustomizeAssetId(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally { setBusy(false); }
+  };
+
   const beginEdit = async () => {
+    setSubtitleCustomizeAssetId(null);
     setBusy(true); setError('');
     try {
       const invalidated = await api.editQueueBatchPreflight(candidate.id, candidate.revision);
@@ -533,6 +730,10 @@ export function BatchPreflightDialog({
     const lease = previewLease.current;
     previewLease.current = null;
     releaseCompatiblePreviewLease(lease);
+    if (subtitleCustomizeAssetId !== null) {
+      setJobs(candidate.assets.filter((asset) => asset.status !== 'queued').map((asset) => ({ ...asset.input })));
+      setSubtitleCustomizeAssetId(null);
+    }
     onClose();
   };
 
@@ -850,6 +1051,17 @@ export function BatchPreflightDialog({
               {assignmentSummary(asset, inventories)}
             </Grid>
             {planSummary(asset)}
+            {asset.plan ? <SubtitleDecisionReview
+              asset={asset}
+              input={candidateInputForAsset(asset)}
+              customizing={subtitleCustomizeAssetId === asset.id}
+              busy={busy || (subtitleCustomizeAssetId !== null && subtitleCustomizeAssetId !== asset.id)}
+              onCustomize={() => setSubtitleCustomizeAssetId(asset.id)}
+              onAction={(decision, action) => updateSubtitleDisposition(asset, decision, action)}
+              onSave={() => void saveSubtitleDispositionEdits()}
+              onDiscard={() => discardSubtitleDispositionEdits(asset)}
+              onRevertAll={() => revertSubtitleDispositionEdits(asset)}
+            /> : null}
             {asset.plan && recordText(asset.plan.profile.workerConfig as Record<string, unknown>, 'effectiveCadenceOperation') === 'inverse_telecine' ? <Alert severity="info">
               An explicit field order makes this plan resolvable, but does not prove visual fidelity. Review for combing, duplicate frames, and judder using Preview, Test Encode, or LAB before acceptance.
             </Alert> : null}
@@ -876,9 +1088,9 @@ export function BatchPreflightDialog({
         <Button disabled={busy} onClick={closeDialog}>Close</Button>
         <Button variant="contained" disabled={busy || jobs.length === 0} onClick={() => void resolveEdits()}>Resolve Preflight again</Button>
       </> : <>
-        <Button disabled={busy || !candidate.resolved || unresolvedCount === 0} onClick={() => void beginEdit()}>Edit</Button>
+        <Button disabled={busy || subtitleCustomizeAssetId !== null || !candidate.resolved || unresolvedCount === 0} onClick={() => void beginEdit()}>Edit</Button>
         <Button disabled={busy} onClick={closeDialog}>Close</Button>
-        <Button variant="contained" disabled={busy || !candidate.resolved || selected.length === 0 || assignmentChanges.length > 0 || missingReferences.length > 0 || (assignmentReviewPending && !reviewedAssignmentChanges)} onClick={() => void accept()}>Accept &amp; Queue {selected.length ? `(${selected.length})` : ''}</Button>
+        <Button variant="contained" disabled={busy || subtitleCustomizeAssetId !== null || !candidate.resolved || selected.length === 0 || assignmentChanges.length > 0 || missingReferences.length > 0 || (assignmentReviewPending && !reviewedAssignmentChanges)} onClick={() => void accept()}>Accept &amp; Queue {selected.length ? `(${selected.length})` : ''}</Button>
       </>}
     </DialogActions>
   </Dialog>;

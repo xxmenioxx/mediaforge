@@ -1946,6 +1946,7 @@ export type QueueJobInput = {
   profileId: number;
   audioProfileKey?: string;
   trackProfileKey?: string;
+  candidateSubtitleDispositions?: CandidateSubtitleDispositionOverride[];
   cadenceModeOverride?: 'auto' | 'preserve' | 'remove_soft_telecine' | 'inverse_telecine';
   cadenceFieldOrder?: 'auto' | 'tff' | 'bff';
   processingMode?: 'full_encode' | 'audio_only';
@@ -1953,6 +1954,13 @@ export type QueueJobInput = {
   notes?: string;
   resolveProfileAssignments?: boolean;
   profileResolution?: Record<string, unknown>;
+};
+
+export type CandidateSubtitleDispositionOverride = {
+  streamIndex: number;
+  streamSignature: string;
+  sourceRevision: string;
+  action: 'keep' | 'extract' | 'keep_and_extract' | 'remove';
 };
 
 export type QueueBatchInput = {
@@ -2036,12 +2044,62 @@ export type QueueBatchPreflightPlan = {
   destination: Record<string, unknown> | null;
   publishMode: string;
   processingMode: string;
+  subtitlePlan?: QueueBatchPreflightSubtitlePlan;
+};
+
+export type QueueBatchPreflightSubtitleDecision = {
+  streamIndex: number;
+  streamSignature?: string;
+  codec?: string;
+  language?: string;
+  title?: string;
+  sourceDefault: boolean;
+  action: 'keep' | 'extract' | 'keep_and_extract' | 'remove';
+  inheritedAction?: 'keep' | 'extract' | 'keep_and_extract' | 'remove';
+  role?: string;
+  actionSource?: string;
+  selectionSource?: string;
+  queueOverrideAllowed: boolean;
+  queueOverrideReason?: string;
+  forced: boolean;
+  effectiveForced: boolean;
+};
+
+export type QueueBatchPreflightSubtitleSidecar = {
+  streamIndex: number;
+  codec?: string;
+  sourceType?: string;
+  language?: string;
+  format?: string;
+  requestedFormat?: string;
+  mode: string;
+  ocrRequired: boolean;
+  ocrLanguage?: string;
+  ocrMode?: string;
+  extension?: string;
+};
+
+export type QueueBatchPreflightSubtitlePlan = {
+  version: number;
+  state: 'unavailable' | 'no_subtitle_streams' | 'no_subtitle_tracks_selected' | 'planned' | string;
+  sourceStreamCount: number;
+  keptInMKV: number;
+  sidecarStreams: number;
+  keepAndExtract: number;
+  removed: number;
+  policySource?: string;
+  explicitAssetSelection: boolean;
+  decisions: QueueBatchPreflightSubtitleDecision[];
+  sidecars: QueueBatchPreflightSubtitleSidecar[];
+  defaultSubtitle: { requestedLanguage?: string; streamIndex?: number; status: string };
+  warnings?: string[];
 };
 
 export type QueueBatchPreflightAsset = {
   id: string;
   mediaPath: string;
   assetRecordId?: number;
+  sourceRevision?: string;
   batchId: string;
   batchName: string;
   input: QueueJobInput;

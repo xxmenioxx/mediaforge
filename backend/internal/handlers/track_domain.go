@@ -68,6 +68,13 @@ func (value *SubtitleDisposition) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type CandidateSubtitleDispositionOverride struct {
+	StreamIndex     int                 `json:"streamIndex"`
+	StreamSignature string              `json:"streamSignature"`
+	SourceRevision  string              `json:"sourceRevision"`
+	Action          SubtitleDisposition `json:"action"`
+}
+
 type AttachmentPolicy string
 
 const (
@@ -237,9 +244,13 @@ type ResolvedFontAttachment struct {
 
 type ResolvedSubtitleTrack struct {
 	StreamIndex                   int                  `json:"streamIndex"`
+	StreamSignature               string               `json:"streamSignature,omitempty"`
 	Codec                         string               `json:"codec,omitempty"`
 	Language                      string               `json:"language,omitempty"`
+	Title                         string               `json:"title,omitempty"`
+	SourceDefault                 bool                 `json:"sourceDefault"`
 	Action                        SubtitleDisposition  `json:"action"`
+	InheritedAction               *SubtitleDisposition `json:"inheritedAction,omitempty"`
 	Role                          SubtitleSemanticRole `json:"role,omitempty"`
 	RoleProvenance                string               `json:"roleProvenance,omitempty"`
 	RoleConfidence                string               `json:"roleConfidence,omitempty"`
@@ -248,6 +259,9 @@ type ResolvedSubtitleTrack struct {
 	RoleSourceSnapshotFingerprint string               `json:"roleSourceSnapshotFingerprint,omitempty"`
 	RoleStreamSignature           string               `json:"roleStreamSignature,omitempty"`
 	ActionSource                  string               `json:"actionSource,omitempty"`
+	SelectionSource               string               `json:"selectionSource,omitempty"`
+	QueueOverrideAllowed          bool                 `json:"queueOverrideAllowed"`
+	QueueOverrideReason           string               `json:"queueOverrideReason,omitempty"`
 	Forced                        bool                 `json:"forced"`
 	EffectiveForced               bool                 `json:"effectiveForced"`
 }
@@ -300,6 +314,7 @@ type ResolvedDefaultTrack struct {
 // ResolvedTrackPlan freezes semantic Track Profile rules into per-asset stream
 // decisions. Task 2 wires this model into Queue snapshots and execution plans.
 type ResolvedTrackPlan struct {
+	DecisionProjectionVersion  int                          `json:"decisionProjectionVersion,omitempty"`
 	RoleClassifierVersion      string                       `json:"roleClassifierVersion,omitempty"`
 	VideoStreams               []ResolvedTrackStream        `json:"videoStreams"`
 	AudioStreams               []ResolvedTrackStream        `json:"audioStreams"`
