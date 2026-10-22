@@ -1103,6 +1103,10 @@ func (h QueueHandler) UpdateBatchPreflight(c *gin.Context) {
 		}
 	} else {
 		freshnessState := previous
+		// Freshness checks apply the submitted candidate inputs to a private
+		// asset slice. Keep previous immutable for the assignment review below,
+		// which needs the original resolved evidence as its Before authority.
+		freshnessState.Assets = append([]queueBatchPreflightAsset(nil), previous.Assets...)
 		for index := range input.Jobs {
 			path := filepath.Clean(input.Jobs[index].MediaPath)
 			for assetIndex := range freshnessState.Assets {

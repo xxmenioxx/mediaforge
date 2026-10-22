@@ -656,6 +656,136 @@ func TestBatchPreflightEditInvalidatesThenReresolvesSavedConfiguration(t *testin
 	}
 }
 
+func TestBatchPreflightEditReviewsPathAssignmentBeforeCandidateOverride(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 1)
+	oldPath := fixture.paths[0]
+	sourceRoot := filepath.Dir(oldPath)
+	documentariesPath := filepath.Join(sourceRoot, "documentaries")
+	assetGroupPath := filepath.Join(documentariesPath, "Cobain - Montage of Heck")
+	assetPath := filepath.Join(assetGroupPath, "Cobain - Montage of Heck.mkv")
+	if err := os.MkdirAll(assetGroupPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(oldPath, assetPath); err != nil {
+		t.Fatal(err)
+	}
+	var asset models.AssetRecord
+	if err := fixture.db.Where("path = ?", oldPath).First(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	asset.Path, asset.SourcePath = assetPath, assetPath
+	asset.RootPath, asset.GroupPath = sourceRoot, filepath.Join("documentaries", "Cobain - Montage of Heck")
+	asset.LogicalGroupPath, asset.FileName = documentariesPath, filepath.Base(assetPath)
+	if err := fixture.db.Save(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.ScanResult{}).Where("path = ?", oldPath).Updates(map[string]any{"path": assetPath, "file_name": filepath.Base(assetPath)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.AutoMigrate(&models.SourceGroup{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Create(&models.RuntimeSnapshot{DetectedAt: time.Now(), SelectedProfile: "test", Encoders: models.JSONMap{"libx265": models.JSONMap{"listed": true, "usable": true}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	fixture.paths[0] = assetPath
+	pathProfile := fixture.profile
+	pathProfile.Name = "Path Profile A"
+	pathProfile.ProfileVersion = 3
+	if err := fixture.db.Model(&models.Profile{}).Where("id = ?", pathProfile.ID).Updates(map[string]any{"name": pathProfile.Name, "profile_version": pathProfile.ProfileVersion}).Error; err != nil {
+		t.Fatal(err)
+	}
+	candidateProfile := authoritativeTestProfile()
+	candidateProfile.Name = "Candidate Override"
+	candidateProfile.ProfileVersion = 4
+	if err := fixture.db.Create(&candidateProfile).Error; err != nil {
+		t.Fatal(err)
+	}
+	sourceProfile := authoritativeTestProfile()
+	sourceProfile.Name, sourceProfile.ProfileVersion = "Source Group Profile B", 2
+	if err := fixture.db.Create(&sourceProfile).Error; err != nil {
+		t.Fatal(err)
+	}
+	sourceGroup := models.SourceGroup{Name: "Documentaries", RelativePath: "documentaries", SourcePath: documentariesPath, Enabled: true}
+	if err := fixture.db.Create(&sourceGroup).Error; err != nil {
+		t.Fatal(err)
+	}
+	asset.SourceGroupID = sourceGroup.ID
+	if err := fixture.db.Save(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	assignments := []models.ProfileAssignment{
+		{TargetType: assetScopeSourceGroup, TargetPath: sourceGroup.SourcePath, MediaType: "video", Selection: "profile", VideoProfileID: sourceProfile.ID},
+		{TargetType: assetScopeLogicalGroup, TargetPath: asset.LogicalGroupPath, MediaType: "video", Selection: "profile", VideoProfileID: candidateProfile.ID},
+		{TargetType: assetScopePath, TargetPath: assetGroupPath, MediaType: "video", Selection: "profile", VideoProfileID: pathProfile.ID},
+	}
+	if err := fixture.db.Create(&assignments).Error; err != nil {
+		t.Fatal(err)
+	}
+	router := queuePreflightRouter(fixture.db)
+	input := queuePreflightInput(fixture, "Path assignment override")
+	input.Jobs[0].SourceAssetRecordID = &asset.ID
+	input.Jobs[0].ResolveProfileAssignments = true
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", input)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Assets[0].Plan == nil {
+		t.Fatal("initial candidate has no frozen plan")
+	}
+	if got := queuePreflightAssignmentValue(candidate.Assets[0].Plan.ProfileResolution["video"]); got.Source != assetScopePath || got.ProfileID != pathProfile.ID || filepath.Clean(got.TargetPath) != filepath.Clean(assetGroupPath) {
+		t.Fatalf("initial candidate plan did not retain the Path assignment: %#v", got)
+	}
+
+	edit := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/edit", map[string]any{"revision": candidate.Revision})
+	if edit.Code != http.StatusOK {
+		t.Fatalf("edit status=%d body=%s", edit.Code, edit.Body.String())
+	}
+	var editable QueueBatchPreflightResponse
+	if err := json.Unmarshal(edit.Body.Bytes(), &editable); err != nil {
+		t.Fatal(err)
+	}
+	updatedJob := editable.Assets[0].Input
+	updatedJob.ProfileID = candidateProfile.ID
+	update := QueueBatchPreflightInput{
+		Revision: editable.Revision, BatchID: editable.BatchID, BatchName: editable.BatchName,
+		Jobs: []QueueJobInput{updatedJob},
+	}
+	updated := queuePreflightRequest(t, router, http.MethodPut, "/preflights/"+candidate.ID, update)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	if err := json.Unmarshal(updated.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	responseAsset := candidate.Assets[0]
+	if responseAsset.AssignmentReview == nil || !responseAsset.AssignmentReview.Required || len(responseAsset.AssignmentReview.Changes) != 1 {
+		t.Fatalf("candidate override did not require reviewing the changed Path assignment: %#v", responseAsset.AssignmentReview)
+	}
+	change := responseAsset.AssignmentReview.Changes[0]
+	wantBefore := QueueBatchPreflightAssignmentValue{
+		Selection: "profile", Source: assetScopePath, TargetPath: assetGroupPath,
+		ProfileID: pathProfile.ID, ProfileName: pathProfile.Name, ProfileVersion: pathProfile.ProfileVersion,
+		ProcessingMode: ProcessingModeFullEncode, SelectedEncoder: "libx265",
+	}
+	wantAfter := QueueBatchPreflightAssignmentValue{
+		Selection: "profile", Source: "queue_batch_preflight_edit", AssignmentOrigin: assetScopePath,
+		TargetPath: assetGroupPath, ProfileID: candidateProfile.ID,
+		ProfileName: candidateProfile.Name, ProfileVersion: candidateProfile.ProfileVersion,
+		ProcessingMode: ProcessingModeFullEncode, SelectedEncoder: "libx265", CandidateOverride: true,
+	}
+	if change.Domain != "video" || !reflect.DeepEqual(change.Before, wantBefore) || !reflect.DeepEqual(change.After, wantAfter) {
+		t.Fatalf("Path assignment review lost original or candidate-only provenance: got=%#v before=%#v after=%#v", change, change.Before, change.After)
+	}
+	if responseAsset.Plan == nil || responseAsset.Plan.Profile.ID != candidateProfile.ID || responseAsset.Plan.Profile.Name != candidateProfile.Name || responseAsset.Plan.ProfileVersion != candidateProfile.ProfileVersion {
+		t.Fatalf("reviewed candidate did not freeze the explicit profile identity: %#v", responseAsset.Plan)
+	}
+}
+
 func TestSelectedAssetPreflightKeepsPathProfileAndReviewsExplicitRefresh(t *testing.T) {
 	fixture := newQueuePreflightFixture(t, 1)
 	oldPath := fixture.paths[0]
