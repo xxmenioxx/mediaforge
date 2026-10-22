@@ -124,6 +124,50 @@ describe('subtitle styling settings', () => {
     }));
   });
 
+  it('exposes numeric controls for every built-in and custom preset and bounds edits', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const value = subtitleStylingValue({ subtitleStyling: {
+      builtInOverrides: {
+        MVF_Default: { fontSize: 21, outlineWidth: 1, shadowDepth: 2 },
+        MVF_Top: { fontSize: 22, outlineWidth: 2, shadowDepth: 3 },
+        MVF_Lyrics: { fontSize: 23, outlineWidth: 3, shadowDepth: 4 },
+        MVF_Sign: { fontSize: 24, outlineWidth: 4, shadowDepth: 5 },
+      },
+      customPresets: [{
+        id: 'custom_saved', displayName: 'Saved custom', primaryColor: '#FFFFFF', outlineColor: '#000000',
+        shadowBackColor: '#000000', opacity: 100, fontFamily: 'Arial', fontSize: 25, autoFontSize: false,
+        bold: false, outlineWidth: 5, shadowDepth: 6, alignmentBehavior: 'bottom', provenance: 'custom',
+      }],
+    } });
+    render(<SubtitleStylingCard value={value} saving={false} onSave={onSave} />);
+
+    const presetSelect = screen.getByRole('combobox', { name: 'Style preset' });
+    const fontSize = screen.getByRole('spinbutton', { name: 'Font size (ASS units)' }) as HTMLInputElement;
+    const outline = screen.getByRole('spinbutton', { name: 'Outline width (ASS units)' }) as HTMLInputElement;
+    const shadow = screen.getByRole('spinbutton', { name: 'Shadow depth (ASS units)' }) as HTMLInputElement;
+    for (const [name, expected] of [
+      ['Default', ['21', '1', '2']],
+      ['Top', ['22', '2', '3']],
+      ['Lyrics', ['23', '3', '4']],
+      ['Sign', ['24', '4', '5']],
+      ['Saved custom', ['25', '5', '6']],
+    ] as const) {
+      await user.click(presetSelect);
+      await user.click(screen.getByRole('option', { name: new RegExp(name) }));
+      expect([fontSize.value, outline.value, shadow.value]).toEqual(expected);
+    }
+
+    await user.clear(fontSize);
+    await user.type(fontSize, '999');
+    await user.clear(outline);
+    await user.type(outline, '99');
+    await user.clear(shadow);
+    await user.type(shadow, '99');
+    expect([fontSize.value, outline.value, shadow.value]).toEqual(['200', '20', '20']);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it('resets a local draft to defaults and saves only after explicit confirmation', async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();

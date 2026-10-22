@@ -196,6 +196,25 @@ func TestSubtitleNumericPresetSettingsPersistAndSerialize(t *testing.T) {
 	if !strings.Contains(autoStyled, "Arial,20,&H00FFFFFF&,&H00FFFFFF&,&H00000000&,&H00000000&,0,0,1,0,0,2,10,10,10,0,1") {
 		t.Fatalf("auto font size did not use the documented fixed 20-unit fallback: %q", autoStyled)
 	}
+
+	for _, invalid := range []struct {
+		field string
+		value int
+	}{
+		{field: "fontSize", value: -1}, {field: "fontSize", value: 201},
+		{field: "outlineWidth", value: -1}, {field: "outlineWidth", value: 21},
+		{field: "shadowDepth", value: -1}, {field: "shadowDepth", value: 21},
+	} {
+		_, err := normalizeSubtitleStylingSettings(map[string]any{
+			"enabled": true,
+			"builtInOverrides": map[string]any{
+				SubtitleStyleDefault: map[string]any{invalid.field: invalid.value},
+			},
+		})
+		if err == nil {
+			t.Fatalf("out-of-range %s=%d was accepted", invalid.field, invalid.value)
+		}
+	}
 }
 
 func TestGenericASSBoundaryPreservesSourceAndRestylesOnlyBaseAssignment(t *testing.T) {
