@@ -392,7 +392,11 @@ func maintenanceArtifactCandidate(db *gorm.DB, roots map[string]string, operatio
 		return candidate, identity
 	}
 
-	if roots["library"] != "" && pathWithin(roots["library"], filepath.Clean(operation.TemporaryPath)) {
+	libraryCandidatePath := filepath.Clean(operation.TemporaryPath)
+	if resolved, resolveErr := resolveWithoutFollowingLeaf(operation.TemporaryPath); resolved != "" && (resolveErr == nil || errors.Is(resolveErr, os.ErrNotExist)) {
+		libraryCandidatePath = resolved
+	}
+	if roots["library"] != "" && pathWithin(roots["library"], libraryCandidatePath) {
 		candidate.ManualOnly = true
 		role, path, info, pathErr := resolveOwnedFilePath(roots, operation.TemporaryPath, []string{"library"})
 		if pathErr != nil || role != "library" {
@@ -1721,14 +1725,44 @@ func resolveWithoutFollowingLeaf(path string) (string, error) {
 		return "", errors.New("path is not clean")
 	}
 	parent := filepath.Dir(path)
-	resolvedParent, err := filepath.EvalSymlinks(parent)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", os.ErrNotExist
+	missing := []string{}
+	for {
+		resolvedParent, resolveErr := filepath.EvalSymlinks(parent)
+		if resolveErr == nil {
+			info, statErr := os.Stat(resolvedParent)
+			if statErr != nil {
+				return "", statErr
+			}
+			if !info.IsDir() {
+				return "", errors.New("path parent is not a directory")
+			}
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolvedParent = filepath.Join(resolvedParent, missing[index])
+			}
+			resolved := filepath.Join(resolvedParent, filepath.Base(path))
+			if len(missing) > 0 {
+				return resolved, os.ErrNotExist
+			}
+			return resolved, nil
+		}
+		if !errors.Is(resolveErr, os.ErrNotExist) {
+			return "", resolveErr
+		}
+		if info, statErr := os.Lstat(parent); statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", errors.New("path contains an unresolved symlink")
+			}
+			return "", errors.New("path parent could not be safely resolved")
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return "", statErr
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return "", resolveErr
+		}
+		missing = append(missing, filepath.Base(parent))
+		parent = next
 	}
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(resolvedParent, filepath.Base(path)), nil
 }
 
 func overlapsProtectedStorageRoot(roots map[string]string, path string) bool {

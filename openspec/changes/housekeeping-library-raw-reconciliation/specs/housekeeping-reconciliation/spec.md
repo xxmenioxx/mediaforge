@@ -27,6 +27,8 @@ Housekeeping preview SHALL report the owning maintenance operation, asset path, 
 
 Housekeeping SHALL remain the only cleanup engine for Library maintenance temporaries. Cleanup SHALL require the existing preview and authorized execution controls, then revalidate the preview token, role roots, operation and asset identity, exact temporary path and file identity, backup/recovery state, references, and active-operation state immediately before removal. Cleanup SHALL be idempotent and SHALL NOT grant general Library deletion permission.
 
+Role classification SHALL compare equivalent physical parent paths consistently when an operating system exposes aliases for the same temporary directory. Resolution SHALL preserve the final path component without following it, and SHALL retain the existing fail-closed checks for traversal, symlinks, role ownership, backups, and file identity.
+
 #### Scenario: Approved exact residual is removed
 
 - **WHEN** manual execution uses a current preview for a still-identical eligible temporary
@@ -41,6 +43,11 @@ Housekeeping SHALL remain the only cleanup engine for Library maintenance tempor
 
 - **WHEN** the candidate is a symlink, non-regular file, unsafe hardlink, traversal path, role overlap, or has backup/recovery dependencies
 - **THEN** no file is removed and the reason is reported
+
+#### Scenario: Equivalent temporary path aliases retain Library ownership
+
+- **WHEN** a maintenance path uses an OS alias such as `/var/...` while the configured Library root resolves to `/private/var/...`, including when descendant directories are absent
+- **THEN** preview classifies the path using the same physical parent identity while preserving the existing no-follow leaf, exact ownership, backup, symlink, traversal, and manual-only checks
 
 ### Requirement: Empty RAW directory protection is attributable and fail-closed
 

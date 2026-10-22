@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,10 @@ func newHousekeepingTestDB(t *testing.T) (*gorm.DB, housekeepingTestRoots) {
 		t.Fatal(err)
 	}
 	base := t.TempDir()
+	base, err = filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
 	roots := housekeepingTestRoots{
 		raw: filepath.Join(base, "raw"), library: filepath.Join(base, "library"), archive: filepath.Join(base, "archive"),
 		work: filepath.Join(base, "work"), cache: filepath.Join(base, "cache"), reports: filepath.Join(base, "reports"), logs: filepath.Join(base, "logs"),
@@ -752,6 +757,112 @@ func TestHousekeepingCompletedLibraryMaintenanceTemporaryIsAlreadyAbsentNoop(t *
 	if !ok || result.Outcome != "already_absent" || noOp.Outcome != "already_absent" || result.RecoveredBytes != 0 || len(result.RemovedPaths) != 0 {
 		t.Fatalf("already absent outcome was not retained durably: candidate=%#v report=%#v", noOp, result)
 	}
+}
+
+func TestHousekeepingLibraryMaintenanceCanonicalizesTemporaryPathAliases(t *testing.T) {
+	for _, testCase := range []string{"absent", "backup", "eligible", "unsafe"} {
+		t.Run(testCase, func(t *testing.T) {
+			db, roots := newHousekeepingTestDB(t)
+			aliasRoot := housekeepingLibraryPathAlias(t, roots.library)
+			assetPath := filepath.Join(roots.library, "Akira", "film.mkv")
+			temporaryPath := filepath.Join(aliasRoot, "Akira", ".film.mkv.maintenance-alias.tmp.mkv")
+			if testCase == "unsafe" {
+				temporaryPath = aliasRoot + string(os.PathSeparator) + "Akira" + string(os.PathSeparator) + ".." + string(os.PathSeparator) + "Akira" + string(os.PathSeparator) + ".film.mkv.maintenance-alias.tmp.mkv"
+			}
+			backupPath := filepath.Join(aliasRoot, "Akira", ".film.mkv.maintenance-alias.backup.mkv")
+			content := []byte("verified alias fixture")
+			finished := housekeepingOldTime()
+			operation := models.AssetMaintenanceOperation{
+				ID: "maintenance-alias", OperationType: "remove_tracks", AssetPath: assetPath,
+				TemporaryPath: temporaryPath, BackupPath: backupPath, Status: maintenanceStatusComplete, Phase: "completed",
+				FinishedAt: &finished, CreatedAt: finished, UpdatedAt: finished,
+			}
+			if testCase != "absent" {
+				if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(assetPath, content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				temporaryFile := temporaryPath
+				if testCase == "unsafe" {
+					temporaryFile = filepath.Join(roots.library, "Akira", ".film.mkv.maintenance-alias.tmp.mkv")
+				}
+				if err := os.WriteFile(temporaryFile, content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				fingerprint, err := mediaFileFingerprint(assetPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				operation.ResultFingerprint = fingerprint
+				record := models.AssetRecord{Path: assetPath, RootPath: roots.library, FileName: filepath.Base(assetPath), Status: "processed", Missing: false}
+				if err := db.Create(&record).Error; err != nil {
+					t.Fatal(err)
+				}
+				operation.AssetRecordID = record.ID
+			}
+			if testCase == "backup" {
+				if err := os.WriteFile(backupPath, []byte("preserve recovery backup"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.Create(&operation).Error; err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := PreviewHousekeeping(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate, ok := housekeepingCandidateByPath(report, temporaryPath, housekeepingKindStageArtifact)
+			if !ok || (testCase != "unsafe" && !candidate.ManualOnly) {
+				t.Fatalf("aliased Library temporary was not classified as manual-only: %#v", candidate)
+			}
+			switch testCase {
+			case "absent":
+				if candidate.SafeToDelete || candidate.Outcome != "already_absent" || candidate.Maintenance == nil || candidate.Maintenance.BackupPresence != "absent" {
+					t.Fatalf("absent aliased temporary evidence was incorrect: %#v", candidate)
+				}
+			case "backup":
+				if candidate.SafeToDelete || candidate.Maintenance == nil || candidate.Maintenance.BackupPresence != "present" || !strings.Contains(candidate.BlockedReason, "backup") {
+					t.Fatalf("aliased backup did not block cleanup with evidence: %#v", candidate)
+				}
+				if _, err := os.Stat(backupPath); err != nil {
+					t.Fatalf("recovery backup changed: %v", err)
+				}
+			case "eligible":
+				if !candidate.SafeToDelete || candidate.Outcome != "eligible" {
+					t.Fatalf("verified aliased residual was not classified safely: %#v", candidate)
+				}
+				if _, err := os.Stat(temporaryPath); err != nil {
+					t.Fatalf("preview modified the aliased temporary: %v", err)
+				}
+			case "unsafe":
+				if candidate.SafeToDelete || candidate.BlockedReason == "" {
+					t.Fatalf("unsafe aliased traversal was not blocked: %#v", candidate)
+				}
+				if _, err := os.Stat(filepath.Join(roots.library, "Akira", ".film.mkv.maintenance-alias.tmp.mkv")); err != nil {
+					t.Fatalf("unsafe candidate changed the fixture file: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func housekeepingLibraryPathAlias(t *testing.T, libraryRoot string) string {
+	t.Helper()
+	if strings.HasPrefix(libraryRoot, "/private/var/") {
+		alias := strings.TrimPrefix(libraryRoot, "/private")
+		if resolved, err := filepath.EvalSymlinks(alias); err == nil && filepath.Clean(resolved) == filepath.Clean(libraryRoot) {
+			return alias
+		}
+	}
+	aliasParent := filepath.Join(t.TempDir(), "library-parent-alias")
+	if err := os.Symlink(filepath.Dir(libraryRoot), aliasParent); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(aliasParent, filepath.Base(libraryRoot))
 }
 
 func TestHousekeepingCompletedLibraryMaintenanceTemporaryRequiresManualBoundCleanup(t *testing.T) {
