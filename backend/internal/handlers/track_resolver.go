@@ -12,6 +12,42 @@ import (
 
 const assetKeepSubtitleStreamsConstraintKey = "_assetKeepSubtitleStreamsConstraint"
 
+const (
+	resolvedSubtitleDecisionProjectionVersion = 1
+	queueCandidateSubtitleDispositionsKey     = "queueCandidateSubtitleDispositions"
+)
+
+func parseCandidateSubtitleDispositionOverrides(raw any) (map[int]CandidateSubtitleDispositionOverride, error) {
+	if raw == nil {
+		return map[int]CandidateSubtitleDispositionOverride{}, nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("candidate subtitle overrides: encode: %w", err)
+	}
+	var entries []CandidateSubtitleDispositionOverride
+	if err := json.Unmarshal(encoded, &entries); err != nil {
+		return nil, fmt.Errorf("candidate subtitle overrides: decode: %w", err)
+	}
+	if len(entries) > 1000 {
+		return nil, fmt.Errorf("candidate subtitle overrides: too many stream actions")
+	}
+	result := make(map[int]CandidateSubtitleDispositionOverride, len(entries))
+	for _, entry := range entries {
+		if entry.StreamIndex < 0 || strings.TrimSpace(entry.StreamSignature) == "" {
+			return nil, fmt.Errorf("candidate subtitle override requires a stream index and identity")
+		}
+		if _, exists := result[entry.StreamIndex]; exists {
+			return nil, fmt.Errorf("candidate subtitle stream %d has duplicate overrides", entry.StreamIndex)
+		}
+		if _, err := ParseSubtitleDisposition(string(entry.Action)); err != nil {
+			return nil, fmt.Errorf("candidate subtitle stream %d: %w", entry.StreamIndex, err)
+		}
+		result[entry.StreamIndex] = entry
+	}
+	return result, nil
+}
+
 // resolveTrackPlan turns a Track Profile plus the stable asset snapshot into
 // concrete decisions. It is intentionally independent from Queue, Lab, Test
 // Encode, and FFmpeg rendering so every caller can share the same decision.
@@ -59,6 +95,10 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 	}
 	selectedSubtitles, explicitSubtitleSelection := profileIndexSet(profile, "keepSubtitleStreams")
 	assetSelectedSubtitles, assetSubtitleSelectionExplicit := profileIndexSet(profile, assetKeepSubtitleStreamsConstraintKey)
+	candidateSubtitleOverrides, err := parseCandidateSubtitleDispositionOverrides(profile[queueCandidateSubtitleDispositionsKey])
+	if err != nil {
+		return ResolvedTrackPlan{}, err
+	}
 	resolvedCanonicalPathSelection :=
 		canonicalDisposition &&
 			storedSettingProfileScope(profile) == "path" &&
@@ -68,7 +108,7 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 	subtitles := make([]ResolvedSubtitleTrack, 0, len(scan.SubtitleStreams))
 	sidecars := []ResolvedTrackSidecar{}
 	warnings := []string{}
-	preferredRuleSource := map[int]bool{}
+	resolvedCandidateOverrides := map[int]bool{}
 	for _, raw := range scan.SubtitleStreams {
 		stream := settingProfileObject(raw)
 		index := streamIndexValue(stream["index"])
@@ -83,11 +123,12 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 		role := classifySubtitleRole(scan, stream, profile)
 		action := defaultDisposition
 		excludedByAssetSelection := assetSubtitleSelectionExplicit && !assetSelectedSubtitles[index]
+		selectedByProfile := explicitSubtitleSelection &&
+			(!canonicalDisposition || resolvedCanonicalPathSelection) &&
+			!selectedSubtitles[index]
 		if excludedByAssetSelection {
 			action = SubtitleDispositionRemove
-		} else if explicitSubtitleSelection &&
-			(!canonicalDisposition || resolvedCanonicalPathSelection) &&
-			!selectedSubtitles[index] {
+		} else if selectedByProfile {
 			action = SubtitleDispositionRemove
 		}
 		if !excludedByAssetSelection && !canonicalDisposition {
@@ -99,8 +140,8 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 				}
 			}
 		}
+		profileRuleMatched, preferredRuleMatched := false, false
 		if !excludedByAssetSelection && (!resolvedCanonicalPathSelection || selectedSubtitles[index]) {
-			var profileRuleMatched bool
 			action, profileRuleMatched = matchingSubtitleRuleActionWithMatch(
 				profile,
 				index,
@@ -109,14 +150,33 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 				action,
 			)
 			if !profileRuleMatched {
-				var preferredRuleMatched bool
 				action, preferredRuleMatched = matchingPreferredSubtitleRuleAction(profile, language, action)
-				if preferredRuleMatched {
-					// Kept on the resolved track for the preview and downstream
-					// diagnostics; this is not a second resolution path.
-					preferredRuleSource[index] = true
-				}
 			}
+		}
+		queueOverrideAllowed := canonicalDisposition && !excludedByAssetSelection && !selectedByProfile && !profileRuleMatched && !preferredRuleMatched
+		queueOverrideReason := ""
+		if !canonicalDisposition {
+			queueOverrideReason = "A canonical subtitle disposition plan is unavailable"
+		} else if excludedByAssetSelection {
+			queueOverrideReason = "Explicit Asset Tracks selection excludes this stream"
+		} else if selectedByProfile {
+			queueOverrideReason = "The resolved Track Profile selection excludes this stream"
+		} else if profileRuleMatched || preferredRuleMatched {
+			queueOverrideReason = "A matching subtitle rule controls this stream"
+		}
+		candidateOverride, hasCandidateOverride := candidateSubtitleOverrides[index]
+		var inheritedAction *SubtitleDisposition
+		if hasCandidateOverride {
+			if subtitleStreamSignature(stream) != candidateOverride.StreamSignature {
+				return ResolvedTrackPlan{}, fmt.Errorf("candidate subtitle stream %d identity changed; resolve Queue Preflight again", index)
+			}
+			if !queueOverrideAllowed {
+				return ResolvedTrackPlan{}, fmt.Errorf("candidate subtitle stream %d cannot be overridden: %s", index, queueOverrideReason)
+			}
+			inherited := action
+			inheritedAction = &inherited
+			action = candidateOverride.Action
+			resolvedCandidateOverrides[index] = true
 		}
 		if overrides.Extract && !excludedByAssetSelection {
 			action = SubtitleDispositionKeepAndExtract
@@ -124,16 +184,37 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 		sourceForced := boolValue(stream["forced"], false)
 		effectiveForced := sourceForced || role.Role == SubtitleRoleForced
 		resolved := ResolvedSubtitleTrack{
-			StreamIndex: index, Codec: codec, Language: language, Action: action,
+			StreamIndex: index, StreamSignature: subtitleStreamSignature(stream),
+			Codec: codec, Language: language, Title: workerStringValue(stream["title"]),
+			SourceDefault: boolValue(stream["default"], false), Action: action, InheritedAction: inheritedAction,
 			Role: role.Role, RoleProvenance: role.Provenance, RoleConfidence: role.Confidence,
 			RoleClassifierVersion: role.ClassifierVersion,
 			RoleOverrideState:     role.OverrideState, RoleSourceSnapshotFingerprint: role.SourceSnapshotFingerprint,
 			RoleStreamSignature: role.StreamSignature, Forced: sourceForced, EffectiveForced: effectiveForced,
+			QueueOverrideAllowed: queueOverrideAllowed, QueueOverrideReason: queueOverrideReason,
+		}
+		if assetSubtitleSelectionExplicit {
+			resolved.SelectionSource = "explicit_asset_tracks"
+		} else if explicitSubtitleSelection {
+			resolved.SelectionSource = "track_selection"
+		} else {
+			resolved.SelectionSource = "inherited"
+		}
+		if hasCandidateOverride {
+			resolved.ActionSource = "candidate_override"
+		} else if excludedByAssetSelection {
+			resolved.ActionSource = "explicit_asset_tracks"
+		} else if selectedByProfile {
+			resolved.ActionSource = "track_selection"
+		} else if profileRuleMatched {
+			resolved.ActionSource = "subtitle_rule"
+		} else if preferredRuleMatched {
+			resolved.ActionSource = "preferred_subtitle_language"
+		} else {
+			resolved.ActionSource = "subtitle_disposition"
 		}
 		if overrides.Extract && !excludedByAssetSelection {
 			resolved.ActionSource = "operation_override"
-		} else if preferredRuleSource[index] {
-			resolved.ActionSource = "preferred_subtitle_language"
 		}
 		subtitles = append(subtitles, resolved)
 		if action.ExtractsSidecar() {
@@ -234,6 +315,12 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 		}
 	}
 
+	for index := range candidateSubtitleOverrides {
+		if !resolvedCandidateOverrides[index] {
+			return ResolvedTrackPlan{}, fmt.Errorf("candidate subtitle stream %d is missing from the current source scan", index)
+		}
+	}
+
 	attachmentPolicy := AttachmentPolicyKeep
 	if raw, exists := profile["attachmentPolicy"]; exists {
 		parsed, err := ParseAttachmentPolicy(workerStringValue(raw))
@@ -275,8 +362,9 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 		return ResolvedTrackPlan{}, err
 	}
 	return ResolvedTrackPlan{
-		RoleClassifierVersion: subtitleSemanticRoleClassifierVersion,
-		VideoStreams:          video, AudioStreams: audio, RemovedAudioStreams: removedAudio, AudioSelectionExplicit: audioSelectionExplicit, SubtitleStreams: subtitles,
+		DecisionProjectionVersion: resolvedSubtitleDecisionProjectionVersion,
+		RoleClassifierVersion:     subtitleSemanticRoleClassifierVersion,
+		VideoStreams:              video, AudioStreams: audio, RemovedAudioStreams: removedAudio, AudioSelectionExplicit: audioSelectionExplicit, SubtitleStreams: subtitles,
 		AttachmentPolicy: attachmentPolicy, AttachmentsKept: attachmentsKept, AttachmentReason: attachmentReason,
 		AttachmentStreams: attachments, FontAttachmentExportPolicy: fontPolicy,
 		FontAttachments: fontAttachments, FontAttachmentsExported: len(fontAttachments) > 0,

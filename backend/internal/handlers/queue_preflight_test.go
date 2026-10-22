@@ -174,6 +174,10 @@ func TestQueuePreflightResponseSerializesNilTrackProfileSnapshot(t *testing.T) {
 			t.Errorf("%s JSON=%q want null: %s", field, got, payload)
 		}
 	}
+	var subtitlePlan QueueBatchPreflightSubtitlePlan
+	if err := json.Unmarshal(decoded.Assets[0].Plan["subtitlePlan"], &subtitlePlan); err != nil || subtitlePlan.State != "unavailable" {
+		t.Errorf("legacy snapshot subtitle plan=%#v err=%v want explicit unavailable state", subtitlePlan, err)
+	}
 }
 
 func TestBatchPreflightAcceptsTheExactReviewedFrozenPlan(t *testing.T) {
@@ -523,6 +527,173 @@ func TestQueuePreflightFreezesAssetSubtitleExclusionAheadOfTrackProfileRules(t *
 	if err != nil || json.Unmarshal(encoded, &override) != nil || !reflect.DeepEqual(override.KeepSubtitleStreams, []int{2, 4}) || !boolValue(candidate.Assets[0].Plan.ProfileSnapshot[assetSubtitleSelectionExplicitSnapshotKey], false) {
 		t.Fatalf("Preflight lost the reviewed asset selection: override=%#v snapshot=%#v err=%v", override, candidate.Assets[0].Plan.ProfileSnapshot, err)
 	}
+}
+
+func TestBatchPreflightProjectsSubtitleActionsAndFreezesQueueOnlyOverride(t *testing.T) {
+	fixture := newQueuePreflightFixture(t, 2)
+	addQueuePreflightBitrateScan(t, fixture.db, fixture.paths[0], 1_000_000)
+	for _, path := range fixture.paths {
+		var scan models.ScanResult
+		if err := fixture.db.Where("path = ?", path).First(&scan).Error; err != nil {
+			t.Fatal(err)
+		}
+		scan.SubtitleStreams = models.JSONList{
+			models.JSONMap{"index": 2, "codec": "subrip", "language": "spa", "title": "Spanish", "default": true},
+			models.JSONMap{"index": 3, "codec": "subrip", "language": "eng"},
+			models.JSONMap{"index": 4, "codec": "hdmv_pgs_subtitle", "language": "jpn", "forced": true},
+			models.JSONMap{"index": 5, "codec": "ass", "language": "fra"},
+		}
+		if err := fixture.db.Save(&scan).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	trackProfile := models.JSONMap{
+		"key": "subtitle-review", "scope": "path", "trackDispositionVersion": 1,
+		"subtitleMode": "all", "subtitleDisposition": "extract", "subtitleSidecarFormats": models.JSONList{"both"},
+		"defaultSubtitleLanguage": "spa", "attachmentPolicy": "auto", "chapterPolicy": "keep",
+		"preferredSubtitleRules": models.JSONList{
+			models.JSONMap{"language": "spa", "action": "extract"},
+			models.JSONMap{"language": "eng", "action": "extract"},
+			models.JSONMap{"language": "jpn", "action": "keep_and_extract"},
+		},
+	}
+	if err := fixture.db.Create(&models.AppSetting{Key: "trackProfiles", Value: models.JSONMap{"profiles": models.JSONList{trackProfile}}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	input := queuePreflightInput(fixture, "Subtitle review")
+	input.Jobs = input.Jobs[:1]
+	input.Jobs[0].TrackProfileKey = "subtitle-review"
+	router := queuePreflightRouter(fixture.db)
+	created := queuePreflightRequest(t, router, http.MethodPost, "/preflights", input)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var candidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate.Assets) != 1 || candidate.Assets[0].Plan == nil || candidate.Assets[0].Plan.SubtitlePlan == nil {
+		t.Fatalf("candidate omitted subtitle projection: %#v", candidate.Assets)
+	}
+	initial := candidate.Assets[0].Plan.SubtitlePlan
+	if initial.Version != 1 || initial.State != "planned" || initial.SourceStreamCount != 4 || initial.SidecarStreams != 4 || initial.KeptInMKV != 1 || initial.KeepAndExtract != 1 || initial.PolicySource != "Track Profile" {
+		t.Fatalf("incorrect effective subtitle summary: %#v", initial)
+	}
+	if initial.Decisions[0].Action != SubtitleDispositionExtract || initial.Decisions[1].Action != SubtitleDispositionExtract || initial.Decisions[2].Action != SubtitleDispositionKeepAndExtract || initial.Decisions[3].Action != SubtitleDispositionExtract {
+		t.Fatalf("preferred rules or unmatched Extract fallback were misreported: %#v", initial.Decisions)
+	}
+	if initial.Decisions[0].Title != "Spanish" || !initial.Decisions[0].SourceDefault || initial.DefaultSubtitle.RequestedLanguage != "spa" || initial.DefaultSubtitle.Status != "missing" {
+		t.Fatalf("source metadata/default flag preference was not represented honestly: %#v", initial)
+	}
+	if len(initial.Sidecars) != 8 || !initial.Sidecars[4].OCRRequired || len(initial.Warnings) != 1 || !strings.Contains(initial.Warnings[0], "FRA") {
+		t.Fatalf("formats, OCR, or unmatched-language warning missing: %#v", initial)
+	}
+	if candidate.Assets[0].SourceRevision == "" || candidate.Assets[0].SourceRevision != initialDecisionSourceRevision(candidate.Assets[0], 5) {
+		t.Fatalf("candidate stream projection lacks its source revision identity: %#v", candidate.Assets[0])
+	}
+
+	updatedInput := candidate.Assets[0].Input
+	updatedInput.CandidateSubtitleDispositions = []CandidateSubtitleDispositionOverride{{
+		StreamIndex: 5, StreamSignature: initial.Decisions[3].StreamSignature,
+		SourceRevision: candidate.Assets[0].SourceRevision, Action: SubtitleDispositionKeep,
+	}}
+	updated := queuePreflightRequest(t, router, http.MethodPut, "/preflights/"+candidate.ID, QueueBatchPreflightInput{
+		Revision: candidate.Revision, BatchID: candidate.BatchID, BatchName: candidate.BatchName,
+		Jobs: []QueueJobInput{updatedInput},
+	})
+	if updated.Code != http.StatusOK {
+		t.Fatalf("Queue-only subtitle update status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	if err := json.Unmarshal(updated.Body.Bytes(), &candidate); err != nil {
+		t.Fatal(err)
+	}
+	updatedAsset := candidate.Assets[0]
+	if updatedAsset.Plan == nil || updatedAsset.Plan.SubtitlePlan == nil {
+		t.Fatalf("candidate update omitted subtitle projection: %#v", updatedAsset)
+	}
+	decision := updatedAsset.Plan.SubtitlePlan.Decisions[3]
+	if decision.Action != SubtitleDispositionKeep || decision.ActionSource != "candidate_override" || decision.InheritedAction == nil || *decision.InheritedAction != SubtitleDispositionExtract {
+		t.Fatalf("candidate override lacks the reviewed before/after plan: %#v", decision)
+	}
+	if updatedAsset.Plan.SubtitlePlan.KeptInMKV != 2 || updatedAsset.Plan.SubtitlePlan.SidecarStreams != 3 || updatedAsset.Plan.SubtitlePlan.KeepAndExtract != 1 {
+		t.Fatalf("candidate override summary counts are incorrect: %#v", updatedAsset.Plan.SubtitlePlan)
+	}
+	for _, sidecar := range updatedAsset.Plan.SubtitlePlan.Sidecars {
+		if sidecar.StreamIndex == 5 {
+			t.Fatalf("Keep override retained a sidecar for stream 5: %#v", sidecar)
+		}
+	}
+	if _, exists := assetConversionOverrides(fixture.db)[filepath.Clean(fixture.paths[0])]; exists {
+		t.Fatalf("Queue-only action wrote a persistent Asset Tracks override: %#v", assetConversionOverrides(fixture.db))
+	}
+
+	accepted := queuePreflightRequest(t, router, http.MethodPost, "/preflights/"+candidate.ID+"/accept", map[string]any{
+		"revision": candidate.Revision, "assetIds": []string{candidate.Assets[0].ID},
+	})
+	if accepted.Code != http.StatusCreated {
+		t.Fatalf("accept status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	var acceptedCandidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(accepted.Body.Bytes(), &acceptedCandidate); err != nil {
+		t.Fatal(err)
+	}
+	if len(acceptedCandidate.Jobs) != 1 {
+		t.Fatalf("accepted jobs=%d want=1", len(acceptedCandidate.Jobs))
+	}
+	frozen, ok := ResolvedTrackPlanFromSnapshot(acceptedCandidate.Jobs[0].TrackProfileSnapshot)
+	if !ok || frozen.SubtitleStreams[3].Action != SubtitleDispositionKeep || frozen.SubtitleStreams[3].ActionSource != "candidate_override" {
+		t.Fatalf("accepted Queue snapshot differs from reviewed subtitle plan: %#v", acceptedCandidate.Jobs[0].TrackProfileSnapshot)
+	}
+	if _, exists := assetConversionOverrides(fixture.db)[filepath.Clean(fixture.paths[0])]; exists {
+		t.Fatalf("accepting candidate action wrote a persistent Asset Tracks override: %#v", assetConversionOverrides(fixture.db))
+	}
+
+	var setting models.AppSetting
+	if err := fixture.db.First(&setting, "key = ?", "trackProfiles").Error; err != nil {
+		t.Fatal(err)
+	}
+	profiles := workerSliceValue(setting.Value["profiles"])
+	settingProfileObject(profiles[0])["subtitleDisposition"] = "remove"
+	setting.Value["profiles"] = profiles
+	if err := fixture.db.Save(&setting).Error; err != nil {
+		t.Fatal(err)
+	}
+	removeInput := QueueBatchPreflightInput{
+		BatchID: "preflight-remove-fallback",
+		Jobs: []QueueJobInput{{
+			MediaPath: fixture.paths[1], LibraryID: fixture.library.ID, ProfileID: fixture.profile.ID,
+			ProcessingMode: ProcessingModeFullEncode, Priority: 5, TrackProfileKey: "subtitle-review",
+		}},
+	}
+	removeCandidateResponse := queuePreflightRequest(t, router, http.MethodPost, "/preflights", removeInput)
+	if removeCandidateResponse.Code != http.StatusCreated {
+		t.Fatalf("Remove fallback create status=%d body=%s", removeCandidateResponse.Code, removeCandidateResponse.Body.String())
+	}
+	var removeCandidate QueueBatchPreflightResponse
+	if err := json.Unmarshal(removeCandidateResponse.Body.Bytes(), &removeCandidate); err != nil {
+		t.Fatal(err)
+	}
+	removePlan := removeCandidate.Assets[0].Plan.SubtitlePlan
+	if removePlan == nil || removePlan.State != "planned" || removePlan.SidecarStreams != 3 || removePlan.Removed != 1 || len(removePlan.Sidecars) != 6 {
+		t.Fatalf("Remove fallback projection planned work for unmatched stream(s): %#v", removePlan)
+	}
+	if removePlan.Decisions[3].Action != SubtitleDispositionRemove {
+		t.Fatalf("unmatched FRA disposition=%q want remove", removePlan.Decisions[3].Action)
+	}
+	for _, sidecar := range removePlan.Sidecars {
+		if sidecar.StreamIndex == 5 {
+			t.Fatalf("Remove fallback produced a sidecar for stream 5: %#v", sidecar)
+		}
+	}
+}
+
+func initialDecisionSourceRevision(asset QueueBatchPreflightAssetResponse, streamIndex int) string {
+	for _, decision := range asset.Plan.SubtitlePlan.Decisions {
+		if decision.StreamIndex == streamIndex {
+			return asset.SourceRevision
+		}
+	}
+	return ""
 }
 
 func TestBatchPreflightUnqualifiedProfileAddsWarningWithoutBlocking(t *testing.T) {

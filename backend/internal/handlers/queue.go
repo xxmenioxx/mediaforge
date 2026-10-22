@@ -26,36 +26,38 @@ type QueueHandler struct {
 const sourceAnalysisEvidenceSnapshotKey = models.QueueSourceAnalysisEvidenceKey
 
 type QueueJobInput struct {
-	MediaPath                    string         `json:"mediaPath" binding:"required"`
-	SourceAssetRecordID          *uint          `json:"-"`
-	PublishMode                  string         `json:"publishMode"`
-	BatchID                      string         `json:"batchId"`
-	BatchName                    string         `json:"batchName"`
-	BatchPosition                int            `json:"batchPosition"`
-	LibraryID                    uint           `json:"libraryId" binding:"required"`
-	ProfileID                    uint           `json:"profileId"`
-	AudioProfileKey              string         `json:"audioProfileKey"`
-	TrackProfileKey              string         `json:"trackProfileKey"`
-	CadenceModeOverride          string         `json:"cadenceModeOverride,omitempty"`
-	CadenceFieldOrder            string         `json:"cadenceFieldOrder,omitempty"`
-	ProcessingMode               string         `json:"processingMode"`
-	Priority                     int            `json:"priority"`
-	Notes                        string         `json:"notes"`
-	ResolveProfileAssignments    bool           `json:"resolveProfileAssignments"`
-	ProfileResolution            models.JSONMap `json:"profileResolution,omitempty"`
-	candidateInput               *QueueJobInput
-	resolvedProfileResolution    models.JSONMap
-	preservedProfileSnapshot     models.JSONMap
-	preservedProfileVersion      int
-	preservedProfileCapturedAt   *time.Time
-	preservedAudioSnapshot       models.JSONMap
-	preservedTrackSnapshot       models.JSONMap
-	preservedConversionOverride  *AssetConversionOverrideState
-	preservedDestinationSnapshot models.JSONMap
-	deferFreeze                  bool
-	validationContext            *queueBatchValidationContext
-	skipProfileAssignmentResolve bool
-	preflightBlockers            []string
+	MediaPath                                  string                                 `json:"mediaPath" binding:"required"`
+	SourceAssetRecordID                        *uint                                  `json:"-"`
+	PublishMode                                string                                 `json:"publishMode"`
+	BatchID                                    string                                 `json:"batchId"`
+	BatchName                                  string                                 `json:"batchName"`
+	BatchPosition                              int                                    `json:"batchPosition"`
+	LibraryID                                  uint                                   `json:"libraryId" binding:"required"`
+	ProfileID                                  uint                                   `json:"profileId"`
+	AudioProfileKey                            string                                 `json:"audioProfileKey"`
+	TrackProfileKey                            string                                 `json:"trackProfileKey"`
+	CandidateSubtitleDispositions              []CandidateSubtitleDispositionOverride `json:"candidateSubtitleDispositions,omitempty"`
+	CadenceModeOverride                        string                                 `json:"cadenceModeOverride,omitempty"`
+	CadenceFieldOrder                          string                                 `json:"cadenceFieldOrder,omitempty"`
+	ProcessingMode                             string                                 `json:"processingMode"`
+	Priority                                   int                                    `json:"priority"`
+	Notes                                      string                                 `json:"notes"`
+	ResolveProfileAssignments                  bool                                   `json:"resolveProfileAssignments"`
+	ProfileResolution                          models.JSONMap                         `json:"profileResolution,omitempty"`
+	candidateInput                             *QueueJobInput
+	resolvedProfileResolution                  models.JSONMap
+	preservedProfileSnapshot                   models.JSONMap
+	preservedProfileVersion                    int
+	preservedProfileCapturedAt                 *time.Time
+	preservedAudioSnapshot                     models.JSONMap
+	preservedTrackSnapshot                     models.JSONMap
+	preservedConversionOverride                *AssetConversionOverrideState
+	preservedDestinationSnapshot               models.JSONMap
+	deferFreeze                                bool
+	allowCandidateSubtitleDispositionOverrides bool
+	validationContext                          *queueBatchValidationContext
+	skipProfileAssignmentResolve               bool
+	preflightBlockers                          []string
 }
 
 type queuePathStat struct {
@@ -615,6 +617,9 @@ func (h QueueHandler) prepareBatchQueueJob(
 	input QueueJobInput,
 ) (models.QueueJob, int, error) {
 	input.MediaPath = filepath.Clean(input.MediaPath)
+	if len(input.CandidateSubtitleDispositions) > 0 && !input.allowCandidateSubtitleDispositionOverrides {
+		return models.QueueJob{}, http.StatusBadRequest, fmt.Errorf("candidate-only subtitle actions require Queue Preflight")
+	}
 	validation := input.validationContext
 	if validation == nil {
 		var err error

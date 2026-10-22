@@ -73,14 +73,108 @@ func TestResolveTrackPlanPreferredSubtitleRulesRespectProfilePrecedenceAndUnknow
 			t.Fatalf("subtitle[%d] action=%q want=%q", index, plan.SubtitleStreams[index].Action, action)
 		}
 	}
-	if plan.SubtitleStreams[0].ActionSource != "" {
-		t.Fatalf("explicit Track Profile rule was incorrectly attributed to global preference: %#v", plan.SubtitleStreams[0])
+	if plan.SubtitleStreams[0].ActionSource != "subtitle_rule" {
+		t.Fatalf("explicit Track Profile rule provenance missing: %#v", plan.SubtitleStreams[0])
 	}
 	if plan.SubtitleStreams[1].ActionSource != "preferred_subtitle_language" || plan.SubtitleStreams[2].ActionSource != "preferred_subtitle_language" {
 		t.Fatalf("global preferred-rule provenance missing: %#v", plan.SubtitleStreams)
 	}
-	if plan.SubtitleStreams[3].ActionSource != "" {
-		t.Fatalf("und matched a preferred language: %#v", plan.SubtitleStreams[3])
+	if plan.SubtitleStreams[3].ActionSource != "subtitle_disposition" {
+		t.Fatalf("und did not retain the fallback action source: %#v", plan.SubtitleStreams[3])
+	}
+}
+
+func TestResolveTrackPlanSubtitleFallbackAndCandidateOverrides(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 3, "codec": "subrip", "language": "spa", "title": "Spanish", "default": true},
+		map[string]any{"index": 4, "codec": "subrip", "language": "eng"},
+		map[string]any{"index": 5, "codec": "hdmv_pgs_subtitle", "language": "jpn", "forced": true},
+		map[string]any{"index": 6, "codec": "ass", "language": "fra"},
+		map[string]any{"index": 7, "codec": "subrip", "language": "ita"},
+		map[string]any{"index": 8, "codec": "subrip", "language": "deu"},
+		map[string]any{"index": 9, "codec": "subrip"},
+	}}
+	profile := map[string]any{
+		"trackDispositionVersion": 1,
+		"subtitleDisposition":     "extract",
+		"subtitleSidecarFormats":  []string{"both"},
+		"attachmentPolicy":        "auto",
+		"chapterPolicy":           "keep",
+		"defaultSubtitleLanguage": "spa",
+		"preferredSubtitleRules": []any{
+			map[string]any{"language": "spa", "action": "extract"},
+			map[string]any{"language": "eng", "action": "extract"},
+			map[string]any{"language": "jpn", "action": "keep_and_extract"},
+		},
+	}
+	plan, err := resolveTrackPlan(scan, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SubtitleDisposition{
+		SubtitleDispositionExtract, SubtitleDispositionExtract, SubtitleDispositionKeepAndExtract,
+		SubtitleDispositionExtract, SubtitleDispositionExtract, SubtitleDispositionExtract, SubtitleDispositionExtract,
+	}
+	for index, action := range want {
+		if plan.SubtitleStreams[index].Action != action {
+			t.Fatalf("stream %d action=%q want=%q", plan.SubtitleStreams[index].StreamIndex, plan.SubtitleStreams[index].Action, action)
+		}
+	}
+	if plan.SubtitleStreams[0].Title != "Spanish" || !plan.SubtitleStreams[0].SourceDefault || plan.DefaultSubtitle.RequestedLanguage != "spa" || plan.DefaultSubtitle.Status != "missing" {
+		t.Fatalf("source title/default metadata or non-filtering default-language preference missing: %#v", plan)
+	}
+	if !plan.SubtitleStreams[2].EffectiveForced || plan.SubtitleStreams[3].ActionSource != "subtitle_disposition" || len(plan.SidecarOutputs) != 14 {
+		t.Fatalf("fallback, forced metadata, or both-format projection is inaccurate: %#v", plan)
+	}
+	for _, sidecar := range plan.SidecarOutputs {
+		if sidecar.StreamIndex == 5 && !sidecar.OCRRequired {
+			t.Fatalf("bitmap sidecar omitted OCR requirement: %#v", sidecar)
+		}
+	}
+
+	profile["subtitleDisposition"] = "remove"
+	removedFallback, err := resolveTrackPlan(scan, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 3; index < len(removedFallback.SubtitleStreams); index++ {
+		if removedFallback.SubtitleStreams[index].Action != SubtitleDispositionRemove {
+			t.Fatalf("unmatched stream %d action=%q want remove", removedFallback.SubtitleStreams[index].StreamIndex, removedFallback.SubtitleStreams[index].Action)
+		}
+	}
+	for _, sidecar := range removedFallback.SidecarOutputs {
+		if sidecar.StreamIndex >= 6 {
+			t.Fatalf("removed stream planned a sidecar: %#v", sidecar)
+		}
+	}
+
+	profile[queueCandidateSubtitleDispositionsKey] = []CandidateSubtitleDispositionOverride{{
+		StreamIndex: 6, StreamSignature: subtitleStreamSignature(settingProfileObject(scan.SubtitleStreams[3])), SourceRevision: "source-rev-1", Action: SubtitleDispositionKeep,
+	}}
+	overridden, err := resolveTrackPlan(scan, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overridden.SubtitleStreams[3].Action != SubtitleDispositionKeep || overridden.SubtitleStreams[3].ActionSource != "candidate_override" || overridden.SubtitleStreams[3].InheritedAction == nil || *overridden.SubtitleStreams[3].InheritedAction != SubtitleDispositionRemove {
+		t.Fatalf("candidate override did not preserve its before/after decision: %#v", overridden.SubtitleStreams[3])
+	}
+	for _, sidecar := range overridden.SidecarOutputs {
+		if sidecar.StreamIndex == 6 {
+			t.Fatalf("Keep override retained sidecar work: %#v", sidecar)
+		}
+	}
+
+	profile[queueCandidateSubtitleDispositionsKey] = []CandidateSubtitleDispositionOverride{{
+		StreamIndex: 3, StreamSignature: subtitleStreamSignature(settingProfileObject(scan.SubtitleStreams[0])), SourceRevision: "source-rev-1", Action: SubtitleDispositionKeep,
+	}}
+	if _, err := resolveTrackPlan(scan, profile); err == nil || !strings.Contains(err.Error(), "matching subtitle rule") {
+		t.Fatalf("candidate override bypassed a preferred action rule: %v", err)
+	}
+	profile[queueCandidateSubtitleDispositionsKey] = []CandidateSubtitleDispositionOverride{{
+		StreamIndex: 6, StreamSignature: "stale-stream-signature", SourceRevision: "source-rev-1", Action: SubtitleDispositionExtract,
+	}}
+	if _, err := resolveTrackPlan(scan, profile); err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("candidate override accepted a mismatched stream identity: %v", err)
 	}
 }
 

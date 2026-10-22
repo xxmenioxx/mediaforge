@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { QueueBatchPreflightInput, QueueBatchPreflightResponse } from '../api/types';
+import type { QueueBatchPreflightInput, QueueBatchPreflightResponse, QueueBatchPreflightSubtitleDecision } from '../api/types';
 import { BatchPreflightDialog } from './BatchPreflightDialog';
 
 const mocks = vi.hoisted(() => ({
@@ -116,6 +116,45 @@ function candidate(overrides: Partial<QueueBatchPreflightResponse> = {}): QueueB
   };
 }
 
+function candidateWithSubtitlePlan(fallback: 'extract' | 'remove' = 'extract', revision = 1): QueueBatchPreflightResponse {
+  const base = candidate();
+  const decisions: QueueBatchPreflightSubtitleDecision[] = [
+    { streamIndex: 2, streamSignature: 'subtitle:2:spa', codec: 'subrip', language: 'spa', title: 'Spanish', sourceDefault: true, action: 'extract', inheritedAction: 'extract', role: 'dialogue', actionSource: 'preferred_subtitle_language', selectionSource: 'track_profile', queueOverrideAllowed: false, forced: false, effectiveForced: false },
+    { streamIndex: 3, streamSignature: 'subtitle:3:eng', codec: 'subrip', language: 'eng', title: 'English', sourceDefault: false, action: 'extract', inheritedAction: 'extract', role: 'dialogue', actionSource: 'preferred_subtitle_language', selectionSource: 'track_profile', queueOverrideAllowed: false, forced: false, effectiveForced: false },
+    { streamIndex: 4, streamSignature: 'subtitle:4:jpn', codec: 'ass', language: 'jpn', title: 'Signs and songs', sourceDefault: false, action: 'keep_and_extract', inheritedAction: 'keep_and_extract', role: 'signs', actionSource: 'subtitle_rule', selectionSource: 'track_profile', queueOverrideAllowed: false, forced: false, effectiveForced: false },
+    { streamIndex: 5, streamSignature: 'subtitle:5:fra', codec: 'hdmv_pgs_subtitle', language: 'fra', title: 'French', sourceDefault: false, action: fallback, inheritedAction: fallback, role: 'dialogue', actionSource: 'subtitle_disposition', selectionSource: 'track_profile', queueOverrideAllowed: true, forced: false, effectiveForced: false },
+  ];
+  const subtitlePlan = {
+    version: 1,
+    state: 'planned' as const,
+    sourceStreamCount: decisions.length,
+    keptInMKV: 1,
+    sidecarStreams: fallback === 'extract' ? 4 : 3,
+    keepAndExtract: 1,
+    removed: fallback === 'remove' ? 1 : 0,
+    policySource: 'Global Asset Defaults',
+    explicitAssetSelection: false,
+    decisions,
+    sidecars: [
+      { streamIndex: 2, codec: 'subrip', language: 'spa', format: 'srt', requestedFormat: 'both', mode: 'original', ocrRequired: false },
+      { streamIndex: 2, codec: 'subrip', language: 'spa', format: 'original', requestedFormat: 'both', mode: 'original', ocrRequired: false },
+      { streamIndex: 3, codec: 'subrip', language: 'eng', format: 'srt', requestedFormat: 'both', mode: 'original', ocrRequired: false },
+      { streamIndex: 4, codec: 'ass', language: 'jpn', format: 'ass', requestedFormat: 'both', mode: 'original', ocrRequired: false },
+      ...(fallback === 'extract' ? [{ streamIndex: 5, codec: 'hdmv_pgs_subtitle', language: 'fra', format: 'srt', requestedFormat: 'both', mode: 'converted', ocrRequired: true, ocrLanguage: 'fra', ocrMode: 'accurate' }] : []),
+    ],
+    defaultSubtitle: { requestedLanguage: 'spa', status: 'not_selected' },
+    warnings: fallback === 'extract' ? ['1 additional language will also be extracted because Subtitle action = Extract.'] : [],
+  };
+  return candidate({
+    revision,
+    assets: base.assets.map((asset) => ({
+      ...asset,
+      sourceRevision: 'source-revision-exact',
+      plan: { ...asset.plan!, subtitlePlan },
+    })),
+  });
+}
+
 describe('BatchPreflightDialog', () => {
   afterEach(() => cleanup());
 
@@ -135,6 +174,93 @@ describe('BatchPreflightDialog', () => {
     mocks.testEncode.mockResolvedValue({ id: 5 });
     mocks.open.mockReturnValue({ location: { href: '' } });
     vi.stubGlobal('open', mocks.open);
+  });
+
+  it('shows the frozen Extract fallback truthfully and saves an exact Queue-only stream override', async () => {
+    const user = userEvent.setup();
+    const initial = candidateWithSubtitlePlan('extract');
+    const onClose = vi.fn();
+    mocks.update.mockImplementation(async (_id: string, input: QueueBatchPreflightInput) => {
+      const resolved = candidateWithSubtitlePlan('extract', (input.revision ?? 0) + 1);
+      return {
+        ...resolved,
+        assets: resolved.assets.map((asset) => ({ ...asset, input: { ...input.jobs[0] } })),
+      };
+    });
+    render(<BatchPreflightDialog candidate={initial} onClose={onClose} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    expect(screen.getByText('Kept in MKV 1')).toBeTruthy();
+    expect(screen.getByText('Sidecar streams 4')).toBeTruthy();
+    expect(screen.getByText('Removed 0')).toBeTruthy();
+    expect(screen.getByText('Languages: spa · eng · jpn · fra')).toBeTruthy();
+    expect(screen.getByText(/action rules, not a stream filter/)).toBeTruthy();
+    expect(screen.getByText(/1 additional language will also be extracted/)).toBeTruthy();
+    expect(screen.queryByText(/Stream 5/)).toBeNull();
+
+    await user.click(screen.getByText(/View all subtitle decisions/));
+    expect(screen.getByText(/Stream 2 · spa · SRT · Spanish · Source default/)).toBeTruthy();
+    expect(screen.getByText(/Stream 4 · jpn · ASS · Signs and songs/)).toBeTruthy();
+    expect(screen.getAllByText(/Requested outputs have not been generated/).length).toBe(4);
+    expect(screen.getByText(/SRT.*ORIGINAL/)).toBeTruthy();
+    expect(screen.getByText(/OCR fra \/ accurate/)).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Customize for this Queue' }));
+    await user.click(screen.getByRole('combobox', { name: 'Queue action for stream 5' }));
+    await user.click(await screen.findByRole('option', { name: 'Keep' }));
+    expect(screen.getByText(/Candidate-only override: Extract sidecar → Keep in output MKV/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Save Queue-only choices' }));
+
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith('candidate-1', expect.objectContaining({
+      revision: 1,
+      jobs: [expect.objectContaining({
+        candidateSubtitleDispositions: [{
+          streamIndex: 5,
+          streamSignature: 'subtitle:5:fra',
+          sourceRevision: 'source-revision-exact',
+          action: 'keep',
+        }],
+      })],
+    })));
+    expect(screen.getByText('Candidate-only override')).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('shows unmatched languages as Remove when the frozen global fallback is Remove', async () => {
+    const user = userEvent.setup();
+    render(<BatchPreflightDialog candidate={candidateWithSubtitlePlan('remove')} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    expect(screen.getByText('Kept in MKV 1')).toBeTruthy();
+    expect(screen.getByText('Sidecar streams 3')).toBeTruthy();
+    expect(screen.getByText('Removed 1')).toBeTruthy();
+    await user.click(screen.getByText(/View all subtitle decisions/));
+    const french = screen.getByText(/Stream 5 · fra · PGS · French/).closest('[data-testid="subtitle-decision-row]');
+    expect(french?.textContent).toContain('Remove / Skip');
+    expect(french?.textContent).toContain('No sidecar planned');
+    expect(french?.textContent).not.toContain('OCR');
+  });
+
+  it('drops unsaved Queue-only subtitle edits on Discard and Close without submitting them', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<BatchPreflightDialog candidate={candidateWithSubtitlePlan('extract')} onClose={onClose} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Customize for this Queue' }));
+    await user.click(screen.getByRole('combobox', { name: 'Queue action for stream 5' }));
+    await user.click(await screen.findByRole('option', { name: 'Keep + Extract' }));
+    expect(screen.getByText('Candidate-only override')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Discard edits' }));
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(screen.queryByText('Candidate-only override')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Customize for this Queue' }));
+    await user.click(screen.getByRole('combobox', { name: 'Queue action for stream 5' }));
+    await user.click(await screen.findByRole('option', { name: 'Keep' }));
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(mocks.update).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Customize for this Queue' }));
+    expect(screen.getByRole('combobox', { name: 'Queue action for stream 5' }).textContent).toContain('Inherit · Extract sidecar');
   });
 
   it('preserves edit inputs, invalidates and resolves again, then accepts the ready identity', async () => {
