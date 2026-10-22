@@ -569,7 +569,7 @@ describe('BatchPreflightDialog', () => {
 
   it('passes the exact candidate snapshot to an inline preview player and preserves Test Encode and LAB flows', async () => {
     const onClose = vi.fn();
-    const view = render(<BatchPreflightDialog candidate={candidate()} onClose={onClose} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+    render(<BatchPreflightDialog candidate={candidate()} onClose={onClose} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
     let resolveReady!: (value: { state: string; leaseToken: string }) => void;
     mocks.waitPreview.mockImplementationOnce(() => new Promise((resolve) => { resolveReady = resolve; }));
 
