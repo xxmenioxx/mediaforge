@@ -78,18 +78,32 @@ func subtitleOCRFailedError(cause error) error {
 }
 
 type subtitleTranslationOperationView struct {
-	Provider                string                    `json:"provider,omitempty"`
-	Model                   string                    `json:"model,omitempty"`
-	RequestedSourceLanguage string                    `json:"requestedSourceLanguage,omitempty"`
-	TargetLocale            string                    `json:"targetLocale,omitempty"`
-	OutputRepresentation    string                    `json:"outputRepresentation,omitempty"`
-	ContextMode             string                    `json:"contextMode,omitempty"`
-	ContextSource           string                    `json:"contextSource,omitempty"`
-	FailureClass            string                    `json:"failureClass,omitempty"`
-	Diagnostic              string                    `json:"diagnostic,omitempty"`
-	Retryable               bool                      `json:"retryable"`
-	Cancellable             bool                      `json:"cancellable"`
-	OCRReviewTarget         *canonicalOCRReviewTarget `json:"ocrReviewTarget,omitempty"`
+	Provider                string                            `json:"provider,omitempty"`
+	Model                   string                            `json:"model,omitempty"`
+	RequestedSourceLanguage string                            `json:"requestedSourceLanguage,omitempty"`
+	TargetLocale            string                            `json:"targetLocale,omitempty"`
+	OutputRepresentation    string                            `json:"outputRepresentation,omitempty"`
+	ContextMode             string                            `json:"contextMode,omitempty"`
+	ContextSource           string                            `json:"contextSource,omitempty"`
+	FailureClass            string                            `json:"failureClass,omitempty"`
+	Diagnostic              string                            `json:"diagnostic,omitempty"`
+	Retryable               bool                              `json:"retryable"`
+	Cancellable             bool                              `json:"cancellable"`
+	OCRReviewTarget         *canonicalOCRReviewTarget         `json:"ocrReviewTarget,omitempty"`
+	Quality                 *subtitleTranslationQualityReport `json:"quality,omitempty"`
+}
+
+func setSubtitleTranslationQuality(operationID string, quality subtitleTranslationQualityReport) {
+	quality.Findings = append([]subtitleTranslationQualityFinding(nil), quality.Findings...)
+	for index := range quality.Findings {
+		quality.Findings[index].Reasons = append([]string(nil), quality.Findings[index].Reasons...)
+	}
+	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+		if operation.Translation == nil {
+			operation.Translation = &subtitleTranslationOperationView{}
+		}
+		operation.Translation.Quality = &quality
+	})
 }
 
 // subtitleTranslationOperationRequest is the bounded, secret-free execution

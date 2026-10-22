@@ -689,7 +689,8 @@ export type SubtitleTranslationSettingsValue = {
   [key: string]: unknown;
 	provider: string;
   ollamaEndpoint: string;
-  ollamaModel: string;
+	ollamaModel: string;
+	qualityReviewerModel: string;
   maxCuesPerRequest: number;
   maxRequestBytes: number;
   maxContextCues: number;
@@ -705,6 +706,36 @@ export type SubtitleTranslationCapabilityInput = {
   path: string;
   source: SubtitleTranslationSourceSelector;
 };
+
+export type SubtitleTranslationQualityDecisionInput = {
+  cueId: string;
+  action: 'keep' | 'edit';
+  text?: string;
+};
+
+export type SubtitleTranslationQualityDecisionResponse = {
+  operationId: string;
+  cueId: string;
+  status: 'open' | 'reviewed';
+};
+
+export type SubtitleTranslationQualityReviewResponse = {
+  operationId: string;
+  status: 'open' | 'reviewed' | 'recovery_required';
+  quality: NonNullable<NonNullable<SubtitleExtractionOperation['translation']>['quality']>;
+  decisions: Array<{ cueId: string; action: 'keep' | 'edit'; text?: string; at: string }>;
+};
+
+export type SubtitleTranslationQualityEditableCueResponse = {
+  operationId: string;
+  cueId: string;
+  sourceIdentity: string;
+  sourceRevision: string;
+  targetRevisions: string[];
+  text: string;
+};
+
+export type SubtitleTranslationQualityReviewListItem = SubtitleTranslationQualityReviewResponse & { updatedAt: string };
 
 export type StartSubtitleTranslationInput = {
   path: string;
@@ -3440,6 +3471,31 @@ export type SubtitleExtractionOperation = {
     retryable: boolean;
     cancellable: boolean;
     ocrReviewTarget?: CanonicalOCRReviewTarget;
+    quality?: {
+      policyVersion: string;
+      state: 'not_analyzed' | 'clean' | 'warnings' | 'review_required' | 'approved' | string;
+      cueCount: number;
+      cleanCount: number;
+      warningCount: number;
+      reviewCount: number;
+      persisted?: boolean;
+      persistenceWarning?: string;
+      truncated?: boolean;
+      reviewer?: {
+        provider: string;
+        model: string;
+        state: string;
+        diagnostic?: string;
+        findings?: Array<{ cueId: string; verdict: string; reason?: string; suggestedText?: string }>;
+      };
+      findings?: Array<{
+        cueId: string;
+        sourceOrdinal: number;
+        sourceText: string;
+        translatedText: string;
+        reasons: string[];
+      }>;
+    };
   };
   qualityReport?: SubtitleOCRQualityReport;
   proofreading?: SubtitleProofreadingReport;
