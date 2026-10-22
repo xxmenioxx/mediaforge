@@ -11,9 +11,9 @@ export type StoredSettingsDraft = {
   section: SettingsSection;
 };
 
-const draftSections: SettingsDraftSection[] = ['general', 'pipeline', 'analysis', 'runtime', 'assets', 'archive', 'operations', 'advanced'];
+const draftSections: SettingsDraftSection[] = ['general', 'pipeline', 'analysis', 'runtime', 'assets', 'asset-defaults', 'validation', 'archive', 'operations', 'test-encode', 'advanced'];
 
-type LegacySettingsForm = Omit<SettingsForm, 'mvforgePreferences' | 'analysisPolicy' | 'profileSampleEstimatePolicy'>;
+type LegacySettingsForm = Omit<SettingsForm, 'mvforgePreferences' | 'analysisPolicy' | 'profileSampleEstimatePolicy' | 'ordinarySettings'>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -37,17 +37,20 @@ function isSettingsForm(value: unknown): value is SettingsForm {
   const record = value as Record<string, unknown>;
   return isRecord(record.mvforgePreferences)
     && isRecord(record.analysisPolicy)
-    && isRecord(record.profileSampleEstimatePolicy);
+    && isRecord(record.profileSampleEstimatePolicy)
+    && isRecord(record.ordinarySettings);
 }
 
 function upgradeStoredForm(value: unknown): SettingsForm | undefined {
   if (isSettingsForm(value)) return value;
   if (!isLegacySettingsForm(value)) return undefined;
+  const record = value as unknown as Record<string, unknown>;
   return {
     ...value,
-    mvforgePreferences: initialSettings.mvforgePreferences,
-    analysisPolicy: initialSettings.analysisPolicy,
-    profileSampleEstimatePolicy: initialSettings.profileSampleEstimatePolicy,
+    mvforgePreferences: isRecord(record.mvforgePreferences) ? record.mvforgePreferences as SettingsForm['mvforgePreferences'] : initialSettings.mvforgePreferences,
+    analysisPolicy: isRecord(record.analysisPolicy) ? record.analysisPolicy as SettingsForm['analysisPolicy'] : initialSettings.analysisPolicy,
+    profileSampleEstimatePolicy: isRecord(record.profileSampleEstimatePolicy) ? record.profileSampleEstimatePolicy as SettingsForm['profileSampleEstimatePolicy'] : initialSettings.profileSampleEstimatePolicy,
+    ordinarySettings: isRecord(record.ordinarySettings) ? record.ordinarySettings as SettingsForm['ordinarySettings'] : initialSettings.ordinarySettings,
   };
 }
 
@@ -60,8 +63,8 @@ export function readStoredSettingsDraft(): StoredSettingsDraft | undefined {
       window.sessionStorage.removeItem(settingsDraftStorageKey);
       return undefined;
     }
-    const form = value.version === 1 ? upgradeStoredForm(value.form) : isSettingsForm(value.form) ? value.form : undefined;
-    const baseline = value.version === 1 ? upgradeStoredForm(value.baseline) : isSettingsForm(value.baseline) ? value.baseline : undefined;
+    const form = upgradeStoredForm(value.form);
+    const baseline = upgradeStoredForm(value.baseline);
     if (!form || !baseline) {
       window.sessionStorage.removeItem(settingsDraftStorageKey);
       return undefined;
@@ -82,11 +85,15 @@ export function settingsDraftSnapshot(form: SettingsForm, section: SettingsDraft
     case 'general':
       return form.mvforgePreferences;
     case 'pipeline':
-      return { pipelineAutomation: form.pipelineAutomation };
+      return { pipelineAutomation: form.pipelineAutomation, workingHours: form.ordinarySettings.workingHours };
     case 'analysis':
       return { analysisPolicy: form.analysisPolicy, profileSampleEstimatePolicy: form.profileSampleEstimatePolicy };
     case 'runtime':
-      return { workers: form.workers };
+      return {
+        workers: form.workers,
+        runtimePolicy: form.ordinarySettings.runtimePolicy,
+        directPlay: form.ordinarySettings.directPlay,
+      };
     case 'assets': {
       return {
         paths: {
@@ -100,15 +107,23 @@ export function settingsDraftSnapshot(form: SettingsForm, section: SettingsDraft
         assetInventory: form.assetInventory,
         assetTypes: form.assetTypes,
         assetCategories: form.assetCategories,
+        storageRoles: form.ordinarySettings.storageRoles,
+        workspace: form.ordinarySettings.workspace,
       };
     }
+    case 'asset-defaults':
+      return form.ordinarySettings.assetDefaults;
+    case 'validation':
+      return form.ordinarySettings.validation;
     case 'archive':
       return {
         originalsArchivePath: form.paths.originalsArchivePath,
         originalRetentionPolicy: form.originalRetentionPolicy,
       };
     case 'operations':
-      return form.cancellationPolicy;
+      return { cancellationPolicy: form.cancellationPolicy, housekeeping: form.ordinarySettings.housekeeping };
+    case 'test-encode':
+      return form.ordinarySettings.testEncodePolicy;
     case 'advanced':
       return form.advancedJson;
   }
@@ -134,11 +149,23 @@ export function mergeSettingsDraftSection(
     case 'general':
       return { ...target, mvforgePreferences: source.mvforgePreferences };
     case 'pipeline':
-      return { ...target, pipelineAutomation: source.pipelineAutomation };
+      return {
+        ...target,
+        pipelineAutomation: source.pipelineAutomation,
+        ordinarySettings: { ...target.ordinarySettings, workingHours: source.ordinarySettings.workingHours },
+      };
     case 'analysis':
       return { ...target, analysisPolicy: source.analysisPolicy, profileSampleEstimatePolicy: source.profileSampleEstimatePolicy };
     case 'runtime':
-      return { ...target, workers: source.workers };
+      return {
+        ...target,
+        workers: source.workers,
+        ordinarySettings: {
+          ...target.ordinarySettings,
+          runtimePolicy: source.ordinarySettings.runtimePolicy,
+          directPlay: source.ordinarySettings.directPlay,
+        },
+      };
     case 'assets':
       return {
         ...target,
@@ -146,7 +173,16 @@ export function mergeSettingsDraftSection(
         assetInventory: source.assetInventory,
         assetTypes: source.assetTypes,
         assetCategories: source.assetCategories,
+        ordinarySettings: {
+          ...target.ordinarySettings,
+          storageRoles: source.ordinarySettings.storageRoles,
+          workspace: source.ordinarySettings.workspace,
+        },
       };
+    case 'asset-defaults':
+      return { ...target, ordinarySettings: { ...target.ordinarySettings, assetDefaults: source.ordinarySettings.assetDefaults } };
+    case 'validation':
+      return { ...target, ordinarySettings: { ...target.ordinarySettings, validation: source.ordinarySettings.validation } };
     case 'archive':
       return {
         ...target,
@@ -154,7 +190,13 @@ export function mergeSettingsDraftSection(
         originalRetentionPolicy: source.originalRetentionPolicy,
       };
     case 'operations':
-      return { ...target, cancellationPolicy: source.cancellationPolicy };
+      return {
+        ...target,
+        cancellationPolicy: source.cancellationPolicy,
+        ordinarySettings: { ...target.ordinarySettings, housekeeping: source.ordinarySettings.housekeeping },
+      };
+    case 'test-encode':
+      return { ...target, ordinarySettings: { ...target.ordinarySettings, testEncodePolicy: source.ordinarySettings.testEncodePolicy } };
     case 'advanced':
       return { ...target, advancedJson: source.advancedJson };
   }

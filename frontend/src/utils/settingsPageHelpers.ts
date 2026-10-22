@@ -22,6 +22,10 @@ export const defaultLibraryTypes: LibraryType[] = [
 ];
 
 export const defaultAssetCategories = ['movie', 'anime', 'series', 'episode', 'season', 'extras', 'special', 'concert', 'music-video', 'documentary'];
+const ordinarySettingsKeys = [
+  'testEncodePolicy', 'assetDefaults', 'validation', 'runtimePolicy', 'directPlay',
+  'workingHours', 'storageRoles', 'workspace', 'housekeeping',
+] as const;
 
 export function buildSettingsForm(base: Omit<SettingsForm, 'advancedJson'>): SettingsForm {
   return {
@@ -222,6 +226,7 @@ export function settingsToForm(settings: Array<{ key: string; value: Record<stri
     },
     assetTypes: normalizeLibraryTypes(arrayValue(assetTypes.types, defaultLibraryTypes)),
     assetCategories: normalizeStringArray(arrayValue(assetCategories.categories, defaultAssetCategories), defaultAssetCategories),
+    ordinarySettings: Object.fromEntries(ordinarySettingsKeys.map((key) => [key, byKey[key] ?? {}])),
   });
 }
 
@@ -255,6 +260,7 @@ export const initialSettings: SettingsForm = buildSettingsForm({
   },
   assetTypes: defaultLibraryTypes,
   assetCategories: defaultAssetCategories,
+  ordinarySettings: {},
 });
 
 export function normalizeLibraryTypes(value: unknown[]): LibraryType[] {

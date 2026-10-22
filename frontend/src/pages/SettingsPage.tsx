@@ -64,6 +64,7 @@ import {
   type SettingsSection,
 } from './settings/SettingsNavigation';
 import { SettingsSaveBar, type SettingsSaveState } from './settings/SettingsSaveBar';
+import { useSettingsDraftValue } from '../hooks/useSettingsDraftValue';
 import {
   dirtySettingsDraftSections,
   equalSettingsDrafts,
@@ -145,6 +146,10 @@ type HousekeepingValue = {
 };
 type RuntimePolicyValue = { schemaVersion: number; mode: 'automatic' | 'manual'; preferredProfile: string; fallbackProfile: string; overrides: Record<string, RuntimeProfileOverride> };
 
+function identitySettingsValue<T>(value: unknown): T {
+  return value as T;
+}
+
 export type WorkerJobStartPacingMode = 'time' | 'progress';
 
 export type SettingsForm = {
@@ -199,6 +204,7 @@ export type SettingsForm = {
   };
   assetTypes: LibraryType[];
   assetCategories: string[];
+  ordinarySettings: Record<string, Record<string, unknown>>;
   advancedJson: {
     paths: string;
     workers: string;
@@ -428,7 +434,10 @@ export function SettingsPage() {
         batch.push({ key: 'mvforgePreferences', value: nextForm.mvforgePreferences as unknown as Record<string, unknown> });
       }
       if (draftSection === 'pipeline') {
-        batch.push({ key: 'pipelineAutomation', value: nextForm.pipelineAutomation as unknown as Record<string, unknown> });
+        batch.push(
+          { key: 'pipelineAutomation', value: nextForm.pipelineAutomation as unknown as Record<string, unknown> },
+          { key: 'workingHours', value: nextForm.ordinarySettings.workingHours },
+        );
       }
       if (draftSection === 'analysis') {
         batch.push(
@@ -437,15 +446,34 @@ export function SettingsPage() {
         );
       }
       if (draftSection === 'runtime') {
-        batch.push({ key: 'workers', value: workerSettingsPayload(nextForm.workers) as unknown as Record<string, unknown> });
+        batch.push(
+          { key: 'workers', value: workerSettingsPayload(nextForm.workers) as unknown as Record<string, unknown> },
+          { key: 'runtimePolicy', value: nextForm.ordinarySettings.runtimePolicy },
+          { key: 'directPlay', value: nextForm.ordinarySettings.directPlay },
+        );
       }
       if (draftSection === 'assets') {
+        const persistedStorageRoles = storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value);
+        const draftStorageRoles = storageRolesValue(nextForm.ordinarySettings.storageRoles);
+        const storageRoles = {
+          ...persistedStorageRoles,
+          ...draftStorageRoles,
+          originals_archive: persistedStorageRoles.originals_archive,
+        };
         batch.push(
           { key: 'paths', value: pathSettings as unknown as Record<string, unknown> },
           { key: 'assetInventory', value: nextForm.assetInventory as unknown as Record<string, unknown> },
           { key: 'assetTypes', value: { types: nextForm.assetTypes } },
           { key: 'assetCategories', value: { categories: nextForm.assetCategories } },
+          { key: 'storageRoles', value: storageRoles as unknown as Record<string, unknown> },
+          { key: 'workspace', value: nextForm.ordinarySettings.workspace },
         );
+      }
+      if (draftSection === 'asset-defaults') {
+        batch.push({ key: 'assetDefaults', value: nextForm.ordinarySettings.assetDefaults });
+      }
+      if (draftSection === 'validation') {
+        batch.push({ key: 'validation', value: nextForm.ordinarySettings.validation });
       }
       if (draftSection === 'archive') {
         storageRoles.originals_archive = { path: nextForm.paths.originalsArchivePath };
@@ -456,7 +484,13 @@ export function SettingsPage() {
         );
       }
       if (draftSection === 'operations') {
-        batch.push({ key: 'cancellationPolicy', value: nextForm.cancellationPolicy as unknown as Record<string, unknown> });
+        batch.push(
+          { key: 'cancellationPolicy', value: nextForm.cancellationPolicy as unknown as Record<string, unknown> },
+          { key: 'housekeeping', value: nextForm.ordinarySettings.housekeeping },
+        );
+      }
+      if (draftSection === 'test-encode') {
+        batch.push({ key: 'testEncodePolicy', value: nextForm.ordinarySettings.testEncodePolicy });
       }
       if (draftSection === 'advanced') {
         storageRoles.originals_archive = { path: nextForm.paths.originalsArchivePath };
@@ -590,6 +624,13 @@ export function SettingsPage() {
   function discardDraftSection(draftSection: SettingsDraftSection) {
     setForm((current) => mergeSettingsDraftSection(current, savedFormRef.current, draftSection));
     setExternalSettingsChanged(false);
+  }
+
+  function updateOrdinarySettingDraft(key: keyof SettingsForm['ordinarySettings'], value: Record<string, unknown>) {
+    setForm((current) => ({
+      ...current,
+      ordinarySettings: { ...current.ordinarySettings, [key]: value },
+    }));
   }
 
   async function reloadPersistedSettings() {
@@ -771,6 +812,7 @@ export function SettingsPage() {
         arrayValue(assetCategoriesValue.categories, form.assetCategories),
         form.assetCategories,
       ),
+      ordinarySettings: form.ordinarySettings,
     });
 
     setForm(next);
@@ -942,10 +984,11 @@ export function SettingsPage() {
 
             {section === 'test-encode' ? (
               <TestEncodeSettingsDomain
-                key={JSON.stringify(settings.data?.find((item) => item.key === 'testEncodePolicy')?.value ?? null)}
-                value={settings.data?.find((item) => item.key === 'testEncodePolicy')?.value}
-                saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'testEncodePolicy', value })}
+                value={form.ordinarySettings.testEncodePolicy}
+                saving={coreSavePending}
+                draftOnly
+                onDraftChange={(value) => updateOrdinarySettingDraft('testEncodePolicy', value)}
+                onSave={() => undefined}
               />
             ) : null}
 
@@ -985,17 +1028,19 @@ export function SettingsPage() {
                   </Grid>
                 </Grid>
                 <StorageWorkspaceCard
-                  key={JSON.stringify({
-                    roles: storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value),
-                    workspace: workspaceValue(settings.data?.find((item) => item.key === 'workspace')?.value),
-                  })}
-                  roles={storageRolesValue(settings.data?.find((item) => item.key === 'storageRoles')?.value)}
-                  workspace={workspaceValue(settings.data?.find((item) => item.key === 'workspace')?.value)}
-                  saving={updateSetting.isPending || updateSettingsBatch.isPending}
-                  onSave={(roles, workspace) => updateSettingsBatch.mutate({ settings: [
-                    { key: 'storageRoles', value: roles },
-                    { key: 'workspace', value: workspace as unknown as Record<string, unknown> },
-                  ] })}
+                  roles={storageRolesValue(form.ordinarySettings.storageRoles)}
+                  workspace={workspaceValue(form.ordinarySettings.workspace)}
+                  saving={coreSavePending}
+                  draftOnly
+                  onDraftChange={(roles, workspace) => setForm((current) => ({
+                    ...current,
+                    ordinarySettings: {
+                      ...current.ordinarySettings,
+                      storageRoles: roles as unknown as Record<string, unknown>,
+                      workspace: workspace as unknown as Record<string, unknown>,
+                    },
+                  }))}
+                  onSave={() => undefined}
                 />
                 {hasLegacyAnalysisRecords ? (
                   <Card variant="outlined" component="section" aria-label="Assets Settings" data-testid="assets-settings-section">
@@ -1010,12 +1055,14 @@ export function SettingsPage() {
 
             {section === 'asset-defaults' ? (
               <AssetDefaultsSettingsDomain
-                value={settings.data?.find((item) => item.key === 'assetDefaults')?.value}
+                value={form.ordinarySettings.assetDefaults}
                 settings={settings.data ?? []}
                 profiles={profilesQuery.data ?? []}
                 runtimeEncoders={runtimeSnapshot.data?.encoders}
-                saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'assetDefaults', value: value as unknown as Record<string, unknown> })}
+                saving={coreSavePending}
+                draftOnly
+                onDraftChange={(value) => updateOrdinarySettingDraft('assetDefaults', value as unknown as Record<string, unknown>)}
+                onSave={() => undefined}
               />
             ) : null}
 
@@ -1160,10 +1207,12 @@ export function SettingsPage() {
 
             {section === 'validation' ? (
               <ValidationPolicySettingsCard
-                value={settings.data?.find((item) => item.key === 'validation')?.value}
-                saving={updateSetting.isPending}
+                value={form.ordinarySettings.validation}
+                saving={coreSavePending}
                 autoPublisherEnabled={autoPublisherEnabled}
-                onSave={(value) => updateSetting.mutate({ key: 'validation', value })}
+                draftOnly
+                onDraftChange={(value) => updateOrdinarySettingDraft('validation', value)}
+                onSave={() => undefined}
               />
             ) : null}
 
@@ -1173,12 +1222,13 @@ export function SettingsPage() {
 
             {section === 'runtime' ? (
               <RuntimeProfilesCard
-                key={JSON.stringify(runtimePolicyValue(settings.data?.find((item) => item.key === 'runtimePolicy')?.value))}
                 catalog={runtimeProfilesQuery.data}
-                value={runtimePolicyValue(settings.data?.find((item) => item.key === 'runtimePolicy')?.value)}
+                value={runtimePolicyValue(form.ordinarySettings.runtimePolicy)}
                 detectedProfile={runtimeSnapshot.data?.recommendedProfile ?? 'desktop_safe'}
-                saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'runtimePolicy', value: value as unknown as Record<string, unknown> })}
+                saving={coreSavePending}
+                draftOnly
+                onDraftChange={(value) => updateOrdinarySettingDraft('runtimePolicy', value as unknown as Record<string, unknown>)}
+                onSave={() => undefined}
               />
             ) : null}
 
@@ -1201,10 +1251,11 @@ export function SettingsPage() {
             
             {section === 'runtime' ? (
               <DirectPlayCard
-                key={JSON.stringify(directPlayValue(settings.data?.find((item) => item.key === 'directPlay')?.value))}
-                value={directPlayValue(settings.data?.find((item) => item.key === 'directPlay')?.value)}
-                saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'directPlay', value: value as unknown as Record<string, unknown> })}
+                value={directPlayValue(form.ordinarySettings.directPlay)}
+                saving={coreSavePending}
+                draftOnly
+                onDraftChange={(value) => updateOrdinarySettingDraft('directPlay', value as unknown as Record<string, unknown>)}
+                onSave={() => undefined}
               />
             ) : null}
 
@@ -1219,10 +1270,11 @@ export function SettingsPage() {
 
             {section === 'pipeline' ? (
               <WorkingHoursCard
-                key={JSON.stringify(workingHoursValue(settings.data?.find((item) => item.key === 'workingHours')?.value))}
-                value={workingHoursValue(settings.data?.find((item) => item.key === 'workingHours')?.value)}
-                saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'workingHours', value: value as unknown as Record<string, unknown> })}
+                value={workingHoursValue(form.ordinarySettings.workingHours)}
+                saving={coreSavePending}
+                draftOnly
+                onDraftChange={(value) => updateOrdinarySettingDraft('workingHours', value as unknown as Record<string, unknown>)}
+                onSave={() => undefined}
               />
             ) : null}
 
@@ -1236,13 +1288,15 @@ export function SettingsPage() {
                 </Grid>
                 <Grid size={{ xs: 12 }}>
                   <HousekeepingCard
-                    key={JSON.stringify(housekeepingValue(settings.data?.find((item) => item.key === 'housekeeping')?.value))}
-                    value={housekeepingValue(settings.data?.find((item) => item.key === 'housekeeping')?.value)}
-                    saving={updateSetting.isPending}
+                    value={housekeepingValue(form.ordinarySettings.housekeeping)}
+                    savedValue={housekeepingValue(settings.data?.find((item) => item.key === 'housekeeping')?.value)}
+                    saving={coreSavePending}
                     preview={previewHousekeeping.data}
                     result={runHousekeeping.data}
                     busy={previewHousekeeping.isPending || runHousekeeping.isPending}
-                    onSave={(value) => updateSetting.mutate({ key: 'housekeeping', value: value as unknown as Record<string, unknown> })}
+                    draftOnly
+                    onDraftChange={(value) => updateOrdinarySettingDraft('housekeeping', value as unknown as Record<string, unknown>)}
+                    onSave={() => undefined}
                     onPreview={() => { previewHousekeeping.reset(); runHousekeeping.reset(); previewHousekeeping.mutate(); }}
                     onRun={(previewId) => runHousekeeping.mutate({ previewId })}
                   />
@@ -1610,8 +1664,8 @@ const runtimeNumericFields: Array<{ key: keyof RuntimeProfileValues; label: stri
   { key: 'minFreeLibraryGb', label: 'Library reserve', suffix: 'GB' }, { key: 'maxWorkspaceGb', label: 'Maximum workspace', suffix: 'GB' },
 ];
 
-function RuntimeProfilesCard({ catalog, value, detectedProfile, saving, onSave }: { catalog?: RuntimeProfilesResponse; value: RuntimePolicyValue; detectedProfile: string; saving: boolean; onSave: (value: RuntimePolicyValue) => void }) {
-  const [draft, setDraft] = useState(value);
+function RuntimeProfilesCard({ catalog, value, detectedProfile, saving, onSave, onDraftChange, draftOnly }: { catalog?: RuntimeProfilesResponse; value: RuntimePolicyValue; detectedProfile: string; saving: boolean; onSave: (value: RuntimePolicyValue) => void; onDraftChange?: (value: RuntimePolicyValue) => void; draftOnly?: boolean }) {
+  const [draft, setDraft] = useSettingsDraftValue(value, identitySettingsValue<RuntimePolicyValue>, onDraftChange);
   if (!catalog) return <Card><CardContent><Typography color="text.secondary">Loading runtime profiles…</Typography></CardContent></Card>;
   const selectedKey = draft.preferredProfile === 'auto' ? detectedProfile : draft.preferredProfile;
   const selected = catalog.profiles.find((profile) => profile.key === selectedKey) ?? catalog.profiles[0];
@@ -1636,7 +1690,7 @@ function RuntimeProfilesCard({ catalog, value, detectedProfile, saving, onSave }
       <Grid size={{ xs: 12, lg: 6 }}><Stack spacing={1}><Typography variant="h4">Resource reserves</Typography><Grid container spacing={1}>{runtimeNumericFields.slice(6).map((field) => <Grid size={{ xs: 12, sm: 6 }} key={field.key}>{numericField(field)}</Grid>)}</Grid></Stack></Grid>
     </Grid>
     <Stack spacing={1}><Typography variant="h4">Runtime behavior</Typography><Grid container spacing={1}><Grid size={{ xs: 12, sm: 6 }}>{booleanField('allowDirectMode', 'Allow direct workspace mode')}</Grid><Grid size={{ xs: 12, sm: 6 }}>{booleanField('pauseWhenOnBattery', 'Pause new jobs while on battery')}</Grid><Grid size={{ xs: 12, sm: 6 }}>{booleanField('preventSleepDuringJobs', 'Prevent sleep during active jobs (macOS)')}</Grid></Grid></Stack>
-    <Stack direction="row" spacing={1}><Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save effective runtime policy</Button><Button disabled={!Object.keys(override).length} onClick={() => setDraft((current) => { const overrides = { ...current.overrides }; delete overrides[selected.key]; return { ...current, overrides }; })}>Restore profile defaults</Button></Stack>
+    <Stack direction="row" spacing={1}>{!draftOnly ? <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save effective runtime policy</Button> : null}<Button disabled={!Object.keys(override).length} onClick={() => setDraft((current) => { const overrides = { ...current.overrides }; delete overrides[selected.key]; return { ...current, overrides }; })}>Restore profile defaults</Button></Stack>
   </Stack></CardContent></Card>;
 }
 
@@ -1645,14 +1699,14 @@ const housekeepingKindLabels: Record<HousekeepingReport['candidates'][number]['k
   empty_directory: 'Empty directory', test_encode: 'Test Encode', runtime_snapshot: 'Runtime snapshot',
 };
 
-export function HousekeepingCard({ value, saving, preview, result, busy, onSave, onPreview, onRun }: { value: HousekeepingValue; saving: boolean; preview?: HousekeepingReport; result?: HousekeepingReport; busy: boolean; onSave: (value: HousekeepingValue) => void; onPreview: () => void; onRun: (previewId: string) => void }) {
-  const [draft, setDraft] = useState(value);
+export function HousekeepingCard({ value, savedValue = value, saving, preview, result, busy, onSave, onDraftChange, draftOnly, onPreview, onRun }: { value: HousekeepingValue; savedValue?: HousekeepingValue; saving: boolean; preview?: HousekeepingReport; result?: HousekeepingReport; busy: boolean; onSave: (value: HousekeepingValue) => void; onDraftChange?: (value: HousekeepingValue) => void; draftOnly?: boolean; onPreview: () => void; onRun: (previewId: string) => void }) {
+  const [draft, setDraft] = useSettingsDraftValue(value, identitySettingsValue<HousekeepingValue>, onDraftChange);
   const [category, setCategory] = useState<'all' | HousekeepingReport['candidates'][number]['kind']>('all');
   const report = result ?? preview;
   const activePreview = preview?.dryRun ? preview : undefined;
   const validPreview = Boolean(activePreview?.previewId && activePreview.previewExpiresAt && Date.parse(activePreview.previewExpiresAt) > Date.now());
   const safeCandidates = activePreview?.candidates.filter((item) => item.safeToDelete) ?? [];
-  const policyDirty = JSON.stringify(draft) !== JSON.stringify(value);
+  const policyDirty = JSON.stringify(draft) !== JSON.stringify(savedValue);
   const recoverableBytes = report?.summaries.reduce((total, summary) => total + summary.recoverableBytes, 0) ?? 0;
   const daysField = (key: keyof HousekeepingValue, label: string) => <TextField type="number" label={label} value={draft[key] as number} inputProps={{ min: 0 }} onChange={(event) => setDraft({ ...draft, [key]: Math.max(0, Number(event.target.value)) })} fullWidth />;
   const candidateAge = (modifiedAt: string) => {
@@ -1678,7 +1732,7 @@ export function HousekeepingCard({ value, saving, preview, result, busy, onSave,
     <FormControlLabel control={<Switch checked={draft.orphanStageArtifactsEnabled} onChange={(event) => setDraft({ ...draft, orphanStageArtifactsEnabled: event.target.checked })} />} label="Remove eligible orphan stage artifacts" />
     <Alert severity="info">Preview authorizes one short-lived cleanup run. Blocked candidates stay visible with their reason.</Alert>
     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-      <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || busy} onClick={() => onSave(draft)}>Save policy</Button>
+      {!draftOnly ? <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || busy} onClick={() => onSave(draft)}>Save policy</Button> : null}
       <Button variant="outlined" disabled={busy || saving || policyDirty} onClick={onPreview}>Preview cleanup</Button>
       <Button color="error" variant="outlined" disabled={busy || saving || policyDirty || !validPreview || safeCandidates.length === 0} onClick={() => { if (activePreview?.previewId) onRun(activePreview.previewId); }}>Remove previewed candidates</Button>
     </Stack>
@@ -1731,8 +1785,8 @@ function directPlayValue(value: Record<string, unknown> | undefined): DirectPlay
   };
 }
 
-function DirectPlayCard({ value, saving, onSave }: { value: DirectPlayValue; saving: boolean; onSave: (value: DirectPlayValue) => void }) {
-  const [draft, setDraft] = useState(value);
+function DirectPlayCard({ value, saving, onSave, onDraftChange, draftOnly }: { value: DirectPlayValue; saving: boolean; onSave: (value: DirectPlayValue) => void; onDraftChange?: (value: DirectPlayValue) => void; draftOnly?: boolean }) {
+  const [draft, setDraft] = useSettingsDraftValue(value, identitySettingsValue<DirectPlayValue>, onDraftChange);
   const toggleClient = (client: string) => setDraft((current) => ({ ...current, targetClients: current.targetClients.includes(client) ? current.targetClients.filter((item) => item !== client) : [...current.targetClients, client] }));
   return <Card><CardContent><Stack spacing={2}>
     <Stack><Typography variant="h3">DirectPlay Policy</Typography><Typography color="text.secondary" variant="body2">Estimate playback compatibility from the planned output profile for each target client.</Typography></Stack>
@@ -1744,7 +1798,7 @@ function DirectPlayCard({ value, saving, onSave }: { value: DirectPlayValue; sav
     </Grid>
     <Stack><Typography variant="h4">Target clients</Typography><Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>{directPlayClients.map((client) => <FormControlLabel key={client} control={<Checkbox checked={draft.targetClients.includes(client)} disabled={!draft.enabled} onChange={() => toggleClient(client)} />} label={client.replaceAll('_', ' ')} />)}</Stack></Stack>
     <Alert severity="info">This is a preflight estimate. MVForge records it in the Execution Plan; definitive compatibility requires analyzing the final file.</Alert>
-    <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || (draft.enabled && draft.targetClients.length === 0)} onClick={() => onSave(draft)}>Save DirectPlay policy</Button>
+    {!draftOnly ? <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || (draft.enabled && draft.targetClients.length === 0)} onClick={() => onSave(draft)}>Save DirectPlay policy</Button> : null}
   </Stack></CardContent></Card>;
 }
 
@@ -1765,8 +1819,8 @@ function workingHoursValue(value: Record<string, unknown> | undefined): WorkingH
   };
 }
 
-function WorkingHoursCard({ value, saving, onSave }: { value: WorkingHoursValue; saving: boolean; onSave: (value: WorkingHoursValue) => void }) {
-  const [draft, setDraft] = useState(value);
+function WorkingHoursCard({ value, saving, onSave, onDraftChange, draftOnly }: { value: WorkingHoursValue; saving: boolean; onSave: (value: WorkingHoursValue) => void; onDraftChange?: (value: WorkingHoursValue) => void; draftOnly?: boolean }) {
+  const [draft, setDraft] = useSettingsDraftValue(value, identitySettingsValue<WorkingHoursValue>, onDraftChange);
   const updateWindow = (index: number, patch: Partial<WorkingWindow>) => setDraft((current) => ({ ...current, windows: current.windows.map((window, position) => position === index ? { ...window, ...patch } : window) }));
   return <Card><CardContent><Stack spacing={2}>
     <Stack><Typography variant="h3">Working Hours</Typography><Typography color="text.secondary" variant="body2">Heavy conversions only start inside allowed windows; running jobs continue.</Typography></Stack>
@@ -1782,7 +1836,7 @@ function WorkingHoursCard({ value, saving, onSave }: { value: WorkingHoursValue;
       <Grid size={{ xs: 12, md: 1 }}><IconButton color="error" onClick={() => setDraft((current) => ({ ...current, windows: current.windows.filter((_, position) => position !== index) }))}><DeleteIcon /></IconButton></Grid>
     </Grid>)}
     {!draft.windows.length ? <Alert severity="info">No conversion windows configured. With heavy jobs disabled outside windows, conversions will wait.</Alert> : null}
-    <Stack direction="row" spacing={1}><Button startIcon={<AddIcon />} onClick={() => setDraft((current) => ({ ...current, windows: [...current.windows, { name: 'New window', days: ['mon', 'tue', 'wed', 'thu', 'fri'], start: '23:00', end: '07:00' }] }))}>Add window</Button><Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save working hours</Button></Stack>
+    <Stack direction="row" spacing={1}><Button startIcon={<AddIcon />} onClick={() => setDraft((current) => ({ ...current, windows: [...current.windows, { name: 'New window', days: ['mon', 'tue', 'wed', 'thu', 'fri'], start: '23:00', end: '07:00' }] }))}>Add window</Button>{!draftOnly ? <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save working hours</Button> : null}</Stack>
   </Stack></CardContent></Card>;
 }
 
@@ -1797,21 +1851,22 @@ function workspaceValue(value: Record<string, unknown> | undefined): WorkspaceVa
   };
 }
 
-function StorageWorkspaceCard({ roles, workspace, saving, onSave }: { roles: StorageRolesValue; workspace: WorkspaceValue; saving: boolean; onSave: (roles: Record<string, unknown>, workspace: WorkspaceValue) => void }) {
-  const [roleDraft, setRoleDraft] = useState(roles);
-  const [workspaceDraft, setWorkspaceDraft] = useState(workspace);
+function StorageWorkspaceCard({ roles, workspace, saving, onSave, onDraftChange, draftOnly }: { roles: StorageRolesValue; workspace: WorkspaceValue; saving: boolean; onSave: (roles: Record<string, unknown>, workspace: WorkspaceValue) => void; onDraftChange?: (roles: StorageRolesValue, workspace: WorkspaceValue) => void; draftOnly?: boolean }) {
+  const [draft, setDraft] = useSettingsDraftValue({ roles, workspace }, identitySettingsValue<{ roles: StorageRolesValue; workspace: WorkspaceValue }>, (next) => onDraftChange?.(next.roles, next.workspace));
+  const roleDraft = draft.roles;
+  const workspaceDraft = draft.workspace;
   return <Grid container spacing={2}>
     <Grid size={{ xs: 12, md: 7 }}><Card><CardContent><Stack spacing={2}><Stack><Typography variant="h3">Storage Roles</Typography><Typography color="text.secondary" variant="body2">Scheduler paths are referenced by role instead of host-specific locations.</Typography></Stack>
-      {storageRoleNames.filter((role) => role !== 'originals_archive').map((role) => <TextField key={role} label={role.replaceAll('_', ' ')} value={roleDraft[role].path} onChange={(event) => setRoleDraft((current) => ({ ...current, [role]: { path: event.target.value } }))} fullWidth />)}
+      {storageRoleNames.filter((role) => role !== 'originals_archive').map((role) => <TextField key={role} label={role.replaceAll('_', ' ')} value={roleDraft[role].path} onChange={(event) => setDraft((current) => ({ ...current, roles: { ...current.roles, [role]: { path: event.target.value } } }))} fullWidth />)}
       <Alert severity="info">The originals_archive role is managed in the Original Archive settings section.</Alert>
     </Stack></CardContent></Card></Grid>
     <Grid size={{ xs: 12, md: 5 }}><Card><CardContent><Stack spacing={2}><Stack><Typography variant="h3">Workspace Strategy</Typography><Typography color="text.secondary" variant="body2">Choose whether FFmpeg reads a work-disk copy or reads raw directly.</Typography></Stack>
-      <TextField select label="Preferred mode" value={workspaceDraft.preferredMode} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, preferredMode: event.target.value as WorkspaceValue['preferredMode'] })}><MenuItem value="copy_to_work_disk">Copy input to work disk</MenuItem><MenuItem value="direct_mode">Read raw directly</MenuItem></TextField>
-      <TextField select label="Insufficient workspace fallback" value={workspaceDraft.fallbackMode} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, fallbackMode: event.target.value as WorkspaceValue['fallbackMode'] })}><MenuItem value="wait">Wait for workspace</MenuItem><MenuItem value="direct_mode">Use direct mode</MenuItem></TextField>
-      <FormControlLabel control={<Switch checked={workspaceDraft.allowDirectMode} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, allowDirectMode: event.target.checked })} />} label="Allow direct-mode fallback" />
-      <FormControlLabel control={<Switch checked={workspaceDraft.estimateRequiredSpace} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, estimateRequiredSpace: event.target.checked })} />} label="Estimate required workspace" />
+      <TextField select label="Preferred mode" value={workspaceDraft.preferredMode} onChange={(event) => setDraft((current) => ({ ...current, workspace: { ...current.workspace, preferredMode: event.target.value as WorkspaceValue['preferredMode'] } }))}><MenuItem value="copy_to_work_disk">Copy input to work disk</MenuItem><MenuItem value="direct_mode">Read raw directly</MenuItem></TextField>
+      <TextField select label="Insufficient workspace fallback" value={workspaceDraft.fallbackMode} onChange={(event) => setDraft((current) => ({ ...current, workspace: { ...current.workspace, fallbackMode: event.target.value as WorkspaceValue['fallbackMode'] } }))}><MenuItem value="wait">Wait for workspace</MenuItem><MenuItem value="direct_mode">Use direct mode</MenuItem></TextField>
+      <FormControlLabel control={<Switch checked={workspaceDraft.allowDirectMode} onChange={(event) => setDraft((current) => ({ ...current, workspace: { ...current.workspace, allowDirectMode: event.target.checked } }))} />} label="Allow direct-mode fallback" />
+      <FormControlLabel control={<Switch checked={workspaceDraft.estimateRequiredSpace} onChange={(event) => setDraft((current) => ({ ...current, workspace: { ...current.workspace, estimateRequiredSpace: event.target.checked } }))} />} label="Estimate required workspace" />
       <Alert severity="info">Copy mode reserves input + estimated output + temporary overhead. Insufficient space produces WAITING_SSD_SPACE.</Alert>
-      <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(roleDraft as unknown as Record<string, unknown>, workspaceDraft)}>Save storage settings</Button>
+      {!draftOnly ? <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(roleDraft as unknown as Record<string, unknown>, workspaceDraft)}>Save storage settings</Button> : null}
     </Stack></CardContent></Card></Grid>
   </Grid>;
 }

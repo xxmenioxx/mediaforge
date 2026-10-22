@@ -22,7 +22,8 @@ import {
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import SaveIcon from '@mui/icons-material/Save';
-import { useEffect, useMemo, useState } from 'react';
+import { useState } from 'react';
+import { useSettingsDraftValue } from '../hooks/useSettingsDraftValue';
 import type { ValidationPolicy, ValidationRulePolicy, ValidationPreset } from '../api/types';
 
 const presetLabels: Record<ValidationPreset, string> = {
@@ -126,19 +127,18 @@ const fidelityFieldLabels: Record<string, string> = {
   bitDepth: 'Bit depth', chromaLocation: 'Chroma location', hevcLevel: 'HEVC level', hevcTier: 'HEVC tier', colorPolicy: 'Color contract',
 };
 
-export function ValidationPolicySettingsCard({ value, saving, autoPublisherEnabled, onSave }: {
+export function ValidationPolicySettingsCard({ value, saving, autoPublisherEnabled, onSave, onDraftChange, draftOnly }: {
   value: Record<string, unknown> | undefined;
   saving: boolean;
   autoPublisherEnabled?: boolean;
   onSave: (value: Record<string, unknown>) => void;
+  onDraftChange?: (value: Record<string, unknown>) => void;
+  draftOnly?: boolean;
 }) {
-  const storedPolicy = useMemo(() => validationPolicyFromSetting(value), [value]);
-  const [draft, setDraft] = useState(storedPolicy);
+  const [draft, setDraft] = useSettingsDraftValue(value, normalizeValidationPolicy, (next) => onDraftChange?.(validationPolicyPayload(value, next)));
   const [showDifferences, setShowDifferences] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [confirmWarningOptInOpen, setConfirmWarningOptInOpen] = useState(false);
-
-  useEffect(() => { setDraft(storedPolicy); }, [storedPolicy]);
 
   const storedOutcomeSetting = value?.autoAdvanceOutcomes;
   const currentAutoAdvanceOutcomes = normalizeAutoAdvanceOutcomes(storedOutcomeSetting);
@@ -177,13 +177,7 @@ export function ValidationPolicySettingsCard({ value, saving, autoPublisherEnabl
     if (factory) setDraft((current) => ({ ...current, ...factory, presetDefaults: current.presetDefaults, autoAdvanceOutcomes: current.autoAdvanceOutcomes }));
   };
 
-  const save = () => {
-    const policy: Record<string, unknown> = { ...(value ?? {}), ...draft, autoAdvanceOutcomes: draftAutoAdvanceOutcomes };
-    delete policy.presetDefaults;
-    delete policy.differenceCount;
-    delete policy.differences;
-    onSave(policy);
-  };
+  const save = () => onSave(validationPolicyPayload(value, draft));
 
   const setWarningAdvancement = (enabled: boolean) => {
     setDraft((current) => ({
@@ -284,7 +278,7 @@ export function ValidationPolicySettingsCard({ value, saving, autoPublisherEnabl
               })}
             </Stack></AccordionDetails>
           </Accordion>
-          <Button startIcon={<SaveIcon />} variant="contained" onClick={save} disabled={saving}>Save Validation settings</Button>
+          {draftOnly ? null : <Button startIcon={<SaveIcon />} variant="contained" onClick={save} disabled={saving}>Save Validation settings</Button>}
         </Stack>
       </CardContent>
       <Dialog open={confirmWarningOptInOpen} onClose={() => setConfirmWarningOptInOpen(false)} aria-labelledby="validation-warning-opt-in-title">
@@ -303,6 +297,19 @@ export function ValidationPolicySettingsCard({ value, saving, autoPublisherEnabl
       </Dialog>
     </Card>
   );
+}
+
+function normalizeValidationPolicy(value: unknown): ValidationPolicy {
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  return validationPolicyFromSetting(record);
+}
+
+function validationPolicyPayload(value: Record<string, unknown> | undefined, draft: ValidationPolicy): Record<string, unknown> {
+  const policy: Record<string, unknown> = { ...(value ?? {}), ...draft, autoAdvanceOutcomes: normalizeAutoAdvanceOutcomes(draft.autoAdvanceOutcomes) };
+  delete policy.presetDefaults;
+  delete policy.differenceCount;
+  delete policy.differences;
+  return policy;
 }
 
 function validationPolicyFromSetting(value: Record<string, unknown> | undefined): ValidationPolicy {

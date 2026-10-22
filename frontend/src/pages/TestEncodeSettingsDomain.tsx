@@ -24,6 +24,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { useSettingsDraftValue } from '../hooks/useSettingsDraftValue';
 import type { TestEncode, TestEncodePolicy } from '../api/types';
 
 const defaultPolicy: TestEncodePolicy = {
@@ -40,6 +41,8 @@ type Props = {
   value?: Record<string, unknown>;
   saving: boolean;
   onSave: (value: Record<string, unknown>) => void;
+  onDraftChange?: (value: Record<string, unknown>) => void;
+  draftOnly?: boolean;
 };
 
 function policyValue(value?: Record<string, unknown>): TestEncodePolicy {
@@ -52,6 +55,10 @@ function policyValue(value?: Record<string, unknown>): TestEncodePolicy {
     maxReconcileBatchSize: numberField(value?.maxReconcileBatchSize, defaultPolicy.maxReconcileBatchSize),
     maxCleanupBatchSize: numberField(value?.maxCleanupBatchSize, defaultPolicy.maxCleanupBatchSize),
   };
+}
+
+function policyValueFromUnknown(value: unknown): TestEncodePolicy {
+  return policyValue(value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined);
 }
 
 function numberField(value: unknown, fallback: number): number {
@@ -78,9 +85,9 @@ function formatDate(value?: string): string {
   return value ? new Date(value).toLocaleString() : '—';
 }
 
-export function TestEncodeSettingsDomain({ value, saving, onSave }: Props) {
+export function TestEncodeSettingsDomain({ value, saving, onSave, onDraftChange, draftOnly }: Props) {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<TestEncodePolicy>(() => policyValue(value));
+  const [draft, setDraft] = useSettingsDraftValue(value, policyValueFromUnknown, (next) => onDraftChange?.(next as unknown as Record<string, unknown>));
   const [executionStatus, setExecutionStatus] = useState('');
   const [notice, setNotice] = useState('');
   const [retention, setRetention] = useState('');
@@ -166,7 +173,7 @@ export function TestEncodeSettingsDomain({ value, saving, onSave }: Props) {
         <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField select label="Default start position" value={draft.defaultStartMode} onChange={(event) => setDraft({ ...draft, defaultStartMode: event.target.value as TestEncodePolicy['defaultStartMode'] })} fullWidth><MenuItem value="beginning">Beginning</MenuItem><MenuItem value="middle">Middle</MenuItem><MenuItem value="representative">Representative scene</MenuItem></TextField></Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}><TextField select label="Retention after comparison" value={draft.defaultRetention} onChange={(event) => setDraft({ ...draft, defaultRetention: event.target.value as TestEncodePolicy['defaultRetention'] })} fullWidth><MenuItem value="temporary">Temporary</MenuItem><MenuItem value="keep">Keep</MenuItem></TextField></Grid>
       </Grid>
-      <Stack direction="row"><Button variant="contained" disabled={saving} onClick={() => onSave(draft as unknown as Record<string, unknown>)}>Save Test Encode settings</Button></Stack>
+      {!draftOnly ? <Stack direction="row"><Button variant="contained" disabled={saving} onClick={() => onSave(draft as unknown as Record<string, unknown>)}>Save Test Encode settings</Button></Stack> : null}
     </Stack></CardContent></Card>
 
     <Card><CardContent><Stack spacing={2}>
