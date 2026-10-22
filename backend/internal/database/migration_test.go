@@ -955,6 +955,83 @@ func TestMigrateRestoresMissingTestEncodeFFmpegCommandColumn(t *testing.T) {
 	}
 }
 
+func TestMigrateAddsManualRequestFieldsToExistingPublisherPublication(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "legacy-publisher.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Now().UTC()
+	legacy := models.PublisherPublication{
+		PublicationID: "publication:legacy", QueueJobID: 9, ExecutionNumber: 2,
+		ExecutionPlanID: 3, ExecutionPlanVersion: 1, ExecutionPlanFingerprint: "plan",
+		LibraryID: 4, DestinationRoot: "/library", DestinationPath: "/library/legacy.mkv",
+		PublishMode: "standard", ResultArtifactID: "result:legacy", ResultGenerationToken: "generation:legacy",
+		ResultGenerationVersion: 1, ResultOutputRevision: "revision:legacy", ValidationRunID: "validation:legacy",
+		SourcePath: "/raw/legacy.mkv", State: "READY", Manifest: models.JSONList{}, OriginalArchiveStatus: "pending",
+		CreatedAt: createdAt, UpdatedAt: createdAt,
+	}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	legacyAudit := models.PublisherAuditEvent{
+		EventID: "publisher-action:legacy", PublicationID: legacy.PublicationID,
+		Version: 1, Action: "hold", ActorSource: "local_operator", ActorID: "local_operator", CreatedAt: createdAt,
+	}
+	if err := db.Create(&legacyAudit).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, index := range []struct {
+		model any
+		name  string
+	}{
+		{&models.PublisherPublication{}, "idx_publisher_publications_manual_request_id"},
+		{&models.PublisherPublication{}, "idx_publisher_publications_manual_request_status"},
+		{&models.PublisherAuditEvent{}, "idx_publisher_audit_idempotency_key"},
+	} {
+		if db.Migrator().HasIndex(index.model, index.name) {
+			if err := db.Migrator().DropIndex(index.model, index.name); err != nil {
+				t.Fatalf("drop new index %s to simulate legacy schema: %v", index.name, err)
+			}
+		}
+	}
+	for _, column := range []string{"manual_request_id", "manual_request_status", "manual_request_reason", "manual_request_attempt_count", "manual_requested_at", "manual_request_completed_at"} {
+		if err := db.Migrator().DropColumn(&models.PublisherPublication{}, column); err != nil {
+			t.Fatalf("drop publisher_publications.%s to simulate legacy schema: %v", column, err)
+		}
+	}
+	if err := db.Migrator().DropColumn(&models.PublisherAuditEvent{}, "idempotency_key"); err != nil {
+		t.Fatalf("drop publisher_audit_events.idempotency_key to simulate legacy schema: %v", err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("migrate legacy Publisher schema: %v", err)
+	}
+	for _, column := range []string{"manual_request_id", "manual_request_status", "manual_request_reason", "manual_request_attempt_count", "manual_requested_at", "manual_request_completed_at"} {
+		if !db.Migrator().HasColumn(&models.PublisherPublication{}, column) {
+			t.Fatalf("publisher_publications.%s was not migrated", column)
+		}
+	}
+	if !db.Migrator().HasColumn(&models.PublisherAuditEvent{}, "idempotency_key") || !db.Migrator().HasIndex(&models.PublisherAuditEvent{}, "idx_publisher_audit_idempotency_key") {
+		t.Fatal("Publisher audit idempotency identity was not migrated")
+	}
+	var migrated models.PublisherPublication
+	if err := db.Where("publication_id = ?", legacy.PublicationID).First(&migrated).Error; err != nil {
+		t.Fatal(err)
+	}
+	if migrated.ManualRequestID != "" || migrated.ManualRequestStatus != "" || migrated.ManualRequestReason != "" || migrated.ManualRequestAttemptCount != 0 || migrated.ManualRequestedAt != nil || migrated.ManualRequestCompletedAt != nil {
+		t.Fatalf("legacy publication acquired synthetic manual request state: %#v", migrated)
+	}
+	var migratedAudit models.PublisherAuditEvent
+	if err := db.Where("event_id = ?", legacyAudit.EventID).First(&migratedAudit).Error; err != nil {
+		t.Fatal(err)
+	}
+	if migratedAudit.IdempotencyKey != "" {
+		t.Fatalf("legacy audit event acquired a synthetic request key: %#v", migratedAudit)
+	}
+}
+
 func settingValuesForTest(value any) []any {
 	switch values := value.(type) {
 	case []any:

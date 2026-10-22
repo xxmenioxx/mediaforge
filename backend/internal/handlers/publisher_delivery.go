@@ -65,8 +65,9 @@ type publisherLeaseOwner struct {
 }
 
 type publisherActionInput struct {
-	Action string `json:"action"`
-	Reason string `json:"reason"`
+	Action         string `json:"action"`
+	Reason         string `json:"reason"`
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 }
 
 type PublisherPublicationSummary struct {
@@ -88,6 +89,10 @@ type PublisherPublicationView struct {
 	ValidationRunID            string          `json:"validationRunId"`
 	ValidationOverrideEventIDs models.JSONList `json:"validationOverrideEventIds,omitempty"`
 	State                      string          `json:"state"`
+	ManualRequestID            string          `json:"manualRequestId,omitempty"`
+	ManualRequestStatus        string          `json:"manualRequestStatus,omitempty"`
+	ManualRequestedAt          *time.Time      `json:"manualRequestedAt,omitempty"`
+	ManualRequestCompletedAt   *time.Time      `json:"manualRequestCompletedAt,omitempty"`
 	HoldReason                 string          `json:"holdReason,omitempty"`
 	FailureCode                string          `json:"failureCode,omitempty"`
 	FailureSummary             string          `json:"failureSummary,omitempty"`
@@ -245,8 +250,10 @@ func (h PublisherHandler) handoffAndPublishWithReason(job models.QueueJob, autom
 		if reason = publisherBoundedText(reason, 500); reason == "" {
 			reason = "Manual Publisher handoff"
 		}
-		if err := h.appendPublicationAudit(publication.PublicationID, "publish", reason, nil); err != nil {
-			return PublishResult{}, err
+		if publication.ManualRequestID == "" {
+			if err := h.appendPublicationAudit(publication.PublicationID, "publish", reason, nil); err != nil {
+				return PublishResult{}, err
+			}
 		}
 	}
 	if publication.State == PublicationHeld {
@@ -267,12 +274,20 @@ func (h PublisherHandler) handoffAndPublishWithReason(job models.QueueJob, autom
 		if automatic {
 			return PublishResult{JobID: job.ID, Status: "blocked", SourcePath: job.OutputPath, PublishedPath: publication.DestinationPath, Message: publication.FailureSummary}, nil
 		}
-		if err := h.resetPublicationForRetry(publication.PublicationID, actorSource, actorID, "retry", "Manual retry requested."); err != nil {
+		retryReason := publisherBoundedText(reason, 500)
+		if retryReason == "" {
+			retryReason = "Manual retry requested."
+		}
+		if err := h.resetPublicationForRetry(publication.PublicationID, actorSource, actorID, "retry", retryReason); err != nil {
 			return PublishResult{}, err
 		}
 	}
 	if publication.State == PublicationFailed && !automatic {
-		if err := h.resetPublicationForRetry(publication.PublicationID, actorSource, actorID, "retry", "Manual retry requested."); err != nil {
+		retryReason := publisherBoundedText(reason, 500)
+		if retryReason == "" {
+			retryReason = "Manual retry requested."
+		}
+		if err := h.resetPublicationForRetry(publication.PublicationID, actorSource, actorID, "retry", retryReason); err != nil {
 			return PublishResult{}, err
 		}
 	}
@@ -929,7 +944,9 @@ func (h PublisherHandler) ListPublications(c *gin.Context) {
 			LibraryID: publication.LibraryID, DestinationRoot: publication.DestinationRoot, DestinationPath: publication.DestinationPath,
 			PublishMode: publication.PublishMode, ResultArtifactID: publication.ResultArtifactID, ValidationRunID: publication.ValidationRunID,
 			ValidationOverrideEventIDs: publication.ValidationOverrideEventIDs,
-			State:                      publication.State, HoldReason: publication.HoldReason, FailureCode: publication.FailureCode,
+			State:                      publication.State, ManualRequestID: publication.ManualRequestID, ManualRequestStatus: publication.ManualRequestStatus,
+			ManualRequestedAt: publication.ManualRequestedAt, ManualRequestCompletedAt: publication.ManualRequestCompletedAt,
+			HoldReason: publication.HoldReason, FailureCode: publication.FailureCode,
 			FailureSummary: publication.FailureSummary, AttemptCount: publication.AttemptCount,
 			FencingGeneration: publication.FencingGeneration, PublishedAt: publication.PublishedAt,
 			OriginalArchiveStatus: publication.OriginalArchiveStatus, OriginalArchivedPath: publication.OriginalArchivedPath,
@@ -1119,18 +1136,14 @@ func (h PublisherHandler) PublisherAction(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "release the publication hold before retrying"})
 			return
 		}
-		if err := h.resetPublicationForRetry(publication.PublicationID, publicationActorOperator, publicationActorOperator, input.Action, input.Reason); err != nil {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-			return
-		}
 		var job models.QueueJob
 		if err := h.db.First(&job, publication.QueueJobID).Error; err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
-		result, err := h.handoffAndPublish(job, false)
+		result, err := h.acceptManualPublication(job, input.Reason, input.IdempotencyKey, true)
 		if err != nil {
-			status := http.StatusInternalServerError
+			status := http.StatusConflict
 			var publishErr publishError
 			if errors.As(err, &publishErr) && publishErr.Status > 0 {
 				status = publishErr.Status
@@ -1138,7 +1151,15 @@ func (h PublisherHandler) PublisherAction(c *gin.Context) {
 			c.JSON(status, gin.H{"error": err.Error(), "publicationId": publication.PublicationID})
 			return
 		}
-		c.JSON(http.StatusOK, result)
+		if result.Status == "already_published" {
+			c.JSON(http.StatusOK, result)
+			return
+		}
+		if result.PublicationID != publication.PublicationID {
+			c.JSON(http.StatusConflict, gin.H{"error": "publication identity changed; refresh Publisher", "publicationId": publication.PublicationID})
+			return
+		}
+		c.JSON(http.StatusAccepted, result)
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be hold, release, or retry"})
 	}
@@ -1171,6 +1192,197 @@ func (h PublisherHandler) operatorPublicationTransition(publication models.Publi
 		}
 		return tx.Create(&models.PublisherAuditEvent{EventID: id, PublicationID: publication.PublicationID, Version: int(count + 1), Action: action, ActorSource: publicationActorOperator, ActorID: publicationActorOperator, Reason: publisherBoundedText(reason, 500), CreatedAt: time.Now().UTC()}).Error
 	})
+}
+
+const (
+	publisherManualRequestAccepted   = "accepted"
+	publisherManualRequestProcessing = "processing"
+	publisherManualRequestCompleted  = "completed"
+	publisherManualRequestFailed     = "failed"
+)
+
+func (h PublisherHandler) acceptManualPublication(job models.QueueJob, reason, idempotencyKey string, retry bool) (ManualPublishRequestResult, error) {
+	if job.ID == 0 || h.db == nil {
+		return ManualPublishRequestResult{}, publishError{Status: http.StatusBadRequest, Message: "a persisted Queue job is required"}
+	}
+	reason = publisherBoundedText(reason, 500)
+	if reason == "" {
+		return ManualPublishRequestResult{}, publishError{Status: http.StatusBadRequest, Message: "an operator reason is required for manual publication"}
+	}
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if len(idempotencyKey) > 200 {
+		return ManualPublishRequestResult{}, publishError{Status: http.StatusBadRequest, Message: "idempotency key must be 200 characters or fewer"}
+	}
+	if idempotencyKey == "" {
+		var err error
+		idempotencyKey, err = publisherToken("manual-idempotency")
+		if err != nil {
+			return ManualPublishRequestResult{}, err
+		}
+	}
+	if err := h.db.First(&job, job.ID).Error; err != nil {
+		return ManualPublishRequestResult{}, err
+	}
+	if job.DismissedAt != nil {
+		return ManualPublishRequestResult{}, publishError{Status: http.StatusConflict, Message: "dismissed Queue jobs cannot be published"}
+	}
+	if job.PublishedAt != nil && strings.TrimSpace(job.PublishedPath) != "" {
+		return ManualPublishRequestResult{JobID: job.ID, Status: "already_published", Message: "Publication is already committed."}, nil
+	}
+	if job.Status != JobStatusCompleted {
+		return ManualPublishRequestResult{}, publishError{Status: http.StatusConflict, Message: "job must be completed before publishing"}
+	}
+	if job.ExecutionNumber == nil {
+		return ManualPublishRequestResult{}, publishError{Status: http.StatusConflict, Message: "Queue execution identity is unavailable"}
+	}
+	var current models.PublisherPublication
+	if err := h.db.Where("queue_job_id = ? AND execution_number = ?", job.ID, *job.ExecutionNumber).First(&current).Error; err == nil {
+		if current.State == PublicationPublished {
+			return ManualPublishRequestResult{JobID: job.ID, RequestID: current.ManualRequestID, PublicationID: current.PublicationID, Status: "already_published", Message: "Publication is already committed."}, nil
+		}
+		var previousRequest models.PublisherAuditEvent
+		if err := h.db.Where("idempotency_key = ?", idempotencyKey).First(&previousRequest).Error; err == nil {
+			if previousRequest.PublicationID != current.PublicationID {
+				return ManualPublishRequestResult{}, publishError{Status: http.StatusConflict, Message: "idempotency key was already used for another publication"}
+			}
+			requestID, _ := previousRequest.Parameters["requestId"].(string)
+			if requestID != "" && requestID == current.ManualRequestID && (current.ManualRequestStatus == publisherManualRequestAccepted || current.ManualRequestStatus == publisherManualRequestProcessing) {
+				return ManualPublishRequestResult{JobID: job.ID, RequestID: requestID, PublicationID: current.PublicationID, Status: current.ManualRequestStatus, Message: "Manual publication request is already accepted."}, nil
+			}
+			return ManualPublishRequestResult{}, publishError{Status: http.StatusConflict, Message: "this manual request was already handled; refresh Publisher and use the audited retry action for another attempt"}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return ManualPublishRequestResult{}, err
+		}
+		if current.ManualRequestStatus == publisherManualRequestAccepted || current.ManualRequestStatus == publisherManualRequestProcessing {
+			return ManualPublishRequestResult{JobID: job.ID, RequestID: current.ManualRequestID, PublicationID: current.PublicationID, Status: current.ManualRequestStatus, Message: "Manual publication request is already accepted."}, nil
+		}
+		if current.State == PublicationPublishing {
+			return ManualPublishRequestResult{}, publishError{Status: http.StatusConflict, Message: "publication is already in progress; refresh Publisher for the current state"}
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return ManualPublishRequestResult{}, err
+	}
+	if allowed, gateReason := canonicalRunAllowsPublish(h.db, job, false); !allowed {
+		return ManualPublishRequestResult{}, publishError{Status: http.StatusConflict, Message: gateReason}
+	}
+	identity, resultIdentity, err := publisherIdentityForJob(h.db, job, false)
+	if err != nil {
+		return ManualPublishRequestResult{}, err
+	}
+	publication, err := h.persistPublicationIdentity(identity, resultIdentity)
+	if err != nil {
+		return ManualPublishRequestResult{}, err
+	}
+	if publication.State == PublicationPublished {
+		return ManualPublishRequestResult{JobID: job.ID, RequestID: publication.ManualRequestID, PublicationID: publication.PublicationID, Status: "already_published", Message: "Publication is already committed."}, nil
+	}
+	if publication.State == PublicationHeld {
+		return ManualPublishRequestResult{}, publishError{Status: http.StatusConflict, Message: "publication is held by an operator; release it before requesting delivery"}
+	}
+	if retry {
+		if publication.State != PublicationFailed && publication.State != PublicationBlocked {
+			return ManualPublishRequestResult{}, publishError{Status: http.StatusConflict, Message: "publication is not retryable in its current state"}
+		}
+	} else if publication.State != PublicationReady {
+		return ManualPublishRequestResult{}, publishError{Status: http.StatusConflict, Message: "publication is not ready; use the audited retry action after a failure"}
+	}
+	if checks := validateRequiredSubtitleArtifactDeclarations(job); len(checks) > 0 {
+		for _, check := range checks {
+			if check.Status == "failed" {
+				h.markPublicationBlocked(publication, "required_sidecar_missing", "Required delivery sidecar is not ready: "+check.Message, publicationActorOperator, publicationActorOperator)
+				return ManualPublishRequestResult{}, publishError{Status: http.StatusConflict, Message: "required subtitle artifacts are not ready for publication: " + check.Message}
+			}
+		}
+	}
+	accepted, err := h.persistManualPublicationRequest(publication, reason, idempotencyKey, retry)
+	if err != nil {
+		return ManualPublishRequestResult{}, err
+	}
+	if accepted.State == PublicationPublished {
+		return ManualPublishRequestResult{JobID: job.ID, RequestID: accepted.ManualRequestID, PublicationID: accepted.PublicationID, Status: "already_published", Message: "Publication is already committed."}, nil
+	}
+	return ManualPublishRequestResult{JobID: job.ID, RequestID: accepted.ManualRequestID, PublicationID: accepted.PublicationID, Status: accepted.ManualRequestStatus, Message: "Manual publication request was durably accepted; delivery has not completed."}, nil
+}
+
+func (h PublisherHandler) persistManualPublicationRequest(publication models.PublisherPublication, reason, idempotencyKey string, retry bool) (models.PublisherPublication, error) {
+	requestID, err := publisherToken("manual-publish")
+	if err != nil {
+		return models.PublisherPublication{}, err
+	}
+	eventID, err := publisherToken("publisher-action")
+	if err != nil {
+		return models.PublisherPublication{}, err
+	}
+	now := time.Now().UTC()
+	action := "publish_accepted"
+	if retry {
+		action = "retry_accepted"
+	}
+	var accepted models.PublisherPublication
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		var current models.PublisherPublication
+		if err := tx.Where("publication_id = ?", publication.PublicationID).First(&current).Error; err != nil {
+			return err
+		}
+		var previousRequest models.PublisherAuditEvent
+		if err := tx.Where("idempotency_key = ?", idempotencyKey).First(&previousRequest).Error; err == nil {
+			return publishError{Status: http.StatusConflict, Message: "manual request idempotency key was already used"}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if current.State == PublicationPublished {
+			accepted = current
+			return nil
+		}
+		if current.ManualRequestStatus == publisherManualRequestAccepted || current.ManualRequestStatus == publisherManualRequestProcessing {
+			accepted = current
+			return nil
+		}
+		if current.State == PublicationPublishing || current.State == PublicationHeld {
+			return publishError{Status: http.StatusConflict, Message: "publication state changed before the manual request was accepted"}
+		}
+		if retry && current.State != PublicationFailed && current.State != PublicationBlocked {
+			return publishError{Status: http.StatusConflict, Message: "publication is not retryable in its current state"}
+		}
+		if !retry && current.State != PublicationReady {
+			return publishError{Status: http.StatusConflict, Message: "publication state changed before the manual request was accepted"}
+		}
+		result := tx.Model(&models.PublisherPublication{}).
+			Where("publication_id = ? AND state = ? AND manual_request_status = ?", current.PublicationID, current.State, current.ManualRequestStatus).
+			Updates(map[string]any{
+				"manual_request_id": requestID, "manual_request_status": publisherManualRequestAccepted,
+				"manual_request_reason": reason, "manual_requested_at": now,
+				"manual_request_attempt_count": current.AttemptCount,
+				"manual_request_completed_at":  nil, "updated_at": now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return publishError{Status: http.StatusConflict, Message: "publication changed while accepting the manual request; refresh Publisher"}
+		}
+		var count int64
+		if err := tx.Model(&models.PublisherAuditEvent{}).Where("publication_id = ?", current.PublicationID).Count(&count).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&models.PublisherAuditEvent{
+			EventID: eventID, PublicationID: current.PublicationID, Version: int(count + 1),
+			IdempotencyKey: idempotencyKey,
+			Action:         action, ActorSource: publicationActorOperator, ActorID: publicationActorOperator,
+			Reason: reason, Parameters: models.JSONMap{"requestId": requestID}, CreatedAt: now,
+		}).Error; err != nil {
+			return err
+		}
+		current.ManualRequestID = requestID
+		current.ManualRequestStatus = publisherManualRequestAccepted
+		current.ManualRequestReason = reason
+		current.ManualRequestAttemptCount = current.AttemptCount
+		current.ManualRequestedAt = &now
+		current.ManualRequestCompletedAt = nil
+		accepted = current
+		return nil
+	})
+	return accepted, err
 }
 
 func (p *AutoPublisher) dispatchAssetPublishedOutbox() {

@@ -157,10 +157,10 @@ describe('PublisherPage persisted delivery controls', () => {
     vi.spyOn(api, 'publisherPublications').mockResolvedValue({ items: [], limit: 100 });
     const publish = vi.spyOn(api, 'publishJob').mockResolvedValue({
       jobId: 1542,
-      status: 'published',
-      sourcePath: '/staging/episode.mkv',
-      publishedPath: '/library/episode.mkv',
-      message: 'Published',
+      requestId: 'manual-request-1542',
+      publicationId: 'publication-1542',
+      status: 'accepted',
+      message: 'Manual publication request was durably accepted; delivery has not completed.',
     });
     const user = userEvent.setup();
     renderPage();
@@ -168,17 +168,19 @@ describe('PublisherPage persisted delivery controls', () => {
     expect(await screen.findByText(/Eligibility: ALLOWED_BY_OVERRIDE/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Publish' }));
     expect(await screen.findByText(/Publisher-scoped Validation overrides/i)).toBeTruthy();
-    const confirm = screen.getByRole('button', { name: 'Confirm publish' });
+    const confirm = screen.getByRole('button', { name: 'Accept manual Publish' });
     expect(confirm).toHaveProperty('disabled', true);
     await user.type(screen.getByRole('textbox', { name: 'Operator reason' }), 'Reviewed the findings for this Result');
     await user.click(confirm);
 
-    await waitFor(() => expect(publish).toHaveBeenCalledWith({
+    await waitFor(() => expect(publish).toHaveBeenCalledWith(expect.objectContaining({
       jobId: 1542,
       reason: 'Reviewed the findings for this Result',
-    }, expect.anything()));
+      idempotencyKey: expect.any(String),
+    }), expect.anything()));
     await waitFor(() => expect(eligibility).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText('Job published.')).toBeTruthy();
+    expect(await screen.findByText(/Manual Publish accepted\. Delivery is still in progress/)).toBeTruthy();
+    expect(screen.queryByText('Job published.')).toBeNull();
   });
 
   it('shows backend blocking reasons and disables publication for blocked candidates', async () => {

@@ -35,7 +35,7 @@ import type {
   ProfileAssignment,
   ProfileAssignmentInput,
   PathBrowseResponse,
-  PublishResult,
+  ManualPublishRequestResult,
   PublisherPublicationSummary,
   PublisherEligibilityResponse,
   QueueJob,
@@ -714,10 +714,10 @@ export const api = {
   queueJobs: () => request<QueueJob[]>('/api/queue/jobs'),
   publisherPublications: () => request<{ items: PublisherPublicationSummary[]; limit: number }>('/api/publisher/publications'),
   publisherEligibility: (limit = 100) => request<PublisherEligibilityResponse>(`/api/publisher/eligibility?limit=${limit}`),
-  publisherAction: ({ publicationId, action, reason }: { publicationId: string; action: 'hold' | 'release' | 'retry'; reason: string }) =>
-    request<PublishResult | { publicationId: string; state: string }>(`/api/publisher/publications/${encodeURIComponent(publicationId)}/actions`, {
+  publisherAction: ({ publicationId, action, reason, idempotencyKey }: { publicationId: string; action: 'hold' | 'release' | 'retry'; reason: string; idempotencyKey?: string }) =>
+    request<ManualPublishRequestResult | { publicationId: string; state: string }>(`/api/publisher/publications/${encodeURIComponent(publicationId)}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action, reason }),
+      body: JSON.stringify({ action, reason, idempotencyKey }),
     }),
   createQueueJob: (job: QueueJobInput) =>
     request<QueueJob>('/api/queue/jobs', {
@@ -857,10 +857,10 @@ export const api = {
     request<ValidationStagingCleanupPreview>(`/api/validation/jobs/${jobId}/staging-cleanup/preview`, { method: 'POST', body: JSON.stringify({}) }),
   cleanupValidationStaging: ({ jobId, previewId }: { jobId: number; previewId: string }) =>
     request<ValidationStagingCleanupResult>(`/api/validation/jobs/${jobId}/staging-cleanup`, { method: 'POST', body: JSON.stringify({ previewId }) }),
-  publishJob: ({ jobId, reason }: { jobId: number; reason?: string }) =>
-    request<PublishResult>(`/api/publisher/jobs/${jobId}/publish`, {
+  publishJob: ({ jobId, reason, idempotencyKey }: { jobId: number; reason?: string; idempotencyKey: string }) =>
+    request<ManualPublishRequestResult>(`/api/publisher/jobs/${jobId}/publish`, {
       method: 'POST',
-      body: JSON.stringify({ reason }),
+      body: JSON.stringify({ reason, idempotencyKey }),
     }),
   discardPublisherJob: (jobId: number) =>
     request<{

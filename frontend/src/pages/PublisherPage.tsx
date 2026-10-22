@@ -26,7 +26,7 @@ import {
 } from '@mui/material';
 import PublishIcon from '@mui/icons-material/Publish';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { api } from '../api/client';
 import type { PublisherEligibilityCandidate, PublisherPublicationSummary } from '../api/types';
@@ -39,7 +39,17 @@ type ManualPublishTarget = {
   executionNumber?: number;
   destinationPath?: string;
   status?: PublisherEligibilityCandidate['status'];
+  idempotencyKey: string;
 };
+
+function createPublisherIdempotencyKey() {
+  if (typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 export function PublisherPage() {
   const queryClient = useQueryClient();
@@ -54,6 +64,7 @@ export function PublisherPage() {
   const [search, setSearch] = useState('');
   const [publishTarget, setPublishTarget] = useState<ManualPublishTarget | null>(null);
   const [discardTarget, setDiscardTarget] = useState<PublisherEligibilityCandidate['job'] | null>(null);
+  const retryIdempotencyKeys = useRef(new Map<string, string>());
   const publishJob = useMutation({
     mutationFn: api.publishJob,
     onSuccess: async () => {
@@ -65,7 +76,8 @@ export function PublisherPage() {
 
   const publisherAction = useMutation({
     mutationFn: api.publisherAction,
-    onSuccess: async () => {
+    onSuccess: async (_data, variables) => {
+      if (variables.action === 'retry') retryIdempotencyKeys.current.delete(variables.publicationId);
       await queryClient.invalidateQueries({ queryKey: ['publisherPublications'] });
       await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
       await queryClient.invalidateQueries({ queryKey: ['validationHistory'] });
@@ -88,6 +100,7 @@ export function PublisherPage() {
       executionNumber: candidate.job.executionNumber,
       destinationPath: candidate.job.destinationPath,
       status: candidate.status,
+      idempotencyKey: createPublisherIdempotencyKey(),
     });
   };
 
@@ -98,18 +111,25 @@ export function PublisherPage() {
       executionNumber: publication.executionNumber,
       destinationPath: publication.destinationPath,
       status: publication.validationOverrideEventIds?.length ? 'ALLOWED_BY_OVERRIDE' : undefined,
+      idempotencyKey: createPublisherIdempotencyKey(),
     });
   };
 
   const confirmPublish = async () => {
     if (!publishTarget || !actionReason.trim()) return;
     try {
-      await publishJob.mutateAsync({ jobId: publishTarget.jobId, reason: actionReason.trim() });
+      await publishJob.mutateAsync({ jobId: publishTarget.jobId, reason: actionReason.trim(), idempotencyKey: publishTarget.idempotencyKey });
       setPublishTarget(null);
       setActionReason('');
     } catch {
       // Error state is already handled by the mutation alert.
     }
+  };
+
+  const requestManualRetry = (publicationId: string) => {
+    const idempotencyKey = retryIdempotencyKeys.current.get(publicationId) ?? createPublisherIdempotencyKey();
+    retryIdempotencyKeys.current.set(publicationId, idempotencyKey);
+    publisherAction.mutate({ publicationId, action: 'retry', reason: actionReason, idempotencyKey });
   };
 
   const closePublishDialog = () => {
@@ -155,11 +175,20 @@ export function PublisherPage() {
     !publicationsByExecution.has(`${candidate.job.id}:${candidate.job.executionNumber}`),
   );
   const searchMatches = (value: string) => value.toLowerCase().includes(search.trim().toLowerCase());
+  const publisherDisplayState = (publication: PublisherPublicationSummary['publication']) => {
+    if (publication.state === 'PUBLISHED') return 'Published';
+    if (publication.state === 'HELD') return 'Held';
+    if (publication.state === 'PUBLISHING') return 'Publishing';
+    if (publication.manualRequestStatus === 'processing') return 'In progress';
+    if (publication.manualRequestStatus === 'accepted') return 'Accepted';
+    if (publication.state === 'FAILED' || publication.state === 'BLOCKED') return 'Failed/Blocked';
+    return 'Ready';
+  };
   const publisherStatePriority = (state: string) => {
-    if (state === 'READY' || state === 'ALLOWED' || state === 'ALLOWED_BY_OVERRIDE') return 0;
-    if (state === 'PUBLISHING') return 1;
-    if (state === 'FAILED' || state === 'BLOCKED') return 2;
-    if (state === 'HELD') return 3;
+    if (state === 'Accepted' || state === 'READY' || state === 'ALLOWED' || state === 'ALLOWED_BY_OVERRIDE') return 0;
+    if (state === 'In progress' || state === 'Publishing' || state === 'PUBLISHING') return 1;
+    if (state === 'Failed/Blocked' || state === 'FAILED' || state === 'BLOCKED') return 2;
+    if (state === 'Held' || state === 'HELD') return 3;
     return 4;
   };
   const visibleCandidates = candidateRows.filter((candidate) => {
@@ -169,8 +198,8 @@ export function PublisherPage() {
   });
   const visiblePublications = [...(publications.data?.items ?? [])].filter(({ publication }) => {
     const matches = searchMatches(`${publication.queueJobId} ${publication.executionNumber} ${publication.destinationPath} ${publication.publicationId}`);
-    const state = publication.state === 'PUBLISHED' ? 'Published' : publication.state === 'PUBLISHING' ? 'Publishing' : publication.state === 'HELD' ? 'Held' : publication.state === 'FAILED' || publication.state === 'BLOCKED' ? 'Failed/Blocked' : 'Ready';
-    return matches && (stateFilter === 'All active' ? publication.state !== 'PUBLISHED' : stateFilter === state || (stateFilter === 'Failed/Blocked' && state === 'Failed/Blocked'));
+    const state = publisherDisplayState(publication);
+    return matches && (stateFilter === 'All active' ? state !== 'Published' : stateFilter === state);
   });
   const visibleRows = [
     ...visibleCandidates.map((candidate) => ({
@@ -181,14 +210,13 @@ export function PublisherPage() {
     ...visiblePublications.map((summary) => ({
       kind: 'publication' as const,
       summary,
-      priority: publisherStatePriority(summary.publication.state),
+      priority: publisherStatePriority(publisherDisplayState(summary.publication)),
     })),
   ].sort((left, right) => left.priority - right.priority);
   const countFor = (state: string) => candidateRows.filter((item) =>
     state === 'Failed/Blocked' ? item.status === 'BLOCKED' : state === 'Ready' && item.status !== 'BLOCKED',
   ).length + (publications.data?.items ?? []).filter((item) => {
-    const value = item.publication.state;
-    return state === 'Failed/Blocked' ? value === 'FAILED' || value === 'BLOCKED' : value === state.toUpperCase();
+    return publisherDisplayState(item.publication) === state;
   }).length;
 
   return (
@@ -200,9 +228,11 @@ export function PublisherPage() {
       </PageHeader>
       <Box sx={{ px: { xs: 2, md: 4 }, pb: 4 }}>
         {eligibility.isError || publications.isError ? <Alert severity="warning">Unable to load Publisher eligibility or persisted publication summaries.</Alert> : null}
-        {publishJob.isError ? <Alert severity="warning" sx={{ mb: 2 }}>Publish failed. The file may already exist or be missing.</Alert> : null}
-        {publishJob.isSuccess ? <Alert severity="success" sx={{ mb: 2 }}>Job published.</Alert> : null}
+        {publishJob.isError ? <Alert severity="warning" sx={{ mb: 2 }}>{publishJob.error instanceof Error ? publishJob.error.message : 'Manual Publish was not accepted.'}</Alert> : null}
+        {publishJob.isSuccess && publishJob.data?.status === 'already_published' ? <Alert severity="success" sx={{ mb: 2 }}>This publication was already committed.</Alert> : null}
+        {publishJob.isSuccess && (publishJob.data?.status === 'accepted' || publishJob.data?.status === 'processing') ? <Alert severity="info" sx={{ mb: 2 }}>Manual Publish accepted. Delivery is still in progress; this request is not marked Published until Publisher commits the result.</Alert> : null}
         {publisherAction.isError ? <Alert severity="error" sx={{ mb: 2 }}>{publisherAction.error instanceof Error ? publisherAction.error.message : 'Publisher action failed.'}</Alert> : null}
+        {publisherAction.isSuccess && 'status' in publisherAction.data && (publisherAction.data.status === 'accepted' || publisherAction.data.status === 'processing') ? <Alert severity="info" sx={{ mb: 2 }}>Publisher request accepted. Check the persisted publication status for progress and completion.</Alert> : null}
         {discardJob.isError ? (
           <Alert severity="error" sx={{ mb: 2 }}>
             {discardJob.error instanceof Error
@@ -228,14 +258,14 @@ export function PublisherPage() {
         />
 
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} sx={{ mb: 2 }} alignItems={{ md: 'center' }}>
-          {['Ready', 'Publishing', 'Failed/Blocked', 'Held', 'Published'].map((state) => (
+          {['Accepted', 'In progress', 'Ready', 'Publishing', 'Failed/Blocked', 'Held', 'Published'].map((state) => (
             <Chip key={state} label={`${state}: ${countFor(state)}`} size="small" />
           ))}
           <TextField label="Search filename, job, or destination" value={search} onChange={(event) => setSearch(event.target.value)} size="small" />
           <FormControl size="small" sx={{ minWidth: 160 }}>
             <InputLabel id="publisher-state-filter-label">State</InputLabel>
             <Select labelId="publisher-state-filter-label" label="State" value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
-              {['All active', 'Ready', 'Publishing', 'Failed/Blocked', 'Held', 'Published'].map((state) => <MenuItem key={state} value={state}>{state}</MenuItem>)}
+              {['All active', 'Accepted', 'In progress', 'Ready', 'Publishing', 'Failed/Blocked', 'Held', 'Published'].map((state) => <MenuItem key={state} value={state}>{state}</MenuItem>)}
             </Select>
           </FormControl>
           <Link component={RouterLink} to="/history">Full History</Link>
@@ -259,10 +289,31 @@ export function PublisherPage() {
                   <TableRow key={row.summary.publication.publicationId} hover>
                     <TableCell><Typography fontWeight={700}>{fileNameFromPath(row.summary.publication.destinationPath)}</Typography><Typography variant="caption">Job #{row.summary.publication.queueJobId} · Run {row.summary.publication.executionNumber}</Typography><Typography variant="caption" display="block">Publication {row.summary.publication.publicationId}</Typography></TableCell>
                     <TableCell sx={{ wordBreak: 'break-all' }}>{row.summary.publication.destinationPath}</TableCell>
-                    <TableCell><Stack spacing={0.5}><Chip label={row.summary.publication.state} size="small" color={row.summary.publication.state === 'PUBLISHED' ? 'success' : row.summary.publication.state === 'BLOCKED' || row.summary.publication.state === 'FAILED' ? 'error' : row.summary.publication.state === 'HELD' ? 'warning' : 'default'} />{row.summary.publication.validationOverrideEventIds?.length ? <Chip label="ALLOWED_BY_OVERRIDE" color="warning" size="small" /> : null}<Typography variant="caption">Validation {row.summary.publication.validationRunId}</Typography><Typography variant="caption">{row.summary.publication.failureSummary || row.summary.publication.holdReason || row.summary.publication.state}</Typography></Stack></TableCell>
+                    <TableCell><Stack spacing={0.5}><Chip label={publisherDisplayState(row.summary.publication)} size="small" color={row.summary.publication.state === 'PUBLISHED' ? 'success' : row.summary.publication.state === 'BLOCKED' || row.summary.publication.state === 'FAILED' ? 'error' : row.summary.publication.state === 'HELD' ? 'warning' : row.summary.publication.manualRequestStatus === 'accepted' || row.summary.publication.manualRequestStatus === 'processing' ? 'info' : 'default'} />{row.summary.publication.validationOverrideEventIds?.length ? <Chip label="ALLOWED_BY_OVERRIDE" color="warning" size="small" /> : null}<Typography variant="caption">Validation {row.summary.publication.validationRunId}</Typography><Typography variant="caption">{row.summary.publication.failureSummary || row.summary.publication.holdReason || (row.summary.publication.manualRequestStatus === 'accepted' ? 'Manual request accepted; waiting for Publisher.' : row.summary.publication.manualRequestStatus === 'processing' ? 'Manual request is in progress.' : row.summary.publication.state)}</Typography></Stack></TableCell>
                     <TableCell><details><summary>Evidence · {row.summary.publication.attemptCount} attempts</summary><Typography variant="caption" display="block">Archive: {row.summary.publication.originalArchiveStatus}{row.summary.publication.originalArchivedPath ? ` · ${row.summary.publication.originalArchivedPath}` : ''}</Typography>{row.summary.evidence.map((entry) => <Typography key={`${entry.attemptId}-${entry.phase}`} variant="caption" display="block">{entry.createdAt} · {entry.phase}: {entry.summary || entry.outcome}</Typography>)}{row.summary.audit.map((entry) => <Typography key={`${entry.version}-${entry.action}`} variant="caption" display="block">{entry.createdAt} · {entry.action} · {entry.actorId}{entry.reason ? ` · ${entry.reason}` : ''}</Typography>)}</details></TableCell>
                     <TableCell align="right">
-                      {row.summary.publication.state === 'READY' ? <Stack direction="row" justifyContent="flex-end" spacing={1}><Button size="small" variant="contained" startIcon={<PublishIcon />} onClick={() => openExistingPublicationDialog(row.summary.publication)} disabled={publishJob.isPending}>Publish</Button><Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'hold', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Hold</Button></Stack> : row.summary.publication.state === 'HELD' ? <Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'release', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Release</Button> : row.summary.publication.state === 'FAILED' || row.summary.publication.state === 'BLOCKED' ? <Stack direction="row" justifyContent="flex-end" spacing={1}><Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'retry', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Retry</Button><Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'hold', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Hold</Button></Stack> : null}
+                      {row.summary.publication.manualRequestStatus === 'accepted' || row.summary.publication.manualRequestStatus === 'processing' ? (
+                        <Stack direction="row" justifyContent="flex-end" spacing={1}>
+                          <Button size="small" disabled>{row.summary.publication.manualRequestStatus === 'accepted' ? 'Accepted' : 'In progress'}</Button>
+                          {row.summary.publication.state === 'HELD' ? (
+                            <Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'release', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Release</Button>
+                          ) : row.summary.publication.state === 'READY' || row.summary.publication.state === 'FAILED' || row.summary.publication.state === 'BLOCKED' ? (
+                            <Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'hold', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Hold</Button>
+                          ) : null}
+                        </Stack>
+                      ) : row.summary.publication.state === 'READY' ? (
+                        <Stack direction="row" justifyContent="flex-end" spacing={1}>
+                          <Button size="small" variant="contained" startIcon={<PublishIcon />} onClick={() => openExistingPublicationDialog(row.summary.publication)} disabled={publishJob.isPending}>Publish</Button>
+                          <Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'hold', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Hold</Button>
+                        </Stack>
+                      ) : row.summary.publication.state === 'HELD' ? (
+                        <Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'release', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Release</Button>
+                      ) : row.summary.publication.state === 'FAILED' || row.summary.publication.state === 'BLOCKED' ? (
+                        <Stack direction="row" justifyContent="flex-end" spacing={1}>
+                          <Button size="small" onClick={() => requestManualRetry(row.summary.publication.publicationId)} disabled={!actionReason.trim() || publisherAction.isPending}>Retry</Button>
+                          <Button size="small" onClick={() => publisherAction.mutate({ publicationId: row.summary.publication.publicationId, action: 'hold', reason: actionReason })} disabled={!actionReason.trim() || publisherAction.isPending}>Hold</Button>
+                        </Stack>
+                      ) : null}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -308,7 +359,7 @@ export function PublisherPage() {
             onClick={confirmPublish}
             disabled={publishJob.isPending || !actionReason.trim()}
           >
-            {publishJob.isPending ? 'Publishing…' : 'Confirm publish'}
+            {publishJob.isPending ? 'Submitting…' : 'Accept manual Publish'}
           </Button>
         </DialogActions>
       </Dialog>

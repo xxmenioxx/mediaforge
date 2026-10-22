@@ -38,7 +38,8 @@ type PublisherHandler struct {
 }
 
 type PublishJobInput struct {
-	Reason string `json:"reason"`
+	Reason         string `json:"reason"`
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 }
 
 type PublishResult struct {
@@ -46,6 +47,14 @@ type PublishResult struct {
 	Status        string `json:"status"`
 	SourcePath    string `json:"sourcePath"`
 	PublishedPath string `json:"publishedPath"`
+	Message       string `json:"message"`
+}
+
+type ManualPublishRequestResult struct {
+	JobID         uint   `json:"jobId"`
+	RequestID     string `json:"requestId,omitempty"`
+	PublicationID string `json:"publicationId,omitempty"`
+	Status        string `json:"status"`
 	Message       string `json:"message"`
 }
 
@@ -87,7 +96,7 @@ func (h PublisherHandler) PublishJob(c *gin.Context) {
 		return
 	}
 
-	result, err := h.handoffAndPublishWithReason(job, false, input.Reason)
+	result, err := h.acceptManualPublication(job, input.Reason, input.IdempotencyKey, false)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if publishErr, ok := err.(publishError); ok && publishErr.Status > 0 {
@@ -97,7 +106,11 @@ func (h PublisherHandler) PublishJob(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, result)
+	if result.Status == "already_published" {
+		c.JSON(http.StatusOK, result)
+		return
+	}
+	c.JSON(http.StatusAccepted, result)
 }
 func (h PublisherHandler) failPublishingBeforeArchive(
 	job *models.QueueJob,
