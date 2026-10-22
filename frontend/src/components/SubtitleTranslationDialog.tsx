@@ -91,6 +91,16 @@ function TranslationOperationStatus({
       void qualityReview.refetch();
     },
   });
+  const editableCueRequest = useMutation({
+    mutationFn: (input: { cueId: string; suggestion?: string }) =>
+      api.getSubtitleTranslationQualityEditableCue(operation.id, input.cueId),
+    onSuccess: (cue, input) => {
+      setEditingCueID(cue.cueId);
+      setEditedText(input.suggestion ?? cue.text);
+    },
+  });
+  const qualityReviewRecoveryRequired = qualityReview.data?.status === 'recovery_required';
+  const qualityReviewCanDecide = qualityReview.data?.status === 'open' && !qualityReview.isError;
   const running = operation.status === 'running';
   const cancelled = operation.status === 'cancelled';
   const completed = operation.status === 'completed';
@@ -139,6 +149,9 @@ function TranslationOperationStatus({
               {operation.translation.quality.reviewer.model ? ` · ${operation.translation.quality.reviewer.model}` : ''}
             </Alert>
           ) : null}
+          {qualityReviewRecoveryRequired ? (
+            <Alert severity="warning">Publisher could not confirm rollback of a reviewed edit. Further decisions are locked pending recovery.</Alert>
+          ) : null}
           {(operation.translation.quality.findings ?? []).map((finding) => (
             <Alert key={finding.cueId} severity="info">
               <AlertTitle>Cue {finding.cueId} · {finding.reasons.join(', ')}</AlertTitle>
@@ -146,29 +159,31 @@ function TranslationOperationStatus({
               {operation.translation?.quality?.reviewer?.findings?.find((item) => item.cueId === finding.cueId)?.suggestedText ? (
                 <>
                   <Typography variant="caption" component="div">Reviewer suggestion (advisory): {operation.translation.quality.reviewer.findings.find((item) => item.cueId === finding.cueId)?.suggestedText}</Typography>
-                  <Button size="small" onClick={() => { const suggestion = operation.translation?.quality?.reviewer?.findings?.find((item) => item.cueId === finding.cueId)?.suggestedText; if (suggestion) { setEditingCueID(finding.cueId); setEditedText(suggestion); } }}>Review suggestion</Button>
+                  <Button size="small" disabled={!qualityReviewCanDecide || editableCueRequest.isPending} onClick={() => { const suggestion = operation.translation?.quality?.reviewer?.findings?.find((item) => item.cueId === finding.cueId)?.suggestedText; if (suggestion) { editableCueRequest.mutate({ cueId: finding.cueId, suggestion }); } }}>Review suggestion</Button>
                 </>
               ) : null}
               {editingCueID === finding.cueId ? (
-                <TextField fullWidth size="small" label="Edit translation" value={editedText} onChange={(event) => setEditedText(event.target.value)} sx={{ mt: 1 }} />
-              ) : <Typography variant="caption" component="div">Translation: {finding.translatedText}</Typography>}
+                <TextField fullWidth size="small" label="Edit translation" value={editedText} onChange={(event) => setEditedText(event.target.value)} helperText={editedText.length > 4000 ? 'Reduce this cue to 4,000 characters or fewer before saving.' : undefined} sx={{ mt: 1 }} />
+              ) : <Typography variant="caption" component="div">Translation preview: {finding.translatedText}</Typography>}
               {reviewedCueIDs.has(finding.cueId) || qualityReview.data?.decisions.some((decision) => decision.cueId === finding.cueId) ? (
                 <Chip size="small" label="Reviewed" sx={{ mt: 1 }} />
               ) : editingCueID === finding.cueId ? (
                 <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                  <Button size="small" variant="contained" disabled={qualityDecision.isPending || !editedText.trim()} onClick={() => qualityDecision.mutate({ cueId: finding.cueId, action: 'edit', text: editedText })}>Save edit</Button>
+                  <Button size="small" variant="contained" disabled={qualityDecision.isPending || !editedText.trim() || [...editedText].length > 4000 || !qualityReviewCanDecide} onClick={() => qualityDecision.mutate({ cueId: finding.cueId, action: 'edit', text: editedText })}>Save edit</Button>
                   <Button size="small" onClick={() => setEditingCueID(null)}>Cancel</Button>
                 </Stack>
               ) : (
                 <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                  <Button size="small" disabled={qualityDecision.isPending} onClick={() => qualityDecision.mutate({ cueId: finding.cueId, action: 'keep' })}>Keep translation</Button>
-                  <Button size="small" disabled={qualityDecision.isPending} onClick={() => { setEditingCueID(finding.cueId); setEditedText(finding.translatedText); }}>Edit</Button>
+                  <Button size="small" disabled={qualityDecision.isPending || !qualityReviewCanDecide} onClick={() => qualityDecision.mutate({ cueId: finding.cueId, action: 'keep' })}>Keep translation</Button>
+                  <Button size="small" disabled={!qualityReviewCanDecide || qualityDecision.isPending || editableCueRequest.isPending} onClick={() => editableCueRequest.mutate({ cueId: finding.cueId })}>Edit</Button>
                 </Stack>
               )}
             </Alert>
           ))}
           {operation.translation.quality.truncated ? <Typography variant="caption" color="text.secondary">Additional flagged cues were omitted from this bounded review summary.</Typography> : null}
           {operation.translation.quality.persistenceWarning ? <Alert severity="warning">{operation.translation.quality.persistenceWarning}</Alert> : null}
+          {editableCueRequest.isError ? <Alert severity="warning">{apiErrorMessage(editableCueRequest.error, 'Could not load the complete translation cue from its verified revision.')}</Alert> : null}
+          {qualityReview.isError ? <Alert severity="warning">{apiErrorMessage(qualityReview.error, 'Could not verify the saved translation review.')}</Alert> : null}
           {qualityDecision.isError ? <Alert severity="warning">{apiErrorMessage(qualityDecision.error, 'Could not save the translation review decision.')}</Alert> : null}
         </Stack>
       ) : null}

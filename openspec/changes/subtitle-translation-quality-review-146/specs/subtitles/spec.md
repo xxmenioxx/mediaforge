@@ -52,6 +52,21 @@ The system SHALL persist bounded quality findings, source and output revision id
 - **WHEN** the source or translated target revision differs from the identity captured in the review record
 - **THEN** Keep/Edit is rejected and no reviewed edit is published
 
+#### Scenario: SRT manual edit preserves every cue boundary
+
+- **WHEN** an operator edits one SRT cue, including text with line breaks
+- **THEN** the canonical edit SHALL preserve cue count, cue order, every timestamp, and all unrelated cue text; input containing an SRT timing delimiter SHALL be rejected
+
+#### Scenario: Publisher metadata persistence fails after file promotion
+
+- **WHEN** a reviewed edit is promoted but its SQLite revision or decision commit fails
+- **THEN** the canonical Publisher SHALL compensate the file and metadata together, preserve the prior published revision, and permit a safe retry; if compensation cannot be confirmed, the review SHALL be marked recovery-required and further decisions SHALL fail closed
+
+#### Scenario: Editable cue text is loaded from verified output
+
+- **WHEN** an operator starts editing a flagged cue
+- **THEN** Asset Info SHALL request the complete cue text by review and cue identity, and the backend SHALL return it only after revalidating the source identity and published target revision; the truncated finding preview SHALL never seed the editor
+
 ### Requirement: Optional independent second opinion is bounded and human-only
 
 The system SHALL use a separately configured reviewer model when enabled, SHALL reject using the translator model as reviewer, and SHALL validate reviewer cue identities and response bounds. Reviewer suggestions SHALL never be applied automatically. The request SHALL contain only the deterministic flagged cue pairs needed for review.

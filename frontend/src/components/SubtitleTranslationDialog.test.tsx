@@ -17,6 +17,7 @@ vi.mock('../api/client', () => ({
     retrySubtitleTranslation: vi.fn(),
     decideSubtitleTranslationQuality: vi.fn(),
     getSubtitleTranslationQualityReview: vi.fn(),
+    getSubtitleTranslationQualityEditableCue: vi.fn(),
     listSubtitleTranslationQualityReviews: vi.fn(),
   },
 }));
@@ -105,6 +106,11 @@ describe('SubtitleTranslationDialog', () => {
     vi.mocked(api.subtitleOperation).mockResolvedValue(operation());
     vi.mocked(api.cancelSubtitleOperation).mockResolvedValue(operation({ status: 'cancelled', phase: 'cancelled', translation: { targetLocale: 'es-419', outputRepresentation: 'srt', retryable: true, cancellable: false } }));
     vi.mocked(api.retrySubtitleTranslation).mockResolvedValue({ operation: operation({ id: 'translation-2' }) });
+    vi.mocked(api.getSubtitleTranslationQualityEditableCue).mockResolvedValue({
+      operationId: 'translation-1', cueId: 'cue-15', sourceIdentity: 'external:test',
+      sourceRevision: 'source-revision-1', targetRevisions: ['target-revision-1'],
+      text: 'La traducción completa que excede ampliamente el resumen visible. '.repeat(8),
+    });
     vi.mocked(api.listSubtitleTranslationQualityReviews).mockResolvedValue({ reviews: [] });
   });
 
@@ -616,29 +622,35 @@ describe('SubtitleTranslationDialog', () => {
 
   it('shows bounded advisory translation-quality findings separately from OCR uncertainty', async () => {
     const user = userEvent.setup();
+    const quality = {
+      policyVersion: 'translation-quality-v1', state: 'review_required', cueCount: 2,
+      cleanCount: 1, warningCount: 1, reviewCount: 1, persisted: true,
+      findings: [{ cueId: 'cue-15', sourceOrdinal: 0, sourceText: '会うまでは', translatedText: 'hasta que vuelva a ver...', reasons: ['unusually_short_translation'] }],
+    };
     const completed = operation({
       status: 'completed', phase: 'completed', progress: 100,
       translation: {
         targetLocale: 'es-419', outputRepresentation: 'srt', retryable: false, cancellable: false,
-        quality: {
-          policyVersion: 'translation-quality-v1', state: 'review_required', cueCount: 2,
-          cleanCount: 1, warningCount: 1, reviewCount: 1,
-          findings: [{ cueId: 'cue-15', sourceOrdinal: 0, sourceText: '会うまでは', translatedText: 'hasta que vuelva a ver...', reasons: ['unusually_short_translation'] }],
-        },
+        quality,
       },
     });
     vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: completed });
     vi.mocked(api.subtitleOperation).mockResolvedValue(completed);
+    vi.mocked(api.getSubtitleTranslationQualityReview).mockResolvedValue({
+      operationId: completed.id, status: 'open', quality, decisions: [],
+    });
     vi.mocked(api.decideSubtitleTranslationQuality).mockResolvedValue({ operationId: completed.id, cueId: 'cue-15', status: 'reviewed' });
     renderDialog();
 
     await user.click(await screen.findByRole('button', { name: 'Start translation' }));
     expect(await screen.findByText(/2 cues · 1 clean · 1 warnings · 1 for review/)).toBeTruthy();
     expect(screen.getByText('Source: 会うまでは')).toBeTruthy();
-    expect(screen.getByText('Translation: hasta que vuelva a ver...')).toBeTruthy();
+    expect(screen.getByText('Translation preview: hasta que vuelva a ver...')).toBeTruthy();
     expect(screen.getByText(/do not assess OCR source accuracy/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Edit' }));
-    const edit = screen.getByRole('textbox', { name: 'Edit translation' });
+    const edit = await screen.findByRole('textbox', { name: 'Edit translation' });
+    expect((edit as HTMLInputElement).value).toBe('La traducción completa que excede ampliamente el resumen visible. '.repeat(8));
+    expect(api.getSubtitleTranslationQualityEditableCue).toHaveBeenCalledWith(completed.id, 'cue-15');
     await user.clear(edit);
     await user.type(edit, 'Hasta que conocí a esa persona...');
     await user.click(screen.getByRole('button', { name: 'Save edit' }));
@@ -668,6 +680,31 @@ describe('SubtitleTranslationDialog', () => {
     expect(api.subtitleOperation).not.toHaveBeenCalledWith('old-translation');
     await user.click(screen.getByRole('button', { name: 'Keep translation' }));
     await waitFor(() => expect(api.decideSubtitleTranslationQuality).toHaveBeenCalledWith('old-translation', { cueId: 'cue-1', action: 'keep' }));
+  });
+
+  it('locks translation review decisions when Publisher compensation requires recovery', async () => {
+    const user = userEvent.setup();
+    const quality = {
+      policyVersion: 'translation-quality-v1', state: 'review_required', cueCount: 1,
+      cleanCount: 0, warningCount: 1, reviewCount: 1, persisted: true,
+      findings: [{ cueId: 'cue-recovery', sourceOrdinal: 0, sourceText: 'Hello', translatedText: 'Hola', reasons: ['meaning_drift'] }],
+    };
+    const completed = operation({
+      status: 'completed', phase: 'completed', progress: 100,
+      translation: { targetLocale: 'es-419', outputRepresentation: 'srt', retryable: false, cancellable: false, quality },
+    });
+    vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: completed });
+    vi.mocked(api.subtitleOperation).mockResolvedValue(completed);
+    vi.mocked(api.getSubtitleTranslationQualityReview).mockResolvedValue({
+      operationId: completed.id, status: 'recovery_required', quality, decisions: [],
+    });
+    renderDialog();
+
+    await user.click(await screen.findByRole('button', { name: 'Start translation' }));
+    expect(await screen.findByText(/Publisher could not confirm rollback/)).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Keep translation' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.decideSubtitleTranslationQuality).not.toHaveBeenCalled();
   });
 
   it.each([

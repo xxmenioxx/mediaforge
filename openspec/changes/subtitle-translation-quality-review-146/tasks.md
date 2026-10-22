@@ -15,3 +15,6 @@
 
 - [x] 3.1 Run focused translation backend and Asset Info tests with fixtures/mocks only; verify no real provider, media, production SQLite, or NAS access.
 - [x] 3.2 Run `openspec validate subtitle-translation-quality-review-146 --strict` and `./scripts/verify.sh --auto` through the shared validation lock; verify canonical result reports `ALL CHECKS PASSED`.
+- [x] 3.3 Prove manual SRT edits preserve cue count, timestamps, order, and unrelated text while allowing safe multiline cue text and rejecting injected timing delimiters.
+- [x] 3.4 Prove Publisher compensation keeps files and review revisions coherent on SQLite failure and that a retry can complete the same explicit edit.
+- [x] 3.5 Prove the editor loads complete cue text only through a source/target revision-verified request and never seeds edits from truncated findings.

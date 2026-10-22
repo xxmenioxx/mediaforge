@@ -103,6 +103,7 @@ import type {
   SubtitleTranslationQualityDecisionResponse,
   SubtitleTranslationQualityReviewResponse,
   SubtitleTranslationQualityReviewListItem,
+  SubtitleTranslationQualityEditableCueResponse,
   RemoteExecutorConfig,
   RemoteExecutorProbe,
   TrackProfileResolutionPreview,
@@ -428,6 +429,8 @@ export const api = {
     }),
   getSubtitleTranslationQualityReview: (operationId: string) =>
     request<SubtitleTranslationQualityReviewResponse>(`/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/translation-quality-review`),
+  getSubtitleTranslationQualityEditableCue: (operationId: string, cueId: string) =>
+    request<SubtitleTranslationQualityEditableCueResponse>(`/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/translation-quality-review?cueId=${encodeURIComponent(cueId)}`),
   listSubtitleTranslationQualityReviews: (assetPath: string, sourceIdentity: string) =>
     request<{ reviews: SubtitleTranslationQualityReviewListItem[] }>(`/api/assets/subtitle-translation/quality-reviews?assetPath=${encodeURIComponent(assetPath)}&sourceIdentity=${encodeURIComponent(sourceIdentity)}`),
 

@@ -89,6 +89,26 @@ func TestApplySubtitleTranslationQualityTextPreservesSRTCueStructure(t *testing.
 	}
 }
 
+func TestApplySubtitleTranslationQualityTextPreservesMultilineSRTAndRejectsInjectedTiming(t *testing.T) {
+	content := []byte("1\n00:00:01,000 --> 00:00:02,000\nHola\n\n2\n00:00:03,000 --> 00:00:04,000\nAdios\n")
+	finding := subtitleTranslationQualityFinding{CueID: "cue-1", SourceOrdinal: 0}
+
+	updated, err := applySubtitleTranslationQualityText(translationRepresentationSRT, subtitleTranslationSourceResponse{}, content, finding, "Hasta luego\nllega mañana")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cues := parseSRTBitmapSubtitleCues(string(updated))
+	if len(cues) != 2 || cues[0].Start != 1 || cues[0].End != 2 || cues[0].Text != "Hasta luego\nllega mañana" ||
+		cues[1].Start != 3 || cues[1].End != 4 || cues[1].Text != "Adios" {
+		t.Fatalf("multiline edit changed SRT structure or unrelated text: %#v", cues)
+	}
+
+	injected := "Hasta luego\n\n3\n00:00:05,000 --> 00:00:06,000\nInjected cue"
+	if output, err := applySubtitleTranslationQualityText(translationRepresentationSRT, subtitleTranslationSourceResponse{}, content, finding, injected); err == nil {
+		t.Fatalf("timestamp injection was accepted: %q", output)
+	}
+}
+
 func TestApplySubtitleTranslationQualityTextPreservesASSCueStructure(t *testing.T) {
 	content := []byte("[Script Info]\nTitle: Quality edit fixture\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Custom,Arial,42,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,1,1,2,0,8,20,30,40,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 2,0:00:01.25,0:00:03.50,Custom,Speaker,11,12,13,Effect,{\\an8}Hola\\Nsegunda línea{\\pos(100,200)}\nDialogue: 0,0:00:04.00,0:00:05.00,Default,,0,0,0,,Otro\n")
 	sourceIdentity := "external:/media/movie.ass"

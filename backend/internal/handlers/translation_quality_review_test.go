@@ -65,7 +65,8 @@ func TestSubtitleTranslationQualityEditPublishesThroughCanonicalPipeline(t *test
 	mediaPath := filepath.Join(root, "episode.mkv")
 	sourcePath := filepath.Join(root, "episode.en.srt")
 	sourceContent := []byte("1\n00:00:01,000 --> 00:00:02,000\nWe waited until the train arrived.\n\n")
-	translatedContent := []byte("1\n00:00:01,000 --> 00:00:02,000\nEl tren llegó tarde.\n\n")
+	fullTranslatedText := strings.TrimSpace(strings.Repeat("El tren llegó tarde. ", 24))
+	translatedContent := []byte("1\n00:00:01,000 --> 00:00:02,000\n" + fullTranslatedText + "\n\n")
 	if err := os.WriteFile(mediaPath, []byte("synthetic media identity"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -113,18 +114,81 @@ func TestSubtitleTranslationQualityEditPublishesThroughCanonicalPipeline(t *test
 		ReviewCount:   1,
 		Findings: []subtitleTranslationQualityFinding{{
 			CueID: "cue-1", SourceOrdinal: 0, SourceText: "We waited until the train arrived.",
-			TranslatedText: "El tren llegó tarde.", Reasons: []string{"meaning_drift"},
+			TranslatedText: truncateSubtitleTranslationQualityText(fullTranslatedText), Reasons: []string{"meaning_drift"},
 		}},
 	}
 	if err := persistSubtitleTranslationQualityReview(db, operationID, request, report, []SubtitleArtifact{artifact}); err != nil {
 		t.Fatal(err)
 	}
+	var originalReview models.SubtitleTranslationQualityReview
+	if err := db.First(&originalReview, "operation_id = ?", operationID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var originalTargets []subtitleTranslationQualityTarget
+	if err := json.Unmarshal([]byte(originalReview.TargetsMetadata), &originalTargets); err != nil || len(originalTargets) != 1 {
+		t.Fatalf("original target revision is unavailable: %#v err=%v", originalTargets, err)
+	}
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.POST("/reviews/:id/decision", handler.DecideSubtitleTranslationQuality)
+	router.GET("/reviews/:id", handler.GetSubtitleTranslationQualityReview)
+	editableCueResponse := httptest.NewRecorder()
+	router.ServeHTTP(editableCueResponse, httptest.NewRequest(http.MethodGet, "/reviews/"+operationID+"?cueId=cue-1", nil))
+	if editableCueResponse.Code != http.StatusOK {
+		t.Fatalf("editable cue response status=%d body=%s", editableCueResponse.Code, editableCueResponse.Body.String())
+	}
+	var editableCue subtitleTranslationQualityEditableCueResponse
+	if err := json.Unmarshal(editableCueResponse.Body.Bytes(), &editableCue); err != nil ||
+		editableCue.Text != fullTranslatedText || editableCue.SourceIdentity != request.SourceIdentity ||
+		editableCue.SourceRevision != request.SourceRevision || len(editableCue.TargetRevisions) != 1 {
+		t.Fatalf("editable cue was not returned in full with its verified identity: cue=%#v err=%v", editableCue, err)
+	}
+	originalInfo, err := os.Stat(target.FinalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target.FinalPath, []byte("stale sidecar revision"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staleCueResponse := httptest.NewRecorder()
+	router.ServeHTTP(staleCueResponse, httptest.NewRequest(http.MethodGet, "/reviews/"+operationID+"?cueId=cue-1", nil))
+	if staleCueResponse.Code != http.StatusConflict {
+		t.Fatalf("stale editable cue status=%d body=%s, want conflict", staleCueResponse.Code, staleCueResponse.Body.String())
+	}
+	if err := os.WriteFile(target.FinalPath, translatedContent, originalInfo.Mode().Perm()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(target.FinalPath, originalInfo.ModTime(), originalInfo.ModTime()); err != nil {
+		t.Fatal(err)
+	}
 	decision := `{"cueId":"cue-1","action":"edit","text":"Esperamos hasta que llegó el tren."}`
 	response := httptest.NewRecorder()
+	if err := db.Exec("CREATE TRIGGER fail_quality_review_decision BEFORE UPDATE ON subtitle_translation_quality_reviews WHEN NEW.decisions <> OLD.decisions BEGIN SELECT RAISE(ABORT, 'injected review decision failure'); END").Error; err != nil {
+		t.Fatal(err)
+	}
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/reviews/"+operationID+"/decision", strings.NewReader(decision)))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("database failure status=%d body=%s, want conflict", response.Code, response.Body.String())
+	}
+	rolledBack, err := os.ReadFile(target.FinalPath)
+	if err != nil || string(rolledBack) != string(translatedContent) {
+		t.Fatalf("database failure did not compensate the published file: %q (%v)", rolledBack, err)
+	}
+	var afterFailure models.SubtitleTranslationQualityReview
+	if err := db.First(&afterFailure, "operation_id = ?", operationID).Error; err != nil {
+		t.Fatal(err)
+	}
+	restoredRevision, revisionErr := captureTranslationExternalSourceRevision(target.FinalPath, "")
+	if afterFailure.Status != "open" || afterFailure.Decisions != "[]" ||
+		afterFailure.TargetsMetadata != originalReview.TargetsMetadata ||
+		revisionErr != nil || restoredRevision.key() != originalTargets[0].SourceRevision {
+		t.Fatalf("failed edit left review metadata inconsistent: %#v", afterFailure)
+	}
+	if err := db.Exec("DROP TRIGGER fail_quality_review_decision").Error; err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/reviews/"+operationID+"/decision", strings.NewReader(decision)))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"reviewed"`) {
 		t.Fatalf("edit decision status=%d body=%s", response.Code, response.Body.String())

@@ -721,9 +721,18 @@ export type SubtitleTranslationQualityDecisionResponse = {
 
 export type SubtitleTranslationQualityReviewResponse = {
   operationId: string;
-  status: 'open' | 'reviewed';
+  status: 'open' | 'reviewed' | 'recovery_required';
   quality: NonNullable<NonNullable<SubtitleExtractionOperation['translation']>['quality']>;
   decisions: Array<{ cueId: string; action: 'keep' | 'edit'; text?: string; at: string }>;
+};
+
+export type SubtitleTranslationQualityEditableCueResponse = {
+  operationId: string;
+  cueId: string;
+  sourceIdentity: string;
+  sourceRevision: string;
+  targetRevisions: string[];
+  text: string;
 };
 
 export type SubtitleTranslationQualityReviewListItem = SubtitleTranslationQualityReviewResponse & { updatedAt: string };

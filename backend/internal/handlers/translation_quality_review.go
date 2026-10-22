@@ -42,6 +42,15 @@ type subtitleTranslationQualityReviewResponse struct {
 	Decisions   []subtitleTranslationQualityDecision `json:"decisions"`
 }
 
+type subtitleTranslationQualityEditableCueResponse struct {
+	OperationID     string   `json:"operationId"`
+	CueID           string   `json:"cueId"`
+	SourceIdentity  string   `json:"sourceIdentity"`
+	SourceRevision  string   `json:"sourceRevision"`
+	TargetRevisions []string `json:"targetRevisions"`
+	Text            string   `json:"text"`
+}
+
 type subtitleTranslationQualityReviewListItem struct {
 	OperationID string                               `json:"operationId"`
 	Status      string                               `json:"status"`
@@ -94,6 +103,30 @@ func (h AssetHandler) GetSubtitleTranslationQualityReview(c *gin.Context) {
 		return
 	}
 	report.Persisted = true
+	if cueID := strings.TrimSpace(c.Query("cueId")); cueID != "" {
+		if review.Status != "open" || len(cueID) > 256 {
+			c.JSON(http.StatusConflict, gin.H{"error": "translation quality cue is not available for editing"})
+			return
+		}
+		var request subtitleTranslationOperationRequest
+		var targets []subtitleTranslationQualityTarget
+		if decodeQualityReviewJSON(review.RequestMetadata, &request) != nil || decodeQualityReviewJSON(review.TargetsMetadata, &targets) != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "translation quality review identity is invalid"})
+			return
+		}
+		finding, ok := subtitleTranslationQualityFindingByID(report, cueID)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "cue is not part of this quality review"})
+			return
+		}
+		editable, err := h.subtitleTranslationQualityEditableCueText(c.Request.Context(), review, request, targets, finding)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
+			return
+		}
+		c.JSON(http.StatusOK, editable)
+		return
+	}
 	c.JSON(http.StatusOK, subtitleTranslationQualityReviewResponse{OperationID: operationID, Status: review.Status, Quality: report, Decisions: decisions})
 }
 
@@ -209,15 +242,11 @@ func (h AssetHandler) DecideSubtitleTranslationQuality(c *gin.Context) {
 			return
 		}
 	}
-	if input.Action == "edit" {
-		if err := h.applySubtitleTranslationQualityEdit(c.Request.Context(), review, request, targets, finding, input.Text); err != nil {
+	if input.Action == "keep" {
+		if err := h.validateSubtitleTranslationQualityIdentity(c.Request.Context(), review, request, targets); err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
 			return
 		}
-	}
-	if err := h.validateSubtitleTranslationQualityIdentity(c.Request.Context(), review, request, targets); err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
-		return
 	}
 	decisions = append(decisions, subtitleTranslationQualityDecision{CueID: input.CueID, Action: input.Action, Text: input.Text, At: time.Now().UTC()})
 	decisionBytes, err := json.Marshal(decisions)
@@ -229,10 +258,19 @@ func (h AssetHandler) DecideSubtitleTranslationQuality(c *gin.Context) {
 	if len(decisions) == len(report.Findings) {
 		status = "reviewed"
 	}
-	result := h.db.Model(&models.SubtitleTranslationQualityReview{}).Where("operation_id = ? AND status = ?", operationID, "open").Updates(map[string]any{"decisions": string(decisionBytes), "status": status, "updated_at": time.Now().UTC()})
-	if result.Error != nil || result.RowsAffected != 1 {
-		c.JSON(http.StatusConflict, gin.H{"error": "translation quality review changed before the decision was saved"})
-		return
+	if input.Action == "edit" {
+		if err := h.applySubtitleTranslationQualityEdit(c.Request.Context(), review, request, targets, finding, input.Text, string(decisionBytes), status); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": boundedTranslationAssetInfoReason(err.Error())})
+			return
+		}
+	} else {
+		result := h.db.Model(&models.SubtitleTranslationQualityReview{}).
+			Where("operation_id = ? AND status = ? AND updated_at = ?", operationID, "open", review.UpdatedAt).
+			Updates(map[string]any{"decisions": string(decisionBytes), "status": status, "updated_at": time.Now().UTC()})
+		if result.Error != nil || result.RowsAffected != 1 {
+			c.JSON(http.StatusConflict, gin.H{"error": "translation quality review changed before the decision was saved"})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"operationId": operationID, "cueId": input.CueID, "status": status})
 }
@@ -261,7 +299,7 @@ func subtitleTranslationQualityFindingByID(report subtitleTranslationQualityRepo
 	return subtitleTranslationQualityFinding{}, false
 }
 
-func (h AssetHandler) applySubtitleTranslationQualityEdit(ctx context.Context, review models.SubtitleTranslationQualityReview, request subtitleTranslationOperationRequest, targets []subtitleTranslationQualityTarget, finding subtitleTranslationQualityFinding, text string) error {
+func (h AssetHandler) applySubtitleTranslationQualityEdit(ctx context.Context, review models.SubtitleTranslationQualityReview, request subtitleTranslationOperationRequest, targets []subtitleTranslationQualityTarget, finding subtitleTranslationQualityFinding, text, decisionJSON, finalStatus string) error {
 	if ctx == nil || h.db == nil || len(targets) == 0 {
 		return errors.New("translation review edit context is incomplete")
 	}
@@ -315,6 +353,8 @@ func (h AssetHandler) applySubtitleTranslationQualityEdit(ctx context.Context, r
 	if err != nil {
 		return err
 	}
+	var nextTargetsJSON string
+	var finalCommitAt time.Time
 	_, err = publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
 		Ctx: ctx, OperationID: "subtitle-translation-review-" + review.OperationID, Workspace: workspace,
 		SourceRevision: sourceRevision,
@@ -331,28 +371,187 @@ func (h AssetHandler) applySubtitleTranslationQualityEdit(ctx context.Context, r
 			return nil
 		},
 		Targets: staged,
+		CommitMetadata: func(artifacts []SubtitleArtifact) error {
+			if len(artifacts) != len(targets) {
+				return errors.New("published translation targets changed during review edit")
+			}
+			for index := range targets {
+				if filepath.Clean(artifacts[index].PublishedPath) != filepath.Clean(targets[index].FinalPath) {
+					return errors.New("published translation target identity changed during review edit")
+				}
+				revision, err := captureTranslationExternalSourceRevision(targets[index].FinalPath, "")
+				if err != nil {
+					return errors.New("edited translation revision could not be captured")
+				}
+				targets[index].SourceRevision = revision.key()
+			}
+			encoded, err := json.Marshal(targets)
+			if err != nil || len(encoded) > subtitleTranslationQualityReviewMaxBytes {
+				return errors.New("edited translation review evidence exceeded its bound")
+			}
+			nextTargetsJSON = string(encoded)
+			return nil
+		},
+		RollbackMetadata: func([]SubtitleArtifact) error {
+			if nextTargetsJSON == "" {
+				return nil
+			}
+			return h.db.Transaction(func(tx *gorm.DB) error {
+				var current models.SubtitleTranslationQualityReview
+				if err := tx.First(&current, "operation_id = ?", review.OperationID).Error; err != nil {
+					return err
+				}
+				if current.TargetsMetadata == review.TargetsMetadata && current.Decisions == review.Decisions &&
+					current.Status == review.Status && current.UpdatedAt.Equal(review.UpdatedAt) {
+					return nil
+				}
+				decisionCommitted := !finalCommitAt.IsZero() && current.TargetsMetadata == nextTargetsJSON &&
+					current.Decisions == decisionJSON && current.Status == finalStatus && current.UpdatedAt.Equal(finalCommitAt)
+				if !decisionCommitted {
+					return errors.New("translation review metadata changed during publication rollback")
+				}
+				result := tx.Model(&models.SubtitleTranslationQualityReview{}).
+					Where("operation_id = ? AND updated_at = ? AND targets_metadata = ? AND decisions = ? AND status = ?", review.OperationID, current.UpdatedAt, nextTargetsJSON, decisionJSON, finalStatus).
+					Updates(map[string]any{"targets_metadata": review.TargetsMetadata, "decisions": review.Decisions, "status": review.Status, "updated_at": review.UpdatedAt})
+				if result.Error != nil {
+					return result.Error
+				}
+				if result.RowsAffected != 1 {
+					return errors.New("translation review metadata rollback did not update its owned record")
+				}
+				return nil
+			})
+		},
+		CommitPublication: func([]SubtitleArtifact) error {
+			if nextTargetsJSON == "" || decisionJSON == "" {
+				return errors.New("translation review publication metadata is incomplete")
+			}
+			finalCommitAt = time.Now().UTC()
+			commitErr := h.db.Transaction(func(tx *gorm.DB) error {
+				result := tx.Model(&models.SubtitleTranslationQualityReview{}).
+					Where("operation_id = ? AND status = ? AND updated_at = ? AND targets_metadata = ? AND decisions = ?", review.OperationID, "open", review.UpdatedAt, review.TargetsMetadata, review.Decisions).
+					Updates(map[string]any{"targets_metadata": nextTargetsJSON, "decisions": decisionJSON, "status": finalStatus, "updated_at": finalCommitAt})
+				if result.Error != nil {
+					return result.Error
+				}
+				if result.RowsAffected != 1 {
+					return errors.New("translation review changed before the edit decision was committed")
+				}
+				return nil
+			})
+			if commitErr == nil {
+				return nil
+			}
+			var persisted models.SubtitleTranslationQualityReview
+			if err := h.db.First(&persisted, "operation_id = ?", review.OperationID).Error; err == nil &&
+				persisted.TargetsMetadata == nextTargetsJSON && persisted.Decisions == decisionJSON &&
+				persisted.Status == finalStatus && persisted.UpdatedAt.Equal(finalCommitAt) {
+				return nil
+			}
+			return commitErr
+		},
+		OnRecoveryRequired: func(string) {
+			markSubtitleTranslationQualityRecoveryRequired(h.db, review.OperationID)
+		},
 	})
 	if err != nil {
 		return err
 	}
-	for index := range targets {
-		revision, err := captureTranslationExternalSourceRevision(targets[index].FinalPath, "")
-		if err != nil {
-			return errors.New("edited translation revision could not be captured")
-		}
-		targets[index].SourceRevision = revision.key()
-	}
-	encodedTargets, err := json.Marshal(targets)
-	if err != nil || len(encodedTargets) > subtitleTranslationQualityReviewMaxBytes {
-		return errors.New("edited translation review evidence exceeded its bound")
-	}
-	result := h.db.Model(&models.SubtitleTranslationQualityReview{}).
-		Where("operation_id = ? AND status = ? AND updated_at = ?", review.OperationID, "open", review.UpdatedAt).
-		Updates(map[string]any{"targets_metadata": string(encodedTargets), "updated_at": time.Now().UTC()})
-	if result.Error != nil || result.RowsAffected != 1 {
-		return errors.New("translation review changed while the edit was being published")
-	}
 	return nil
+}
+
+func (h AssetHandler) subtitleTranslationQualityEditableCueText(ctx context.Context, review models.SubtitleTranslationQualityReview, request subtitleTranslationOperationRequest, targets []subtitleTranslationQualityTarget, finding subtitleTranslationQualityFinding) (subtitleTranslationQualityEditableCueResponse, error) {
+	if ctx == nil || len(targets) == 0 || review.AssetPath != request.AssetPath ||
+		review.SourceIdentity == "" || request.SourceIdentity != review.SourceIdentity ||
+		request.SourceRevision != review.SourceRevision {
+		return subtitleTranslationQualityEditableCueResponse{}, errors.New("translation review identity is incomplete")
+	}
+	_, source, _, err := h.resolveTranslationExecutionSource(ctx, request)
+	if err != nil {
+		return subtitleTranslationQualityEditableCueResponse{}, err
+	}
+	if err := h.validateSubtitleTranslationQualityIdentity(ctx, review, request, targets); err != nil {
+		return subtitleTranslationQualityEditableCueResponse{}, err
+	}
+	var resolvedText string
+	targetRevisions := make([]string, 0, len(targets))
+	for index, target := range targets {
+		before, err := captureTranslationExternalSourceRevision(target.FinalPath, "")
+		if err != nil || before.key() != target.SourceRevision {
+			return subtitleTranslationQualityEditableCueResponse{}, staleTranslationSourceError("translated sidecar changed before editable cue text was read")
+		}
+		data, err := os.ReadFile(target.FinalPath)
+		if err != nil || !validTranslatedSubtitleSidecar(target.Format, data) {
+			return subtitleTranslationQualityEditableCueResponse{}, errors.New("translated sidecar is missing or no longer valid")
+		}
+		text, err := subtitleTranslationQualityTargetCueText(target.Format, source, data, finding.SourceOrdinal)
+		if err != nil {
+			return subtitleTranslationQualityEditableCueResponse{}, err
+		}
+		after, err := captureTranslationExternalSourceRevision(target.FinalPath, "")
+		if err != nil || after.key() != target.SourceRevision {
+			return subtitleTranslationQualityEditableCueResponse{}, staleTranslationSourceError("translated sidecar changed while editable cue text was read")
+		}
+		if index == 0 {
+			resolvedText = text
+		} else if text != resolvedText {
+			return subtitleTranslationQualityEditableCueResponse{}, errors.New("translation output representations disagree for the selected cue")
+		}
+		targetRevisions = append(targetRevisions, target.SourceRevision)
+	}
+	if err := h.validateSubtitleTranslationQualityIdentity(ctx, review, request, targets); err != nil {
+		return subtitleTranslationQualityEditableCueResponse{}, err
+	}
+	return subtitleTranslationQualityEditableCueResponse{
+		OperationID: review.OperationID, CueID: finding.CueID, SourceIdentity: review.SourceIdentity,
+		SourceRevision: review.SourceRevision, TargetRevisions: targetRevisions, Text: resolvedText,
+	}, nil
+}
+
+func subtitleTranslationQualityTargetCueText(format string, source subtitleTranslationSourceResponse, content []byte, ordinal int) (string, error) {
+	if ordinal < 0 {
+		return "", errors.New("translation quality cue identity is invalid")
+	}
+	if format == translationRepresentationSRT {
+		for _, cue := range parseSRTBitmapSubtitleCues(string(content)) {
+			if cue.SourceOrdinal == ordinal {
+				return cue.Text, nil
+			}
+		}
+		return "", errors.New("translation cue is missing from the published sidecar")
+	}
+	document, err := parseTranslationASSDocument(format, string(content))
+	if err != nil {
+		return "", err
+	}
+	for _, cue := range document.TranslationSourceCues(source.SourceIdentity, "") {
+		if cue.SourceOrdinal == ordinal {
+			return cue.Text, nil
+		}
+	}
+	return "", errors.New("translation cue is missing from the published sidecar")
+}
+
+func markSubtitleTranslationQualityRecoveryRequired(db *gorm.DB, operationID string) {
+	if db == nil || strings.TrimSpace(operationID) == "" {
+		return
+	}
+	var review models.SubtitleTranslationQualityReview
+	if err := db.First(&review, "operation_id = ?", operationID).Error; err != nil {
+		return
+	}
+	var report subtitleTranslationQualityReport
+	if decodeQualityReviewJSON(review.QualityReport, &report) != nil {
+		return
+	}
+	report.PersistenceWarning = "Publisher could not confirm rollback of the reviewed edit; further decisions are disabled pending recovery."
+	reportBytes, err := json.Marshal(report)
+	if err != nil || len(reportBytes) > subtitleTranslationQualityReviewMaxBytes {
+		return
+	}
+	_ = db.Model(&models.SubtitleTranslationQualityReview{}).
+		Where("operation_id = ? AND updated_at = ?", review.OperationID, review.UpdatedAt).
+		Updates(map[string]any{"status": "recovery_required", "quality_report": string(reportBytes), "updated_at": time.Now().UTC()})
 }
 
 func (h AssetHandler) validateSubtitleTranslationQualityIdentity(ctx context.Context, review models.SubtitleTranslationQualityReview, request subtitleTranslationOperationRequest, targets []subtitleTranslationQualityTarget) error {
@@ -411,19 +610,49 @@ func applySubtitleTranslationQualityText(format string, source subtitleTranslati
 		return nil, errors.New("translation quality cue identity is invalid")
 	}
 	if format == translationRepresentationSRT {
+		editedText := strings.ReplaceAll(text, "\r\n", "\n")
+		if strings.Contains(editedText, "\r") || strings.Contains(editedText, "-->") {
+			return nil, errors.New("manual SRT cue text contains an invalid line ending or cue timing delimiter")
+		}
+		editedText = strings.TrimSpace(editedText)
+		if editedText == "" {
+			return nil, errors.New("manual SRT cue text is empty")
+		}
 		cues := parseSRTBitmapSubtitleCues(string(content))
 		translated := make(map[int]string, len(cues))
 		found := false
 		for _, cue := range cues {
 			translated[cue.SourceOrdinal] = cue.Text
 			if cue.SourceOrdinal == finding.SourceOrdinal {
-				translated[cue.SourceOrdinal], found = text, true
+				translated[cue.SourceOrdinal], found = editedText, true
 			}
 		}
 		if !found {
 			return nil, errors.New("translation cue is missing from the published sidecar")
 		}
-		return serializeTranslatedTextCues(translationRepresentationSRT, cues, translated, translationRepresentationSRT)
+		output, err := serializeTranslatedTextCues(translationRepresentationSRT, cues, translated, translationRepresentationSRT)
+		if err != nil {
+			return nil, err
+		}
+		updatedCues := parseSRTBitmapSubtitleCues(string(output))
+		if len(updatedCues) != len(cues) {
+			return nil, errors.New("manual SRT edit changed the cue count")
+		}
+		for index := range cues {
+			if updatedCues[index].SourceOrdinal != cues[index].SourceOrdinal ||
+				updatedCues[index].Start != cues[index].Start ||
+				updatedCues[index].End != cues[index].End {
+				return nil, errors.New("manual SRT edit changed cue timing or identity")
+			}
+			if index == finding.SourceOrdinal {
+				if updatedCues[index].Text != editedText {
+					return nil, errors.New("manual SRT edit could not preserve the complete cue text")
+				}
+			} else if updatedCues[index].Text != cues[index].Text {
+				return nil, errors.New("manual SRT edit changed an unrelated cue")
+			}
+		}
+		return output, nil
 	}
 	document, err := parseTranslationASSDocument(format, string(content))
 	if err != nil {
