@@ -37,6 +37,7 @@ export function ScannerPage() {
   const scan = useMutation({ mutationFn: api.scan, onSuccess: (result) => suggestion.mutate(result.path) });
   const libraries = useQuery({ queryKey: ['libraries'], queryFn: api.libraries });
   const profiles = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
+  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const assets = useQuery({ queryKey: ['assets'], queryFn: api.assets });
   const availableAssets = (assets.data?.unprocessed ?? []).filter((asset) => !asset.missing);
   const resolvedPath = availableAssets.find((asset) => asset.path === path || asset.relativePath === path)?.path ?? path;
@@ -166,6 +167,9 @@ export function ScannerPage() {
       </Box>
       <BatchPreflightDialog
         candidate={singleQueueCandidate}
+        profiles={profiles.data}
+        libraries={libraries.data}
+        settings={settings.data}
         onClose={() => setSingleQueueCandidate(null)}
         onAccepted={(candidate) => {
           setSingleQueueCandidate(candidate);

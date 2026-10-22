@@ -190,15 +190,17 @@ func resolveQueuePreflightEffectiveProfile(profile models.Profile, selectedEncod
 }
 
 type QueueBatchPreflightInput struct {
-	Revision  uint            `json:"revision,omitempty"`
-	BatchID   string          `json:"batchId" binding:"required"`
-	BatchName string          `json:"batchName"`
-	Jobs      []QueueJobInput `json:"jobs" binding:"required,min=1,max=1000,dive"`
+	Revision             uint            `json:"revision,omitempty"`
+	BatchID              string          `json:"batchId" binding:"required"`
+	BatchName            string          `json:"batchName"`
+	ReResolveAssignments bool            `json:"reResolveAssignments,omitempty"`
+	Jobs                 []QueueJobInput `json:"jobs" binding:"required,min=1,max=1000,dive"`
 }
 
 type QueueBatchPreflightAcceptInput struct {
-	Revision uint     `json:"revision" binding:"required"`
-	AssetIDs []string `json:"assetIds" binding:"required,min=1,max=1000"`
+	Revision                  uint     `json:"revision" binding:"required"`
+	AssetIDs                  []string `json:"assetIds" binding:"required,min=1,max=1000"`
+	ReviewedAssignmentChanges bool     `json:"reviewedAssignmentChanges,omitempty"`
 }
 
 type QueueBatchPreflightRemoveInput struct {
@@ -222,25 +224,26 @@ type queueBatchPreflightState struct {
 }
 
 type queueBatchPreflightAsset struct {
-	ID              string                            `json:"id"`
-	MediaPath       string                            `json:"mediaPath"`
-	AssetRecordID   *uint                             `json:"assetRecordId,omitempty"`
-	SourceRevision  string                            `json:"sourceRevision,omitempty"`
-	BatchID         string                            `json:"batchId"`
-	BatchName       string                            `json:"batchName"`
-	BatchPosition   int                               `json:"batchPosition"`
-	Input           QueueJobInput                     `json:"input"`
-	Status          string                            `json:"status"`
-	ReviewCode      string                            `json:"reviewCode,omitempty"`
-	CadenceReview   *QueueBatchPreflightCadenceReview `json:"cadenceReview,omitempty"`
-	Blockers        []string                          `json:"blockers"`
-	Warnings        []string                          `json:"warnings"`
-	ResolvedJob     *models.QueueJob                  `json:"resolvedJob,omitempty"`
-	Constraints     models.JSONMap                    `json:"constraints,omitempty"`
-	QualityEvidence models.JSONMap                    `json:"qualityEvidence,omitempty"`
-	SelectedEncoder string                            `json:"selectedEncoder,omitempty"`
-	RuntimeProfile  string                            `json:"runtimeProfile,omitempty"`
-	QueuedJobID     uint                              `json:"queuedJobId,omitempty"`
+	ID               string                               `json:"id"`
+	MediaPath        string                               `json:"mediaPath"`
+	AssetRecordID    *uint                                `json:"assetRecordId,omitempty"`
+	SourceRevision   string                               `json:"sourceRevision,omitempty"`
+	BatchID          string                               `json:"batchId"`
+	BatchName        string                               `json:"batchName"`
+	BatchPosition    int                                  `json:"batchPosition"`
+	Input            QueueJobInput                        `json:"input"`
+	Status           string                               `json:"status"`
+	ReviewCode       string                               `json:"reviewCode,omitempty"`
+	CadenceReview    *QueueBatchPreflightCadenceReview    `json:"cadenceReview,omitempty"`
+	Blockers         []string                             `json:"blockers"`
+	Warnings         []string                             `json:"warnings"`
+	ResolvedJob      *models.QueueJob                     `json:"resolvedJob,omitempty"`
+	Constraints      models.JSONMap                       `json:"constraints,omitempty"`
+	QualityEvidence  models.JSONMap                       `json:"qualityEvidence,omitempty"`
+	SelectedEncoder  string                               `json:"selectedEncoder,omitempty"`
+	RuntimeProfile   string                               `json:"runtimeProfile,omitempty"`
+	QueuedJobID      uint                                 `json:"queuedJobId,omitempty"`
+	AssignmentReview *QueueBatchPreflightAssignmentReview `json:"assignmentReview,omitempty"`
 }
 
 type QueueBatchPreflightCadenceReview struct {
@@ -318,20 +321,57 @@ type QueueBatchPreflightPlan struct {
 	ProcessingMode       string         `json:"processingMode"`
 }
 
+type QueueBatchPreflightAssignmentValue struct {
+	Selection         string `json:"selection,omitempty"`
+	Source            string `json:"source,omitempty"`
+	AssignmentOrigin  string `json:"assignmentOrigin,omitempty"`
+	TargetPath        string `json:"targetPath,omitempty"`
+	ProfileID         uint   `json:"profileId,omitempty"`
+	ProfileName       string `json:"profileName,omitempty"`
+	ProfileVersion    int    `json:"profileVersion,omitempty"`
+	ProfileKey        string `json:"profileKey,omitempty"`
+	LibraryID         uint   `json:"libraryId,omitempty"`
+	LibraryName       string `json:"libraryName,omitempty"`
+	DestinationPath   string `json:"destinationPath,omitempty"`
+	ProcessingMode    string `json:"processingMode,omitempty"`
+	SelectedEncoder   string `json:"selectedEncoder,omitempty"`
+	CandidateOverride bool   `json:"candidateOverride,omitempty"`
+}
+
+type QueueBatchPreflightAssignmentChange struct {
+	Domain  string                             `json:"domain"`
+	Reason  string                             `json:"reason"`
+	Before  QueueBatchPreflightAssignmentValue `json:"before"`
+	Current QueueBatchPreflightAssignmentValue `json:"current"`
+}
+
+type QueueBatchPreflightAssignmentReview struct {
+	Required bool                                        `json:"required"`
+	Changes  []QueueBatchPreflightAssignmentReviewChange `json:"changes,omitempty"`
+}
+
+type QueueBatchPreflightAssignmentReviewChange struct {
+	Domain string                             `json:"domain"`
+	Before QueueBatchPreflightAssignmentValue `json:"before"`
+	After  QueueBatchPreflightAssignmentValue `json:"after"`
+}
+
 type QueueBatchPreflightAssetResponse struct {
-	ID            string                            `json:"id"`
-	MediaPath     string                            `json:"mediaPath"`
-	AssetRecordID *uint                             `json:"assetRecordId,omitempty"`
-	BatchID       string                            `json:"batchId"`
-	BatchName     string                            `json:"batchName"`
-	Input         QueueJobInput                     `json:"input"`
-	Status        string                            `json:"status"`
-	ReviewCode    string                            `json:"reviewCode,omitempty"`
-	CadenceReview *QueueBatchPreflightCadenceReview `json:"cadenceReview,omitempty"`
-	Blockers      []string                          `json:"blockers"`
-	Warnings      []string                          `json:"warnings"`
-	QueuedJobID   uint                              `json:"queuedJobId,omitempty"`
-	Plan          *QueueBatchPreflightPlan          `json:"plan,omitempty"`
+	ID                string                                `json:"id"`
+	MediaPath         string                                `json:"mediaPath"`
+	AssetRecordID     *uint                                 `json:"assetRecordId,omitempty"`
+	BatchID           string                                `json:"batchId"`
+	BatchName         string                                `json:"batchName"`
+	Input             QueueJobInput                         `json:"input"`
+	Status            string                                `json:"status"`
+	ReviewCode        string                                `json:"reviewCode,omitempty"`
+	CadenceReview     *QueueBatchPreflightCadenceReview     `json:"cadenceReview,omitempty"`
+	Blockers          []string                              `json:"blockers"`
+	Warnings          []string                              `json:"warnings"`
+	QueuedJobID       uint                                  `json:"queuedJobId,omitempty"`
+	Plan              *QueueBatchPreflightPlan              `json:"plan,omitempty"`
+	AssignmentChanges []QueueBatchPreflightAssignmentChange `json:"assignmentChanges,omitempty"`
+	AssignmentReview  *QueueBatchPreflightAssignmentReview  `json:"assignmentReview,omitempty"`
 }
 
 type QueueBatchPreflightResponse struct {
@@ -407,6 +447,7 @@ func queuePreflightResponse(record models.QueueBatchPreflight, state queueBatchP
 			ID: asset.ID, MediaPath: asset.MediaPath, AssetRecordID: asset.AssetRecordID,
 			BatchID: asset.BatchID, BatchName: asset.BatchName, Input: asset.Input,
 			Status: asset.Status, ReviewCode: reviewCode, CadenceReview: cadenceReview, Blockers: asset.Blockers, Warnings: asset.Warnings, QueuedJobID: asset.QueuedJobID,
+			AssignmentReview: asset.AssignmentReview,
 		}
 		if asset.ResolvedJob != nil {
 			job := asset.ResolvedJob
@@ -427,6 +468,321 @@ func queuePreflightResponse(record models.QueueBatchPreflight, state queueBatchP
 		response.Assets = append(response.Assets, item)
 	}
 	return response
+}
+
+func (h QueueHandler) preflightResponseWithAssignmentChanges(record models.QueueBatchPreflight, state queueBatchPreflightState) (QueueBatchPreflightResponse, error) {
+	changes, err := queuePreflightAssignmentChanges(h.db, state)
+	if err != nil {
+		return QueueBatchPreflightResponse{}, err
+	}
+	response := queuePreflightResponse(record, state)
+	for index := range response.Assets {
+		response.Assets[index].AssignmentChanges = changes[response.Assets[index].ID]
+	}
+	return response, nil
+}
+
+func queuePreflightAssignmentValue(value any) QueueBatchPreflightAssignmentValue {
+	decision, _ := value.(map[string]any)
+	if jsonMap, ok := value.(models.JSONMap); ok {
+		decision = map[string]any(jsonMap)
+	}
+	if decision == nil {
+		return QueueBatchPreflightAssignmentValue{}
+	}
+	return QueueBatchPreflightAssignmentValue{
+		Selection:         strings.TrimSpace(stringFromUnknown(decision["selection"])),
+		Source:            strings.TrimSpace(stringFromUnknown(decision["source"])),
+		AssignmentOrigin:  strings.TrimSpace(stringFromUnknown(decision["assignmentOrigin"])),
+		TargetPath:        strings.TrimSpace(stringFromUnknown(decision["targetPath"])),
+		ProfileID:         uint(workerNumberValue(decision["videoProfileId"], workerNumberValue(decision["profileId"], 0))),
+		ProfileKey:        strings.TrimSpace(stringFromUnknown(decision["profileKey"])),
+		LibraryID:         uint(workerNumberValue(decision["libraryId"], 0)),
+		CandidateOverride: strings.TrimSpace(stringFromUnknown(decision["source"])) == "queue_batch_preflight_edit",
+	}
+}
+
+func queuePreflightAssignmentEvidence(asset queueBatchPreflightAsset) map[string]QueueBatchPreflightAssignmentValue {
+	resolution := queuePreflightResolutionForAsset(asset)
+	evidence := map[string]QueueBatchPreflightAssignmentValue{
+		"video":       queuePreflightAssignmentValue(resolution["video"]),
+		"audio":       queuePreflightAssignmentValue(resolution["audio"]),
+		"tracks":      queuePreflightAssignmentValue(resolution["tracks"]),
+		"destination": queuePreflightAssignmentValue(resolution["destination"]),
+	}
+	job := asset.ResolvedJob
+	if job == nil {
+		video := evidence["video"]
+		video.ProfileID, video.LibraryID = asset.Input.ProfileID, asset.Input.LibraryID
+		evidence["video"] = video
+		audio := evidence["audio"]
+		audio.ProfileKey = strings.TrimSpace(asset.Input.AudioProfileKey)
+		evidence["audio"] = audio
+		tracks := evidence["tracks"]
+		tracks.ProfileKey = strings.TrimSpace(asset.Input.TrackProfileKey)
+		evidence["tracks"] = tracks
+		destination := evidence["destination"]
+		destination.LibraryID = asset.Input.LibraryID
+		evidence["destination"] = destination
+		return evidence
+	}
+	video := evidence["video"]
+	profile, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
+	if err == nil {
+		video.ProfileID = profile.ID
+		video.ProfileName = profile.Name
+	}
+	video.ProfileVersion = job.ProfileVersion
+	video.ProcessingMode = job.ProcessingMode
+	video.SelectedEncoder = asset.SelectedEncoder
+	if normalizeQueueProcessingMode(job.ProcessingMode) == ProcessingModeAudioOnly && asset.Input.ProfileID == 0 {
+		video.Selection = "audio_only_fallback"
+		video.Source = "audio_only_fallback"
+	}
+	evidence["video"] = video
+
+	audio := evidence["audio"]
+	audioSnapshot := job.AudioProfileSnapshot
+	audio.ProfileKey = queuePreflightFirstNonEmpty(job.AudioProfileKey, workerStringValue(audioSnapshot["key"]))
+	audio.ProfileName = workerStringValue(audioSnapshot["name"])
+	evidence["audio"] = audio
+	tracks := evidence["tracks"]
+	trackSnapshot := job.TrackProfileSnapshot
+	tracks.ProfileKey = queuePreflightFirstNonEmpty(job.TrackProfileKey, workerStringValue(trackSnapshot["key"]))
+	tracks.ProfileName = workerStringValue(trackSnapshot["name"])
+	evidence["tracks"] = tracks
+
+	destination := evidence["destination"]
+	destination.LibraryID = job.LibraryID
+	destination.LibraryName = workerStringValue(job.ResolvedDestinationSnapshot["libraryName"])
+	destination.DestinationPath = workerStringValue(job.ResolvedDestinationSnapshot["destinationRoot"])
+	evidence["destination"] = destination
+	return evidence
+}
+
+func queuePreflightAssignmentReviewChanges(before, after queueBatchPreflightAsset) []QueueBatchPreflightAssignmentReviewChange {
+	beforeEvidence, afterEvidence := queuePreflightAssignmentEvidence(before), queuePreflightAssignmentEvidence(after)
+	changes := []QueueBatchPreflightAssignmentReviewChange{}
+	for _, domain := range []string{"video", "audio", "tracks", "destination"} {
+		oldValue, newValue := beforeEvidence[domain], afterEvidence[domain]
+		if oldValue != newValue {
+			changes = append(changes, QueueBatchPreflightAssignmentReviewChange{Domain: domain, Before: oldValue, After: newValue})
+		}
+	}
+	return changes
+}
+
+func queuePreflightSetAssignmentReviews(previous queueBatchPreflightState, next *queueBatchPreflightState) {
+	previousAssets := make(map[string]queueBatchPreflightAsset, len(previous.Assets))
+	for _, asset := range previous.Assets {
+		previousAssets[filepath.Clean(asset.MediaPath)] = asset
+	}
+	for index := range next.Assets {
+		asset := &next.Assets[index]
+		previousAsset, exists := previousAssets[filepath.Clean(asset.MediaPath)]
+		if !exists || previousAsset.Status == queuePreflightQueued || asset.Status == queuePreflightQueued {
+			continue
+		}
+		newChanges := queuePreflightAssignmentReviewChanges(previousAsset, *asset)
+		if previousAsset.AssignmentReview == nil || !previousAsset.AssignmentReview.Required {
+			if len(newChanges) > 0 {
+				asset.AssignmentReview = &QueueBatchPreflightAssignmentReview{Required: true, Changes: newChanges}
+			}
+			continue
+		}
+		if asset.ResolvedJob == nil {
+			asset.AssignmentReview = previousAsset.AssignmentReview
+			continue
+		}
+		currentEvidence := queuePreflightAssignmentEvidence(*asset)
+		changesByDomain := map[string]QueueBatchPreflightAssignmentReviewChange{}
+		for _, existing := range previousAsset.AssignmentReview.Changes {
+			current := currentEvidence[existing.Domain]
+			if existing.Before != current {
+				existing.After = current
+				changesByDomain[existing.Domain] = existing
+			}
+		}
+		for _, change := range newChanges {
+			if _, exists := changesByDomain[change.Domain]; !exists {
+				changesByDomain[change.Domain] = change
+			}
+		}
+		merged := make([]QueueBatchPreflightAssignmentReviewChange, 0, len(changesByDomain))
+		for _, domain := range []string{"video", "audio", "tracks", "destination"} {
+			if change, exists := changesByDomain[domain]; exists {
+				merged = append(merged, change)
+			}
+		}
+		if len(merged) == 0 {
+			asset.AssignmentReview = nil
+		} else {
+			asset.AssignmentReview = &QueueBatchPreflightAssignmentReview{Required: true, Changes: merged}
+		}
+	}
+}
+
+func queuePreflightResolutionForAsset(asset queueBatchPreflightAsset) models.JSONMap {
+	if asset.Input.ProfileResolution != nil {
+		return asset.Input.ProfileResolution
+	}
+	if asset.ResolvedJob != nil {
+		return asset.ResolvedJob.ProfileResolution
+	}
+	return nil
+}
+
+func queuePreflightAssignmentChanges(db *gorm.DB, state queueBatchPreflightState) (map[string][]QueueBatchPreflightAssignmentChange, error) {
+	changes := make(map[string][]QueueBatchPreflightAssignmentChange)
+	assetIDs, profileIDs, libraryIDs := []uint{}, map[uint]bool{}, map[uint]bool{}
+	audioKeys, trackKeys := map[string]bool{}, map[string]bool{}
+	for _, asset := range state.Assets {
+		if asset.AssetRecordID != nil && *asset.AssetRecordID > 0 {
+			assetIDs = append(assetIDs, *asset.AssetRecordID)
+		}
+		if asset.Input.ProfileID > 0 {
+			profileIDs[asset.Input.ProfileID] = true
+		}
+		if asset.Input.LibraryID > 0 {
+			libraryIDs[asset.Input.LibraryID] = true
+		}
+		if key := strings.TrimSpace(asset.Input.AudioProfileKey); key != "" && key != assetDefaultsCustomAudioKey {
+			audioKeys[key] = true
+		}
+		if key := strings.TrimSpace(asset.Input.TrackProfileKey); key != "" && key != assetDefaultsCustomTracksKey {
+			trackKeys[key] = true
+		}
+	}
+
+	assetRecords := map[uint]models.AssetRecord{}
+	var records []models.AssetRecord
+	var resolver *assetConfigurationResolver
+	if len(assetIDs) > 0 && db.Migrator().HasTable(&models.AssetRecord{}) {
+		if err := db.Where("id IN ?", assetIDs).Find(&records).Error; err != nil {
+			return nil, fmt.Errorf("load current Queue Preflight asset assignments: %w", err)
+		}
+		for _, record := range records {
+			assetRecords[record.ID] = record
+		}
+		loaded, err := loadAssetConfigurationResolver(db)
+		if err != nil {
+			return nil, fmt.Errorf("load current Queue Preflight assignments: %w", err)
+		}
+		resolver = &loaded
+	}
+
+	profiles := map[uint]models.Profile{}
+	profileInventoryLoaded := db.Migrator().HasTable(&models.Profile{})
+	if len(profileIDs) > 0 && profileInventoryLoaded {
+		ids := make([]uint, 0, len(profileIDs))
+		for id := range profileIDs {
+			ids = append(ids, id)
+		}
+		var rows []models.Profile
+		if err := db.Where("id IN ?", ids).Find(&rows).Error; err != nil {
+			return nil, fmt.Errorf("load current Queue Preflight profiles: %w", err)
+		}
+		for _, profile := range rows {
+			profiles[profile.ID] = profile
+		}
+	}
+	libraries := map[uint]models.Library{}
+	libraryInventoryLoaded := db.Migrator().HasTable(&models.Library{})
+	if len(libraryIDs) > 0 && libraryInventoryLoaded {
+		ids := make([]uint, 0, len(libraryIDs))
+		for id := range libraryIDs {
+			ids = append(ids, id)
+		}
+		var rows []models.Library
+		if err := db.Where("id IN ?", ids).Find(&rows).Error; err != nil {
+			return nil, fmt.Errorf("load current Queue Preflight libraries: %w", err)
+		}
+		for _, library := range rows {
+			libraries[library.ID] = library
+		}
+	}
+	availableAudioKeys, availableTrackKeys := map[string]bool{}, map[string]bool{}
+	supplementalInventoryLoaded := db.Migrator().HasTable(&models.AppSetting{})
+	if (len(audioKeys) > 0 || len(trackKeys) > 0) && supplementalInventoryLoaded {
+		var settings []models.AppSetting
+		if err := db.Where("key IN ?", []string{"audioEnhancementProfiles", "trackProfiles"}).Find(&settings).Error; err != nil {
+			return nil, fmt.Errorf("load current Queue Preflight supplemental profiles: %w", err)
+		}
+		for _, setting := range settings {
+			for _, raw := range settingProfileValues(setting.Value["profiles"]) {
+				profile := settingProfileObject(raw)
+				if profile == nil || boolValue(profile["disabled"], false) || strings.TrimSpace(stringFromUnknown(profile["deletedAt"])) != "" {
+					continue
+				}
+				key := strings.TrimSpace(stringFromUnknown(profile["key"]))
+				if setting.Key == "audioEnhancementProfiles" && audioKeys[key] {
+					availableAudioKeys[key] = true
+				}
+				if setting.Key == "trackProfiles" && trackKeys[key] {
+					availableTrackKeys[key] = true
+				}
+			}
+		}
+	}
+
+	appendChange := func(assetID string, change QueueBatchPreflightAssignmentChange) {
+		for _, current := range changes[assetID] {
+			if current.Domain == change.Domain && current.Reason == change.Reason {
+				return
+			}
+		}
+		changes[assetID] = append(changes[assetID], change)
+	}
+	domains := []string{"video", "audio", "tracks", "destination"}
+	for _, asset := range state.Assets {
+		if asset.Status == queuePreflightQueued {
+			continue
+		}
+		resolution := queuePreflightResolutionForAsset(asset)
+		var currentResolution models.JSONMap
+		if asset.AssetRecordID != nil && resolver != nil {
+			record, exists := assetRecords[*asset.AssetRecordID]
+			if !exists || filepath.Clean(record.Path) != filepath.Clean(asset.MediaPath) {
+				appendChange(asset.ID, QueueBatchPreflightAssignmentChange{Domain: "asset", Reason: "source_identity_changed"})
+			} else {
+				currentInput := QueueJobInput{MediaPath: record.Path}
+				currentResolution = resolveProfileAssignmentsFromEffective(&currentInput, resolver.resolve(record))
+			}
+		}
+		for _, domain := range domains {
+			beforeRaw := resolution[domain]
+			before := queuePreflightAssignmentValue(beforeRaw)
+			if beforeRaw == nil || before.Source == "queue_batch_preflight_edit" || currentResolution == nil {
+				continue
+			}
+			current := queuePreflightAssignmentValue(currentResolution[domain])
+			if before != current {
+				appendChange(asset.ID, QueueBatchPreflightAssignmentChange{Domain: domain, Reason: "assignment_changed", Before: before, Current: current})
+			}
+		}
+		if asset.Input.ProfileID > 0 && profileInventoryLoaded {
+			profile, exists := profiles[asset.Input.ProfileID]
+			if !exists || profile.Disabled {
+				before := queuePreflightAssignmentValue(resolution["video"])
+				appendChange(asset.ID, QueueBatchPreflightAssignmentChange{Domain: "video", Reason: "profile_unavailable", Before: before, Current: QueueBatchPreflightAssignmentValue{ProfileID: asset.Input.ProfileID}})
+			}
+		}
+		if asset.Input.LibraryID > 0 && libraryInventoryLoaded {
+			if _, exists := libraries[asset.Input.LibraryID]; !exists {
+				before := queuePreflightAssignmentValue(resolution["destination"])
+				appendChange(asset.ID, QueueBatchPreflightAssignmentChange{Domain: "destination", Reason: "library_unavailable", Before: before, Current: QueueBatchPreflightAssignmentValue{LibraryID: asset.Input.LibraryID}})
+			}
+		}
+		if key := strings.TrimSpace(asset.Input.AudioProfileKey); key != "" && key != assetDefaultsCustomAudioKey && supplementalInventoryLoaded && !availableAudioKeys[key] {
+			before := queuePreflightAssignmentValue(resolution["audio"])
+			appendChange(asset.ID, QueueBatchPreflightAssignmentChange{Domain: "audio", Reason: "profile_unavailable", Before: before, Current: QueueBatchPreflightAssignmentValue{ProfileKey: key}})
+		}
+		if key := strings.TrimSpace(asset.Input.TrackProfileKey); key != "" && key != assetDefaultsCustomTracksKey && supplementalInventoryLoaded && !availableTrackKeys[key] {
+			before := queuePreflightAssignmentValue(resolution["tracks"])
+			appendChange(asset.ID, QueueBatchPreflightAssignmentChange{Domain: "tracks", Reason: "profile_unavailable", Before: before, Current: QueueBatchPreflightAssignmentValue{ProfileKey: key}})
+		}
+	}
+	return changes, nil
 }
 
 func queuePreflightHasPendingAssets(state queueBatchPreflightState) bool {
@@ -602,7 +958,12 @@ func (h QueueHandler) GetBatchPreflight(c *gin.Context) {
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, queuePreflightResponse(record, state))
+	response, err := h.preflightResponseWithAssignmentChanges(record, state)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (h QueueHandler) EditBatchPreflight(c *gin.Context) {
@@ -646,7 +1007,12 @@ func (h QueueHandler) EditBatchPreflight(c *gin.Context) {
 	}
 	record.Revision = input.Revision + 1
 	record.Resolved = false
-	c.JSON(http.StatusOK, queuePreflightResponse(record, state))
+	response, err := h.preflightResponseWithAssignmentChanges(record, state)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (h QueueHandler) UpdateBatchPreflight(c *gin.Context) {
@@ -730,6 +1096,39 @@ func (h QueueHandler) UpdateBatchPreflight(c *gin.Context) {
 			}
 		}
 	}
+	if input.ReResolveAssignments {
+		if err := queuePreflightRefreshAssignments(h.db, &input, previous); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+	} else {
+		freshnessState := previous
+		// Freshness checks apply the submitted candidate inputs to a private
+		// asset slice. Keep previous immutable for the assignment review below,
+		// which needs the original resolved evidence as its Before authority.
+		freshnessState.Assets = append([]queueBatchPreflightAsset(nil), previous.Assets...)
+		for index := range input.Jobs {
+			path := filepath.Clean(input.Jobs[index].MediaPath)
+			for assetIndex := range freshnessState.Assets {
+				if filepath.Clean(freshnessState.Assets[assetIndex].MediaPath) == path {
+					freshnessState.Assets[assetIndex].Input = *input.Jobs[index].candidateInput
+					freshnessState.Assets[assetIndex].Input.ProfileResolution = input.Jobs[index].ProfileResolution
+					break
+				}
+			}
+		}
+		changes, err := queuePreflightAssignmentChanges(h.db, freshnessState)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		for _, assetChanges := range changes {
+			if len(assetChanges) > 0 {
+				c.JSON(http.StatusConflict, gin.H{"error": "Assignments changed or became unavailable since this candidate was resolved. Use Discard edits & re-resolve to review the current assignments."})
+				return
+			}
+		}
+	}
 	state, err := h.resolveQueueBatchPreflight(input, previous.AllowMultipleGroups)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -740,6 +1139,7 @@ func (h QueueHandler) UpdateBatchPreflight(c *gin.Context) {
 			state.Assets = append(state.Assets, asset)
 		}
 	}
+	queuePreflightSetAssignmentReviews(previous, &state)
 	state.QueuedJobs = previous.QueuedJobs
 	stateMap, err := queuePreflightStateMap(state)
 	if err != nil {
@@ -759,7 +1159,12 @@ func (h QueueHandler) UpdateBatchPreflight(c *gin.Context) {
 	}
 	record.Revision = input.Revision + 1
 	record.Resolved, record.State = true, stateMap
-	c.JSON(http.StatusOK, queuePreflightResponse(record, state))
+	response, err := h.preflightResponseWithAssignmentChanges(record, state)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (h QueueHandler) RemoveBatchPreflightAsset(c *gin.Context) {
@@ -1016,6 +1421,16 @@ func (h QueueHandler) resolveQueueBatchPreflight(input QueueBatchPreflightInput,
 			state.Assets = append(state.Assets, item)
 			continue
 		}
+		if input.ResolveProfileAssignments {
+			item.Input.ProfileID = job.ProfileID
+			if normalizeQueueProcessingMode(job.ProcessingMode) == ProcessingModeAudioOnly && input.ProfileID == 0 {
+				item.Input.ProfileID = 0
+			}
+			item.Input.LibraryID = job.LibraryID
+			item.Input.AudioProfileKey = job.AudioProfileKey
+			item.Input.TrackProfileKey = job.TrackProfileKey
+			item.Input.ProcessingMode = job.ProcessingMode
+		}
 		item.Input.ProfileResolution = job.ProfileResolution
 		item.ResolvedJob = &job
 		profile, err := scheduler.RestoreProfileSnapshot(job.ProfileSnapshot)
@@ -1245,6 +1660,9 @@ func queuePreflightEditedResolution(previous models.JSONMap, original, edited Qu
 		if result == nil {
 			result = models.JSONMap{}
 		}
+		if strings.TrimSpace(workerStringValue(result["source"])) != "queue_batch_preflight_edit" {
+			result["assignmentOrigin"] = result["source"]
+		}
 		result["source"] = "queue_batch_preflight_edit"
 		return result
 	}
@@ -1277,6 +1695,144 @@ func queuePreflightEditedResolution(previous models.JSONMap, original, edited Qu
 		resolution["destination"] = destination
 	}
 	return resolution
+}
+
+func queuePreflightRefreshAssignments(db *gorm.DB, input *QueueBatchPreflightInput, previous queueBatchPreflightState) error {
+	previousAssets := make(map[string]queueBatchPreflightAsset, len(previous.Assets))
+	assetIDs := make([]uint, 0, len(input.Jobs))
+	for _, asset := range previous.Assets {
+		if asset.Status == queuePreflightQueued {
+			continue
+		}
+		previousAssets[filepath.Clean(asset.MediaPath)] = asset
+		if asset.AssetRecordID != nil && *asset.AssetRecordID > 0 {
+			assetIDs = append(assetIDs, *asset.AssetRecordID)
+		}
+	}
+	if len(assetIDs) == 0 {
+		return fmt.Errorf("current asset assignments are unavailable; reload the candidate before resolving")
+	}
+	resolver, err := loadAssetConfigurationResolver(db)
+	if err != nil {
+		return fmt.Errorf("load current asset assignments: %w", err)
+	}
+	var records []models.AssetRecord
+	if err := db.Where("id IN ?", assetIDs).Find(&records).Error; err != nil {
+		return fmt.Errorf("load current asset records: %w", err)
+	}
+	recordsByID := make(map[uint]models.AssetRecord, len(records))
+	for _, record := range records {
+		recordsByID[record.ID] = record
+	}
+	for index := range input.Jobs {
+		submitted := input.Jobs[index]
+		path := filepath.Clean(submitted.MediaPath)
+		previousAsset, exists := previousAssets[path]
+		if !exists || previousAsset.AssetRecordID == nil {
+			continue
+		}
+		record, exists := recordsByID[*previousAsset.AssetRecordID]
+		if !exists || filepath.Clean(record.Path) != path {
+			return fmt.Errorf("source asset identity changed since this candidate was resolved; reload the candidate")
+		}
+		refreshed := submitted
+		refreshed.ProfileID, refreshed.LibraryID = 0, 0
+		refreshed.AudioProfileKey, refreshed.TrackProfileKey = "", ""
+		refreshed.ProcessingMode = ProcessingModeAudioOnly
+		currentResolution := resolveProfileAssignmentsFromEffective(&refreshed, resolver.resolve(record))
+		proposedResolution := input.Jobs[index].ProfileResolution
+		mergedResolution := queuePreflightCloneMap(currentResolution)
+		if mergedResolution == nil {
+			mergedResolution = models.JSONMap{}
+		}
+		isCandidateOverride := func(domain string) bool {
+			value, ok := proposedResolution[domain].(models.JSONMap)
+			if !ok {
+				if generic, genericOK := proposedResolution[domain].(map[string]any); genericOK {
+					return workerStringValue(generic["source"]) == "queue_batch_preflight_edit"
+				}
+				return false
+			}
+			return workerStringValue(value["source"]) == "queue_batch_preflight_edit"
+		}
+		if proposedResolution == nil {
+			proposedResolution = models.JSONMap{}
+		}
+		if isCandidateOverride("video") {
+			refreshed.ProfileID = submitted.ProfileID
+			mergedResolution["video"] = queuePreflightCloneDecision(proposedResolution["video"])
+		}
+		if isCandidateOverride("audio") {
+			refreshed.AudioProfileKey = submitted.AudioProfileKey
+			mergedResolution["audio"] = queuePreflightCloneDecision(proposedResolution["audio"])
+		}
+		if isCandidateOverride("tracks") {
+			refreshed.TrackProfileKey = submitted.TrackProfileKey
+			mergedResolution["tracks"] = queuePreflightCloneDecision(proposedResolution["tracks"])
+		}
+		if isCandidateOverride("destination") {
+			refreshed.LibraryID = submitted.LibraryID
+			mergedResolution["destination"] = queuePreflightCloneDecision(proposedResolution["destination"])
+		}
+		if submitted.ProcessingMode != previousAsset.Input.ProcessingMode || isCandidateOverride("video") {
+			refreshed.ProcessingMode = submitted.ProcessingMode
+		}
+		if refreshed.ProfileID == 0 && normalizeQueueProcessingMode(refreshed.ProcessingMode) == ProcessingModeAudioOnly && previousAsset.Input.ProfileID == 0 && previousAsset.ResolvedJob != nil {
+			refreshed.ProfileID = previousAsset.ResolvedJob.ProfileID
+		}
+		refreshed.ProfileResolution = mergedResolution
+		refreshed.resolvedProfileResolution = mergedResolution
+		refreshed.SourceAssetRecordID = previousAsset.AssetRecordID
+		refreshed.ResolveProfileAssignments = false
+		refreshed.skipProfileAssignmentResolve = true
+		candidateInput := refreshed
+		candidateInput.candidateInput = nil
+		candidateInput.preservedProfileSnapshot = nil
+		candidateInput.preservedAudioSnapshot = nil
+		candidateInput.preservedTrackSnapshot = nil
+		candidateInput.preservedDestinationSnapshot = nil
+		candidateInput.ProfileResolution = mergedResolution
+		if !isCandidateOverride("video") {
+			candidateInput.ProfileID = currentResolutionProfileID(currentResolution)
+		}
+		refreshed.candidateInput = &candidateInput
+		if previousAsset.ResolvedJob != nil {
+			previousJob := previousAsset.ResolvedJob
+			if previousJob.ProfileID != refreshed.ProfileID || previousAsset.Input.CadenceModeOverride != submitted.CadenceModeOverride || previousAsset.Input.CadenceFieldOrder != submitted.CadenceFieldOrder {
+				refreshed.preservedProfileSnapshot = nil
+				refreshed.preservedProfileVersion = 0
+				refreshed.preservedProfileCapturedAt = nil
+				refreshed.preservedConversionOverride = nil
+			}
+			if previousAsset.Input.AudioProfileKey != refreshed.AudioProfileKey {
+				refreshed.preservedAudioSnapshot = nil
+			}
+			if previousAsset.Input.TrackProfileKey != refreshed.TrackProfileKey {
+				refreshed.preservedTrackSnapshot = nil
+			}
+			if previousAsset.Input.LibraryID != refreshed.LibraryID {
+				refreshed.preservedDestinationSnapshot = nil
+			}
+		}
+		input.Jobs[index] = refreshed
+	}
+	return nil
+}
+
+func currentResolutionProfileID(resolution models.JSONMap) uint {
+	return queuePreflightAssignmentValue(resolution["video"]).ProfileID
+}
+
+func queuePreflightCloneDecision(value any) models.JSONMap {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return models.JSONMap{}
+	}
+	decision := models.JSONMap{}
+	if err := json.Unmarshal(encoded, &decision); err != nil || decision == nil {
+		return models.JSONMap{}
+	}
+	return decision
 }
 
 func (h QueueHandler) AcceptBatchPreflight(c *gin.Context) {
@@ -1365,6 +1921,25 @@ func (h QueueHandler) AcceptBatchPreflight(c *gin.Context) {
 		if len(selected) == 0 {
 			return fmt.Errorf("select at least one ready asset to queue")
 		}
+		reviewRequired := false
+		for _, asset := range state.Assets {
+			if asset.AssignmentReview != nil && asset.AssignmentReview.Required {
+				reviewRequired = true
+				break
+			}
+		}
+		if reviewRequired && !input.ReviewedAssignmentChanges {
+			return fmt.Errorf("review the before-and-after assignment changes before accepting this candidate")
+		}
+		assignmentChanges, err := queuePreflightAssignmentChanges(tx, state)
+		if err != nil {
+			return fmt.Errorf("check current Queue Preflight assignments: %w", err)
+		}
+		for _, asset := range selected {
+			if len(assignmentChanges[asset.ID]) > 0 {
+				return fmt.Errorf("assignments for %s changed or became unavailable after review; edit and re-resolve the candidate", asset.MediaPath)
+			}
+		}
 		sort.SliceStable(selected, func(i, j int) bool { return selected[i].BatchPosition < selected[j].BatchPosition })
 		var runtime models.RuntimeSnapshot
 		if state.RuntimeSnapshotID == 0 || tx.First(&runtime, state.RuntimeSnapshotID).Error != nil {
@@ -1376,6 +1951,11 @@ func (h QueueHandler) AcceptBatchPreflight(c *gin.Context) {
 		for _, asset := range selected {
 			asset.Status = queuePreflightQueued
 			asset.QueuedJobID = asset.ResolvedJob.ID
+		}
+		if input.ReviewedAssignmentChanges {
+			for index := range state.Assets {
+				state.Assets[index].AssignmentReview = nil
+			}
 		}
 		state.QueuedJobs = append(state.QueuedJobs, created...)
 		stateMap, err := queuePreflightStateMap(state)

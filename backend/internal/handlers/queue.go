@@ -1432,7 +1432,7 @@ func (h QueueHandler) resolveProfileAssignments(input *QueueJobInput) (models.JS
 func resolveProfileAssignmentsFromEffective(input *QueueJobInput, effective EffectiveAssetConfiguration) models.JSONMap {
 	resolution := models.JSONMap{}
 	for mediaType, value := range map[string]AssetConfigurationValue{"video": effective.Video, "audio": effective.Audio, "tracks": effective.Tracks} {
-		if value.Source == "" || value.Selection == configSelectionInherit {
+		if value.Source == "" {
 			continue
 		}
 		resolution[mediaType] = models.JSONMap{
@@ -1448,6 +1448,9 @@ func resolveProfileAssignmentsFromEffective(input *QueueJobInput, effective Effe
 			// map while resolving a batch. Queue snapshot capture adds per-asset
 			// fields to ProfileData, so each candidate must own its nested values.
 			resolution[mediaType].(models.JSONMap)["profileData"] = queuePreflightCloneMap(value.ProfileData)
+		}
+		if value.Selection == configSelectionInherit {
+			continue
 		}
 		switch mediaType {
 

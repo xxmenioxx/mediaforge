@@ -89,7 +89,12 @@ function candidate(overrides: Partial<QueueBatchPreflightResponse> = {}): QueueB
       plan: {
         profile: profile as never,
         profileSnapshot: { profileVersion: 3 }, profileVersion: 3, profileCapturedAt: '2026-09-28T12:00:00Z',
-        profileResolution: { video: { source: 'path_assignment' } }, audioProfileSnapshot: { key: 'audio-v2' },
+        profileResolution: {
+          video: { source: 'path', targetPath: '/raw/Season 1', selection: 'profile', videoProfileId: 7 },
+          audio: { source: 'logical_group', targetPath: '/raw/Season 1', selection: 'profile', profileKey: 'audio-v2' },
+          tracks: { source: 'source_group', targetPath: '/raw', selection: 'profile', profileKey: 'tracks-v4' },
+          destination: { source: 'source_group', targetPath: '/raw', selection: 'value', libraryId: 2 },
+        }, audioProfileSnapshot: { key: 'audio-v2', name: 'Dialogue polish' },
         trackProfileSnapshot: { key: 'tracks-v4' }, constraints: { qualityValue: 18 }, selectedEncoder: 'libx265',
         qualityEvidence: {
           sourceBitrateEvidence: { schemaVersion: 1, samplingPolicyVersion: 1, bitrate: 1_100_000, method: 'packet_sampling', confidence: 'low', requestedWindows: 5, successfulWindows: 4, sampledWindows: [] },
@@ -134,10 +139,25 @@ describe('BatchPreflightDialog', () => {
 
   it('preserves edit inputs, invalidates and resolves again, then accepts the ready identity', async () => {
     const onAccepted = vi.fn();
-    render(<BatchPreflightDialog candidate={candidate()} onClose={vi.fn()} onAccepted={onAccepted} onDiscarded={vi.fn()} />);
+    render(<BatchPreflightDialog
+      candidate={candidate()}
+      profiles={[profile as never, { ...profile, id: 8, name: 'Alternate profile', profileVersion: 2 } as never]}
+      libraries={[{ id: 2, name: 'Preflight library', sourcePath: '/raw', destinationPath: '/library', type: 'video', validationRules: {}, createdAt: '', updatedAt: '' }]}
+      settings={[
+        { key: 'audioEnhancementProfiles', value: { profiles: [{ key: 'audio-v2', name: 'Dialogue polish' }] }, createdAt: '', updatedAt: '' },
+        { key: 'trackProfiles', value: { profiles: [{ key: 'tracks-v4', name: 'English subtitles' }, { key: 'tracks-v5', name: 'Signs and songs' }] }, createdAt: '', updatedAt: '' },
+      ] as never}
+      onClose={vi.fn()}
+      onAccepted={onAccepted}
+      onDiscarded={vi.fn()}
+    />);
 
     expect(screen.getByText('Frozen profile v3')).toBeTruthy();
-    expect(screen.getByText(/video: path_assignment/)).toBeTruthy();
+    expect(screen.getByText(/video: path/)).toBeTruthy();
+    expect(screen.getByText(/Inherited from Path \/raw\/Season 1/)).toBeTruthy();
+    expect(screen.getByText(/Dialogue polish · key audio-v2/)).toBeTruthy();
+    expect(screen.getByText('Destination library')).toBeTruthy();
+    expect(screen.getByText(/Preflight library/)).toBeTruthy();
     expect(screen.getByText(/v3 · captured 2026-09-28/)).toBeTruthy();
     expect(screen.getByText(/Encoder fallback reviewed/)).toBeTruthy();
     expect(screen.getByText('Source video bitrate: 1.10 Mbps')).toBeTruthy();
@@ -148,11 +168,14 @@ describe('BatchPreflightDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     await screen.findByRole('button', { name: 'Resolve Preflight again' });
     expect(mocks.edit).toHaveBeenCalledWith('candidate-1', 1);
-    expect((screen.getByLabelText('Profile ID') as HTMLInputElement).value).toBe('7');
-    expect((screen.getByLabelText('Track profile key') as HTMLInputElement).value).toBe('tracks-v4');
+    expect(screen.getByRole('combobox', { name: 'Video profile' }).textContent).toContain('Frozen profile v3');
+    expect(screen.getByRole('combobox', { name: 'Destination library' }).textContent).toContain('Preflight library');
+    expect(screen.getByRole('combobox', { name: 'Audio profile' }).textContent).toContain('Dialogue polish');
+    expect(screen.getByRole('combobox', { name: 'Track profile' }).textContent).toContain('English subtitles');
 
     fireEvent.change(screen.getByLabelText('Batch name'), { target: { value: 'Season 1 revised' } });
-    fireEvent.change(screen.getByLabelText('Track profile key'), { target: { value: 'tracks-v5' } });
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Track profile' }));
+    fireEvent.click(screen.getByRole('option', { name: /Signs and songs · key tracks-v5/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Resolve Preflight again' }));
     await screen.findByRole('button', { name: /Accept & Queue/ });
     expect(mocks.update).toHaveBeenCalledWith('candidate-1', expect.objectContaining({
@@ -165,6 +188,59 @@ describe('BatchPreflightDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /Accept & Queue/ }));
     await waitFor(() => expect(mocks.accept).toHaveBeenCalledWith('candidate-1', 3, ['asset-1']));
     expect(onAccepted).toHaveBeenCalledWith(expect.objectContaining({ revision: 4 }));
+  });
+
+  it('shows before-and-after assignment names and requires explicit review before queueing', async () => {
+    const asset = candidate().assets[0];
+    const reviewCandidate = candidate({
+      assets: [{
+        ...asset,
+        assignmentReview: {
+          required: true,
+          changes: [{
+            domain: 'video',
+            before: { source: 'path', targetPath: '/raw/Season 1', selection: 'profile', profileId: 7, profileName: 'Path archive', profileVersion: 3 },
+            after: { source: 'queue_batch_preflight_edit', assignmentOrigin: 'path', targetPath: '/raw/Season 1', selection: 'profile', profileId: 8, profileName: 'Alternate profile', profileVersion: 2, candidateOverride: true },
+          }],
+        },
+      }],
+    });
+    render(<BatchPreflightDialog candidate={reviewCandidate} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} profiles={[profile as never, { ...profile, id: 8, name: 'Alternate profile', profileVersion: 2 } as never]} />);
+
+    expect(screen.getByText(/Path archive.*Inherited from Path/)).toBeTruthy();
+    expect(screen.getByText(/Alternate profile.*Candidate-only override over Path/)).toBeTruthy();
+    const accept = screen.getByRole('button', { name: /Accept & Queue/ }) as HTMLButtonElement;
+    expect(accept.disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText('I reviewed the before-and-after assignment changes'));
+    expect(accept.disabled).toBe(false);
+    fireEvent.click(accept);
+    await waitFor(() => expect(mocks.accept).toHaveBeenCalledWith('candidate-1', 1, ['asset-1'], true));
+  });
+
+  it('keeps stale and missing inventory references visible and blocks acceptance', () => {
+    const staleAsset = candidate().assets[0];
+    const missingCandidate = candidate({ assets: [{
+      ...staleAsset,
+      input: { ...staleAsset.input, profileId: 77, libraryId: 88 },
+      assignmentChanges: [{ domain: 'video', reason: 'assignment_changed', before: { profileId: 7, profileName: 'Previous' }, current: { profileId: 9, profileName: 'Current' } }],
+    }] });
+    render(<BatchPreflightDialog candidate={missingCandidate} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} profiles={[]} libraries={[]} settings={[]} />);
+
+    expect(screen.getByTestId('preflight-stale-assignment')).toBeTruthy();
+    expect(screen.getByTestId('preflight-missing-inventory').textContent).toContain('Video Profile ID 77');
+    expect(screen.getByTestId('preflight-missing-inventory').textContent).toContain('Library ID 88');
+    expect((screen.getByRole('button', { name: /Accept & Queue/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('labels audio-only fallback separately from a reusable Video Profile selection', () => {
+    const base = candidate().assets[0];
+    render(<BatchPreflightDialog candidate={candidate({ assets: [{
+      ...base,
+      input: { ...base.input, profileId: 0, processingMode: 'audio_only' },
+      plan: { ...base.plan!, processingMode: 'audio_only', profileResolution: { video: { source: 'path', targetPath: '/raw/Season 1', selection: 'audio_only' } } },
+    }] })} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    expect(screen.getByText(/Audio-only fallback: Frozen profile v3/)).toBeTruthy();
   });
 
   it('reviews and accepts a reopened selected title with nullable snapshots across nested groups', async () => {

@@ -45,6 +45,7 @@ import type {
   QueueBatchInput,
   QueueBatchResponse,
   QueueBatchPreflightInput,
+  QueueBatchPreflightUpdateInput,
   QueueBatchPreflightResponse,
   QueueSelectedAssetsInput,
   QueueSelectedAssetsResponse,
@@ -719,15 +720,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ revision }),
     }),
-  updateQueueBatchPreflight: (id: string, input: QueueBatchPreflightInput) =>
+  updateQueueBatchPreflight: (id: string, input: QueueBatchPreflightUpdateInput) =>
     request<QueueBatchPreflightResponse>(`/api/queue/preflights/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(input),
     }),
-  acceptQueueBatchPreflight: (id: string, revision: number, assetIds: string[]) =>
+  acceptQueueBatchPreflight: (id: string, revision: number, assetIds: string[], reviewedAssignmentChanges = false) =>
     request<QueueBatchPreflightResponse>(`/api/queue/preflights/${encodeURIComponent(id)}/accept`, {
       method: 'POST',
-      body: JSON.stringify({ revision, assetIds }),
+      body: JSON.stringify({ revision, assetIds, ...(reviewedAssignmentChanges ? { reviewedAssignmentChanges: true } : {}) }),
     }),
   removeQueueBatchPreflightAsset: (id: string, revision: number, assetId: string) =>
     request<QueueBatchPreflightResponse>(`/api/queue/preflights/${encodeURIComponent(id)}/remove`, {
