@@ -644,6 +644,15 @@ func TestBatchPreflightProjectsSubtitleActionsAndFreezesQueueOnlyOverride(t *tes
 	if !ok || frozen.SubtitleStreams[3].Action != SubtitleDispositionKeep || frozen.SubtitleStreams[3].ActionSource != "candidate_override" {
 		t.Fatalf("accepted Queue snapshot differs from reviewed subtitle plan: %#v", acceptedCandidate.Jobs[0].TrackProfileSnapshot)
 	}
+	assertQueueJobSubtitleArtifactsMatchFrozenPlan(t, acceptedCandidate.Jobs[0])
+	for _, artifact := range subtitleArtifactsFromJSON(acceptedCandidate.Jobs[0].SubtitleArtifacts) {
+		if artifact.StreamIndex == 5 {
+			t.Fatalf("accepted Queue job retained the inherited Extract artifact after Keep: %#v", artifact)
+		}
+	}
+	if !hasSubtitleArtifactStream(acceptedCandidate.Jobs[0].SubtitleArtifacts, 4) {
+		t.Fatalf("Keep + Extract sidecar was lost from accepted Queue job: %#v", acceptedCandidate.Jobs[0].SubtitleArtifacts)
+	}
 	if _, exists := assetConversionOverrides(fixture.db)[filepath.Clean(fixture.paths[0])]; exists {
 		t.Fatalf("accepting candidate action wrote a persistent Asset Tracks override: %#v", assetConversionOverrides(fixture.db))
 	}
@@ -685,6 +694,146 @@ func TestBatchPreflightProjectsSubtitleActionsAndFreezesQueueOnlyOverride(t *tes
 			t.Fatalf("Remove fallback produced a sidecar for stream 5: %#v", sidecar)
 		}
 	}
+}
+
+func TestQueuePreflightSubtitleDispositionReconcilesArtifactsAndWorkerRetry(t *testing.T) {
+	fontScan := models.ScanResult{
+		Path: "/raw/Episode.mkv", FileName: "Episode.mkv",
+		SubtitleStreams: models.JSONList{
+			models.JSONMap{"index": 2, "codec": "ass", "language": "spa"},
+			models.JSONMap{"index": 3, "codec": "subrip", "language": "eng"},
+		},
+		AttachmentStreams: models.JSONList{models.JSONMap{
+			"index": 7, "type": "attachment", "codec": "ttf", "filename": "Planned.ttf",
+			"mimeType": "font/ttf", "attachmentKind": "FONT", "fontFormat": "TTF",
+		}},
+		AttachmentInventoryAvailable: true,
+	}
+	singleStreamScan := models.ScanResult{
+		Path: "/raw/Single.mkv", FileName: "Single.mkv",
+		SubtitleStreams: models.JSONList{models.JSONMap{"index": 2, "codec": "subrip", "language": "eng"}},
+	}
+	tests := []struct {
+		name         string
+		fallback     string
+		scan         models.ScanResult
+		streamIndex  int
+		action       SubtitleDisposition
+		wantAction   SubtitleDisposition
+		wantSidecars int
+		wantFonts    int
+	}{
+		{name: "Extract to Keep preserves unrelated font and sidecar artifacts", fallback: "extract", scan: fontScan, streamIndex: 3, action: SubtitleDispositionKeep, wantAction: SubtitleDispositionKeep, wantSidecars: 1, wantFonts: 1},
+		{name: "Extract to Remove preserves unrelated font and sidecar artifacts", fallback: "extract", scan: fontScan, streamIndex: 3, action: SubtitleDispositionRemove, wantAction: SubtitleDispositionRemove, wantSidecars: 1, wantFonts: 1},
+		{name: "Remove to Extract adds the newly planned artifact", fallback: "remove", scan: fontScan, streamIndex: 3, action: SubtitleDispositionExtract, wantAction: SubtitleDispositionExtract, wantSidecars: 1},
+		{name: "Keep plus Extract creates a sidecar while retaining the stream", fallback: "extract", scan: fontScan, streamIndex: 3, action: SubtitleDispositionKeepAndExtract, wantAction: SubtitleDispositionKeepAndExtract, wantSidecars: 2, wantFonts: 1},
+		{name: "last Extract sidecar to Keep clears the artifact list", fallback: "extract", scan: singleStreamScan, streamIndex: 2, action: SubtitleDispositionKeep, wantAction: SubtitleDispositionKeep},
+		{name: "last Extract sidecar to Remove clears the artifact list", fallback: "extract", scan: singleStreamScan, streamIndex: 2, action: SubtitleDispositionRemove, wantAction: SubtitleDispositionRemove},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := map[string]any{
+				"trackDispositionVersion": 1, "subtitleMode": "all", "subtitleDisposition": test.fallback,
+				"subtitleSidecarFormats": []string{"original"}, "attachmentPolicy": "remove",
+				"fontAttachmentExportPolicy": "all", "chapterPolicy": "keep",
+			}
+			initialPlan, err := resolveTrackPlan(test.scan, profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			initialPlanMap, err := resolvedTrackPlanMap(initialPlan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot := models.JSONMap{}
+			for key, value := range profile {
+				snapshot[key] = value
+			}
+			snapshot[resolvedTrackPlanSnapshotKey] = initialPlanMap
+			job := &models.QueueJob{MediaPath: test.scan.Path, TrackProfileSnapshot: snapshot}
+			job.SubtitleArtifacts = plannedSidecarArtifactsJSON(*job)
+			if len(initialPlan.SidecarOutputs) > 0 && len(job.SubtitleArtifacts) == 0 {
+				t.Fatal("fixture did not begin with the inherited sidecar artifact")
+			}
+			initialFonts := fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)
+			streamSignature := ""
+			for _, stream := range initialPlan.SubtitleStreams {
+				if stream.StreamIndex == test.streamIndex {
+					streamSignature = stream.StreamSignature
+					break
+				}
+			}
+			if streamSignature == "" {
+				t.Fatalf("canonical plan omitted stream %d identity", test.streamIndex)
+			}
+
+			handler := QueueHandler{}
+			err = handler.applyQueuePreflightSubtitleDispositions(job, test.scan, "source-revision-1", []CandidateSubtitleDispositionOverride{{
+				StreamIndex: test.streamIndex, StreamSignature: streamSignature,
+				SourceRevision: "source-revision-1", Action: test.action,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
+			if !ok {
+				t.Fatal("candidate update lost the canonical resolved plan")
+			}
+			var actualAction SubtitleDisposition
+			for _, stream := range plan.SubtitleStreams {
+				if stream.StreamIndex == test.streamIndex {
+					actualAction = stream.Action
+					break
+				}
+			}
+			if actualAction != test.wantAction {
+				t.Fatalf("resolved action=%q want=%q plan=%#v", actualAction, test.wantAction, plan.SubtitleStreams)
+			}
+			if got := len(plannedSubtitleArtifacts(*job)); got != test.wantSidecars {
+				t.Fatalf("canonical sidecar count=%d want=%d", got, test.wantSidecars)
+			}
+			assertQueueJobSubtitleArtifactsMatchFrozenPlan(t, *job)
+			if test.wantSidecars == 0 && len(job.SubtitleArtifacts) != 0 {
+				t.Fatalf("QueueJob retained stale artifacts after its last sidecar was removed: %#v", job.SubtitleArtifacts)
+			}
+			if got := len(fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts)); got != test.wantFonts {
+				t.Fatalf("font artifacts=%#v want count=%d", fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts), test.wantFonts)
+			}
+			if test.wantFonts > 0 && !reflect.DeepEqual(fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts), initialFonts) {
+				t.Fatalf("candidate subtitle edit changed unrelated planned font artifacts: before=%#v after=%#v", initialFonts, fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts))
+			}
+
+			// Worker retries/restarts consume the frozen plan and must not restore
+			// artifacts from the inherited pre-edit plan.
+			ensurePlannedSidecarArtifacts(job)
+			ensurePlannedSidecarArtifacts(job)
+			assertQueueJobSubtitleArtifactsMatchFrozenPlan(t, *job)
+		})
+	}
+}
+
+func assertQueueJobSubtitleArtifactsMatchFrozenPlan(t *testing.T, job models.QueueJob) {
+	t.Helper()
+	got, err := json.Marshal(job.SubtitleArtifacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(plannedSidecarArtifactsJSON(job))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("QueueJob subtitle artifacts differ from frozen plan: got=%s want=%s", got, want)
+	}
+}
+
+func hasSubtitleArtifactStream(artifacts models.JSONList, streamIndex int) bool {
+	for _, artifact := range subtitleArtifactsFromJSON(artifacts) {
+		if artifact.StreamIndex == streamIndex {
+			return true
+		}
+	}
+	return false
 }
 
 func initialDecisionSourceRevision(asset QueueBatchPreflightAssetResponse, streamIndex int) string {

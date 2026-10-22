@@ -53,9 +53,16 @@ Preflight SHALL allow an operator to explicitly override an individual eligible 
 - **WHEN** the source revision or selected stream identity changes while candidate overrides exist
 - **THEN** Preflight invalidates or rejects those overrides and requires a fresh resolution without matching by language alone
 
+#### Scenario: Candidate override reconciles planned artifacts
+- **WHEN** a candidate-only override changes a subtitle action
+- **THEN** the QueueJob artifact list is rebuilt from the updated canonical plan, including font attachments, and contains no stale sidecar artifacts
+- **AND** if the final sidecar changes to Keep or Remove, the obsolete sidecar entry is removed even when no sidecars remain
+
 ### Requirement: Accepted Queue work retains reviewed subtitle decisions
 
 Accepting a candidate SHALL freeze its reviewed per-stream subtitle decisions, sidecar formats, OCR requirements, and candidate-only overrides into the accepted Queue snapshot consumed by Worker and downstream artifact, Validation, and Publisher paths. Later Settings or Asset changes SHALL NOT alter the accepted snapshot. Existing explicit Asset Tracks selections and canonical role/forced-track rules SHALL retain their precedence and safety behavior.
+
+The accepted QueueJob subtitle artifact list SHALL describe the sidecars and font attachments in that exact frozen plan. Worker retries and restarts SHALL use this reconciled list and SHALL NOT restore artifacts from the inherited plan.
 
 #### Scenario: Accepted plan survives later configuration changes
 - **WHEN** a candidate with reviewed subtitle decisions is accepted and subtitle settings later change

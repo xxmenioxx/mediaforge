@@ -954,6 +954,10 @@ func (h QueueHandler) applyQueuePreflightSubtitleDispositions(
 	} else {
 		delete(job.TrackProfileSnapshot, queueCandidateSubtitleDispositionsKey)
 	}
+	// prepareBatchQueueJob may have generated this list from the inherited plan.
+	// Keep the accepted job's artifact manifest aligned with the candidate plan,
+	// including the empty result when the last sidecar is removed.
+	job.SubtitleArtifacts = plannedSidecarArtifactsJSON(*job)
 	return nil
 }
 
