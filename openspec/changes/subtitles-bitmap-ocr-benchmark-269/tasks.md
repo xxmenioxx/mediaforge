@@ -15,3 +15,4 @@
 ## 4. Validation
 
 - [x] 4.1 Run focused benchmark validation and `./scripts/verify.sh --auto`; record exact outcomes and any limitations.
+- [x] 4.2 Keep peak RSS run-wide rather than candidate-specific and enforce report shape in the harness; verify each row excludes RSS and the report contains exactly one aggregate value.

@@ -105,7 +105,7 @@ def main() -> None:
                 write_pgm(image_path, width, height, pixels)
                 for psm in (6, 7):
                     for dawg_enabled in (True, False):
-                        elapsed, cpu, peak_rss, cer, wer, recognized = [], [], [], [], [], []
+                        elapsed, cpu, cer, wer, recognized = [], [], [], [], []
                         for repeat in range(args.repeats):
                             before = resource.getrusage(resource.RUSAGE_CHILDREN)
                             started = time.perf_counter()
@@ -120,7 +120,6 @@ def main() -> None:
                             elapsed.append(time.perf_counter() - started)
                             after = resource.getrusage(resource.RUSAGE_CHILDREN)
                             cpu.append((after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime))
-                            peak_rss.append(after.ru_maxrss)
                             output = result.stdout.rstrip("\n") if result.returncode == 0 else ""
                             char_error, word_error = scores(expected, output)
                             cer.append(char_error)
@@ -131,7 +130,6 @@ def main() -> None:
                             "psm": psm, "dawg_enabled": dawg_enabled, "repeats": args.repeats,
                             "median_elapsed_seconds": statistics.median(elapsed),
                             "median_child_cpu_seconds": statistics.median(cpu),
-                            "observed_child_peak_rss_bytes": max(peak_rss),
                             "mean_cer": statistics.mean(cer), "mean_wer": statistics.mean(wer),
                             "recognized_line_count": len(recognized[0].splitlines()),
                             "line_count_delta": abs(len(recognized[0].splitlines()) - len(lines)),
@@ -142,13 +140,19 @@ def main() -> None:
         "method": "synthetic 5x7 bitmap glyphs rendered as PGM; direct Tesseract CLI, English, PSM 6/7, DAWG enabled/disabled; no SeConv or PGS/VobSub container path",
         "fixtures": [{"case": i, "ground_truth": "\n".join(lines)} for i, lines in enumerate(CASES)],
         "rows": rows,
+        "resource_measurements": {
+            "run_wide_observed_child_peak_rss_bytes": resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
+            "rss_scope": "aggregate high-water mark across Tesseract subprocesses in this benchmark run; not candidate-specific",
+        },
         "limitations": [
             "Synthetic block glyphs are not representative of broadcast subtitle fonts, alpha, color palettes, outlines, or segmentation.",
             "Direct Tesseract measurements do not represent MVForge SeConv behavior.",
             "Correction false-positive/false-approval metrics and subtitle artifact integrity are not measured.",
-            "Peak RSS is the child-process high-water mark observed by getrusage and may be cumulative on some platforms.",
+            "Child peak RSS is an aggregate run-wide high-water mark and cannot compare candidate memory cost.",
         ],
     }
+    if any(any("rss" in key.casefold() for key in row) for row in rows):
+        raise AssertionError("RSS measurements must not be attributed to individual candidates")
     (root / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"report": str(root / "report.json"), "tesseract_version": version, "rows": len(rows)}))
 

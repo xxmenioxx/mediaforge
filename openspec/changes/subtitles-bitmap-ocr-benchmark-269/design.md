@@ -28,13 +28,13 @@ Command (the result directory must be disposable):
 
 ```bash
 python3 backend/internal/handlers/benchmark/bitmap_ocr_synthetic.py \
-  --workdir /private/tmp/mvforge-dupla-269/attempt-1/synthetic-ocr \
+  --workdir /private/tmp/mvforge-dupla-269/attempt-3/synthetic-ocr \
   --repeats 3
 ```
 
-On the local Tesseract 5.5.3 host, 72 candidate rows ran: 3 cue layouts, shadow off/on, 1x/2x/3x nearest-neighbor glyph scale, PSM 6/7, and DAWG enabled/disabled, with 3 repeats each. Measured CER ranged 0.417–1.000 and WER 0.500–1.000. Per-row median elapsed time ranged 133.0–237.6 ms, child CPU time 127.2–226.9 ms, and observed child peak RSS reached 29.1 MiB. Recognized line count matched the fixture in 60/72 rows and differed in 12/72.
+On the local Tesseract 5.5.3 host, 72 candidate rows ran: 3 cue layouts, shadow off/on, 1x/2x/3x nearest-neighbor glyph scale, PSM 6/7, and DAWG enabled/disabled, with 3 repeats each. Measured CER ranged 0.417–1.000 and WER 0.500–1.000. Per-row median elapsed time ranged 123.4–185.8 ms, child CPU time 119.9–178.2 ms, and the run-wide child peak RSS was 29.0 MiB. RSS is reported only as one run-wide high-water mark; it is not attributable to individual candidates. Recognized line count matched the fixture in 60/72 rows and differed in 12/72.
 
-These results show this tiny-font fixture is hard for Tesseract and that scale/segmentation can change output; they do not establish a useful or safe improvement on real subtitle imagery. Estimates for NAS behavior: none. No false-correction/false-approval, alpha/color, PGS/VobSub segmentation, cue timing, geometry, or SRT/ASS integrity measurement was possible in this fixture.
+These results show this tiny-font fixture is hard for Tesseract and that scale/segmentation can change output; they do not establish a useful or safe improvement on real subtitle imagery. Estimates for NAS behavior: none. No per-candidate memory comparison, false-correction/false-approval, alpha/color, PGS/VobSub segmentation, cue timing, geometry, or SRT/ASS integrity measurement was possible in this fixture.
 
 ## Risks / Trade-offs
 
