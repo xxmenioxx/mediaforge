@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -42,6 +42,12 @@ function renderSettings(initialPath: string) {
       </QueryClientProvider>
     </MemoryRouter>,
   );
+}
+
+function sidebarDraftStatus(sectionTitle: string): boolean {
+  const sidebar = screen.getByRole('navigation', { name: 'Settings sections' });
+  const section = within(sidebar).getByRole('button', { name: new RegExp(`^${sectionTitle}`) });
+  return within(section).queryByText('Draft') !== null;
 }
 
 afterEach(() => {
@@ -138,8 +144,10 @@ describe('Settings domain navigation and drafts', () => {
     await user.click(await screen.findByLabelText('Quality / storage preference'));
     await user.click(await screen.findByRole('option', { name: 'Maximum quality' }));
     expect(screen.getByRole('status').textContent).toBe('Unsaved changes');
+    expect(sidebarDraftStatus('General')).toBe(true);
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(sidebarDraftStatus('General')).toBe(false));
     expect(vi.mocked(api.updateSettingsBatch).mock.calls[0][0].settings).toEqual([
       { key: 'mvforgePreferences', value: expect.objectContaining({ qualityGoal: 'maximum_quality' }) },
     ]);
@@ -149,9 +157,11 @@ describe('Settings domain navigation and drafts', () => {
     await user.click(screen.getByLabelText('Analysis mode'));
     await user.click(await screen.findByRole('option', { name: 'Thorough' }));
     expect(screen.getByRole('status').textContent).toBe('Unsaved changes');
+    expect(sidebarDraftStatus('Analysis')).toBe(true);
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(sidebarDraftStatus('Analysis')).toBe(false));
     expect(vi.mocked(api.updateSettingsBatch).mock.calls[1][0].settings).toEqual([
       { key: 'analysisPolicy', value: expect.objectContaining({ mode: 'thorough' }) },
       { key: 'profileSampleEstimatePolicy', value: expect.objectContaining({ hardwareWindows: 5 }) },
@@ -254,14 +264,17 @@ describe('Settings domain navigation and drafts', () => {
     await user.click(videoHandling);
     await user.click(await screen.findByRole('option', { name: 'Encode as HEVC' }));
     expect(screen.getByRole('status').textContent).toBe('Unsaved changes');
+    expect(sidebarDraftStatus('Asset Defaults')).toBe(true);
     expect(screen.queryByRole('button', { name: 'Save Asset Defaults' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Save failed'));
+    expect(sidebarDraftStatus('Asset Defaults')).toBe(true);
     expect(screen.getByLabelText('Video handling').textContent).toContain('Encode as HEVC');
     expect(vi.mocked(api.updateSettingsBatch).mock.calls[0][0].settings.map((setting) => setting.key)).toEqual(['assetDefaults']);
     await user.click(screen.getByRole('button', { name: 'Discard changes' }));
     await waitFor(() => expect(screen.getByLabelText('Video handling').textContent).toContain('Copy'));
+    await waitFor(() => expect(sidebarDraftStatus('Asset Defaults')).toBe(false));
     expect(screen.getByRole('status').textContent).not.toBe('Unsaved changes');
     expect(api.updateSetting).not.toHaveBeenCalled();
   }, 15000);
@@ -274,9 +287,11 @@ describe('Settings domain navigation and drafts', () => {
     await user.click(await screen.findByRole('button', { name: 'Confirm warning opt-in' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Confirm automatic warning advancement' })).toBeNull());
     expect(screen.getByRole('status').textContent).toBe('Unsaved changes');
+    expect(sidebarDraftStatus('Validation & Publishing')).toBe(true);
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(sidebarDraftStatus('Validation & Publishing')).toBe(false));
     const batch = vi.mocked(api.updateSettingsBatch).mock.calls[0][0].settings;
     expect(batch.map((setting) => setting.key)).toEqual(['validation']);
     expect(batch[0].value).toEqual(expect.objectContaining({ autoAdvanceOutcomes: ['PASS', 'PASS_WITH_WARNINGS'] }));
@@ -307,10 +322,12 @@ describe('Settings domain navigation and drafts', () => {
     const duration = await screen.findByLabelText('Default duration (seconds)');
     fireEvent.change(duration, { target: { value: '30' } });
     expect(screen.getByRole('status').textContent).toBe('Unsaved changes');
+    expect(sidebarDraftStatus('Test Encode')).toBe(true);
     expect(screen.queryByRole('button', { name: 'Save Test Encode settings' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(sidebarDraftStatus('Test Encode')).toBe(false));
     const batch = vi.mocked(api.updateSettingsBatch).mock.calls[0][0].settings;
     expect(batch.map((setting) => setting.key)).toEqual(['testEncodePolicy']);
     expect(batch[0].value).toEqual(expect.objectContaining({ defaultDurationSeconds: 30 }));

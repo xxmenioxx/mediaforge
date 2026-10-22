@@ -12,6 +12,7 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
+import { settingsDraftSectionForRoute } from './settingsDrafts';
 
 export const settingsSections = [
   'general',
@@ -135,9 +136,7 @@ export function resolveSettingsSection(value: string | null): SettingsSection {
 }
 
 export function settingsSectionForDraft(value: SettingsSection): SettingsDraftSection | undefined {
-  return ['pipeline', 'runtime', 'assets', 'archive', 'operations', 'advanced'].includes(value)
-    ? (value as SettingsDraftSection)
-    : undefined;
+  return settingsDraftSectionForRoute(value);
 }
 
 export function SettingsSidebar({
