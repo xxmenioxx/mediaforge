@@ -18,6 +18,7 @@ vi.mock('../api/client', async (importOriginal) => {
       runtimeProfiles: vi.fn(),
       profiles: vi.fn(),
       schedulerRecovery: vi.fn(),
+      updateSetting: vi.fn(),
     },
   };
 });
@@ -82,5 +83,40 @@ describe('Assets Settings historical analysis decisions', () => {
     expect(await screen.findByRole('combobox', { name: 'Validation Mode' })).toBeTruthy();
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
     expect(document.getElementById('validation-settings')).toBeTruthy();
+  });
+
+  it('keeps the existing ASS/SSA style card under Subtitles and preserves other subtitle settings on save', async () => {
+    const user = userEvent.setup();
+    const subtitleSetting = {
+      generateSRTFallbackForASS: true,
+      subtitleStyling: { enabled: false, builtInOverrides: {}, customPresets: [], savedColors: [], recentColors: [] },
+    };
+    vi.mocked(api.settings).mockResolvedValue([{ key: 'subtitleSettings', value: subtitleSetting }] as never);
+    vi.mocked(api.updateSetting).mockResolvedValue({ key: 'subtitleSettings', value: subtitleSetting } as never);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={['/settings?section=subtitles']}>
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Subtitles' })).toBeTruthy();
+    expect(screen.getAllByRole('heading', { name: 'ASS/SSA Styling' })).toHaveLength(1);
+    const fontSize = await screen.findByRole('spinbutton', { name: 'Font size (ASS units)' });
+    await user.clear(fontSize);
+    await user.type(fontSize, '36');
+    await user.click(screen.getByRole('button', { name: 'Save Subtitle Styling' }));
+
+    await waitFor(() => expect(api.updateSetting).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.updateSetting).mock.calls[0]?.[0];
+    expect(payload).toMatchObject({
+      key: 'subtitleSettings',
+      value: {
+        generateSRTFallbackForASS: true,
+        subtitleStyling: { builtInOverrides: { MVF_Default: { fontSize: 36 } } },
+      },
+    });
   });
 });

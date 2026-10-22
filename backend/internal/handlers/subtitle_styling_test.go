@@ -162,6 +162,61 @@ func TestGeneratedASSUsesOneStyleAuthorityAndLeavesSRTNeutral(t *testing.T) {
 	}
 }
 
+func TestSubtitleNumericPresetSettingsPersistAndSerialize(t *testing.T) {
+	settings, err := normalizeSubtitleStylingSettings(map[string]any{
+		"enabled": true,
+		"builtInOverrides": map[string]any{
+			SubtitleStyleDefault: map[string]any{"fontSize": 37, "outlineWidth": 0, "shadowDepth": 0},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err = normalizeSubtitleStylingSettings(subtitleStylingSettingsMap(settings))
+	if err != nil {
+		t.Fatal(err)
+	}
+	preset, ok := settings.BuiltInOverrides[SubtitleStyleDefault]
+	if !ok || preset.FontSize != 37 || preset.OutlineWidth != 0 || preset.ShadowDepth != 0 || preset.AutoFontSize {
+		t.Fatalf("numeric style settings did not persist: %#v", preset)
+	}
+	policy := SubtitleStylePolicy{Settings: settings, Version: subtitleStylePolicyHash(settings)}
+	cues := []canonicalBitmapSubtitleCue{{Start: 1, End: 2, Text: "Configured"}}
+	styled := string(renderBitmapASSCuesWithPolicyAndRole(cues, policy, SubtitleRoleFull))
+	expected := "Arial,37,&H00FFFFFF&,&H00FFFFFF&,&H00000000&,&H00000000&,0,0,1,0,0,2,10,10,10,0,1"
+	if !strings.Contains(styled, expected) {
+		t.Fatalf("generated ASS omitted configured numeric styles: want %q in %q", expected, styled)
+	}
+
+	preset.FontSize = 73
+	preset.AutoFontSize = true
+	settings.BuiltInOverrides[SubtitleStyleDefault] = preset
+	policy = SubtitleStylePolicy{Settings: settings, Version: subtitleStylePolicyHash(settings)}
+	autoStyled := string(renderBitmapASSCuesWithPolicyAndRole(cues, policy, SubtitleRoleFull))
+	if !strings.Contains(autoStyled, "Arial,20,&H00FFFFFF&,&H00FFFFFF&,&H00000000&,&H00000000&,0,0,1,0,0,2,10,10,10,0,1") {
+		t.Fatalf("auto font size did not use the documented fixed 20-unit fallback: %q", autoStyled)
+	}
+
+	for _, invalid := range []struct {
+		field string
+		value int
+	}{
+		{field: "fontSize", value: -1}, {field: "fontSize", value: 201},
+		{field: "outlineWidth", value: -1}, {field: "outlineWidth", value: 21},
+		{field: "shadowDepth", value: -1}, {field: "shadowDepth", value: 21},
+	} {
+		_, err := normalizeSubtitleStylingSettings(map[string]any{
+			"enabled": true,
+			"builtInOverrides": map[string]any{
+				SubtitleStyleDefault: map[string]any{invalid.field: invalid.value},
+			},
+		})
+		if err == nil {
+			t.Fatalf("out-of-range %s=%d was accepted", invalid.field, invalid.value)
+		}
+	}
+}
+
 func TestGenericASSBoundaryPreservesSourceAndRestylesOnlyBaseAssignment(t *testing.T) {
 	source := `[Script Info]
 Title: source

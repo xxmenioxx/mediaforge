@@ -294,7 +294,7 @@ function remoteExecutorsValue(value: unknown): RemoteExecutorsValue {
   };
 }
 
-const settingsSections = ['overview', 'general', 'providers-integrations', 'pipeline', 'analysis', 'runtime', 'assets', 'asset-defaults', 'archive', 'test-encode', 'operations'] as const;
+const settingsSections = ['overview', 'general', 'providers-integrations', 'pipeline', 'subtitles', 'analysis', 'runtime', 'assets', 'asset-defaults', 'archive', 'test-encode', 'operations'] as const;
 type SettingsSection = (typeof settingsSections)[number];
 
 function isSettingsSection(value: string | null): value is SettingsSection {
@@ -884,7 +884,7 @@ export function SettingsPage() {
               />
             ) : null}
 
-            {section === 'pipeline' ? (
+            {section === 'subtitles' ? (
               <SubtitleStylingCard
                 key={JSON.stringify(subtitleStylingValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value))}
                 value={subtitleStylingValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value)}
@@ -1208,6 +1208,7 @@ function SettingsDomainNavigation({ section, onChange }: { section: SettingsSect
     { key: 'general' as const, title: 'General', description: 'Application-wide defaults and shared behavior.', color: 'primary.main' },
     { key: 'providers-integrations' as const, title: 'Providers & Integrations', description: 'Connected services and protected provider credentials.', color: 'secondary.main' },
     { key: 'pipeline' as const, title: 'Pipeline', description: 'Scheduler workflow, workers, automation, working hours, DirectPlay and validation.', color: 'primary.main' },
+    { key: 'subtitles' as const, title: 'Subtitles', description: 'ASS/SSA style presets for generated and explicitly restyled subtitles.', color: 'secondary.main' },
     { key: 'analysis' as const, title: 'Analysis', description: 'Snapshot analysis strategy, confidence, cache reuse and workload limits.', color: 'info.dark' },
     { key: 'runtime' as const, title: 'Runtime', description: 'Effective runtime profiles, host detection, resources, disks, power and FFmpeg encoders.', color: 'info.main' },
     { key: 'assets' as const, title: 'Assets & Storage', description: 'Asset types, categories, inventory, controlled paths, storage roles and workspace strategy.', color: 'success.main' },
@@ -2175,12 +2176,19 @@ function subtitlePresetValue(settings: SubtitleStylingSettings, id: string): Sub
 export function SubtitleStylingCard({ value, saving, onSave }: { value: SubtitleStylingSettings; saving: boolean; onSave: (value: SubtitleStylingSettings) => void }) {
   const [draft, setDraft] = useState(value);
   const [selectedID, setSelectedID] = useState('MVF_Default');
-  const [previousValue, setPreviousValue] = useState(value);
-  if (previousValue !== value) {
-    setPreviousValue(value);
+  const valueSnapshot = JSON.stringify(value);
+  const [previousValueSnapshot, setPreviousValueSnapshot] = useState(valueSnapshot);
+  if (previousValueSnapshot !== valueSnapshot) {
+    setPreviousValueSnapshot(valueSnapshot);
     setDraft(value);
   }
   const preset = subtitlePresetValue(draft, selectedID);
+  const savedPreset = subtitlePresetValue(value, selectedID);
+  const effectiveFontSize = preset.autoFontSize || preset.fontSize === 0 ? 20 : preset.fontSize;
+  const savedEffectiveFontSize = savedPreset.autoFontSize || savedPreset.fontSize === 0 ? 20 : savedPreset.fontSize;
+  const dirty = JSON.stringify(draft) !== valueSnapshot;
+  const defaultValue = subtitleStylingValue(undefined);
+  const canReset = JSON.stringify(draft) !== JSON.stringify(defaultValue);
   const updatePreset = (key: keyof SubtitleStylePresetSettings, next: string | number | boolean) => {
     setDraft((current) => {
       const recentColors = typeof next === 'string' && /^#[0-9a-f]{6}$/i.test(next)
@@ -2203,6 +2211,11 @@ export function SubtitleStylingCard({ value, saving, onSave }: { value: Subtitle
       };
     });
   };
+  const updateBoundedNumber = (key: 'fontSize' | 'outlineWidth' | 'shadowDepth', raw: string, min: number, max: number) => {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return;
+    updatePreset(key, Math.max(min, Math.min(max, Math.round(parsed))));
+  };
   const addCustomPreset = () => {
     const id = `custom_${Date.now().toString(36)}`;
     const custom: SubtitleStylePresetSettings = { ...subtitleStyleDefaults[0], id, displayName: 'Custom style', provenance: 'custom' };
@@ -2215,16 +2228,19 @@ export function SubtitleStylingCard({ value, saving, onSave }: { value: Subtitle
     if (!color) return;
     setDraft((current) => ({ ...current, savedColors: [color, ...current.savedColors.filter((item) => item !== color)].slice(0, 32) }));
   };
+  const resetDraft = () => {
+    setDraft(defaultValue);
+    setSelectedID('MVF_Default');
+  };
   const colorFields = (['primaryColor', 'outlineColor', 'shadowBackColor'] as const);
   const hasInvalidColor = colorFields.some((key) => Boolean(subtitleHexError(preset[key])));
-  const previewStyle = preset as SubtitleStylePresetSettings;
   return (
     <Card>
       <CardContent>
         <Stack spacing={2}>
           <Stack>
-            <Typography variant="h3">Position-aware subtitle styling</Typography>
-            <Typography color="text.secondary" variant="body2">Configure reusable MVForge styles. The backend resolves roles and emits authoritative ASS; this browser preview is intentionally approximate.</Typography>
+            <Typography variant="h3">ASS/SSA Styling</Typography>
+            <Typography color="text.secondary" variant="body2">Configure reusable MVForge styles for generated or explicitly restyled ASS/SSA. Saving a preset does not change existing subtitle files.</Typography>
           </Stack>
           <FormControlLabel control={<Switch checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} />} label="Enable position-aware styling" />
           <FormControlLabel control={<Switch checked={draft.applyToGeneratedASS} disabled={!draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, applyToGeneratedASS: event.target.checked }))} />} label="Style generated subtitles" />
@@ -2246,10 +2262,21 @@ export function SubtitleStylingCard({ value, saving, onSave }: { value: Subtitle
                 </Stack>
               </Grid>
             ))}
+            <Grid size={{ xs: 12, md: 4 }}><TextField label="Font size (ASS units)" type="number" inputProps={{ min: 0, max: 200, step: 1 }} value={preset.fontSize} onChange={(event) => updateBoundedNumber('fontSize', event.target.value, 0, 200)} helperText={`Saved: ${savedPreset.fontSize} ASS units (effective ${savedEffectiveFontSize}) · draft output: ${effectiveFontSize} ASS units`} fullWidth /></Grid>
+            <Grid size={{ xs: 12, md: 4 }}><TextField label="Outline width (ASS units)" type="number" inputProps={{ min: 0, max: 20, step: 1 }} value={preset.outlineWidth} onChange={(event) => updateBoundedNumber('outlineWidth', event.target.value, 0, 20)} helperText={`Saved: ${savedPreset.outlineWidth} · draft: ${preset.outlineWidth} (0–20)`} fullWidth /></Grid>
+            <Grid size={{ xs: 12, md: 4 }}><TextField label="Shadow depth (ASS units)" type="number" inputProps={{ min: 0, max: 20, step: 1 }} value={preset.shadowDepth} onChange={(event) => updateBoundedNumber('shadowDepth', event.target.value, 0, 20)} helperText={`Saved: ${savedPreset.shadowDepth} · draft: ${preset.shadowDepth} (0–20)`} fullWidth /></Grid>
             <Grid size={{ xs: 12, md: 4 }}><TextField label="Opacity" type="number" inputProps={{ min: 0, max: 100 }} value={preset.opacity} onChange={(event) => updatePreset('opacity', Math.max(0, Math.min(100, Number(event.target.value))))} fullWidth /></Grid>
             <Grid size={{ xs: 12, md: 4 }}><TextField label="Font family" value={preset.fontFamily} onChange={(event) => updatePreset('fontFamily', event.target.value)} fullWidth /></Grid>
             <Grid size={{ xs: 12, md: 4 }}><TextField select label="Alignment fallback" value={preset.alignmentBehavior} onChange={(event) => updatePreset('alignmentBehavior', event.target.value)} fullWidth><MenuItem value="bottom">Bottom</MenuItem><MenuItem value="top">Top</MenuItem><MenuItem value="center">Center</MenuItem><MenuItem value="auto">Automatic geometry</MenuItem></TextField></Grid>
           </Grid>
+          <Stack spacing={0.5}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+              <FormControlLabel control={<Switch checked={preset.autoFontSize} onChange={(event) => updatePreset('autoFontSize', event.target.checked)} />} label="Auto font size (fixed 20-unit fallback)" />
+              <FormControlLabel control={<Switch checked={preset.bold} onChange={(event) => updatePreset('bold', event.target.checked)} />} label="Bold" />
+            </Stack>
+            <Typography variant="caption" color="text.secondary">Auto font size is a legacy fixed fallback: generated and restyled ASS uses 20 ASS units. It does not adapt to PlayResX/PlayResY. A font size of 0 also resolves to 20.</Typography>
+            <Typography variant="caption" color="text.secondary">These values are authored ASS style units. Their rendered size depends on the subtitle file's PlayResX/PlayResY and the player's renderer; they are not screen pixels.</Typography>
+          </Stack>
           <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
             {subtitleStylePalette.map((color) => <Button key={color} size="small" variant="outlined" onClick={() => selectPaletteColor(color)} sx={{ minWidth: 42, bgcolor: color, color: '#111' }} aria-label={`Use ${color}`}>{color.slice(1)}</Button>)}
           </Stack>
@@ -2260,12 +2287,36 @@ export function SubtitleStylingCard({ value, saving, onSave }: { value: Subtitle
           </Stack>
           <Typography variant="caption" color="text.secondary">Recent colors ({draft.recentColors.length}/12): {draft.recentColors.join(', ') || 'none'}</Typography>
           <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: '#16181d', color: '#fff' }}>
-            <Typography variant="caption" color="inherit">Preview · browser approximation (font availability, libass metrics, outline scaling may differ)</Typography>
-            <Stack spacing={1} sx={{ mt: 1 }}>
-              {(['Dark background', 'Light background', 'Mixed background'] as const).map((background, backgroundIndex) => <Box key={background} sx={{ p: 1, bgcolor: backgroundIndex === 0 ? '#16181d' : backgroundIndex === 1 ? '#f0f0f0' : '#8b806c', color: previewStyle.primaryColor, textShadow: `1px 1px 0 ${previewStyle.outlineColor}, 2px 2px 0 ${previewStyle.shadowBackColor}` }}><Typography variant="caption" color="inherit">{background}</Typography><Stack direction="row" spacing={1} sx={{ mt: 0.5 }}><span>Top note</span><span>Dialogue</span><span>Lyrics</span><span>Sign</span></Stack></Box>)}
-            </Stack>
+            <Typography variant="caption" color="inherit">Preview · 384×288 PlayRes reference. Browser approximation; font availability and libass/Jellyfin/TV rendering can differ.</Typography>
+            <Grid container spacing={1} sx={{ mt: 0.5 }}>
+              {[
+                { id: 'dark', label: 'Dark background', color: '#16181d' },
+                { id: 'light', label: 'Light background', color: '#f0f0f0' },
+              ].map((sample) => (
+                <Grid key={sample.id} size={{ xs: 12, md: 6 }}>
+                  <Box sx={{ borderRadius: 1, overflow: 'hidden', bgcolor: sample.color }}>
+                    <svg viewBox="0 0 384 288" role="img" aria-label={`${sample.label} dialogue preview`} style={{ display: 'block', width: '100%', height: 'auto' }}>
+                      {preset.shadowDepth > 0 ? (
+                        <defs>
+                          <filter id={`subtitle-shadow-${sample.id}`} x="-50%" y="-50%" width="200%" height="200%">
+                            <feDropShadow dx={preset.shadowDepth} dy={preset.shadowDepth} stdDeviation="0" floodColor={preset.shadowBackColor} floodOpacity={preset.opacity / 100} />
+                          </filter>
+                        </defs>
+                      ) : null}
+                      <rect width="384" height="288" fill={sample.color} />
+                      <text x="192" y="226" textAnchor="middle" fill={preset.primaryColor} fillOpacity={preset.opacity / 100} stroke={preset.outlineColor} strokeOpacity={preset.opacity / 100} strokeWidth={preset.outlineWidth * 2} strokeLinejoin="round" paintOrder="stroke" fontFamily={preset.fontFamily || 'Arial'} fontSize={effectiveFontSize} fontWeight={preset.bold ? 700 : 400} filter={preset.shadowDepth > 0 ? `url(#subtitle-shadow-${sample.id})` : undefined}>We need to leave before sunrise.</text>
+                      <text x="192" y="256" textAnchor="middle" fill={preset.primaryColor} fillOpacity={preset.opacity / 100} stroke={preset.outlineColor} strokeOpacity={preset.opacity / 100} strokeWidth={preset.outlineWidth * 2} strokeLinejoin="round" paintOrder="stroke" fontFamily={preset.fontFamily || 'Arial'} fontSize={effectiveFontSize} fontWeight={preset.bold ? 700 : 400} filter={preset.shadowDepth > 0 ? `url(#subtitle-shadow-${sample.id})` : undefined}>Can you keep up?</text>
+                    </svg>
+                    <Typography variant="caption" color={sample.id === 'light' ? '#333' : '#ddd'} sx={{ display: 'block', px: 1, pb: 0.5 }}>{sample.label}</Typography>
+                  </Box>
+                </Grid>
+              ))}
+            </Grid>
           </Box>
-          <Button startIcon={<SaveIcon />} variant="contained" onClick={() => onSave(draft)} disabled={saving || hasInvalidColor} sx={{ alignSelf: 'flex-start' }}>Save Subtitle Styling</Button>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+            <Button startIcon={<SaveIcon />} variant="contained" onClick={() => onSave(draft)} disabled={saving || !dirty || hasInvalidColor} sx={{ alignSelf: 'flex-start' }}>Save Subtitle Styling</Button>
+            <Button variant="outlined" onClick={resetDraft} disabled={saving || !canReset} sx={{ alignSelf: 'flex-start' }}>Reset to defaults</Button>
+          </Stack>
         </Stack>
       </CardContent>
     </Card>
