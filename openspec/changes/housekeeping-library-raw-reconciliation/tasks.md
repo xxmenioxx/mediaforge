@@ -4,6 +4,7 @@
 - [x] 1.2 Add narrowly scoped Library temporary ownership and recovery checks; verify only exact eligible manual residuals can enter the existing Housekeeping preview.
 - [x] 1.3 Revalidate operation, asset, backup, references, roots, symlink/hardlink state, and file identity at execution; verify stale/replaced candidates remain intact and retries are idempotent.
 - [x] 1.4 Persist/report deferred temporary cleanup failures without changing operation history; verify warning behavior using injected runtime failures.
+- [x] 1.5 Canonicalize test roots and preserve Library ownership across equivalent OS temporary-path aliases, including absent descendants, backups, and unsafe paths.
 
 ## 2. Empty RAW directory protection evidence
 
