@@ -311,6 +311,7 @@ function SubtitleDecisionReview({
   const subtitlePlan = asset.plan?.subtitlePlan;
   const overrides = input.candidateSubtitleDispositions ?? [];
   const changed = overrides.length > 0;
+  const [showAllDecisions, setShowAllDecisions] = useState(false);
   if (!subtitlePlan || subtitlePlan.version !== 1 || subtitlePlan.state === 'unavailable') {
     return <Alert severity="info" variant="outlined" data-testid="subtitle-plan-unavailable">
       Subtitle plan unavailable from this frozen candidate snapshot.
@@ -341,9 +342,11 @@ function SubtitleDecisionReview({
     {subtitlePlan.state === 'no_subtitle_tracks_selected' ? <Alert severity="info" variant="outlined">
       No subtitle tracks selected. This plan schedules zero subtitle preparation, OCR, or sidecar output.
     </Alert> : null}
-    <Box component="details" open={customizing} sx={{ mt: 0.25 }}>
-      <Box component="summary" sx={{ cursor: 'pointer', typography: 'caption' }}>View all subtitle decisions ({subtitlePlan.sourceStreamCount} source streams)</Box>
-      <Stack spacing={0.75} sx={{ mt: 0.75, maxHeight: 360, overflowY: 'auto' }}>
+    <Box sx={{ mt: 0.25 }}>
+      <Button size="small" aria-expanded={showAllDecisions} onClick={() => setShowAllDecisions((expanded) => !expanded)}>
+        {showAllDecisions ? 'Hide subtitle decisions' : `View all subtitle decisions (${subtitlePlan.sourceStreamCount} source streams)`}
+      </Button>
+      {showAllDecisions ? <Stack spacing={0.75} sx={{ mt: 0.75, maxHeight: 360, overflowY: 'auto' }}>
         {subtitlePlan.decisions.map((decision) => {
           const override = overrides.find((item) => item.streamIndex === decision.streamIndex && item.streamSignature === decision.streamSignature);
           const action = override?.action ?? 'inherit';
@@ -386,10 +389,10 @@ function SubtitleDecisionReview({
             {customizing && !decision.queueOverrideAllowed ? <Typography variant="caption" color="text.secondary">{decision.queueOverrideReason || 'The canonical policy controls this stream.'}</Typography> : null}
           </Box>;
         })}
-      </Stack>
+      </Stack> : null}
     </Box>
     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-      {!customizing ? <Button size="small" disabled={busy || subtitlePlan.state === 'no_subtitle_streams'} onClick={onCustomize}>Customize for this Queue</Button> : <>
+      {!customizing ? <Button size="small" disabled={busy || subtitlePlan.state === 'no_subtitle_streams'} onClick={() => { setShowAllDecisions(true); onCustomize(); }}>Customize for this Queue</Button> : <>
         <Button size="small" variant="contained" disabled={busy} onClick={onSave}>Save Queue-only choices</Button>
         <Button size="small" disabled={busy} onClick={onDiscard}>Discard edits</Button>
         {changed ? <Button size="small" disabled={busy} onClick={onRevertAll}>Revert all to Inherit</Button> : null}

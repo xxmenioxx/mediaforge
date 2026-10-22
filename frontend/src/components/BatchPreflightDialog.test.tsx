@@ -233,7 +233,7 @@ describe('BatchPreflightDialog', () => {
     expect(screen.getByText('Sidecar streams 3')).toBeTruthy();
     expect(screen.getByText('Removed 1')).toBeTruthy();
     await user.click(screen.getByText(/View all subtitle decisions/));
-    const french = screen.getByText(/Stream 5 · fra · PGS · French/).closest('[data-testid="subtitle-decision-row]');
+    const french = screen.getByText(/Stream 5 · fra · PGS · French/).closest('[data-testid="subtitle-decision-row"]');
     expect(french?.textContent).toContain('Remove / Skip');
     expect(french?.textContent).toContain('No sidecar planned');
     expect(french?.textContent).not.toContain('OCR');
