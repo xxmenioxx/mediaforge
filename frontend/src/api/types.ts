@@ -750,6 +750,7 @@ export type SubtitleSyncCapability = {
   fixedOffset: boolean;
   automaticAlignment: boolean;
   automaticAlignmentReason?: string;
+  automaticFormats?: string[];
   segmentedAlignment: boolean;
   engines: Array<{ name: string; version: string }>;
 };
@@ -781,6 +782,7 @@ export type SubtitleSyncProposal = {
   engineVersion: string;
   model: 'fixed_offset' | 'affine' | 'segmented' | string;
   offsetMilliseconds: number;
+  confidence?: number;
   scale: number;
   segments: Array<{ startMilliseconds?: number; endMilliseconds?: number; offsetMilliseconds: number; scale: number }>;
   qualityState: string;
@@ -793,7 +795,8 @@ export type SubtitleSyncInput = {
   path: string;
   subtitlePath: string;
   referenceAudioStreamIndex: number;
-  offsetMilliseconds: number;
+  mode?: 'fixed_offset' | 'automatic';
+  offsetMilliseconds?: number;
 };
 
 export type SubtitleSyncApplyInput = SubtitleSyncInput & {

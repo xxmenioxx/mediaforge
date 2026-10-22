@@ -6,9 +6,12 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   InputLabel,
   LinearProgress,
   MenuItem,
+  Radio,
+  RadioGroup,
   Select,
   Stack,
   Table,
@@ -59,6 +62,7 @@ export function SubtitleSyncDialog({
 }) {
   const [audioIndex, setAudioIndex] = useState('');
   const [offset, setOffset] = useState('');
+  const [mode, setMode] = useState<'fixed_offset' | 'automatic'>('fixed_offset');
   const [proposal, setProposal] = useState<SubtitleSyncProposal | null>(null);
   const capability = useQuery({
     queryKey: ['subtitleSyncCapability'],
@@ -84,6 +88,7 @@ export function SubtitleSyncDialog({
     if (!open) return;
     setAudioIndex('');
     setOffset('');
+    setMode('fixed_offset');
     setProposal(null);
     resetPreview();
     resetApply();
@@ -94,18 +99,22 @@ export function SubtitleSyncDialog({
   const offsetValid = Number.isInteger(offsetMilliseconds)
     && Math.abs(offsetMilliseconds) <= 43_200_000
     && (subtitle?.format === 'srt' || offsetMilliseconds % 10 === 0);
+  const automaticSupported = Boolean(
+    capability.data?.automaticAlignment
+    && (capability.data.automaticFormats ?? []).includes(subtitle?.format ?? ''),
+  );
   const canAnalyze = Boolean(
     subtitle
     && capability.data?.enabled
-    && capability.data.fixedOffset
+    && (mode === 'automatic' ? automaticSupported : capability.data.fixedOffset)
     && Number.isInteger(selectedAudioIndex)
-    && offsetValid,
+    && (mode === 'automatic' || offsetValid),
   );
   const input: SubtitleSyncInput | null = subtitle && canAnalyze ? {
     path,
     subtitlePath: subtitle.path,
     referenceAudioStreamIndex: selectedAudioIndex,
-    offsetMilliseconds,
+    ...(mode === 'automatic' ? { mode } : { offsetMilliseconds }),
   } : null;
 
   function analyze() {
@@ -138,8 +147,19 @@ export function SubtitleSyncDialog({
                 </Select>
               </FormControl>
               {audioStreams.length === 0 ? <Alert severity="warning">Audio stream evidence is unavailable. Refresh Analysis before synchronizing.</Alert> : null}
-              <Typography variant="subtitle2">Mode: Fixed offset</Typography>
-              <TextField
+              <FormControl>
+                <Typography variant="subtitle2">Alignment mode</Typography>
+                <RadioGroup value={mode} onChange={(event) => { setMode(event.target.value as 'fixed_offset' | 'automatic'); setProposal(null); }}>
+                  <FormControlLabel value="fixed_offset" control={<Radio size="small" />} label="Manual fixed offset" />
+                  <FormControlLabel
+                    value="automatic"
+                    control={<Radio size="small" />}
+                    label="Automatic fixed-offset proposal (SRT)"
+                    disabled={!automaticSupported}
+                  />
+                </RadioGroup>
+              </FormControl>
+              {mode === 'fixed_offset' ? <TextField
                 type="number"
                 size="small"
                 label="Offset (milliseconds)"
@@ -150,20 +170,22 @@ export function SubtitleSyncDialog({
                   setProposal(null);
                 }}
                 helperText={subtitle.format === 'srt' ? 'Positive values move cues later; negative values move them earlier.' : 'ASS/SSA use centisecond timestamps, so offsets must use 10 ms increments.'}
-              />
-              {capability.data && !capability.data.automaticAlignment ? (
-                <Alert severity="info">{capability.data.automaticAlignmentReason || 'Automatic alignment is unavailable on this server.'} Fixed offset remains available without an external engine.</Alert>
+              /> : null}
+              {capability.data && !automaticSupported ? (
+                <Alert severity="info">{capability.data.automaticAlignmentReason || 'Automatic alignment is unavailable for this format on this server.'} Manual fixed offset remains available.</Alert>
               ) : null}
               {capability.isLoading ? <LinearProgress /> : null}
               {capability.isError ? <Alert severity="warning">{errorMessage(capability.error)}</Alert> : null}
               <Button variant="outlined" onClick={analyze} disabled={!canAnalyze || preview.isPending}>
-                {preview.isPending ? 'Analyzing…' : 'Preview offset'}
+                {preview.isPending ? 'Analyzing…' : mode === 'automatic' ? 'Propose automatic offset' : 'Preview offset'}
               </Button>
               {preview.isError ? <Alert severity="warning">{errorMessage(preview.error)}</Alert> : null}
               {proposal ? (
                 <Stack spacing={1}>
                   <Alert severity="warning">
-                    Manual fixed offset · {proposal.offsetMilliseconds >= 0 ? '+' : ''}{proposal.offsetMilliseconds} ms · Review recommended. No confidence score is generated for a manual correction.
+                    {proposal.model === 'audio-activity-correlation-v1'
+                      ? `Automatic fixed-offset proposal · ${proposal.offsetMilliseconds >= 0 ? '+' : ''}${proposal.offsetMilliseconds} ms · Confidence ${Math.round((proposal.confidence ?? 0) * 100)}%. Review required; timing is not changed until applied.`
+                      : `Manual fixed offset · ${proposal.offsetMilliseconds >= 0 ? '+' : ''}${proposal.offsetMilliseconds} ms · Review recommended. No confidence score is generated for a manual correction.`}
                   </Alert>
                   <Typography variant="body2"><strong>Reference audio:</strong> {audioStreams.find((stream) => stream.index === proposal.referenceAudio.streamIndex) ? audioLabel(audioStreams.find((stream) => stream.index === proposal.referenceAudio.streamIndex)!) : `#${proposal.referenceAudio.streamIndex} · ${proposal.referenceAudio.codec}`}</Typography>
                   <Table size="small" aria-label="Subtitle timing preview">
@@ -188,7 +210,7 @@ export function SubtitleSyncDialog({
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        {proposal ? <Button variant="contained" disabled={apply.isPending} onClick={() => apply.mutate(proposal)}>{apply.isPending ? 'Starting…' : 'Apply Sync'}</Button> : null}
+        {proposal ? <Button variant="contained" disabled={apply.isPending || proposal.qualityState === 'low_confidence_review'} onClick={() => apply.mutate(proposal)}>{apply.isPending ? 'Starting…' : 'Apply Sync'}</Button> : null}
       </DialogActions>
     </Dialog>
   );

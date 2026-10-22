@@ -19,7 +19,7 @@
 ## 4. Optional automatic alignment boundary
 
 - [x] 4.1 Verify ffsubsync and ALASS command contracts, format support, upstream licenses, distribution, and NAS resource limits from primary sources; record the decision before adding an adapter or dependency.
-- [ ] 4.2 Add only a verified optional adapter and backend-authoritative capability reporting; verify missing-engine tests preserve manual fixed-offset use and no low-confidence proposal can auto-apply.
+- [x] 4.2 Add a dependency-free, bounded SRT fixed-offset proposal engine and backend-authoritative runtime capability reporting; verify missing-helper tests preserve manual fixed-offset use, automatic preview is read-only, and low-confidence proposals cannot apply.
 
 ## 5. Verification
 

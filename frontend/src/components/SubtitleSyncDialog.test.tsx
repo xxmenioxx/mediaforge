@@ -65,6 +65,17 @@ const proposal: SubtitleSyncProposal = {
   preview: [{ cueIndex: 1, currentStartMs: 1000, currentEndMs: 2500, proposedStartMs: 2000, proposedEndMs: 3500 }],
 };
 
+const automaticProposal: SubtitleSyncProposal = {
+  ...proposal,
+  proposalId: 'automatic-proposal-1',
+  engine: 'mvforge-audio-activity',
+  engineVersion: 'audio-activity-correlation-v1',
+  model: 'audio-activity-correlation-v1',
+  confidence: 0.74,
+  qualityState: 'automatic_review',
+  diagnostics: ['Audio activity correlation supports a reviewable fixed offset.'],
+};
+
 function renderDialog(onApply = vi.fn().mockResolvedValue(undefined)) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(
@@ -89,7 +100,8 @@ describe('SubtitleSyncDialog', () => {
       enabled: true,
       fixedOffset: true,
       automaticAlignment: false,
-      automaticAlignmentReason: 'Automatic alignment is disabled until resource use is bounded for supported NAS deployments.',
+      automaticAlignmentReason: 'Automatic alignment is unavailable because this backend runtime lacks the bounded FFmpeg analysis helper. Manual fixed offset remains available.',
+      automaticFormats: ['srt'],
       segmentedAlignment: false,
       engines: [],
     });
@@ -103,7 +115,7 @@ describe('SubtitleSyncDialog', () => {
     const analyzeButton = await screen.findByRole('button', { name: 'Preview offset' });
     expect(analyzeButton).toHaveProperty('disabled', true);
     expect(screen.queryByRole('button', { name: 'Apply Sync' })).toBeNull();
-    expect(screen.getByText(/Automatic alignment is disabled until resource use is bounded/)).toBeTruthy();
+    expect(screen.getByText(/lacks the bounded FFmpeg analysis helper/)).toBeTruthy();
 
     await user.click(screen.getByRole('combobox', { name: 'Reference audio' }));
     await user.click(await screen.findByRole('option', { name: '#2 · spa · AC3 · Spanish 5.1' }));
@@ -123,5 +135,36 @@ describe('SubtitleSyncDialog', () => {
 
     await user.click(screen.getByRole('button', { name: 'Apply Sync' }));
     await waitFor(() => expect(onApply).toHaveBeenCalledWith(proposal, expect.anything()));
+  });
+
+  it('requests a backend-supported automatic SRT proposal and exposes its confidence for review', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.subtitleSyncCapability).mockResolvedValue({
+      enabled: true,
+      fixedOffset: true,
+      automaticAlignment: true,
+      automaticFormats: ['srt'],
+      segmentedAlignment: false,
+      engines: [{ name: 'mvforge-audio-activity', version: 'mvforge-audio-activity-v1' }],
+    });
+    vi.mocked(api.previewSubtitleSync).mockResolvedValue(automaticProposal);
+    const { onApply } = renderDialog();
+    await user.click(await screen.findByRole('combobox', { name: 'Reference audio' }));
+    await user.click(await screen.findByRole('option', { name: '#2 · spa · AC3 · Spanish 5.1' }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Automatic fixed-offset proposal (SRT)' })).toHaveProperty('disabled', false));
+    await user.click(screen.getByRole('radio', { name: 'Automatic fixed-offset proposal (SRT)' }));
+
+    const proposeButton = screen.getByRole('button', { name: 'Propose automatic offset' });
+    expect(proposeButton).toHaveProperty('disabled', false);
+    await user.click(proposeButton);
+    expect(api.previewSubtitleSync).toHaveBeenCalledWith({
+      path: '/media/episode.mkv',
+      subtitlePath: subtitle.path,
+      referenceAudioStreamIndex: audio.index,
+      mode: 'automatic',
+    }, expect.anything());
+    expect(await screen.findByText(/Automatic fixed-offset proposal · \+1000 ms · Confidence 74%/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Apply Sync' }));
+    await waitFor(() => expect(onApply).toHaveBeenCalledWith(automaticProposal, expect.anything()));
   });
 });

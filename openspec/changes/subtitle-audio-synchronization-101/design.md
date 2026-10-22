@@ -8,20 +8,21 @@ See `proposal.md` and the added requirements in `specs/subtitles/spec.md`. The c
 
 - Ship a complete manual fixed-offset path for an exact external text sidecar.
 - Require an explicit audio stream selected from the media asset and bind proposals to stable source/audio identities.
+- Offer a bounded, review-only automatic fixed-offset proposal for SRT when the backend runtime exposes its limiter and FFmpeg.
 - Keep proposal generation read-only and make Apply a separate, cancellable operation.
 - Preserve all source bytes except SRT cue timestamps or ASS/SSA Dialogue Start/End fields.
 - Persist bounded applied provenance without adding user-visible backup files.
 
 **Non-Goals:**
 
-- Decoding/analyzing audio for automatic alignment in this first implementation.
+- Drift correction, segmented alignment, and automatic ASS/SSA alignment.
 - Syncing embedded subtitle streams directly; the first implementation targets standalone sidecars so the original embedded stream is never rewritten.
 - OCR, translation, Track Profile or Library-wide automation, bitmap subtitles, and client subtitle selection.
 - Introducing an external runtime dependency before its current command contract, license, NAS cost, and container availability are verified.
 
 ## Decisions
 
-1. **Keep synchronization behind a reusable backend engine contract.** A fixed-offset engine accepts a manually selected offset and returns an engine-neutral proposal. The same proposal model can represent affine and segmented transforms, but runtime capability reports those modes unavailable until a real adapter is installed. Fabricating an automatic proposal from a manual input was rejected.
+1. **Keep synchronization behind a reusable backend engine contract.** The manual fixed-offset engine accepts a manually selected offset. A separate bounded audio-activity engine can propose one fixed offset for SRT and returns the same canonical proposal shape with confidence and review state. Affine and segmented transforms remain unavailable; a manual offset never fabricates automatic confidence.
 
 2. **Resolve only exact owned external SRT/ASS/SSA sidecars in V1.** Reuse the existing Asset Info ownership resolver, canonical subtitle inventory, bounded content reader, and source revision functions. Embedded sources need a canonical lossless extraction before a standalone artifact can be synchronized; that extra artifact planning step is deferred rather than mutating the media container.
 
@@ -35,7 +36,7 @@ See `proposal.md` and the added requirements in `specs/subtitles/spec.md`. The c
 
 7. **Persist only compact applied provenance.** Add one SQLite record per successful synchronization with source revision, selected audio identity, engine/model version, transform, quality state, timestamps, and operation ID. Do not persist cue text, raw engine logs, or credentials. The previous source remains in operation-owned staging only until publication and metadata commit have succeeded; no `.bak` file is exposed beside the subtitle.
 
-8. **Defer automatic-engine selection.** The ffsubsync upstream README and CLI reference document the `ffs <media> -i <input> -o <output>` command and FFmpeg-backed audio reference; the package declares MIT and publishes through PyPI and GHCR. Its CLI parser recognizes subtitle extensions, but its documented CLI labels inputs and outputs as SRT and does not establish byte-preserving ASS/SSA output, so automatic synchronization is limited to SRT if a future adapter is approved. ALASS upstream documents `alass <media> <input.srt> <output.srt>`, `.srt`/`.ssa`/`.ass` support, and FFmpeg/ffprobe use; its repository carries GPL-3.0 and is not included. Neither upstream publishes enforceable CPU/memory limits for MVForge's NAS workloads, and no supported-NAS profile has been measured. Therefore automatic and segmented alignment remain unavailable with the backend reason `Automatic alignment is disabled until resource use is bounded for supported NAS deployments.` Fixed offset remains available without either dependency. Sources reviewed: [ffsubsync README](https://github.com/smacke/ffsubsync/blob/master/README.md), [ffsubsync CLI reference](https://subsync.readthedocs.io/en/latest/cli.html), [ffsubsync setup metadata](https://github.com/smacke/ffsubsync/blob/master/setup.py), [ALASS README](https://github.com/kaegi/alass/blob/master/README.md), and [ALASS license](https://github.com/kaegi/alass/blob/master/LICENSE).
+8. **Keep automatic analysis dependency-free and bounded.** The optional SRT engine decodes only the selected audio stream through the bundled Linux limiter and FFmpeg, downmixes to mono 8 kHz, and streams PCM into 100 ms RMS activity windows without retaining raw audio. It rejects subtitles beyond three hours, serializes analysis to one slot, caps child address space at 512 MiB and CPU at 90 seconds, applies a 120-second wall timeout, limits FFmpeg to one decode/filter thread and a 128 MiB single-allocation ceiling, and caps decoded output to the requested duration. Only a strong, separated cue/activity correlation produces an `automatic_review` fixed offset; ambiguous or low-confidence results are review-only and Apply rejects them. Runtime capability is backend-authoritative and requires Linux, the limiter, and FFmpeg; manual fixed offset remains available if any are absent. Complex drift, segmented alignment, and automatic ASS/SSA remain unavailable. No external alignment dependency is added. The reviewed ffsubsync MIT CLI does not provide the process resource boundary used here, while ALASS carries GPL-3.0; neither is included. Sources reviewed: [ffsubsync README](https://github.com/smacke/ffsubsync/blob/master/README.md), [ffsubsync CLI reference](https://subsync.readthedocs.io/en/latest/cli.html), [ffsubsync setup metadata](https://github.com/smacke/ffsubsync/blob/master/setup.py), [ALASS README](https://github.com/kaegi/alass/blob/master/README.md), [ALASS license](https://github.com/kaegi/alass/blob/master/LICENSE), and [FFmpeg command-line documentation](https://www.ffmpeg.org/ffmpeg.html).
 
 ## Risks / Trade-offs
 

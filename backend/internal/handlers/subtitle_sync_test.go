@@ -102,7 +102,7 @@ func TestFixedOffsetSubtitleSyncProposalRequiresReferenceAndPreviewsBoundedCues(
 	}
 }
 
-func TestSubtitleSyncCapabilityReportsWhyAutomaticAlignmentIsUnavailable(t *testing.T) {
+func TestSubtitleSyncCapabilityReportsBoundedRuntimeAvailability(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, recorder := newSubtitleSyncTestContext(t, nil)
 	(AssetHandler{}).SubtitleSyncCapability(ctx)
@@ -110,16 +110,19 @@ func TestSubtitleSyncCapabilityReportsWhyAutomaticAlignmentIsUnavailable(t *test
 		t.Fatalf("unexpected capability status %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var capability struct {
-		Enabled                  bool   `json:"enabled"`
-		FixedOffset              bool   `json:"fixedOffset"`
-		AutomaticAlignment       bool   `json:"automaticAlignment"`
-		AutomaticAlignmentReason string `json:"automaticAlignmentReason"`
-		SegmentedAlignment       bool   `json:"segmentedAlignment"`
+		Enabled                  bool     `json:"enabled"`
+		FixedOffset              bool     `json:"fixedOffset"`
+		AutomaticAlignment       bool     `json:"automaticAlignment"`
+		AutomaticAlignmentReason string   `json:"automaticAlignmentReason"`
+		AutomaticFormats         []string `json:"automaticFormats"`
+		SegmentedAlignment       bool     `json:"segmentedAlignment"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &capability); err != nil {
 		t.Fatal(err)
 	}
-	if !capability.Enabled || !capability.FixedOffset || capability.AutomaticAlignment || capability.SegmentedAlignment || capability.AutomaticAlignmentReason != subtitleSyncAutomaticUnavailableReason {
+	automaticAvailable := subtitleSyncAutomaticEngineAvailable()
+	expectedReason := subtitleSyncAutomaticUnavailableReason()
+	if !capability.Enabled || !capability.FixedOffset || capability.AutomaticAlignment != automaticAvailable || capability.SegmentedAlignment || capability.AutomaticAlignmentReason != expectedReason || len(capability.AutomaticFormats) != 1 || capability.AutomaticFormats[0] != "srt" {
 		t.Fatalf("unexpected subtitle sync capability: %#v", capability)
 	}
 }

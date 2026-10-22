@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -17,11 +18,13 @@ import (
 )
 
 const (
-	subtitleSyncEngineName                 = "manual"
-	subtitleSyncEngineVersion              = "fixed-offset-v1"
-	subtitleSyncAutomaticUnavailableReason = "Automatic alignment is disabled until resource use is bounded for supported NAS deployments."
-	maxSubtitleSyncOffsetMs                = int64(12 * 60 * 60 * 1000)
-	maxSubtitleSyncPreview                 = 12
+	subtitleSyncEngineName       = "manual"
+	subtitleSyncEngineVersion    = "fixed-offset-v1"
+	subtitleSyncModeFixedOffset  = "fixed_offset"
+	subtitleSyncModeAutomatic    = "automatic"
+	maxSubtitleSyncOffsetMs      = int64(12 * 60 * 60 * 1000)
+	maxSubtitleSyncPreview       = 12
+	maxSubtitleSyncProposalCache = 64
 )
 
 type SubtitleSyncAudioReference struct {
@@ -56,6 +59,7 @@ type SubtitleSyncProposal struct {
 	EngineVersion      string                     `json:"engineVersion"`
 	Model              string                     `json:"model"`
 	OffsetMilliseconds int64                      `json:"offsetMilliseconds"`
+	Confidence         float64                    `json:"confidence,omitempty"`
 	Scale              float64                    `json:"scale"`
 	Segments           []SubtitleSyncSegment      `json:"segments"`
 	QualityState       string                     `json:"qualityState"`
@@ -73,6 +77,7 @@ type SubtitleSyncSegment struct {
 
 type SubtitleSyncAnalysisInput struct {
 	SubtitlePath       string
+	MediaPath          string
 	SourceIdentity     string
 	SourceRevision     string
 	Representation     string
@@ -145,7 +150,9 @@ type subtitleSyncProposalIdentity struct {
 	EngineVersion      string                     `json:"engineVersion"`
 	Model              string                     `json:"model"`
 	OffsetMilliseconds int64                      `json:"offsetMilliseconds"`
+	Confidence         float64                    `json:"confidence,omitempty"`
 	Scale              float64                    `json:"scale"`
+	QualityState       string                     `json:"qualityState"`
 }
 
 func subtitleSyncProposalID(proposal SubtitleSyncProposal) string {
@@ -153,7 +160,8 @@ func subtitleSyncProposalID(proposal SubtitleSyncProposal) string {
 		SourceIdentity: proposal.SourceIdentity, SourceRevision: proposal.SourceRevision,
 		Representation: proposal.Representation, ReferenceAudio: proposal.ReferenceAudio,
 		Engine: proposal.Engine, EngineVersion: proposal.EngineVersion, Model: proposal.Model,
-		OffsetMilliseconds: proposal.OffsetMilliseconds, Scale: proposal.Scale,
+		OffsetMilliseconds: proposal.OffsetMilliseconds, Confidence: proposal.Confidence, Scale: proposal.Scale,
+		QualityState: proposal.QualityState,
 	}
 	encoded, _ := json.Marshal(identity)
 	hash := sha256.Sum256(encoded)
@@ -164,6 +172,7 @@ type subtitleSyncAnalysisRequest struct {
 	Path                      string `json:"path" binding:"required"`
 	SubtitlePath              string `json:"subtitlePath" binding:"required"`
 	ReferenceAudioStreamIndex *int   `json:"referenceAudioStreamIndex"`
+	Mode                      string `json:"mode,omitempty"`
 	OffsetMilliseconds        *int64 `json:"offsetMilliseconds"`
 }
 
@@ -171,6 +180,7 @@ type subtitleSyncApplyRequest struct {
 	Path                      string `json:"path" binding:"required"`
 	SubtitlePath              string `json:"subtitlePath" binding:"required"`
 	ReferenceAudioStreamIndex *int   `json:"referenceAudioStreamIndex"`
+	Mode                      string `json:"mode,omitempty"`
 	OffsetMilliseconds        *int64 `json:"offsetMilliseconds"`
 	SourceRevision            string `json:"sourceRevision" binding:"required"`
 	ProposalID                string `json:"proposalId" binding:"required"`
@@ -181,30 +191,117 @@ type subtitleSyncOperationView struct {
 	AppliedAt *time.Time           `json:"appliedAt,omitempty"`
 }
 
+type cachedSubtitleSyncProposal struct {
+	proposal  SubtitleSyncProposal
+	expiresAt time.Time
+}
+
+var subtitleSyncProposals = struct {
+	sync.Mutex
+	items map[string]cachedSubtitleSyncProposal
+}{items: make(map[string]cachedSubtitleSyncProposal)}
+
+func rememberSubtitleSyncProposal(proposal SubtitleSyncProposal) {
+	if proposal.ProposalID == "" {
+		return
+	}
+	now := time.Now()
+	subtitleSyncProposals.Lock()
+	defer subtitleSyncProposals.Unlock()
+	for id, item := range subtitleSyncProposals.items {
+		if !item.expiresAt.After(now) {
+			delete(subtitleSyncProposals.items, id)
+		}
+	}
+	if len(subtitleSyncProposals.items) >= maxSubtitleSyncProposalCache {
+		var oldestID string
+		var oldest time.Time
+		for id, item := range subtitleSyncProposals.items {
+			if oldestID == "" || item.expiresAt.Before(oldest) {
+				oldestID, oldest = id, item.expiresAt
+			}
+		}
+		delete(subtitleSyncProposals.items, oldestID)
+	}
+	subtitleSyncProposals.items[proposal.ProposalID] = cachedSubtitleSyncProposal{proposal: proposal, expiresAt: now.Add(15 * time.Minute)}
+}
+
+func takeSubtitleSyncProposal(proposalID string) (SubtitleSyncProposal, bool) {
+	now := time.Now()
+	subtitleSyncProposals.Lock()
+	defer subtitleSyncProposals.Unlock()
+	item, ok := subtitleSyncProposals.items[proposalID]
+	delete(subtitleSyncProposals.items, proposalID)
+	if !ok || !item.expiresAt.After(now) {
+		return SubtitleSyncProposal{}, false
+	}
+	return item.proposal, true
+}
+
+func normalizeSubtitleSyncMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return subtitleSyncModeFixedOffset
+	}
+	return mode
+}
+
 func (h AssetHandler) SubtitleSyncCapability(c *gin.Context) {
+	automaticAvailable := subtitleSyncAutomaticEngineAvailable()
+	engines := []gin.H{{"name": subtitleSyncEngineName, "version": subtitleSyncEngineVersion}}
+	automaticReason := subtitleSyncAutomaticUnavailableReason()
+	if automaticAvailable {
+		engines = append(engines, gin.H{"name": "mvforge-audio-activity", "version": subtitleSyncAutoModel})
+		automaticReason = ""
+	}
 	c.JSON(200, gin.H{
-		"enabled": true, "fixedOffset": true, "automaticAlignment": false, "segmentedAlignment": false,
-		"automaticAlignmentReason": subtitleSyncAutomaticUnavailableReason,
-		"engines":                  []gin.H{{"name": subtitleSyncEngineName, "version": subtitleSyncEngineVersion}},
+		"enabled": true, "fixedOffset": true, "automaticAlignment": automaticAvailable, "segmentedAlignment": false,
+		"automaticAlignmentReason": automaticReason, "automaticFormats": []string{"srt"}, "engines": engines,
 	})
 }
 
 func (h AssetHandler) AnalyzeSubtitleSync(c *gin.Context) {
 	var input subtitleSyncAnalysisRequest
-	if err := c.ShouldBindJSON(&input); err != nil || input.ReferenceAudioStreamIndex == nil || input.OffsetMilliseconds == nil || *input.ReferenceAudioStreamIndex < 0 {
-		c.JSON(400, gin.H{"error": "path, subtitlePath, referenceAudioStreamIndex, and offsetMilliseconds are required"})
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(400, gin.H{"error": "invalid subtitle sync analysis request"})
 		return
 	}
-	proposal, _, _, err := h.resolveAndAnalyzeSubtitleSync(c.Request.Context(), input.Path, input.SubtitlePath, *input.ReferenceAudioStreamIndex, *input.OffsetMilliseconds)
+	mode := normalizeSubtitleSyncMode(input.Mode)
+	if input.ReferenceAudioStreamIndex == nil || *input.ReferenceAudioStreamIndex < 0 || (mode == subtitleSyncModeFixedOffset && input.OffsetMilliseconds == nil) || (mode == subtitleSyncModeAutomatic && input.OffsetMilliseconds != nil) || (mode != subtitleSyncModeFixedOffset && mode != subtitleSyncModeAutomatic) {
+		c.JSON(400, gin.H{"error": "path, subtitlePath, referenceAudioStreamIndex, and a valid analysis mode are required"})
+		return
+	}
+	if mode == subtitleSyncModeAutomatic && !subtitleSyncAutomaticEngineAvailable() {
+		c.JSON(503, gin.H{"error": subtitleSyncAutomaticUnavailableReason()})
+		return
+	}
+	offset := int64(0)
+	if input.OffsetMilliseconds != nil {
+		offset = *input.OffsetMilliseconds
+	}
+	proposal, _, _, err := h.resolveAndAnalyzeSubtitleSync(c.Request.Context(), input.Path, input.SubtitlePath, *input.ReferenceAudioStreamIndex, mode, offset)
 	if err != nil {
 		writeSubtitleSyncRequestError(c, err)
 		return
 	}
+	if mode == subtitleSyncModeAutomatic {
+		rememberSubtitleSyncProposal(proposal)
+	}
 	c.JSON(200, proposal)
 }
 
-func (h AssetHandler) resolveAndAnalyzeSubtitleSync(ctx context.Context, assetPath, subtitlePath string, audioStreamIndex int, offsetMilliseconds int64) (SubtitleSyncProposal, string, subtitleTranslationSourceResponse, error) {
-	if err := validateSubtitleSyncOffset(strings.TrimPrefix(strings.ToLower(filepath.Ext(subtitlePath)), "."), offsetMilliseconds); err != nil {
+func (h AssetHandler) resolveAndAnalyzeSubtitleSync(ctx context.Context, assetPath, subtitlePath string, audioStreamIndex int, mode string, offsetMilliseconds int64) (SubtitleSyncProposal, string, subtitleTranslationSourceResponse, error) {
+	representation := strings.TrimPrefix(strings.ToLower(filepath.Ext(subtitlePath)), ".")
+	if mode == subtitleSyncModeAutomatic {
+		if representation != "srt" {
+			return SubtitleSyncProposal{}, "", subtitleTranslationSourceResponse{}, errors.New("automatic alignment currently supports SRT only; ASS and SSA retain manual fixed offset")
+		}
+		if offsetMilliseconds != 0 {
+			return SubtitleSyncProposal{}, "", subtitleTranslationSourceResponse{}, errors.New("automatic alignment does not accept a caller-provided offset")
+		}
+	} else if mode != subtitleSyncModeFixedOffset {
+		return SubtitleSyncProposal{}, "", subtitleTranslationSourceResponse{}, errors.New("subtitle synchronization analysis mode is invalid")
+	} else if err := validateSubtitleSyncOffset(representation, offsetMilliseconds); err != nil {
 		return SubtitleSyncProposal{}, "", subtitleTranslationSourceResponse{}, err
 	}
 	mediaPath, source, err := h.resolveSubtitleSyncSource(ctx, assetPath, subtitlePath)
@@ -219,11 +316,16 @@ func (h AssetHandler) resolveAndAnalyzeSubtitleSync(ctx context.Context, assetPa
 	if err != nil {
 		return SubtitleSyncProposal{}, "", subtitleTranslationSourceResponse{}, err
 	}
-	proposal, err := (fixedOffsetSubtitleSyncEngine{}).Analyze(ctx, SubtitleSyncAnalysisInput{
-		SubtitlePath: source.ExternalPath, SourceIdentity: source.SourceIdentity, SourceRevision: source.SourceRevision,
+	analysisInput := SubtitleSyncAnalysisInput{
+		SubtitlePath: source.ExternalPath, MediaPath: mediaPath, SourceIdentity: source.SourceIdentity, SourceRevision: source.SourceRevision,
 		Representation: source.Representation, ReferenceAudio: audio,
 		OffsetMilliseconds: offsetMilliseconds, Source: content,
-	})
+	}
+	var engine SubtitleSyncEngine = fixedOffsetSubtitleSyncEngine{}
+	if mode == subtitleSyncModeAutomatic {
+		engine = automaticSubtitleSyncEngine{decoder: ffmpegSubtitleSyncPCMDecoder{}}
+	}
+	proposal, err := engine.Analyze(ctx, analysisInput)
 	if err != nil {
 		return SubtitleSyncProposal{}, "", subtitleTranslationSourceResponse{}, err
 	}
@@ -280,16 +382,56 @@ func writeSubtitleSyncRequestError(c *gin.Context, err error) {
 
 func (h AssetHandler) StartSubtitleSync(c *gin.Context) {
 	var input subtitleSyncApplyRequest
-	if err := c.ShouldBindJSON(&input); err != nil || input.ReferenceAudioStreamIndex == nil || input.OffsetMilliseconds == nil || *input.ReferenceAudioStreamIndex < 0 || strings.TrimSpace(input.ProposalID) == "" || strings.TrimSpace(input.SourceRevision) == "" {
-		c.JSON(400, gin.H{"error": "path, subtitlePath, referenceAudioStreamIndex, offsetMilliseconds, sourceRevision, and proposalId are required"})
+	if err := c.ShouldBindJSON(&input); err != nil || input.ReferenceAudioStreamIndex == nil || *input.ReferenceAudioStreamIndex < 0 || strings.TrimSpace(input.ProposalID) == "" || strings.TrimSpace(input.SourceRevision) == "" {
+		c.JSON(400, gin.H{"error": "path, subtitlePath, referenceAudioStreamIndex, sourceRevision, and proposalId are required"})
 		return
 	}
-	proposal, mediaPath, source, err := h.resolveAndAnalyzeSubtitleSync(c.Request.Context(), input.Path, input.SubtitlePath, *input.ReferenceAudioStreamIndex, *input.OffsetMilliseconds)
+	mode := normalizeSubtitleSyncMode(input.Mode)
+	var proposal SubtitleSyncProposal
+	var mediaPath string
+	var source subtitleTranslationSourceResponse
+	var err error
+	if mode == subtitleSyncModeAutomatic {
+		if input.OffsetMilliseconds != nil {
+			c.JSON(400, gin.H{"error": "automatic apply uses the reviewed proposal offset"})
+			return
+		}
+		var found bool
+		proposal, found = takeSubtitleSyncProposal(strings.TrimSpace(input.ProposalID))
+		if !found {
+			c.JSON(409, gin.H{"error": "automatic proposal expired; analyze the current subtitle and audio again"})
+			return
+		}
+		if proposal.QualityState != "automatic_review" {
+			c.JSON(422, gin.H{"error": "low-confidence automatic proposals cannot be applied; choose a manual fixed offset after review"})
+			return
+		}
+		if !subtitleSyncAutomaticEngineAvailable() {
+			c.JSON(503, gin.H{"error": subtitleSyncAutomaticUnavailableReason()})
+			return
+		}
+		mediaPath, source, err = h.resolveSubtitleSyncSource(c.Request.Context(), input.Path, input.SubtitlePath)
+		if err == nil && (proposal.SourceRevision != strings.TrimSpace(input.SourceRevision) || proposal.SubtitlePath != source.ExternalPath || proposal.SourceIdentity != source.SourceIdentity || proposal.SourceRevision != source.SourceRevision) {
+			err = errors.New("subtitle sync proposal is stale; analyze the current subtitle and audio stream again")
+		}
+		if err == nil {
+			var currentAudio SubtitleSyncAudioReference
+			currentAudio, err = resolveSubtitleSyncAudio(c.Request.Context(), mediaPath, *input.ReferenceAudioStreamIndex)
+			if err == nil && (proposal.ReferenceAudio != currentAudio || proposal.ReferenceAudio.StreamIndex != *input.ReferenceAudioStreamIndex) {
+				err = errors.New("subtitle sync proposal is stale; analyze the current subtitle and audio stream again")
+			}
+		}
+	} else if mode == subtitleSyncModeFixedOffset && input.OffsetMilliseconds != nil {
+		proposal, mediaPath, source, err = h.resolveAndAnalyzeSubtitleSync(c.Request.Context(), input.Path, input.SubtitlePath, *input.ReferenceAudioStreamIndex, mode, *input.OffsetMilliseconds)
+	} else {
+		c.JSON(400, gin.H{"error": "analysis mode or fixed offset is invalid"})
+		return
+	}
 	if err != nil {
 		writeSubtitleSyncRequestError(c, err)
 		return
 	}
-	if proposal.SourceRevision != strings.TrimSpace(input.SourceRevision) || proposal.ProposalID != strings.TrimSpace(input.ProposalID) {
+	if mode == subtitleSyncModeFixedOffset && (proposal.SourceRevision != strings.TrimSpace(input.SourceRevision) || proposal.ProposalID != strings.TrimSpace(input.ProposalID)) {
 		c.JSON(409, gin.H{"error": "subtitle sync proposal is stale; analyze the current subtitle and audio stream again"})
 		return
 	}
@@ -319,7 +461,11 @@ func (h AssetHandler) StartSubtitleSync(c *gin.Context) {
 func (h AssetHandler) runSubtitleSyncOperation(ctx context.Context, operationID, workspace, mediaPath string, source subtitleTranslationSourceResponse, proposal SubtitleSyncProposal) {
 	defer cleanupSubtitleOperationWorkspace(workspace)
 	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
-		operation.Phase, operation.Progress, operation.Message = "validating", 25, "Applying fixed offset to canonical subtitle timing"
+		message := "Applying fixed offset to canonical subtitle timing"
+		if proposal.Model == subtitleSyncAutoModel {
+			message = "Applying reviewed automatic fixed-offset proposal to canonical subtitle timing"
+		}
+		operation.Phase, operation.Progress, operation.Message = "validating", 25, message
 	})
 	content, err := readBoundedTranslationSubtitle(source.ExternalPath)
 	if err == nil && ctx.Err() != nil {
@@ -327,7 +473,11 @@ func (h AssetHandler) runSubtitleSyncOperation(ctx context.Context, operationID,
 	}
 	var output []byte
 	if err == nil {
-		output, err = (fixedOffsetSubtitleSyncEngine{}).Apply(ctx, content, proposal)
+		var engine SubtitleSyncEngine = fixedOffsetSubtitleSyncEngine{}
+		if proposal.Model == subtitleSyncAutoModel {
+			engine = automaticSubtitleSyncEngine{}
+		}
+		output, err = engine.Apply(ctx, content, proposal)
 	}
 	stagePath := filepath.Join(workspace, "subtitle-output."+source.Representation)
 	if err == nil {

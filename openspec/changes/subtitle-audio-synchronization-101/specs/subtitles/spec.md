@@ -16,6 +16,14 @@ Asset Info SHALL offer synchronization for eligible SRT and ASS subtitle artifac
 - **WHEN** the user requests automatic synchronization and no compatible engine is available
 - **THEN** the backend reports the unavailable capability and leaves the manual fixed-offset mode available without fabricating confidence or a proposal
 
+#### Scenario: Bounded automatic SRT proposal is available
+- **WHEN** Asset Info requests automatic synchronization for SRT and the backend has the bounded FFmpeg runtime capability
+- **THEN** the backend streams bounded activity evidence from only the explicitly selected audio stream and returns a canonical fixed-offset proposal with confidence, review state, and a bounded cue preview without changing the subtitle
+
+#### Scenario: Automatic analysis is unsupported or ambiguous
+- **WHEN** the subtitle is not SRT, analysis exceeds its bounded duration/time/resource limits, or cue/audio activity correlation is low-confidence
+- **THEN** the backend rejects unsupported analysis or returns a low-confidence review-only proposal that Apply cannot publish; manual fixed offset remains available
+
 ### Requirement: Synchronization changes timing while preserving subtitle content
 
 Applying a pure synchronization transform SHALL change only canonical cue timing fields. SRT dialogue and cue structure SHALL remain unchanged. ASS/SSA styles, Script Info, Events structure, dialogue text, override tags, positioning, karaoke structure, drawings, and attachments SHALL remain unchanged. The operation SHALL reject malformed or unsafe timing output before publication.
