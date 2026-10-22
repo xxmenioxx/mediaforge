@@ -203,6 +203,21 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
                 {"items": [publication]}, 41, 3, "job-result:41:execution:3", "stale-validation",
             )
 
+    def test_manual_publish_acceptance_requires_durable_request_identity(self) -> None:
+        publication_id = pipeline_smoke.assert_manual_publish_accepted({
+            "status": "accepted",
+            "requestId": "manual-request-41",
+            "publicationId": "publication-41",
+        })
+        self.assertEqual(publication_id, "publication-41")
+        for response in (
+            {"status": "published", "requestId": "manual-request-41", "publicationId": "publication-41"},
+            {"status": "accepted", "requestId": "manual-request-41"},
+            {"status": "accepted", "publicationId": "publication-41"},
+        ):
+            with self.subTest(response=response), self.assertRaises(pipeline_smoke.SmokeFailure):
+                pipeline_smoke.assert_manual_publish_accepted(response)
+
     def test_run_root_refuses_repository_and_nas_paths(self) -> None:
         for path in (pipeline_smoke.REPO_ROOT, Path("/volume1"), Path("/volume2")):
             with self.subTest(path=path), self.assertRaises(pipeline_smoke.SmokeFailure):

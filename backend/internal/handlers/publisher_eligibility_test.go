@@ -161,12 +161,25 @@ func TestPublisherManualEligibilityAllowsReviewRequiredPublisherOverrideReadOnly
 	request.Header.Set("Content-Type", "application/json")
 	publishResponse = httptest.NewRecorder()
 	router.ServeHTTP(publishResponse, request)
-	if publishResponse.Code != http.StatusOK {
+	if publishResponse.Code != http.StatusAccepted {
 		t.Fatalf("manual publication status=%d body=%s", publishResponse.Code, publishResponse.Body.String())
 	}
-	var publishResult PublishResult
-	if err := json.Unmarshal(publishResponse.Body.Bytes(), &publishResult); err != nil || publishResult.Status != "published" {
-		t.Fatalf("REVIEW_REQUIRED Result with a valid Publisher override was not manually publishable: result=%#v err=%v", publishResult, err)
+	var publishResult ManualPublishRequestResult
+	if err := json.Unmarshal(publishResponse.Body.Bytes(), &publishResult); err != nil || publishResult.Status != "accepted" || publishResult.RequestID == "" || publishResult.PublicationID == "" {
+		t.Fatalf("REVIEW_REQUIRED Result with a valid Publisher override was not durably accepted for manual publishing: result=%#v err=%v", publishResult, err)
+	}
+	var acceptedPublication models.PublisherPublication
+	if err := fixture.db.Where("publication_id = ?", publishResult.PublicationID).First(&acceptedPublication).Error; err != nil {
+		t.Fatalf("durably accepted manual publication identity was not persisted: %v", err)
+	}
+	if acceptedPublication.ManualRequestID != publishResult.RequestID || acceptedPublication.ManualRequestStatus != publisherManualRequestAccepted {
+		t.Fatalf("manual Publisher request identity/state mismatch: result=%#v publication=%#v", publishResult, acceptedPublication)
+	}
+	if acceptedPublication.ValidationRunID != runBefore.RunID || len(acceptedPublication.ValidationOverrideEventIDs) != 1 || acceptedPublication.ValidationOverrideEventIDs[0] != event.EventID {
+		t.Fatalf("accepted request did not preserve Validation and override identity: publication=%#v", acceptedPublication)
+	}
+	if _, err := os.Lstat(fixture.destination); !os.IsNotExist(err) {
+		t.Fatalf("HTTP acceptance performed delivery before Publisher execution: destination=%q err=%v", fixture.destination, err)
 	}
 	var runAfterPublish models.ValidationRun
 	if err := fixture.db.Where("run_id = ?", runBefore.RunID).First(&runAfterPublish).Error; err != nil {
