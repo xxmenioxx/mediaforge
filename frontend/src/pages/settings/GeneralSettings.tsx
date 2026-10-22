@@ -10,39 +10,33 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import SaveIcon from '@mui/icons-material/Save';
-import { useState } from 'react';
 import type { MVForgePreferences } from '../../api/types';
 import { defaultMVForgePreferences } from '../../mvforgePreferences';
 
-export function GeneralSettingsDomain({ value, availableEncoders, saving, onSave }: {
+export function GeneralSettingsDomain({ value, availableEncoders, onChange }: {
   value: MVForgePreferences;
   availableEncoders: string[];
-  saving: boolean;
-  onSave: (value: MVForgePreferences) => void;
+  onChange: (value: MVForgePreferences) => void;
 }) {
   return (
     <Grid container spacing={2}>
       <Grid size={{ xs: 12 }}>
         <MVForgePreferencesCard
-          key={JSON.stringify(value)}
           value={value}
           availableEncoders={availableEncoders}
-          saving={saving}
-          onSave={onSave}
+          onChange={onChange}
         />
       </Grid>
     </Grid>
   );
 }
 
-function MVForgePreferencesCard({ value, availableEncoders, saving, onSave }: {
+function MVForgePreferencesCard({ value, availableEncoders, onChange }: {
   value: MVForgePreferences;
   availableEncoders: string[];
-  saving: boolean;
-  onSave: (value: MVForgePreferences) => void;
+  onChange: (value: MVForgePreferences) => void;
 }) {
-  const [draft, setDraft] = useState<MVForgePreferences>(value);
+  const draft = value;
   const candidates = draft.executionPreference === 'hardware'
     ? [
         { value: 'auto', label: 'Auto · first available hardware encoder' },
@@ -73,7 +67,7 @@ function MVForgePreferencesCard({ value, availableEncoders, saving, onSave }: {
           </Stack>
           <Grid container spacing={1.5}>
             <Grid size={{ xs: 12, md: 4 }}>
-              <TextField select fullWidth label="Quality / storage preference" value={draft.qualityGoal} onChange={(event) => setDraft((current) => ({ ...current, qualityGoal: event.target.value as MVForgePreferences['qualityGoal'] }))}>
+              <TextField select fullWidth label="Quality / storage preference" value={draft.qualityGoal} onChange={(event) => onChange({ ...draft, qualityGoal: event.target.value as MVForgePreferences['qualityGoal'], preferredVideoEncoder: selectedEncoder })}>
                 <MenuItem value="maximum_savings">Maximum space saving</MenuItem>
                 <MenuItem value="balanced">Balanced</MenuItem>
                 <MenuItem value="conservative">Conservative quality</MenuItem>
@@ -82,13 +76,13 @@ function MVForgePreferencesCard({ value, availableEncoders, saving, onSave }: {
               </TextField>
             </Grid>
             <Grid size={{ xs: 12, md: 4 }}>
-              <TextField select fullWidth label="Preferred execution" value={draft.executionPreference} onChange={(event) => setDraft((current) => ({ ...current, executionPreference: event.target.value as MVForgePreferences['executionPreference'], preferredVideoEncoder: 'auto' }))}>
+              <TextField select fullWidth label="Preferred execution" value={draft.executionPreference} onChange={(event) => onChange({ ...draft, executionPreference: event.target.value as MVForgePreferences['executionPreference'], preferredVideoEncoder: 'auto' })}>
                 <MenuItem value="software">Software preferred</MenuItem>
                 <MenuItem value="hardware">Hardware preferred</MenuItem>
               </TextField>
             </Grid>
             <Grid size={{ xs: 12, md: 4 }}>
-              <TextField select fullWidth label="Preferred video encoder" value={selectedEncoder} onChange={(event) => setDraft((current) => ({ ...current, preferredVideoEncoder: event.target.value }))}>
+              <TextField select fullWidth label="Preferred video encoder" value={selectedEncoder} onChange={(event) => onChange({ ...draft, preferredVideoEncoder: event.target.value })}>
                 {encoderOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
               </TextField>
             </Grid>
@@ -103,14 +97,13 @@ function MVForgePreferencesCard({ value, availableEncoders, saving, onSave }: {
                 freeSolo
                 options={['jpn', 'spa', 'eng', 'fra', 'deu', 'ita', 'por', 'kor', 'zho']}
                 value={draft.preferredLanguages}
-                onChange={(_, languages) => setDraft((current) => ({ ...current, preferredLanguages: [...new Set(languages.map((language) => language.trim().toLowerCase()).filter(Boolean))] }))}
+                onChange={(_, languages) => onChange({ ...draft, preferredLanguages: [...new Set(languages.map((language) => language.trim().toLowerCase()).filter(Boolean))], preferredVideoEncoder: selectedEncoder })}
                 renderInput={(params) => <TextField {...params} label="Preferred languages" helperText="Ordered favorites used to prefill language fields; they do not select or remove tracks automatically." />}
               />
             </Grid>
           </Grid>
           <Stack direction="row" spacing={1}>
-            <Button startIcon={<SaveIcon />} variant="contained" disabled={saving || draft.preferredLanguages.length === 0} onClick={() => onSave({ ...draft, preferredVideoEncoder: selectedEncoder })}>Save preferences</Button>
-            <Button disabled={saving} onClick={() => setDraft(defaultMVForgePreferences)}>Restore defaults</Button>
+            <Button onClick={() => onChange(defaultMVForgePreferences)}>Restore defaults</Button>
           </Stack>
         </Stack>
       </CardContent>

@@ -33,7 +33,7 @@ export type SettingsSection = (typeof settingsSections)[number];
 
 export type SettingsDraftSection = Extract<
   SettingsSection,
-  'pipeline' | 'runtime' | 'assets' | 'archive' | 'operations' | 'advanced'
+  'general' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'archive' | 'operations' | 'advanced'
 >;
 
 type SettingsSectionDefinition = {

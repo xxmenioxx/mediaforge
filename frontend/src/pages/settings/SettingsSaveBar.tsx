@@ -5,10 +5,12 @@ export type SettingsSaveState = 'saved' | 'dirty' | 'saving' | 'failed';
 
 export function SettingsSaveBar({
   state,
+  canSave = true,
   onDiscard,
   onSave,
 }: {
   state: SettingsSaveState;
+  canSave?: boolean;
   onDiscard: () => void;
   onSave: () => void;
 }) {
@@ -47,7 +49,7 @@ export function SettingsSaveBar({
             startIcon={<SaveIcon />}
             variant="contained"
             onClick={onSave}
-            disabled={state === 'saved' || state === 'saving'}
+            disabled={!canSave || state === 'saved' || state === 'saving'}
           >
             {state === 'failed' ? 'Retry save' : 'Save changes'}
           </Button>

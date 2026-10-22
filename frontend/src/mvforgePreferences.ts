@@ -16,7 +16,7 @@ const qualityDefaults: Record<MVForgeQualityGoal, { crf: number; hardwarePreset:
   archive: { crf: 16, hardwarePreset: 'archive' },
 };
 
-export function getMVForgePreferences(settings?: AppSetting[]): MVForgePreferences {
+export function getMVForgePreferences(settings?: Array<Pick<AppSetting, 'key' | 'value'>>): MVForgePreferences {
   const raw = settings?.find((setting) => setting.key === 'mvforgePreferences')?.value ?? {};
   const qualityGoal = isQualityGoal(raw.qualityGoal) ? raw.qualityGoal : defaultMVForgePreferences.qualityGoal;
   const executionPreference = raw.executionPreference === 'hardware' ? 'hardware' : 'software';

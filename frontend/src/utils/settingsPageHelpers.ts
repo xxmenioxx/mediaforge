@@ -1,4 +1,6 @@
 import type { SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
+import { defaultMVForgePreferences, getMVForgePreferences } from '../mvforgePreferences';
+import type { AnalysisMode, AnalysisPolicyValue, ProfileSampleEstimatePolicyValue } from '../pages/settings/AnalysisSettings';
 import type {
   LibraryType,
   SettingsForm,
@@ -161,12 +163,17 @@ export function settingsToForm(settings: Array<{ key: string; value: Record<stri
   const assetInventory = byKey.assetInventory ?? {};
   const cancellationPolicy = byKey.cancellationPolicy ?? {};
   const originalRetentionPolicy = byKey.originalRetentionPolicy ?? {};
+  const analysisPolicy = byKey.analysisPolicy;
+  const profileSampleEstimatePolicy = byKey.profileSampleEstimatePolicy;
   const storageRoles = storageRolesValue(byKey.storageRoles);
   const hasOriginalArchiveRole = Boolean(byKey.storageRoles && typeof byKey.storageRoles.originals_archive === 'object');
   const assetTypes = byKey.assetTypes ?? {};
   const assetCategories = byKey.assetCategories ?? {};
 
   return buildSettingsForm({
+    mvforgePreferences: getMVForgePreferences(settings),
+    analysisPolicy: analysisPolicyValue(analysisPolicy),
+    profileSampleEstimatePolicy: profileSampleEstimatePolicyValue(profileSampleEstimatePolicy),
     paths: {
       rawRoot: stringValue(paths.rawRoot, initialSettings.paths.rawRoot),
       libraryRoot: stringValue(paths.libraryRoot, initialSettings.paths.libraryRoot),
@@ -219,6 +226,9 @@ export function settingsToForm(settings: Array<{ key: string; value: Record<stri
 }
 
 export const initialSettings: SettingsForm = buildSettingsForm({
+  mvforgePreferences: defaultMVForgePreferences,
+  analysisPolicy: analysisPolicyValue(undefined),
+  profileSampleEstimatePolicy: profileSampleEstimatePolicyValue(undefined),
   paths: {
     rawRoot: '/media/raw', libraryRoot: '/media/library', stagingPath: '/media/staging',
     originalsArchivePath: '/media/originals_archive', asIsReportsPath: '/media/reports/as-is',
@@ -286,6 +296,34 @@ export function numberValue(value: unknown, fallback: number) {
 
 export function booleanValue(value: unknown, fallback: boolean) {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+export function analysisPolicyValue(value: Record<string, unknown> | undefined): AnalysisPolicyValue {
+  const mode: AnalysisMode = ['fast', 'balanced', 'thorough', 'custom'].includes(String(value?.mode)) ? value?.mode as AnalysisMode : 'balanced';
+  const positions = Array.isArray(value?.positions) ? value.positions.map(Number).filter((item) => Number.isFinite(item) && item > 0 && item < 1) : [];
+  return {
+    mode,
+    adaptiveAnalysis: booleanValue(value?.adaptiveAnalysis, true),
+    earlyConfidenceEnabled: booleanValue(value?.earlyConfidenceEnabled, true),
+    earlyConfidenceThreshold: Math.max(0.9, Math.min(1, numberValue(value?.earlyConfidenceThreshold, 0.98))),
+    initialWindows: Math.max(3, Math.min(5, numberValue(value?.initialWindows, 3))),
+    maximumWindows: Math.max(3, Math.min(5, numberValue(value?.maximumWindows, 5))),
+    windowSeconds: Math.max(5, Math.min(60, numberValue(value?.windowSeconds, 20))),
+    positions: positions.length ? positions : [0.08, 0.27, 0.5, 0.73, 0.92],
+    interlaceValidation: value?.interlaceValidation === 'always' ? 'always' : 'automatic',
+    cropDepth: value?.cropDepth === 'reduced' || value?.cropDepth === 'full' ? value.cropDepth : 'normal',
+    reuseSnapshots: booleanValue(value?.reuseSnapshots, true),
+    incrementalRefresh: booleanValue(value?.incrementalRefresh, true),
+    concurrentAssets: Math.max(1, Math.min(4, numberValue(value?.concurrentAssets, 1))),
+  };
+}
+
+export function profileSampleEstimatePolicyValue(value: Record<string, unknown> | undefined): ProfileSampleEstimatePolicyValue {
+  return {
+    hardwareWindows: Math.max(1, Math.min(10, numberValue(value?.hardwareWindows, 5))),
+    softwareWindows: Math.max(1, Math.min(10, numberValue(value?.softwareWindows, 3))),
+    operationTimeoutMinutes: Math.max(5, Math.min(120, numberValue(value?.operationTimeoutMinutes, 30))),
+  };
 }
 
 export function arrayValue(value: unknown, fallback: unknown[]) {

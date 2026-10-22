@@ -1,22 +1,25 @@
 import type { SettingsForm } from '../SettingsPage';
 import type { SettingsDraftSection, SettingsSection } from './SettingsNavigation';
+import { initialSettings } from '../../utils/settingsPageHelpers';
 
 export const settingsDraftStorageKey = 'mvforge.settings.core-draft.v1';
 
 export type StoredSettingsDraft = {
-  version: 1;
+  version: 2;
   form: SettingsForm;
   baseline: SettingsForm;
   section: SettingsSection;
 };
 
-const draftSections: SettingsDraftSection[] = ['pipeline', 'runtime', 'assets', 'archive', 'operations', 'advanced'];
+const draftSections: SettingsDraftSection[] = ['general', 'pipeline', 'analysis', 'runtime', 'assets', 'archive', 'operations', 'advanced'];
+
+type LegacySettingsForm = Omit<SettingsForm, 'mvforgePreferences' | 'analysisPolicy' | 'profileSampleEstimatePolicy'>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isSettingsForm(value: unknown): value is SettingsForm {
+function isLegacySettingsForm(value: unknown): value is LegacySettingsForm {
   if (!isRecord(value)) return false;
   return isRecord(value.paths)
     && isRecord(value.workers)
@@ -29,19 +32,44 @@ function isSettingsForm(value: unknown): value is SettingsForm {
     && isRecord(value.advancedJson);
 }
 
+function isSettingsForm(value: unknown): value is SettingsForm {
+  if (!isLegacySettingsForm(value)) return false;
+  const record = value as Record<string, unknown>;
+  return isRecord(record.mvforgePreferences)
+    && isRecord(record.analysisPolicy)
+    && isRecord(record.profileSampleEstimatePolicy);
+}
+
+function upgradeStoredForm(value: unknown): SettingsForm | undefined {
+  if (isSettingsForm(value)) return value;
+  if (!isLegacySettingsForm(value)) return undefined;
+  return {
+    ...value,
+    mvforgePreferences: initialSettings.mvforgePreferences,
+    analysisPolicy: initialSettings.analysisPolicy,
+    profileSampleEstimatePolicy: initialSettings.profileSampleEstimatePolicy,
+  };
+}
+
 export function readStoredSettingsDraft(): StoredSettingsDraft | undefined {
   try {
     const raw = window.sessionStorage.getItem(settingsDraftStorageKey);
     if (!raw) return undefined;
     const value: unknown = JSON.parse(raw);
-    if (!isRecord(value) || value.version !== 1 || !isSettingsForm(value.form) || !isSettingsForm(value.baseline)) {
+    if (!isRecord(value) || (value.version !== 1 && value.version !== 2)) {
+      window.sessionStorage.removeItem(settingsDraftStorageKey);
+      return undefined;
+    }
+    const form = value.version === 1 ? upgradeStoredForm(value.form) : isSettingsForm(value.form) ? value.form : undefined;
+    const baseline = value.version === 1 ? upgradeStoredForm(value.baseline) : isSettingsForm(value.baseline) ? value.baseline : undefined;
+    if (!form || !baseline) {
       window.sessionStorage.removeItem(settingsDraftStorageKey);
       return undefined;
     }
     return {
-      version: 1,
-      form: value.form,
-      baseline: value.baseline,
+      version: 2,
+      form,
+      baseline,
       section: typeof value.section === 'string' ? value.section as SettingsSection : 'general',
     };
   } catch {
@@ -51,8 +79,12 @@ export function readStoredSettingsDraft(): StoredSettingsDraft | undefined {
 
 export function settingsDraftSnapshot(form: SettingsForm, section: SettingsDraftSection): unknown {
   switch (section) {
+    case 'general':
+      return form.mvforgePreferences;
     case 'pipeline':
       return { pipelineAutomation: form.pipelineAutomation };
+    case 'analysis':
+      return { analysisPolicy: form.analysisPolicy, profileSampleEstimatePolicy: form.profileSampleEstimatePolicy };
     case 'runtime':
       return { workers: form.workers };
     case 'assets': {
@@ -99,8 +131,12 @@ export function mergeSettingsDraftSection(
   section: SettingsDraftSection,
 ): SettingsForm {
   switch (section) {
+    case 'general':
+      return { ...target, mvforgePreferences: source.mvforgePreferences };
     case 'pipeline':
       return { ...target, pipelineAutomation: source.pipelineAutomation };
+    case 'analysis':
+      return { ...target, analysisPolicy: source.analysisPolicy, profileSampleEstimatePolicy: source.profileSampleEstimatePolicy };
     case 'runtime':
       return { ...target, workers: source.workers };
     case 'assets':

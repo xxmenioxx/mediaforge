@@ -53,7 +53,7 @@ import { GeneralSettingsDomain } from './settings/GeneralSettings';
 import { ProvidersIntegrationsSettingsDomain } from './settings/ProvidersIntegrationsSettings';
 import { AssetDefaultsSettingsDomain } from './settings/AssetDefaultsSettings';
 import { ArchiveSettingsDomain } from './settings/ArchiveSettings';
-import { AnalysisSettingsDomain, analysisPolicyValue, profileSampleEstimatePolicyValue } from './settings/AnalysisSettings';
+import { AnalysisSettingsDomain } from './settings/AnalysisSettings';
 import type { AnalysisMode, AnalysisPolicyValue, ProfileSampleEstimatePolicyValue } from './settings/AnalysisSettings';
 import {
   resolveSettingsSection,
@@ -74,12 +74,12 @@ import {
   settingsDraftSnapshot,
   settingsDraftStorageKey,
 } from './settings/settingsDrafts';
-import type { AppSetting, HousekeepingReport, Library, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
-import { getMVForgePreferences } from '../mvforgePreferences';
+import type { AppSetting, HousekeepingReport, Library, MVForgePreferences, RuntimeProfileOverride, RuntimeProfilesResponse, RuntimeProfileValues, SchedulerRecoveryReport, RemoteExecutorProbe, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
 import { encoderNamesForWorker } from '../utils/workerEncoders';
 import { liveRuntimeStateLabel, runtimeRefreshSuccessMessage } from '../utils/runtimeStatePresentation';
 import {
   archivePathValue,
+  analysisPolicyValue,
   arrayValue,
   booleanValue,
   buildSettingsForm,
@@ -89,6 +89,7 @@ import {
   normalizeLibraryTypes,
   normalizeStringArray,
   numberValue,
+  profileSampleEstimatePolicyValue,
   reconciliationModeValue,
   settingsToForm,
   slugify,
@@ -156,6 +157,9 @@ export type SettingsForm = {
     resultsReportsPath: string;
     logsPath: string;
   };
+  mvforgePreferences: MVForgePreferences;
+  analysisPolicy: AnalysisPolicyValue;
+  profileSampleEstimatePolicy: ProfileSampleEstimatePolicyValue;
   workers: {
     defaultWorkerName: string;
     autoWorkerEnabled: boolean;
@@ -347,6 +351,13 @@ export function SettingsPage() {
   const dirtySections = dirtySettingsDraftSections(form, savedForm);
   const activeDraftSection = settingsDraftSectionForRoute(section);
   const activeDraftIsDirty = activeDraftSection ? dirtySections.includes(activeDraftSection) : false;
+  const activeDraftCanSave = activeDraftSection === 'general'
+    ? form.mvforgePreferences.preferredLanguages.length > 0
+    : activeDraftSection === 'analysis'
+      ? form.analysisPolicy.mode !== 'custom' || (form.analysisPolicy.maximumWindows >= form.analysisPolicy.initialWindows && form.analysisPolicy.positions.length >= form.analysisPolicy.maximumWindows)
+      : activeDraftSection === 'runtime'
+        ? !workerProgressPercentError(form.workers.startNextJobAtProgressPercent)
+        : true;
   const changeSection = (next: SettingsSection) => {
     navigate({ pathname: location.pathname, search: `?section=${next}`, hash: '' });
   };
@@ -413,8 +424,17 @@ export function SettingsPage() {
             : undefined;
       const batch: Array<{ key: string; value: Record<string, unknown> }> = [];
 
+      if (draftSection === 'general') {
+        batch.push({ key: 'mvforgePreferences', value: nextForm.mvforgePreferences as unknown as Record<string, unknown> });
+      }
       if (draftSection === 'pipeline') {
         batch.push({ key: 'pipelineAutomation', value: nextForm.pipelineAutomation as unknown as Record<string, unknown> });
+      }
+      if (draftSection === 'analysis') {
+        batch.push(
+          { key: 'analysisPolicy', value: nextForm.analysisPolicy as unknown as Record<string, unknown> },
+          { key: 'profileSampleEstimatePolicy', value: nextForm.profileSampleEstimatePolicy as unknown as Record<string, unknown> },
+        );
       }
       if (draftSection === 'runtime') {
         batch.push({ key: 'workers', value: workerSettingsPayload(nextForm.workers) as unknown as Record<string, unknown> });
@@ -550,7 +570,7 @@ export function SettingsPage() {
     const activeDraftSection = settingsDraftSectionForRoute(section);
     const draftSection = activeDraftSection && dirty.includes(activeDraftSection) ? activeDraftSection : dirty[0];
     window.sessionStorage.setItem(settingsDraftStorageKey, JSON.stringify({
-      version: 1,
+      version: 2,
       form,
       baseline: savedForm,
       section: draftSection,
@@ -591,7 +611,12 @@ export function SettingsPage() {
     try {
       await saveCoreSettings.mutateAsync({ section: draftSection, nextForm, baseline: savedFormRef.current });
       const nextBaseline = draftSection === 'advanced'
-        ? nextForm
+        ? {
+            ...nextForm,
+            mvforgePreferences: savedFormRef.current.mvforgePreferences,
+            analysisPolicy: savedFormRef.current.analysisPolicy,
+            profileSampleEstimatePolicy: savedFormRef.current.profileSampleEstimatePolicy,
+          }
         : mergeSettingsDraftSection(savedFormRef.current, nextForm, draftSection);
       savedFormRef.current = nextBaseline;
       setSavedForm(nextBaseline);
@@ -644,6 +669,9 @@ export function SettingsPage() {
     const assetTypesValue = parseJsonObject(form.advancedJson.assetTypes, { types: form.assetTypes });
     const assetCategoriesValue = parseJsonObject(form.advancedJson.assetCategories, { categories: form.assetCategories });
     const next = buildSettingsForm({
+      mvforgePreferences: form.mvforgePreferences,
+      analysisPolicy: form.analysisPolicy,
+      profileSampleEstimatePolicy: form.profileSampleEstimatePolicy,
       paths: {
         rawRoot: stringValue(paths.rawRoot, initialSettings.paths.rawRoot),
         libraryRoot: stringValue(paths.libraryRoot, initialSettings.paths.libraryRoot),
@@ -906,10 +934,9 @@ export function SettingsPage() {
 
             {section === 'general' ? (
               <GeneralSettingsDomain
-                value={getMVForgePreferences(settings.data)}
+                value={form.mvforgePreferences}
                 availableEncoders={[...new Set((workerNodes.data ?? []).flatMap((worker) => [...encoderNamesForWorker(worker)]))]}
-                saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'mvforgePreferences', value: value as unknown as Record<string, unknown> })}
+                onChange={(value) => setForm((current) => ({ ...current, mvforgePreferences: value }))}
               />
             ) : null}
 
@@ -1183,11 +1210,10 @@ export function SettingsPage() {
 
             {section === 'analysis' ? (
               <AnalysisSettingsDomain
-                analysisPolicy={analysisPolicyValue(settings.data?.find((item) => item.key === 'analysisPolicy')?.value)}
-                profileSamplePolicy={profileSampleEstimatePolicyValue(settings.data?.find((item) => item.key === 'profileSampleEstimatePolicy')?.value)}
-                saving={updateSetting.isPending}
-                onSaveAnalysisPolicy={(value) => updateSetting.mutate({ key: 'analysisPolicy', value: value as unknown as Record<string, unknown> })}
-                onSaveProfileSamplePolicy={(value) => updateSetting.mutate({ key: 'profileSampleEstimatePolicy', value: value as unknown as Record<string, unknown> })}
+                analysisPolicy={form.analysisPolicy}
+                profileSamplePolicy={form.profileSampleEstimatePolicy}
+                onChangeAnalysisPolicy={(value) => setForm((current) => ({ ...current, analysisPolicy: value }))}
+                onChangeProfileSamplePolicy={(value) => setForm((current) => ({ ...current, profileSampleEstimatePolicy: value }))}
               />
             ) : null}
 
@@ -1363,6 +1389,7 @@ export function SettingsPage() {
             {activeDraftSection ? (
               <SettingsSaveBar
                 state={currentSaveState ?? 'saved'}
+                canSave={activeDraftCanSave}
                 onDiscard={() => discardDraftSection(activeDraftSection)}
                 onSave={() => {
                   if (activeDraftSection === 'advanced') {

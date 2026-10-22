@@ -52,6 +52,7 @@ afterEach(() => {
 describe('Settings domain navigation and drafts', () => {
   beforeEach(() => {
     window.sessionStorage.clear();
+    vi.mocked(api.updateSettingsBatch).mockClear();
     vi.mocked(api.settings).mockResolvedValue([{ key: 'workers', value: {
       defaultWorkerName: 'local',
       autoWorkerEnabled: true,
@@ -117,5 +118,32 @@ describe('Settings domain navigation and drafts', () => {
       { key: 'workers', value: expect.objectContaining({ maxConcurrentJobs: 3 }) },
     ]);
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Saved'));
+  }, 15000);
+
+  it('uses the section save bar for General and atomic Analysis settings', async () => {
+    const user = userEvent.setup();
+    renderSettings('/settings?section=general');
+
+    await user.click(await screen.findByLabelText('Quality / storage preference'));
+    await user.click(await screen.findByRole('option', { name: 'Maximum quality' }));
+    expect(screen.getByRole('status').textContent).toBe('Unsaved changes');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateSettingsBatch).mock.calls[0][0].settings).toEqual([
+      { key: 'mvforgePreferences', value: expect.objectContaining({ qualityGoal: 'maximum_quality' }) },
+    ]);
+
+    await user.click(screen.getByRole('button', { name: 'Analysis' }));
+    expect(await screen.findByRole('heading', { name: 'Analysis' })).toBeTruthy();
+    await user.click(screen.getByLabelText('Analysis mode'));
+    await user.click(await screen.findByRole('option', { name: 'Thorough' }));
+    expect(screen.getByRole('status').textContent).toBe('Unsaved changes');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.updateSettingsBatch).mock.calls[1][0].settings).toEqual([
+      { key: 'analysisPolicy', value: expect.objectContaining({ mode: 'thorough' }) },
+      { key: 'profileSampleEstimatePolicy', value: expect.objectContaining({ hardwareWindows: 5 }) },
+    ]);
   }, 15000);
 });
