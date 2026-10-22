@@ -108,6 +108,7 @@ type subtitleExtractionOperation struct {
 	Translation            *subtitleTranslationOperationView `json:"translation,omitempty"`
 	Composition            *subtitleCompositionOperationView `json:"composition,omitempty"`
 	QualityReport          *subtitleOCRQualityReport         `json:"qualityReport,omitempty"`
+	Proofreading           *subtitleProofreadingReport       `json:"proofreading,omitempty"`
 	Error                  string                            `json:"error,omitempty"`
 	Retryable              bool                              `json:"retryable,omitempty"`
 	CreatedAt              time.Time                         `json:"createdAt"`
@@ -117,6 +118,7 @@ type subtitleExtractionOperation struct {
 	translationRequest     *subtitleTranslationOperationRequest
 	restyleRequest         *subtitleRestyleRequest
 	compositionRequest     *subtitleCompositionOperationRequest
+	proofreadingRequest    *subtitleProofreadingOperationRequest
 	cancel                 context.CancelFunc
 	publicationCommitted   bool
 	publicationCommittedCh chan struct{}

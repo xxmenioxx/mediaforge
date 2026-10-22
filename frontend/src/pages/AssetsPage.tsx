@@ -79,6 +79,7 @@ import { ProfileSuggestionCard } from '../components/ProfileSuggestionCard';
 import { SourceBitrateQualityEvidence } from '../components/SourceBitrateQualityEvidence';
 import { SubtitleTranslationDialog } from '../components/SubtitleTranslationDialog';
 import { SubtitleOCRReviewDialog } from '../components/SubtitleOCRReviewDialog';
+import { SubtitleProofreadingDialog } from '../components/SubtitleProofreadingDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
 import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
 import { createSingleQueueBatchID, invalidateQueueBatchPreflightReference, getSavedQueueBatchPreflightCandidateID, openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_OPEN_EVENT } from '../utils/queueBatchPreflightEvents';
@@ -3859,6 +3860,7 @@ function AssetRow({
   const [translationDialogOpen, setTranslationDialogOpen] = useState(false);
   const [translationReviewTarget, setTranslationReviewTarget] = useState<CanonicalOCRReviewTarget | null>(null);
   const [translationReviewDialogOpen, setTranslationReviewDialogOpen] = useState(false);
+  const [proofreadingSubtitle, setProofreadingSubtitle] = useState<ExternalSubtitle | null>(null);
   const subtitleOperationPollers = useRef<Set<string>>(new Set());
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [assignProfileOpen, setAssignProfileOpen] = useState(false);
@@ -4714,6 +4716,9 @@ function AssetRow({
     );
 
     for (const operation of runningOperations) {
+      if (operation.kind === 'proofreading') {
+        continue;
+      }
       if (operation.kind === 'compose') {
         setSubtitleCompositionOperation(operation);
         void waitForSubtitleOperation(
@@ -4729,7 +4734,7 @@ function AssetRow({
         continue;
       }
       const format = operation.format;
-      if (format === 'both') {
+      if (format === 'both' || format === 'ssa') {
         continue;
       }
       const key = subtitleGenerationKey(operation.streamIndex, format);
@@ -6223,6 +6228,7 @@ async function generateExternalSubtitle(
                         translationDisabledReason={subtitleTranslationReason}
                         onTranslate={(subtitle) => openTranslation({ type: 'external', external: { subtitlePath: subtitle.path } })}
                         onAnalyze={analyzeExternalSubtitle}
+                        onProofread={(subtitle) => setProofreadingSubtitle(subtitle)}
                         qualityReports={subtitleQualityReports}
                         qualityMessages={subtitleQualityMessages}
                         restyleMessages={subtitleRestyleMessages}
@@ -6710,6 +6716,16 @@ async function generateExternalSubtitle(
           })();
         }}
       />
+      <SubtitleProofreadingDialog
+        open={Boolean(proofreadingSubtitle)}
+        path={asset.path}
+        subtitle={proofreadingSubtitle}
+        onClose={() => setProofreadingSubtitle(null)}
+        onApplied={() => {
+          void externalSubtitles.refetch();
+          void refreshSubtitleEvidence();
+        }}
+      />
     </>
   );
 }
@@ -7061,6 +7077,7 @@ export function ExternalSubtitleList({
   onDelete,
   onTranslate,
   onAnalyze,
+  onProofread,
   qualityReports = {},
   qualityMessages = {},
   restyleMessages = {},
@@ -7083,6 +7100,7 @@ export function ExternalSubtitleList({
   onDelete: (subtitle: ExternalSubtitle) => void;
   onTranslate?: (subtitle: ExternalSubtitle) => void;
   onAnalyze?: (subtitle: ExternalSubtitle) => void;
+  onProofread?: (subtitle: ExternalSubtitle) => void;
   qualityReports?: Record<string, SubtitleOCRQualityReport>;
   qualityMessages?: Record<string, string>;
   restyleMessages?: Record<string, string>;
@@ -7106,9 +7124,9 @@ export function ExternalSubtitleList({
     <>
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
       <Stack spacing={1.25}>
-        <Typography variant="h3">External SRT / ASS files</Typography>
+        <Typography variant="h3">External SRT / ASS / SSA files</Typography>
         {loading ? <Alert severity="info">Reading external subtitles…</Alert> : null}
-        {!loading && values.length === 0 ? <Alert severity="info">No external SRT or ASS sidecars were found beside this asset.</Alert> : null}
+        {!loading && values.length === 0 ? <Alert severity="info">No external SRT, ASS, or SSA sidecars were found beside this asset.</Alert> : null}
         {values.map((subtitle) => {
           const reviewKey = subtitleOCRReviewKey(subtitle);
           const report = qualityReports[reviewKey] ?? qualityReports[subtitle.path];
@@ -7145,6 +7163,7 @@ export function ExternalSubtitleList({
                 {onRestyle && restyleAllowed ? <Button size="small" variant="outlined" disabled={disabled || restyleOperation?.status === 'running'} onClick={() => openRestyleDialog(subtitle, 'restyle')}>Restyle</Button> : null}
                 {onRestyle && srtToAssAllowed ? <Button size="small" variant="outlined" disabled={disabled || restyleOperation?.status === 'running'} onClick={() => openRestyleDialog(subtitle, 'srt_to_ass')}>Generate ASS</Button> : null}
                 {onAnalyze && subtitle.ocrAnalysisAvailable ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onAnalyze(subtitle)}>Analyze OCR</Button> : null}
+                {onProofread ? <Button size="small" variant="outlined" disabled={disabled} onClick={() => onProofread(subtitle)}>Review with AI</Button> : null}
                 {onTranslate ? (
                   <SubtitleTranslateAction
                     label={`Translate ${subtitle.fileName}`}

@@ -286,6 +286,24 @@ func cloneSubtitleExtractionOperationSnapshot(operation *subtitleExtractionOpera
 		result.Artifacts = append([]SubtitleArtifact(nil), operation.Result.Artifacts...)
 		snapshot.Result = &result
 	}
+	if operation.Proofreading != nil {
+		proofreading := *operation.Proofreading
+		proofreading.Findings = append([]subtitleProofreadingFinding(nil), operation.Proofreading.Findings...)
+		for index := range proofreading.Findings {
+			proofreading.Findings[index].Neighbors = append([]subtitleProofreadingNeighbor(nil), operation.Proofreading.Findings[index].Neighbors...)
+		}
+		snapshot.Proofreading = &proofreading
+	}
+	if operation.proofreadingRequest != nil {
+		request := *operation.proofreadingRequest
+		request.Cues = append([]subtitleProofreadingCue(nil), operation.proofreadingRequest.Cues...)
+		request.Deterministic = make(map[string]subtitleProofreadingFinding, len(operation.proofreadingRequest.Deterministic))
+		for key, finding := range operation.proofreadingRequest.Deterministic {
+			finding.Neighbors = append([]subtitleProofreadingNeighbor(nil), finding.Neighbors...)
+			request.Deterministic[key] = finding
+		}
+		snapshot.proofreadingRequest = &request
+	}
 	return snapshot
 }
 

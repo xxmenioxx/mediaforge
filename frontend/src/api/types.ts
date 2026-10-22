@@ -3356,12 +3356,12 @@ export type SubtitleExtractionOperation = {
   processed: number;
   total: number;
   streamIndex: number;
-  format: 'original' | 'srt' | 'ass' | 'both';
+    format: 'original' | 'srt' | 'ass' | 'ssa' | 'both';
   message?: string;
   result?: SubtitleExtractionResult;
   error?: string;
   retryable?: boolean;
-  kind?: 'extraction' | 'ocr_analysis' | 'ocr_correction' | 'translation' | string;
+  kind?: 'extraction' | 'ocr_analysis' | 'ocr_correction' | 'translation' | 'proofreading' | string;
   composition?: {
     sources: Array<Record<string, unknown>>;
     policy: Record<string, unknown>;
@@ -3384,8 +3384,43 @@ export type SubtitleExtractionOperation = {
     ocrReviewTarget?: CanonicalOCRReviewTarget;
   };
   qualityReport?: SubtitleOCRQualityReport;
+  proofreading?: SubtitleProofreadingReport;
   createdAt: string;
   updatedAt: string;
+};
+
+export type SubtitleProofreadingFinding = {
+  cueId: string;
+  ordinal: number;
+  sourceTextHash: string;
+  originalText: string;
+  suggestedText?: string;
+  status: 'clean' | 'suggested' | 'needs_review' | string;
+  category: string;
+  reasonCode: string;
+  reason: string;
+  confidence?: number;
+  neighbors?: Array<{ cueId: string; text: string }>;
+};
+
+export type SubtitleProofreadingReport = {
+  sidecarPath: string;
+  format: 'srt' | 'ass' | 'ssa' | string;
+  mode: 'quick' | 'extended' | string;
+  sourceType: 'ocr-generated' | 'translated' | 'imported/external' | 'unknown' | string;
+  selfReview: boolean;
+  language?: string;
+  revision: string;
+  provider: string;
+  model?: string;
+  providerState: string;
+  providerNotice?: string;
+  totalCount: number;
+  cleanCount: number;
+  suggestedCount: number;
+  reviewCount: number;
+  unassessedCount: number;
+  findings: SubtitleProofreadingFinding[];
 };
 
 export type SubtitleOCRQualityFinding = {
