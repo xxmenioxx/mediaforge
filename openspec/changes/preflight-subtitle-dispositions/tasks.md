@@ -6,13 +6,13 @@
 
 ## 2. Preflight review and candidate-only editing
 
-- [ ] 2.1 Add frontend types and a compact summary with expandable per-stream decisions, provenance, formats, OCR, and policy help; verify the `subtitleDisposition=extract` and `remove` cases in focused component tests.
-- [ ] 2.2 Add explicit per-stream candidate-only editing with before/after feedback, Inherit, conflict-disabled actions, save, cancel, and revert behavior; verify exact stream identity and that discarded local edits do not submit an update.
+- [x] 2.1 Add frontend types and a compact summary with expandable per-stream decisions, provenance, formats, OCR, and policy help; verify the `subtitleDisposition=extract` and `remove` cases in focused component tests.
+- [x] 2.2 Add explicit per-stream candidate-only editing with before/after feedback, Inherit, conflict-disabled actions, save, cancel, and revert behavior; verify exact stream identity and that discarded local edits do not submit an update.
 
 ## 3. Verification
 
-- [ ] 3.1 Run focused backend resolver and Queue Preflight tests plus the focused BatchPreflightDialog frontend test; record actual results.
-- [ ] 3.2 Run `openspec validate preflight-subtitle-dispositions --strict` and the serialized `./scripts/verify.sh --auto`; record scope, check count, warnings, and outcome.
+- [x] 3.1 Run focused backend resolver and Queue Preflight tests plus the focused BatchPreflightDialog frontend test; record actual results.
+- [x] 3.2 Run `openspec validate preflight-subtitle-dispositions --strict` and the serialized `./scripts/verify.sh --auto`; record scope, check count, warnings, and outcome.
 
 ## Validation record
 
