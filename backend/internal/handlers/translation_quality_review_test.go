@@ -1,9 +1,13 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -52,6 +56,113 @@ func TestListSubtitleTranslationQualityReviewsRequiresIdentity(t *testing.T) {
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/reviews?assetPath=%2Fmedia%2Fa.mkv", nil))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestSubtitleTranslationQualityEditPublishesThroughCanonicalPipeline(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-workspace"))
+	mediaPath := filepath.Join(root, "episode.mkv")
+	sourcePath := filepath.Join(root, "episode.en.srt")
+	sourceContent := []byte("1\n00:00:01,000 --> 00:00:02,000\nWe waited until the train arrived.\n\n")
+	translatedContent := []byte("1\n00:00:01,000 --> 00:00:02,000\nEsperamos hasta que llegó el tren.\n\n")
+	if err := os.WriteFile(mediaPath, []byte("synthetic media identity"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, sourceContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db := translationSourceTestDB(t, root, mediaPath)
+	if err := db.AutoMigrate(&models.SubtitleTranslationQualityReview{}); err != nil {
+		t.Fatal(err)
+	}
+	handler := AssetHandler{db: db}
+	request := subtitleTranslationOperationRequest{
+		AssetPath: mediaPath, SourceType: "external", SourceReference: sourcePath,
+		RequestedSourceLanguage: "en", TargetLocale: "es-419", RequestedRepresentation: translationRepresentationSRT,
+		Provider: "ollama", ProviderModel: "qwen3:8b", ContextMode: "none", ContextSource: "none",
+	}
+	_, source, stream, err := handler.resolveTranslationExecutionSource(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceRevision, err := translationSourceRevisionForResolvedSource(source, stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.SourceIdentity = source.SourceIdentity
+	request.SourceRevision = sourceRevision.key()
+	targets, err := translationPublicationTargets(request, source, "en", TranslationProviderMetrics{}, "translation-operation", map[string][]byte{
+		translationRepresentationSRT: translatedContent,
+	}, mediaPath)
+	if err != nil || len(targets) != 1 {
+		t.Fatalf("translation targets=%#v err=%v", targets, err)
+	}
+	target := targets[0]
+	if err := os.WriteFile(target.FinalPath, translatedContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	artifact := target.Artifact
+	artifact.PublishedPath = target.FinalPath
+	operationID := "quality-review-publish-e2e"
+	report := subtitleTranslationQualityReport{
+		PolicyVersion: subtitleTranslationQualityPolicyVersion,
+		State:         "review_required",
+		CueCount:      1,
+		WarningCount:  1,
+		ReviewCount:   1,
+		Findings: []subtitleTranslationQualityFinding{{
+			CueID: "cue-1", SourceOrdinal: 0, SourceText: "We waited until the train arrived.",
+			TranslatedText: "Esperamos hasta que llegó el tren.", Reasons: []string{"meaning_drift"},
+		}},
+	}
+	if err := persistSubtitleTranslationQualityReview(db, operationID, request, report, []SubtitleArtifact{artifact}); err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/reviews/:id/decision", handler.DecideSubtitleTranslationQuality)
+	decision := `{"cueId":"cue-1","action":"edit","text":"Esperamos hasta que llegó el tren."}`
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/reviews/"+operationID+"/decision", strings.NewReader(decision)))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"reviewed"`) {
+		t.Fatalf("edit decision status=%d body=%s", response.Code, response.Body.String())
+	}
+	updated, err := os.ReadFile(target.FinalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updated), "00:00:01,000 --> 00:00:02,000") || !strings.Contains(string(updated), "Esperamos hasta que llegó el tren.") {
+		t.Fatalf("canonical publisher did not preserve SRT timing and publish the approved cue: %q", updated)
+	}
+	if got, err := os.ReadFile(sourcePath); err != nil || string(got) != string(sourceContent) {
+		t.Fatalf("source sidecar changed: err=%v content=%q", err, got)
+	}
+	var saved models.SubtitleTranslationQualityReview
+	if err := db.First(&saved, "operation_id = ?", operationID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != "reviewed" {
+		t.Fatalf("review status=%q, want reviewed", saved.Status)
+	}
+	var decisions []subtitleTranslationQualityDecision
+	if err := json.Unmarshal([]byte(saved.Decisions), &decisions); err != nil || len(decisions) != 1 || decisions[0].Action != "edit" || decisions[0].Text != "Esperamos hasta que llegó el tren." {
+		t.Fatalf("persisted edit decision=%#v err=%v", decisions, err)
+	}
+	targetRevision, err := captureTranslationExternalSourceRevision(target.FinalPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persistedTargets []subtitleTranslationQualityTarget
+	if err := json.Unmarshal([]byte(saved.TargetsMetadata), &persistedTargets); err != nil || len(persistedTargets) != 1 || persistedTargets[0].SourceRevision != targetRevision.key() {
+		t.Fatalf("published target revision was not persisted: targets=%#v err=%v", persistedTargets, err)
+	}
+
+	duplicate := httptest.NewRecorder()
+	router.ServeHTTP(duplicate, httptest.NewRequest(http.MethodPost, "/reviews/"+operationID+"/decision", strings.NewReader(decision)))
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate decision status=%d body=%s, want conflict", duplicate.Code, duplicate.Body.String())
 	}
 }
 
