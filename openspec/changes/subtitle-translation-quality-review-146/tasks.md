@@ -2,7 +2,7 @@
 
 - [x] 1.1 Add pure bounded cue-quality checks for empty/shortened output, numeric preservation, and duplicate unrelated translations; verify with deterministic fixtures.
 - [x] 1.2 Integrate analysis after canonical structural validation and expose bounded operation evidence; verify malformed structure still fails before quality findings and publication.
-- [ ] 1.3 Verify canonical OCR uncertainty remains distinct from translation quality and is never treated as corrected by translation; bitmap text evidence remains unavailable to this text-cue analyzer.
+- [x] 1.3 Verify canonical OCR uncertainty is surfaced separately, gates translation before provider work, and is never treated as a translation correction or quality approval; bitmap cue text remains outside the text-cue analyzer.
 
 ## 2. Focused Review
 

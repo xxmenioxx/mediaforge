@@ -175,10 +175,13 @@ function TranslationOperationStatus({
       {cancelled ? <Alert severity="info">Translation cancelled.</Alert> : null}
       {operation.status === 'error' ? (
         ocrReviewRequired ? (
-          <Alert severity="warning">
-            <AlertTitle>Translation paused</AlertTitle>
-            {diagnostic}
-          </Alert>
+          <Stack spacing={1}>
+            <Alert severity="warning">
+              <AlertTitle>Translation paused for source OCR review</AlertTitle>
+              {operation.translation?.ocrReviewTarget?.message || diagnostic}
+            </Alert>
+            <Typography variant="caption" color="text.secondary">Source OCR uncertainty is separate from translation quality. No translation correction or quality approval has been recorded.</Typography>
+          </Stack>
         ) : (
           <Alert severity="warning">
             {operation.translation?.failureClass ? `${operation.translation.failureClass}: ` : ''}

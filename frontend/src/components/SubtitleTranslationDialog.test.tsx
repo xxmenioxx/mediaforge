@@ -552,15 +552,20 @@ describe('SubtitleTranslationDialog', () => {
       status: 'error',
       phase: 'ocr_review',
       error: 'private path /workspace/private',
-      translation: { failureClass: 'ocr_review_required', diagnostic: 'OCR review is required before translation.', retryable: true, cancellable: false },
+      translation: {
+        failureClass: 'ocr_review_required', diagnostic: 'OCR review is required before translation.', retryable: true, cancellable: false,
+        ocrReviewTarget: { state: 'stale', message: 'Canonical OCR source evidence is stale and requires review.' },
+      },
     });
     vi.mocked(api.startSubtitleTranslation).mockResolvedValue({ operation: failed });
     vi.mocked(api.subtitleOperation).mockResolvedValue(failed);
     renderDialog(source, undefined, onReviewOCR);
 
     await user.click(await screen.findByRole('button', { name: 'Start translation' }));
-    expect(await screen.findByText('Translation paused')).toBeTruthy();
-    expect(screen.getByText('OCR review is required before translation.')).toBeTruthy();
+    expect(await screen.findByText('Translation paused for source OCR review')).toBeTruthy();
+    expect(screen.getByText('Canonical OCR source evidence is stale and requires review.')).toBeTruthy();
+    expect(screen.getByText('Source OCR uncertainty is separate from translation quality. No translation correction or quality approval has been recorded.')).toBeTruthy();
+    expect(screen.queryByText('Translation quality')).toBeNull();
     expect(screen.getByText('Stage: OCR review')).toBeTruthy();
     expect(screen.queryByText(/private path|workspace\/private/)).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Review OCR' }));
