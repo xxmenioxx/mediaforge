@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -32,7 +33,9 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             second_db = roots[1] / "config" / "mvforge.db"
             self.assertNotEqual(first_db, second_db)
             self.assertNotEqual(roots[0] / "raw", roots[1] / "raw")
-            self.assertEqual(pipeline_smoke.SUPPORTED_SCENARIOS, frozenset({"happy-path", "track-actions"}))
+            self.assertEqual(pipeline_smoke.SUPPORTED_SCENARIOS, frozenset({
+                "happy-path", "track-actions", "cadence-progressive", "cadence-ivtc", "cadence-ambiguous",
+            }))
 
     def test_happy_path_generates_deterministic_multistream_mkv_inputs_in_sandbox(self) -> None:
         scenario = pipeline_smoke.scenario_for("happy-path")
@@ -256,6 +259,217 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             self.assertEqual(command[command.index("-flags") + 1], "+ilme+ildct")
             self.assertEqual(command[command.index("-top") + 1], "1")
             self.assertEqual(command[-1], "/media/raw/synthetic-smoke.mkv")
+
+    def test_issue_285_cadence_scenarios_use_synthetic_cpu_fixtures_and_frozen_authority(self) -> None:
+        progressive = pipeline_smoke.scenario_for("cadence-progressive")
+        ivtc = pipeline_smoke.scenario_for("cadence-ivtc")
+        self.assertEqual(progressive.expected_cadence_rate, "24000/1001")
+        self.assertEqual(progressive.cadence_mode, "auto")
+        self.assertEqual(progressive.duration_seconds, 90)
+        self.assertEqual(progressive.fixture_video_source, "color=c=gray:s=320x180:r=24000/1001:d=90")
+        self.assertEqual(progressive.fixture_frame_count, 2158)
+        self.assertEqual(ivtc.fixture_frame_rate, "30000/1001")
+        self.assertEqual(ivtc.expected_cadence_rate, "24000/1001")
+        self.assertEqual(ivtc.expected_cadence_operation, "inverse_telecine")
+        ambiguous = pipeline_smoke.scenario_for("cadence-ambiguous")
+        self.assertIsNone(ambiguous.expected_frame_fidelity_status)
+        self.assertIsNone(ambiguous.expected_frame_fidelity_rate_status)
+        self.assertEqual(ambiguous.fixture_frame_count, 720)
+        self.assertIsNone(ambiguous.output_frame_count)
+
+        for scenario in (progressive, ivtc, ambiguous):
+            with self.subTest(scenario=scenario.name), tempfile.TemporaryDirectory() as temp_base:
+                root = pipeline_smoke.create_run_root(temp_base, f"issue-285-{scenario.name}")
+                sandbox = root / "sandbox"
+                pipeline_smoke.prepare_sandbox(sandbox)
+                with patch.object(pipeline_smoke, "run_command") as run_command:
+                    pipeline_smoke.generate_fixture(pipeline_smoke.DEFAULT_IMAGE, sandbox, scenario)
+                command = run_command.call_args.args[0]
+                self.assertEqual(command[command.index("--network") + 1], "none")
+                self.assertIn("--read-only", command)
+                self.assertEqual(command.count("--mount"), 1)
+                if scenario is progressive:
+                    self.assertIn("color=c=gray:s=320x180:r=24000/1001:d=90", command)
+                elif scenario is ivtc:
+                    self.assertIn("testsrc2=size=320x180:rate=24000/1001:duration=24", command)
+                    self.assertEqual(command[command.index("-vf") + 1], "telecine=first_field=top")
+                else:
+                    self.assertIn("-filter_complex", command)
+                    self.assertIn("[telecined][native]concat=n=2:v=1:a=0[smoke_video]", " ".join(command))
+                    self.assertIn("-map", command)
+                    self.assertIn("[smoke_video]", command)
+                self.assertEqual(command[-1], "/media/raw/synthetic-smoke.mkv")
+
+    def test_issue_285_cadence_assertions_bind_snapshot_plan_command_and_frame_fidelity(self) -> None:
+        cases = (
+            ("cadence-progressive", "preserve", "24000/1001", "format=yuv420p", "passed"),
+            ("cadence-ivtc", "inverse_telecine", "24000/1001",
+             "fieldmatch=order=tff:combmatch=full,bwdif=mode=send_frame:parity=tff:deint=interlaced,decimate,setfield=prog", "passed"),
+        )
+        for name, operation, rate, filters, fidelity_status in cases:
+            with self.subTest(scenario=name):
+                scenario = pipeline_smoke.scenario_for(name)
+                worker = {
+                    "cadenceMode": scenario.cadence_mode,
+                    "fieldStructureMode": scenario.field_structure_mode,
+                    "effectiveCadenceOperation": operation,
+                    "effectiveOutputFrameRate": rate,
+                    "effectiveOutputFrameRateUnknown": name == "cadence-ambiguous",
+                    "effectiveCadenceFieldOrder": "tff" if name == "cadence-ivtc" else None,
+                    "videoFilters": filters,
+                }
+                command_filter = filters or "format=yuv420p"
+                command = f"ffmpeg -i /media/raw/synthetic-smoke.mkv -vf '{command_filter}'"
+                if name == "cadence-ivtc":
+                    command += " -fps_mode cfr"
+                job = {
+                    "id": 7, "activeExecutionPlanId": 11, "profileVersion": 2,
+                    "profileSnapshot": {"workerConfig": worker},
+                    "notes": f"Conversion command: {command}",
+                }
+                plan = {"id": 11, "jobId": 7, "profileVersion": 2}
+                summary = pipeline_smoke.assert_cadence_execution(job, plan, scenario)
+                self.assertEqual(summary["operation"], operation)
+                validation = {"report": {"frameFidelity": {
+                    "status": fidelity_status,
+                    "fields": {"frameRate": {"status": scenario.expected_frame_fidelity_rate_status}},
+                    "expected": {"frameRate": rate},
+                    "actual": {"frameRate": rate},
+                }}}
+                fidelity = pipeline_smoke.assert_cadence_validation(validation, scenario)
+                self.assertEqual(fidelity["status"], fidelity_status)
+
+    def test_issue_285_ambiguous_cadence_passes_only_after_expected_preflight_rejection(self) -> None:
+        queued = {
+            "id": 7, "status": "queued", "stage": "queued", "profileSnapshot": None,
+            "trackProfileSnapshot": None, "activeExecutionPlanId": None, "profileCapturedAt": None,
+        }
+        job = {
+            "id": 7, "status": "failed", "stage": "failed",
+            "errorMessage": (
+                "claim-time Queue HEVC preflight: HEVC Level/Tier decision is unresolved: "
+                "HEVC Level/Tier is unresolved because effective output FPS is unknown. "
+                "Cadence resolution: inverse telecine is unresolved because an explicit or "
+                "validated field order is required; review required."
+            ),
+            "profileSnapshot": {}, "trackProfileSnapshot": {}, "profileCapturedAt": None,
+            "profileResolution": {}, "activeExecutionPlanId": None,
+            "validationStatus": "", "validationReport": {}, "errorCode": None,
+            "stageHistory": [
+                {"stage": "queued"}, {"stage": "claimed"}, {"stage": "failed"},
+            ],
+            "notes": (
+                "Synthetic isolated pipeline smoke; no production media\n"
+                "Execution failed after the worker claimed the job; its reservation was released"
+            ),
+            "outputPath": "", "publishedPath": "", "publishedAt": None, "publishedSizeBytes": 0,
+        }
+        plans: list[dict[str, object]] = []
+        artifacts: dict[str, object] = {"jobId": 7}
+        validation_history = {"items": [{"id": 7, "status": "failed", "validationStatus": ""}]}
+        publications = {"items": []}
+        backend_log = json.dumps({
+            "component": "system",
+            "event": "auto_worker_claim_failed",
+            "error": job["errorMessage"],
+        })
+
+        summary = pipeline_smoke.assert_ambiguous_cadence_preflight(
+            queued, job, plans, artifacts, validation_history, publications, backend_log,
+        )
+        self.assertEqual(summary["preflight"]["status"], "PASS: expected negative rejection")
+        self.assertEqual(summary["preflight"]["effectiveOutputFrameRate"], "unknown")
+        self.assertEqual(summary["preflight"]["errorCode"], None)
+        self.assertEqual(summary["preflight"]["structuredEvent"], "auto_worker_claim_failed")
+        self.assertEqual(summary["executionPlan"], "NOT_CREATED")
+        self.assertEqual(summary["workerExecution"]["ffmpegConversion"], "NOT_RUN")
+        self.assertEqual(summary["result"], "NOT_CREATED")
+        self.assertEqual(summary["publication"], "NOT_CREATED")
+        self.assertEqual(summary["validation"]["validationRun"], "NOT_RUN_BY_DESIGN")
+        self.assertEqual(summary["frameFidelity"], "NOT_RUN_BY_DESIGN")
+        self.assertTrue(summary["overallAcceptance"].startswith("PASS:"))
+
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_ambiguous_cadence_preflight(
+                queued, {**job, "errorMessage": "cadence guessed 24000/1001"}, plans, artifacts,
+                validation_history, publications, backend_log,
+            )
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_ambiguous_cadence_preflight(
+                queued, job, [{"id": 11, "jobId": 7}], artifacts,
+                validation_history, publications, backend_log,
+            )
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_ambiguous_cadence_preflight(
+                queued, job, plans, {"jobId": 7, "result": {"status": "ready"}},
+                validation_history, publications, backend_log,
+            )
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_ambiguous_cadence_preflight(
+                queued, job, plans, artifacts,
+                {"items": [{"id": 7, "status": "failed", "validationStatus": "failed", "validationRunId": "run-1"}]},
+                publications, backend_log,
+            )
+
+    def test_issue_285_ambiguous_cadence_fails_if_execution_or_publication_is_observed(self) -> None:
+        queued = {
+            "id": 7, "status": "queued", "stage": "queued", "profileSnapshot": None,
+            "trackProfileSnapshot": None, "activeExecutionPlanId": None, "profileCapturedAt": None,
+        }
+        error = (
+            "claim-time Queue HEVC preflight: HEVC Level/Tier decision is unresolved: "
+            "HEVC Level/Tier is unresolved because effective output FPS is unknown. "
+            "Cadence resolution: inverse telecine is unresolved because an explicit or "
+            "validated field order is required; review required."
+        )
+        job = {
+            "id": 7, "status": "failed", "stage": "failed", "errorMessage": error,
+            "profileSnapshot": {}, "trackProfileSnapshot": {}, "profileResolution": {},
+            "profileCapturedAt": None, "activeExecutionPlanId": None, "validationStatus": "",
+            "validationReport": {}, "stageHistory": [
+                {"stage": "queued"}, {"stage": "claimed"}, {"stage": "failed"},
+            ],
+            "notes": "Synthetic isolated pipeline smoke",
+            "outputPath": "", "publishedPath": "", "publishedAt": None, "publishedSizeBytes": 0,
+        }
+        validation_history = {"items": [{"id": 7, "status": "failed", "validationStatus": ""}]}
+        publications = {"items": []}
+        backend_log = json.dumps({"event": "auto_worker_claim_failed", "error": error})
+
+        cases = (
+            ("completed job", {**job, "status": "completed", "stage": "completed"}),
+            ("processing stage", {**job, "stageHistory": [
+                {"stage": "queued"}, {"stage": "claimed"}, {"stage": "processing"}, {"stage": "failed"},
+            ]}),
+            ("FFmpeg command", {**job, "notes": "Conversion command: ffmpeg -i synthetic.mkv output.mkv"}),
+            ("worker output", {**job, "outputPath": "/media/staging/job-7/output.mkv"}),
+            ("published path", {**job, "publishedPath": "/media/library/published/output.mkv"}),
+            ("concrete cadence", {**job, "profileResolution": {"effectiveOutputFrameRate": "24000/1001"}}),
+        )
+        for label, changed_job in cases:
+            with self.subTest(observation=label), self.assertRaises(pipeline_smoke.SmokeFailure):
+                pipeline_smoke.assert_ambiguous_cadence_preflight(
+                    queued, changed_job, [], {"jobId": 7}, validation_history, publications, backend_log,
+                )
+
+        publication = {"items": [{"publication": {"queueJobId": 7, "state": "published"}}]}
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_ambiguous_cadence_preflight(
+                queued, job, [], {"jobId": 7}, validation_history, publication, backend_log,
+            )
+
+        wrong_event = json.dumps({"event": "worker_execution_started", "error": error})
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_ambiguous_cadence_preflight(
+                queued, job, [], {"jobId": 7}, validation_history, publications, wrong_event,
+            )
+
+    def test_issue_285_ambiguous_cadence_cannot_reach_execution_or_validation_helpers(self) -> None:
+        scenario = pipeline_smoke.scenario_for("cadence-ambiguous")
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_cadence_execution({}, {}, scenario)
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_cadence_validation({}, scenario)
 
     def test_ffprobe_contract_requires_exact_streams_progressive_rate_and_chapters(self) -> None:
         scenario = pipeline_smoke.scenario_for("happy-path")
