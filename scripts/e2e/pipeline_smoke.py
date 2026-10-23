@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -15,7 +16,7 @@ import tempfile
 import time
 import uuid
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
@@ -54,6 +55,23 @@ class SyntheticScenario:
     output_video_codec: str = "hevc"
     video_width: int = 320
     video_height: int = 180
+    fixture_video_source: str | None = None
+    fixture_frame_rate: str | None = None
+    fixture_input_frame_rate: str | None = None
+    fixture_video_filter: str | None = None
+    fixture_video_filter_graph: str | None = None
+    fixture_interlaced: bool = False
+    fixture_field_order: str = "progressive"
+    output_field_order: str = "progressive"
+    cadence_mode: str = "preserve"
+    field_structure_mode: str = "preserve"
+    expected_cadence_operation: str | None = None
+    expected_cadence_rate: str | None = None
+    expected_cadence_field_order: str | None = None
+    expected_frame_fidelity_status: str | None = None
+    expected_frame_fidelity_rate_status: str | None = None
+    fixture_frame_count: int | None = None
+    output_frame_count: int | None = None
 
     @property
     def audio_stream_indexes(self) -> tuple[int, ...]:
@@ -113,9 +131,65 @@ TRACK_ACTIONS_SCENARIO = SyntheticScenario(
     subtitle_action="extract",
     subtitle_sidecar_formats=("srt", "ass"),
 )
+CADENCE_PROGRESSIVE_SCENARIO = replace(
+    HAPPY_PATH_SCENARIO,
+    name="cadence-progressive",
+    duration_seconds=90,
+    chapters=((0, 30000, "Synthetic chapter 1"), (30000, 60000, "Synthetic chapter 2"), (60000, 90000, "Synthetic chapter 3")),
+    cadence_mode="auto",
+    field_structure_mode="auto",
+    fixture_video_source="color=c=gray:s=320x180:r=24000/1001:d=90",
+    expected_cadence_operation="preserve",
+    expected_cadence_rate="24000/1001",
+    expected_frame_fidelity_status="passed",
+    expected_frame_fidelity_rate_status="passed",
+    fixture_frame_count=2158,
+    output_frame_count=2158,
+)
+CADENCE_IVTC_SCENARIO = replace(
+    HAPPY_PATH_SCENARIO,
+    name="cadence-ivtc",
+    duration_seconds=24,
+    chapters=((0, 8000, "Synthetic chapter 1"), (8000, 16000, "Synthetic chapter 2"), (16000, 24000, "Synthetic chapter 3")),
+    cadence_mode="auto",
+    field_structure_mode="auto",
+    fixture_frame_rate="30000/1001",
+    fixture_input_frame_rate="24000/1001",
+    fixture_video_filter="telecine=first_field=top",
+    fixture_interlaced=True,
+    fixture_field_order="tb",
+    expected_cadence_operation="inverse_telecine",
+    expected_cadence_rate="24000/1001",
+    expected_cadence_field_order="tff",
+    expected_frame_fidelity_status="passed",
+    expected_frame_fidelity_rate_status="passed",
+    fixture_frame_count=720,
+    output_frame_count=576,
+)
+CADENCE_AMBIGUOUS_SCENARIO = replace(
+    HAPPY_PATH_SCENARIO,
+    name="cadence-ambiguous",
+    duration_seconds=24,
+    chapters=((0, 8000, "Synthetic chapter 1"), (8000, 16000, "Synthetic chapter 2"), (16000, 24000, "Synthetic chapter 3")),
+    frame_rate="30000/1001",
+    fixture_frame_rate="30000/1001",
+    fixture_video_filter_graph=(
+        "[0:v]setpts=PTS-STARTPTS,telecine=first_field=top[telecined];"
+        "[1:v]setpts=PTS-STARTPTS[native];"
+        "[telecined][native]concat=n=2:v=1:a=0[smoke_video]"
+    ),
+    fixture_interlaced=True,
+    fixture_field_order="tb",
+    cadence_mode="auto",
+    field_structure_mode="auto",
+    fixture_frame_count=720,
+)
 SCENARIOS = {
     HAPPY_PATH_SCENARIO.name: HAPPY_PATH_SCENARIO,
     TRACK_ACTIONS_SCENARIO.name: TRACK_ACTIONS_SCENARIO,
+    CADENCE_PROGRESSIVE_SCENARIO.name: CADENCE_PROGRESSIVE_SCENARIO,
+    CADENCE_IVTC_SCENARIO.name: CADENCE_IVTC_SCENARIO,
+    CADENCE_AMBIGUOUS_SCENARIO.name: CADENCE_AMBIGUOUS_SCENARIO,
 }
 SUPPORTED_SCENARIOS = frozenset(SCENARIOS)
 REQUIRED_FINDING_STATES = {
@@ -387,6 +461,12 @@ def generate_fixture(
         encoding="utf-8",
     )
 
+    effective_video_filter = video_filter if video_filter is not None else scenario.fixture_video_filter
+    effective_interlaced = interlaced or scenario.fixture_interlaced
+    input_rate = scenario.frame_rate if scenario.fixture_input_frame_rate is None else scenario.fixture_input_frame_rate
+    video_source = scenario.fixture_video_source or (
+        f"testsrc2=size={scenario.video_width}x{scenario.video_height}:rate={input_rate}:duration={scenario.duration_seconds}"
+    )
     args = [
         "docker", "run", "--rm", "--network", "none", "--read-only",
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
@@ -395,29 +475,36 @@ def generate_fixture(
         "--env", "HOME=/media/config/home", "--env", "TMPDIR=/media/tmp",
         "--entrypoint", "ffmpeg", image,
         "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-        "-f", "lavfi", "-i",
-        f"testsrc2=size={scenario.video_width}x{scenario.video_height}:rate={scenario.frame_rate}:duration={scenario.duration_seconds}",
+        "-f", "lavfi", "-i", video_source,
     ]
+    if scenario.fixture_video_filter_graph:
+        segment_seconds = scenario.duration_seconds // 2
+        args[-1] = f"testsrc2=size={scenario.video_width}x{scenario.video_height}:rate=24000/1001:duration={segment_seconds}"
+        args.extend((
+            "-f", "lavfi", "-i",
+            f"testsrc2=size={scenario.video_width}x{scenario.video_height}:rate=30000/1001:duration={segment_seconds}",
+        ))
     for track in scenario.audio_tracks:
         args.extend((
             "-f", "lavfi", "-i",
             f"sine=frequency={track.frequency_hz}:sample_rate=48000:duration={scenario.duration_seconds}",
         ))
-    subtitle_input_index = len(scenario.audio_tracks) + 1
+    first_audio_input_index = 2 if scenario.fixture_video_filter_graph else 1
+    subtitle_input_index = first_audio_input_index + len(scenario.audio_tracks)
     chapter_input_index = subtitle_input_index + 1
-    args.extend((
-        "-i", "/media/fixtures/synthetic-smoke.srt",
-        "-f", "ffmetadata", "-i", "/media/fixtures/synthetic-smoke.ffmeta",
-        "-map", "0:v:0",
-    ))
+    args.extend(("-i", "/media/fixtures/synthetic-smoke.srt", "-f", "ffmetadata", "-i", "/media/fixtures/synthetic-smoke.ffmeta"))
+    if scenario.fixture_video_filter_graph:
+        args.extend(("-filter_complex", scenario.fixture_video_filter_graph, "-map", "[smoke_video]"))
+    else:
+        args.extend(("-map", "0:v:0"))
     for audio_input_index in range(1, len(scenario.audio_tracks) + 1):
-        args.extend(("-map", f"{audio_input_index}:a:0"))
+        args.extend(("-map", f"{first_audio_input_index + audio_input_index - 1}:a:0"))
     args.extend((
         "-map", f"{subtitle_input_index}:s:0",
         "-map_chapters", str(chapter_input_index),
     ))
-    if video_filter:
-        args.extend(("-vf", video_filter))
+    if effective_video_filter:
+        args.extend(("-vf", effective_video_filter))
     args.extend((
         "-c:v", "libx264", "-profile:v", "high", "-preset", "ultrafast",
         "-threads", "1", "-pix_fmt", "yuv420p",
@@ -426,7 +513,7 @@ def generate_fixture(
         "-metadata", "title=MVForge synthetic pipeline smoke",
         "-metadata", "creation_time=2000-01-01T00:00:00Z",
     ))
-    if interlaced:
+    if effective_interlaced:
         args.extend(("-flags", "+ilme+ildct", "-top", "1"))
     for index, track in enumerate(scenario.audio_tracks):
         args.extend((
@@ -448,9 +535,9 @@ def probe_media(container: str, media_path: str) -> dict[str, Any]:
     result = run_command(
         [
             "docker", "exec", container, "ffprobe", "-v", "error",
-            "-show_chapters",
+            "-count_frames", "-show_chapters",
             "-show_entries",
-            "format=duration:stream=index,codec_type,codec_name,width,height,sample_rate,channels,avg_frame_rate,r_frame_rate,field_order,pix_fmt:stream_tags=language,title:chapter=id,start_time,end_time:chapter_tags=title",
+            "format=duration:stream=index,codec_type,codec_name,width,height,sample_rate,channels,avg_frame_rate,r_frame_rate,field_order,pix_fmt,nb_read_frames:stream_tags=language,title:chapter=id,start_time,end_time:chapter_tags=title",
             "-of", "json", media_path,
         ],
         timeout=30,
@@ -468,6 +555,7 @@ def assert_media_probe(
     *,
     expected_video_codec: str | None = None,
     output: bool = False,
+    require_frame_count: bool = True,
 ) -> dict[str, Any]:
     if not isinstance(probe, dict):
         raise SmokeFailure(f"{label} ffprobe evidence is not an object")
@@ -490,7 +578,8 @@ def assert_media_probe(
             f"expected {expected_counts}"
         )
     video = next(stream for stream in streams if isinstance(stream, dict) and stream.get("codec_type") == "video")
-    expected_rate = Fraction(scenario.frame_rate)
+    rate_value = scenario.frame_rate if output or scenario.fixture_frame_rate is None else scenario.fixture_frame_rate
+    expected_rate = Fraction(rate_value)
     for field in ("avg_frame_rate", "r_frame_rate"):
         try:
             actual_rate = Fraction(str(video.get(field, "")))
@@ -498,8 +587,9 @@ def assert_media_probe(
             raise SmokeFailure(f"{label} video has no usable {field}") from exc
         if actual_rate != expected_rate:
             raise SmokeFailure(f"{label} video {field}={actual_rate}, expected {expected_rate}")
-    if video.get("field_order") != "progressive":
-        raise SmokeFailure(f"{label} video field_order={video.get('field_order')!r}, expected progressive")
+    expected_field_order = scenario.output_field_order if output else scenario.fixture_field_order
+    if video.get("field_order") != expected_field_order:
+        raise SmokeFailure(f"{label} video field_order={video.get('field_order')!r}, expected {expected_field_order!r}")
     if video.get("width") != scenario.video_width or video.get("height") != scenario.video_height:
         raise SmokeFailure(
             f"{label} video geometry is {video.get('width')}x{video.get('height')}; "
@@ -509,6 +599,14 @@ def assert_media_probe(
         raise SmokeFailure(
             f"{label} video codec={video.get('codec_name')!r}, expected {expected_video_codec!r}"
         )
+    expected_frame_count = scenario.output_frame_count if output else scenario.fixture_frame_count
+    if require_frame_count and expected_frame_count is not None:
+        try:
+            actual_frame_count = int(video.get("nb_read_frames", video.get("nb_frames", "")))
+        except (TypeError, ValueError) as exc:
+            raise SmokeFailure(f"{label} video has no counted frame total") from exc
+        if actual_frame_count != expected_frame_count:
+            raise SmokeFailure(f"{label} video frame count={actual_frame_count}, expected {expected_frame_count}")
     expected_audio_tracks = scenario.expected_output_audio_tracks if output else scenario.audio_tracks
     actual_audio_tracks = [stream for stream in streams if isinstance(stream, dict) and stream.get("codec_type") == "audio"]
     for index, (actual, expected) in enumerate(zip(actual_audio_tracks, expected_audio_tracks), start=1):
@@ -558,6 +656,7 @@ def assert_media_probe(
         "chapterTitles": actual_chapter_titles,
         "durationSeconds": duration,
         "videoFrameRate": str(expected_rate),
+        "videoFrameCount": int(video["nb_read_frames"]) if str(video.get("nb_read_frames", "")).isdigit() else None,
         "videoFieldOrder": video.get("field_order"),
         "videoCodec": video.get("codec_name"),
     }
@@ -568,7 +667,7 @@ def summarize_probe(probe: Any) -> dict[str, Any]:
         return {"error": "ffprobe evidence unavailable"}
     stream_fields = (
         "index", "codec_type", "codec_name", "width", "height", "sample_rate", "channels",
-        "avg_frame_rate", "r_frame_rate", "field_order", "pix_fmt",
+        "avg_frame_rate", "r_frame_rate", "field_order", "pix_fmt", "nb_read_frames",
     )
     streams = []
     for stream in probe.get("streams", []):
@@ -946,6 +1045,258 @@ def assert_frozen_snapshots(job: dict[str, Any], scenario: SyntheticScenario) ->
     }
 
 
+def assert_cadence_execution(
+    job: dict[str, Any], plan: dict[str, Any], scenario: SyntheticScenario,
+) -> dict[str, Any] | None:
+    if scenario.name == "cadence-ambiguous":
+        raise SmokeFailure("ambiguous cadence must be rejected before ExecutionPlan or FFmpeg execution")
+    if not scenario.name.startswith("cadence-"):
+        return None
+    profile = job.get("profileSnapshot")
+    worker = profile.get("workerConfig") if isinstance(profile, dict) else None
+    if not isinstance(worker, dict):
+        raise SmokeFailure("cadence scenario QueueJob has no frozen worker configuration")
+    if worker.get("cadenceMode") != scenario.cadence_mode:
+        raise SmokeFailure(f"frozen cadenceMode={worker.get('cadenceMode')!r}, expected {scenario.cadence_mode!r}")
+    if worker.get("fieldStructureMode") != scenario.field_structure_mode:
+        raise SmokeFailure(
+            f"frozen fieldStructureMode={worker.get('fieldStructureMode')!r}, expected {scenario.field_structure_mode!r}"
+        )
+    operation = worker.get("effectiveCadenceOperation")
+    output_rate = worker.get("effectiveOutputFrameRate")
+    filters = str(worker.get("videoFilters") or "").lower()
+    if scenario.expected_cadence_operation is not None and operation != scenario.expected_cadence_operation:
+        raise SmokeFailure(
+            f"frozen cadence operation={operation!r}, expected {scenario.expected_cadence_operation!r}"
+        )
+    if scenario.expected_cadence_rate is not None and output_rate != scenario.expected_cadence_rate:
+        raise SmokeFailure(
+            f"frozen cadence output frame rate={output_rate!r}, expected {scenario.expected_cadence_rate!r}"
+        )
+    if scenario.expected_cadence_field_order is not None and worker.get("effectiveCadenceFieldOrder") != scenario.expected_cadence_field_order:
+        raise SmokeFailure(
+            f"frozen IVTC field order={worker.get('effectiveCadenceFieldOrder')!r}, "
+            f"expected {scenario.expected_cadence_field_order!r}"
+        )
+    cadence_filters = ("fieldmatch=", "decimate", "fps=", "bwdif=", "yadif=")
+    if scenario.name == "cadence-progressive":
+        if operation not in {None, "", "preserve"} or any(token in filters for token in cadence_filters):
+            raise SmokeFailure(f"progressive preserve unexpectedly changed cadence: {operation!r}, {filters!r}")
+    elif scenario.name == "cadence-ivtc":
+        for token in ("fieldmatch=order=tff", "decimate", "setfield=prog"):
+            if token not in filters:
+                raise SmokeFailure(f"frozen IVTC chain is missing {token!r}: {filters!r}")
+
+    if plan.get("jobId") != job.get("id") or plan.get("id") != job.get("activeExecutionPlanId"):
+        raise SmokeFailure("cadence Queue snapshot is not bound to the active ExecutionPlan")
+    if isinstance(job.get("profileVersion"), int) and plan.get("profileVersion") != job.get("profileVersion"):
+        raise SmokeFailure("active ExecutionPlan profile version differs from the frozen QueueJob")
+
+    notes = job.get("notes")
+    notes_text = "\n".join(notes) if isinstance(notes, list) else str(notes or "")
+    commands = re.findall(r"(?m)Conversion command:\s*(ffmpeg[^\r\n]*)", notes_text)
+    if not commands:
+        raise SmokeFailure("QueueJob notes do not expose the executed FFmpeg conversion command")
+    try:
+        command_args = shlex.split(commands[-1])
+    except ValueError as exc:
+        raise SmokeFailure("executed FFmpeg command in QueueJob notes is not parseable") from exc
+    command_filter = ""
+    for option in ("-vf", "-filter:v"):
+        if option in command_args:
+            command_filter = command_args[command_args.index(option) + 1].lower()
+            break
+    if scenario.name == "cadence-ivtc":
+        for token in ("fieldmatch=order=tff", "decimate", "setfield=prog"):
+            if token not in command_filter:
+                raise SmokeFailure(f"executed FFmpeg chain is missing {token!r}: {command_filter!r}")
+        if "-fps_mode" not in command_args or command_args[command_args.index("-fps_mode") + 1] != "cfr":
+            raise SmokeFailure("executed IVTC command did not apply the frozen constant-frame-rate output mode")
+    elif any(token in command_filter for token in cadence_filters):
+        raise SmokeFailure(f"executed FFmpeg command unexpectedly transformed progressive preserve: {command_filter!r}")
+    return {
+        "queueJobId": job.get("id"),
+        "executionPlanId": plan.get("id"),
+        "profileVersion": plan.get("profileVersion"),
+        "cadenceMode": worker.get("cadenceMode"),
+        "fieldStructureMode": worker.get("fieldStructureMode"),
+        "operation": operation,
+        "effectiveOutputFrameRate": output_rate,
+        "effectiveOutputFrameRateUnknown": worker.get("effectiveOutputFrameRateUnknown"),
+        "fieldOrder": worker.get("effectiveCadenceFieldOrder"),
+        "frozenVideoFilters": worker.get("videoFilters"),
+        "executedVideoFilter": command_filter,
+        "commandOutputMode": command_args[command_args.index("-fps_mode") + 1] if "-fps_mode" in command_args else None,
+    }
+
+
+def assert_ambiguous_cadence_preflight(
+    queued: dict[str, Any],
+    job: dict[str, Any],
+    plans: Any,
+    artifacts: dict[str, Any],
+    validation_history: dict[str, Any],
+    publications: dict[str, Any],
+    backend_log: str,
+) -> dict[str, Any]:
+    if queued.get("status") != "queued" or queued.get("stage") != "queued":
+        raise SmokeFailure("ambiguous cadence Queue request did not remain lightweight queued intent")
+    if any(queued.get(key) not in (None, {}) for key in (
+        "profileSnapshot", "trackProfileSnapshot", "activeExecutionPlanId", "profileCapturedAt",
+    )):
+        raise SmokeFailure("ambiguous cadence Queue request unexpectedly contained a frozen execution snapshot")
+
+    if job.get("status") != "failed" or job.get("stage") != "failed":
+        raise SmokeFailure(f"ambiguous cadence preflight did not fail closed: {job.get('status')!r}/{job.get('stage')!r}")
+    stage_history = job.get("stageHistory")
+    stages = [row.get("stage") for row in stage_history if isinstance(row, dict)] if isinstance(stage_history, list) else []
+    if not stages or stages[-1] != "failed" or any(stage in {"processing", "completed", "published"} for stage in stages):
+        raise SmokeFailure(f"ambiguous cadence reached execution instead of failing at preflight: {stages!r}")
+
+    error = str(job.get("errorMessage") or "")
+    required_error_evidence = (
+        "claim-time Queue HEVC preflight",
+        "effective output FPS is unknown",
+        "inverse telecine is unresolved because an explicit or validated field order is required",
+        "review required",
+    )
+    missing_error_evidence = [part for part in required_error_evidence if part not in error]
+    if missing_error_evidence:
+        raise SmokeFailure(f"ambiguous cadence failure lacks resolver/preflight evidence {missing_error_evidence!r}: {error!r}")
+
+    if job.get("profileSnapshot") not in (None, {}) or job.get("trackProfileSnapshot") not in (None, {}):
+        raise SmokeFailure("claim-time cadence preflight froze Profile or Track state before rejecting the Queue job")
+    profile_resolution = job.get("profileResolution")
+    if profile_resolution is not None and not isinstance(profile_resolution, dict):
+        raise SmokeFailure("ambiguous cadence preflight returned an invalid profile resolution")
+    if isinstance(profile_resolution, dict):
+        output_rate = profile_resolution.get("effectiveOutputFrameRate")
+        if output_rate not in (None, "", "unknown"):
+            raise SmokeFailure(f"ambiguous cadence preflight persisted a guessed expected FPS: {output_rate!r}")
+        if profile_resolution.get("effectiveOutputFrameRateUnknown") is False:
+            raise SmokeFailure("ambiguous cadence preflight marked its unresolved expected FPS as known")
+    if job.get("profileCapturedAt") or job.get("activeExecutionPlanId") is not None:
+        raise SmokeFailure("claim-time cadence preflight created frozen execution authority before rejecting the job")
+    if not isinstance(plans, list) or any(
+        isinstance(plan, dict) and plan.get("jobId") == job.get("id") for plan in plans
+    ):
+        raise SmokeFailure("ambiguous cadence preflight created an ExecutionPlan")
+
+    if artifacts.get("result") is not None or artifacts.get("resultPath"):
+        raise SmokeFailure("ambiguous cadence preflight unexpectedly created a Result artifact")
+    if job.get("outputPath") not in (None, ""):
+        raise SmokeFailure("ambiguous cadence preflight unexpectedly created a worker output path")
+
+    notes = job.get("notes")
+    notes_text = "\n".join(notes) if isinstance(notes, list) else str(notes or "")
+    if "Conversion command:" in notes_text or re.search(r"(?i)\bffmpeg\b", notes_text):
+        raise SmokeFailure("ambiguous cadence unexpectedly launched a worker FFmpeg conversion")
+
+    if job.get("publishedPath") not in (None, "") or job.get("publishedAt") is not None or job.get("publishedSizeBytes") not in (None, 0):
+        raise SmokeFailure("ambiguous cadence preflight unexpectedly published content")
+    publication_items = publications.get("items") if isinstance(publications, dict) else None
+    if not isinstance(publication_items, list):
+        raise SmokeFailure("Publisher did not return its isolated publication list")
+    matching_publications = [
+        row.get("publication")
+        for row in publication_items
+        if isinstance(row, dict)
+        and isinstance(row.get("publication"), dict)
+        and row["publication"].get("queueJobId") == job.get("id")
+    ]
+    if matching_publications:
+        raise SmokeFailure("ambiguous cadence unexpectedly created a Publisher record")
+
+    claim_failure_events = []
+    for line in backend_log.splitlines():
+        start = line.find("{")
+        if start < 0:
+            continue
+        try:
+            event = json.loads(line[start:])
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(event, dict)
+            and event.get("event") == "auto_worker_claim_failed"
+            and event.get("error") == error
+        ):
+            claim_failure_events.append(event)
+    if len(claim_failure_events) != 1:
+        raise SmokeFailure("backend logs do not contain the unique structured auto_worker_claim_failed event")
+
+    if job.get("validationStatus") not in (None, "") or job.get("validationReport") not in (None, {}):
+        raise SmokeFailure("ambiguous cadence preflight unexpectedly persisted a Validation verdict")
+    items = validation_history.get("items") if isinstance(validation_history, dict) else None
+    matching_history = [
+        row for row in items
+        if isinstance(row, dict) and row.get("id") == job.get("id")
+    ] if isinstance(items, list) else []
+    if len(matching_history) != 1:
+        raise SmokeFailure("read-only Validation history did not return exactly the failed synthetic Queue job")
+    history_row = matching_history[0]
+    if history_row.get("status") != "failed":
+        raise SmokeFailure("Validation history does not show the Queue preflight rejection")
+    if history_row.get("validationStatus") not in (None, ""):
+        raise SmokeFailure("failed ambiguous cadence Queue job has a non-empty Validation status")
+    if history_row.get("validationRunId") not in (None, "") or history_row.get("validationOutcome") not in (None, ""):
+        raise SmokeFailure("failed ambiguous cadence Queue job unexpectedly has a ValidationRun or outcome")
+
+    return {
+        "queueJobId": job.get("id"),
+        "queueIntent": {"status": queued.get("status"), "stage": queued.get("stage"), "frozenSnapshot": "absent"},
+        "preflight": {
+            "status": "PASS: expected negative rejection",
+            "queueStatus": job.get("status"),
+            "stage": job.get("stage"),
+            "cadenceResolution": "unresolved; review required",
+            "effectiveOutputFrameRate": "unknown",
+            "errorCode": job.get("errorCode"),
+            "structuredEvent": "auto_worker_claim_failed",
+            "evidence": error,
+        },
+        "workerExecution": {
+            "stageHistory": stages,
+            "ffmpegConversion": "NOT_RUN",
+            "workerOutputPath": "absent",
+        },
+        "executionPlan": "NOT_CREATED",
+        "result": "NOT_CREATED",
+        "outputFfprobe": "NOT_RUN",
+        "publication": "NOT_CREATED",
+        "validation": {
+            "validationRun": "NOT_RUN_BY_DESIGN",
+            "validationStatus": job.get("validationStatus"),
+            "reason": "ValidationRun requires completed execution and a canonical Result; pre-Queue review is reported by cadence preflight",
+        },
+        "frameFidelity": "NOT_RUN_BY_DESIGN",
+        "overallAcceptance": "PASS: all expected negative preflight assertions passed",
+    }
+
+
+def assert_cadence_validation(validation: dict[str, Any], scenario: SyntheticScenario) -> dict[str, Any] | None:
+    if scenario.name == "cadence-ambiguous":
+        raise SmokeFailure("ambiguous cadence is rejected before execution; ValidationRun must remain NOT_RUN")
+    if scenario.expected_frame_fidelity_status is None:
+        return None
+    report = validation.get("report")
+    fidelity = report.get("frameFidelity") if isinstance(report, dict) else None
+    if not isinstance(fidelity, dict):
+        raise SmokeFailure("Validation Result has no Frame Fidelity report for cadence scenario")
+    if fidelity.get("status") != scenario.expected_frame_fidelity_status:
+        raise SmokeFailure(
+            f"Frame Fidelity status={fidelity.get('status')!r}, expected {scenario.expected_frame_fidelity_status!r}"
+        )
+    fields = fidelity.get("fields")
+    frame_rate = fields.get("frameRate") if isinstance(fields, dict) else None
+    rate_status = frame_rate.get("status") if isinstance(frame_rate, dict) else None
+    if scenario.expected_frame_fidelity_rate_status and rate_status != scenario.expected_frame_fidelity_rate_status:
+        raise SmokeFailure(
+            f"Frame Fidelity frameRate status={rate_status!r}, expected {scenario.expected_frame_fidelity_rate_status!r}"
+        )
+    return {"status": fidelity.get("status"), "frameRateStatus": rate_status, "expected": fidelity.get("expected"), "actual": fidelity.get("actual")}
+
+
 def assert_result_validation_binding(
     job: dict[str, Any],
     plan: dict[str, Any],
@@ -1206,6 +1557,8 @@ def run_smoke(args: argparse.Namespace) -> int:
     prepare_sandbox(sandbox)
     container = f"mvforge-e2e-{uuid.uuid4().hex[:16]}"
     passed = False
+    cadence_summary: dict[str, Any] | None = None
+    cadence_validation_summary: dict[str, Any] | None = None
     source_path = sandbox / "raw" / "synthetic-smoke.mkv"
     evidence.write("scenario.log", f"scenario={scenario.name}\nphase=starting\n".encode(), MAX_LOG_BYTES)
 
@@ -1288,8 +1641,9 @@ def run_smoke(args: argparse.Namespace) -> int:
                 "preserveChapters": True,
                 "workerConfig": {
                     "videoEncoder": "libx265",
-                    "cadenceMode": "preserve",
-                    "fieldStructureMode": "preserve",
+                    "cadenceMode": scenario.cadence_mode,
+                    "fieldStructureMode": scenario.field_structure_mode,
+                    "cadenceFieldOrder": "auto",
                 },
             },
         )
@@ -1401,6 +1755,55 @@ def run_smoke(args: argparse.Namespace) -> int:
             raise SmokeFailure(
                 f"QueueJob {job_id} did not finish within {args.timeout} seconds; execution plans: {plan_detail}"
             )
+        if scenario.name == "cadence-ambiguous":
+            if job.get("status") != "failed":
+                raise SmokeFailure(
+                    "ambiguous cadence did not receive the expected preflight rejection; "
+                    f"QueueJob ended as {job.get('status')}/{job.get('stage')}: {job.get('errorMessage', '')}"
+                )
+            log("phase=claim-time-cadence-preflight")
+            plans = api.request(
+                "GET", f"/api/queue/jobs/{job_id}/execution-plans",
+                evidence_name="execution-plans.json",
+            )
+            artifacts = api.request(
+                "GET", f"/api/queue/jobs/{job_id}/artifacts",
+                evidence_name="result-artifact-state.json",
+            )
+            validation_history = api.request(
+                "GET", f"/api/validation/history?q={job_id}&limit=100",
+                evidence_name="validation-history.json",
+            )
+            publications = api.request(
+                "GET", "/api/publisher/publications",
+                evidence_name="publisher-publications.json",
+            )
+            logs = run_command(["docker", "logs", "--tail", "1000", container], timeout=30, check=False)
+            if logs.returncode != 0:
+                raise SmokeFailure(
+                    f"could not read backend logs for claim-time rejection: {str(logs.stderr or '')[-2000:]}"
+                )
+            backend_log = logs.stdout
+            evidence.write("backend-container.log", backend_log.encode("utf-8", "replace"), MAX_LOG_BYTES)
+            fail_closed_summary = assert_ambiguous_cadence_preflight(
+                queued, job, plans, artifacts, validation_history, publications, backend_log,
+            )
+            evidence.json("cadence-preflight-summary.json", fail_closed_summary)
+            log("component=claim-time-cadence-preflight outcome=PASS result=expected-negative")
+            log("component=ExecutionPlan outcome=PASS result=NOT_CREATED")
+            log("component=worker-FFmpeg-conversion outcome=PASS result=NOT_RUN")
+            log("component=Result-and-output-ffprobe outcome=PASS result=NOT_CREATED")
+            log("component=Publisher outcome=PASS result=NOT_CREATED")
+            log("component=ValidationRun outcome=PASS result=NOT_RUN_BY_DESIGN")
+            log("phase=passed")
+            passed = True
+            print(
+                "CADENCE_SMOKE_SUMMARY "
+                + json.dumps(fail_closed_summary, sort_keys=True, separators=(",", ":")),
+                flush=True,
+            )
+            print("PIPELINE_SMOKE_PASSED", flush=True)
+            return 0
         if job.get("status") != "completed":
             raise SmokeFailure(f"QueueJob {job_id} ended as {job.get('status')}: {job.get('errorMessage', '')}")
 
@@ -1422,6 +1825,9 @@ def run_smoke(args: argparse.Namespace) -> int:
         active_plan = active_plans[0]
         if active_plan.get("selectedEncoder") != "libx265":
             raise SmokeFailure("ExecutionPlan did not select the required portable libx265 encoder")
+        cadence_summary = assert_cadence_execution(job, active_plan, scenario)
+        if cadence_summary is not None:
+            evidence.json("cadence-execution-summary.json", cadence_summary)
         evidence.json("frozen-plan-summary.json", {
             "queueJobId": job_id,
             "profileCapturedAt": job.get("profileCapturedAt"),
@@ -1456,7 +1862,7 @@ def run_smoke(args: argparse.Namespace) -> int:
         evidence.json("result-artifact-manifest-summary.json", manifest_summary)
         result_summary = assert_media_probe(
             result_probe, scenario, "Result artifact", expected_video_codec=scenario.output_video_codec,
-            output=True,
+            output=True, require_frame_count=False,
         )
         result_path_summary = assert_media_probe(
             result_path_probe, scenario, "Result file", expected_video_codec=scenario.output_video_codec,
@@ -1476,6 +1882,9 @@ def run_smoke(args: argparse.Namespace) -> int:
             "POST", f"/api/validation/jobs/{job_id}", payload={}, expected=(200,),
             evidence_name="validation-result.json",
         )
+        cadence_validation_summary = assert_cadence_validation(validation, scenario)
+        if cadence_validation_summary is not None:
+            evidence.json("cadence-validation-summary.json", cadence_validation_summary)
         run_id = validation.get("runId") if isinstance(validation, dict) else None
         if not isinstance(run_id, str) or not run_id:
             raise SmokeFailure("Validation did not persist and return a ValidationRun id")
@@ -1698,6 +2107,19 @@ def run_smoke(args: argparse.Namespace) -> int:
             "networkMode": "none",
             "rootFilesystemReadOnly": True,
         })
+        if scenario.name.startswith("cadence-"):
+            print(
+                "CADENCE_SMOKE_SUMMARY "
+                + json.dumps({
+                    "scenario": scenario.name,
+                    "queueJobId": job_id,
+                    "executionPlanId": plan_id,
+                    "cadence": cadence_summary,
+                    "result": result_path_summary,
+                    "frameFidelity": cadence_validation_summary,
+                }, sort_keys=True, separators=(",", ":")),
+                flush=True,
+            )
         log("phase=passed")
         passed = True
         print("PIPELINE_SMOKE_PASSED", flush=True)

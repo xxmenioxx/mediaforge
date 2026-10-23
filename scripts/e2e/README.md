@@ -5,6 +5,9 @@ Run one isolated scenario locally:
 ```bash
 ./scripts/e2e/run-pipeline-smoke.sh --scenario happy-path
 ./scripts/e2e/run-pipeline-smoke.sh --scenario track-actions
+./scripts/e2e/run-pipeline-smoke.sh --scenario cadence-progressive
+./scripts/e2e/run-pipeline-smoke.sh --scenario cadence-ivtc
+./scripts/e2e/run-pipeline-smoke.sh --scenario cadence-ambiguous
 ```
 
 The runner uses `mvforge-backend:pipeline-smoke` when it is already present;
@@ -74,15 +77,48 @@ uploaded.
 run sandbox. New scenarios can be registered in `SUPPORTED_SCENARIOS` and added
 to the workflow dispatch choice/matrix as their issues are implemented.
 
-Issue #364 also adds a cadence-analysis fixture command for a multistream H.264
-hard-telecine source. It uses the same image and temporary sandbox, with no
-additional Docker build or separate Pipeline Smoke workflow:
+Issue #364 added a cadence-analysis fixture command for a multistream H.264
+hard-telecine source. Issue #285 extends the same isolated runner with three
+full synthetic scenarios, with no additional Docker image or separate workflow:
 
 ```bash
 python3 scripts/e2e/pipeline_smoke.py generate-cadence --sandbox "$MVFORGE_SMOKE_RUN_ROOT/sandbox"
 ```
 
-The unit/integration regressions exercise its shared backend authorities using
-synthetic scan evidence. #285 can consume this fixture in the existing smoke
-sequence when it adds full output-fidelity checks; do not create another image
-build for cadence scenarios.
+`cadence-progressive` verifies that automatic cadence resolution freezes and
+preserves 24000/1001. `cadence-ivtc` generates a CPU-only 29.97 hard-telecine
+source and verifies the frozen IVTC field order/filter chain, 24000/1001 Result,
+frame count, and Frame Fidelity. `cadence-ambiguous` concatenates telecined and
+native synthetic sections and verifies the expected claim-time rejection. The
+current Queue API represents it as `status=failed`, `stage=failed`, and an
+`errorMessage`; it has no typed rejection-code field. The backend also emits the
+structured `auto_worker_claim_failed` event. The smoke counts this negative
+scenario as PASS only when the error says effective output FPS is unknown and
+cadence review is required, and when persisted state proves no executable
+snapshot, ExecutionPlan, worker output, Result, conversion command, or Publisher
+record was created. The fixture generator uses FFmpeg to create the synthetic
+input; the Queue worker must not launch a conversion for this scenario.
+The observed `executionNumber=1` and `queued → claimed → failed` history record
+the worker's claim attempt, not a conversion execution.
+
+Review required during cadence resolution is a pre-Queue decision: it prevents
+an expected FPS from being guessed. `UNVERIFIED/REVIEW_REQUIRED` is a
+post-execution Validation/Frame Fidelity verdict that requires a completed job
+and canonical Result. For C, no `ValidationRun` is started and the harness
+reports `NOT_RUN_BY_DESIGN`; it does not manufacture a Validation verdict.
+Unexpected Queue states, missing review evidence, execution artifacts, FFmpeg
+conversion, publication, or ValidationRun fail the smoke.
+
+**Proposed clarification for issue #285 (not applied to the issue):**
+
+> For unresolved cadence rejected during claim-time Queue preflight, pass the
+> negative smoke only when the job records the explicit unknown-FPS/review
+> reason and no executable snapshot, ExecutionPlan, worker conversion, Result,
+> or publication exists. ValidationRun is `NOT_RUN` because Validation requires
+> a completed job and canonical Result. Reserve
+> `UNVERIFIED/REVIEW_REQUIRED` for post-execution Validation results.
+
+The progressive and IVTC checks bind Queue snapshot, active ExecutionPlan,
+executed command in QueueJob notes, Result ffprobe evidence, and Validation
+report. All generated media stays under that run's validated temporary root;
+no GPU or NAS path is used.
