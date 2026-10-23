@@ -49,4 +49,17 @@ describe('patchAssetInventoryAsset', () => {
     expect(result.library).toBe(current.library);
     expect(patchAssetInventoryAsset(current, '/media/raw/missing.mkv', { metadata: nextMetadata, conversion: nextConversion })).toBe(current);
   });
+
+  it('patches conversion without replacing persisted metadata', () => {
+    const target = asset('/media/raw/movie.mkv', 'persisted');
+    const current = inventory(target, asset('/media/raw/other.mkv', 'other'));
+    const nextConversion = { ...target.conversion, keepAudioStreams: [2] };
+
+    const result = patchAssetInventoryAsset(current, target.path, { conversion: nextConversion });
+
+    expect(result.unprocessed[0].conversion).toBe(nextConversion);
+    expect(result.unprocessed[0].metadata).toBe(target.metadata);
+    expect(result.unprocessedGroups[0].assets[0].metadata).toBe(target.metadata);
+    expect(result.sourceGroups[0].logicalGroups[0].assetPaths[0].assets[0].metadata).toBe(target.metadata);
+  });
 });

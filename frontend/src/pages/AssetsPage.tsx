@@ -4070,16 +4070,15 @@ function AssetRow({
   });
   const saveAssetTracks = useMutation({
     mutationFn: (patch: AssetTracksUpdateInput) => api.updateAssetTracks(patch),
-    onSuccess: async (response) => {
+    onSuccess: (response) => {
       const savedConversion = normalizeAssetConversionOverride(response.conversion);
       const reconciled = assetInfoTracksSaveReconciliation(persistedAssetEdit, assetEditDraftRef.current, savedConversion);
       setPersistedAssetEdit(reconciled.baseline);
       setAssetEditDraft(reconciled.draft);
       assetEditDraftRef.current = reconciled.draft;
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['assets'] }),
-        queryClient.invalidateQueries({ queryKey: ['effectiveAssetConfiguration'] }),
-      ]);
+      queryClient.setQueryData<AssetInventory | undefined>(['assets'], (current) => current
+        ? patchAssetInventoryAsset(current, response.path, { conversion: savedConversion })
+        : current);
     },
   });
   const resetAssetEdit = saveAssetEdit.reset;

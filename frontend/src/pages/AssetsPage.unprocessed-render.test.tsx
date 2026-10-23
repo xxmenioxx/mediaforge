@@ -517,6 +517,7 @@ describe('Unprocessed Assets hierarchy', () => {
   it('saves only changed Tracks fields while retaining an unsaved Asset Override draft', async () => {
     const path = '/media/raw/movies/Akira/Akira.mkv';
     const inventory = assetInventoryWithConversion({ keepAudioStreams: [1, 2], videoCodec: 'x265', qualityValue: 18 });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     let persistedConversion = { ...inventory.unprocessed[0].conversion };
     vi.mocked(api.assets).mockResolvedValue(inventory);
     vi.mocked(api.latestSnapshot).mockResolvedValue({
@@ -529,11 +530,10 @@ describe('Unprocessed Assets hierarchy', () => {
     });
     vi.mocked(api.updateAssetTracks).mockImplementation(async ({ path: savedPath, ...patch }) => {
       persistedConversion = { ...persistedConversion, ...patch };
-      inventory.unprocessed[0].conversion = persistedConversion;
       return { path: savedPath, conversion: persistedConversion } as never;
     });
 
-    renderAssetsPage();
+    renderAssetsPage(queryClient);
     const user = userEvent.setup();
     const dialog = await openAssetInfo(user);
     await user.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
@@ -543,6 +543,8 @@ describe('Unprocessed Assets hierarchy', () => {
     const quality = await within(dialog).findByRole('combobox', { name: 'Quality / storage intent' });
     await chooseSelectOption(quality, 'Maximum space saving', user);
     await user.click(within(dialog).getByRole('tab', { name: 'Tracks' }));
+    const assetsCallsBeforeSave = vi.mocked(api.assets).mock.calls.length;
+    const effectiveConfigurationCallsBeforeSave = vi.mocked(api.effectiveAssetConfiguration).mock.calls.length;
     await user.click(within(dialog).getByRole('button', { name: 'Save Tracks' }));
 
     await waitFor(() => expect(api.updateAssetTracks).toHaveBeenCalledTimes(1));
@@ -550,6 +552,11 @@ describe('Unprocessed Assets hierarchy', () => {
     expect(api.updateAssetEdit).not.toHaveBeenCalled();
     expect(persistedConversion).toMatchObject({ keepAudioStreams: [1], videoCodec: 'x265', qualityValue: 18 });
     expect(await within(dialog).findByText('Tracks saved.')).toBeTruthy();
+    expect(api.assets).toHaveBeenCalledTimes(assetsCallsBeforeSave);
+    expect(api.effectiveAssetConfiguration).toHaveBeenCalledTimes(effectiveConfigurationCallsBeforeSave);
+    expect(queryClient.getQueryData<typeof inventory>(['assets'])?.unprocessed[0].conversion).toMatchObject({
+      keepAudioStreams: [1], videoCodec: 'x265', qualityValue: 18,
+    });
 
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' });

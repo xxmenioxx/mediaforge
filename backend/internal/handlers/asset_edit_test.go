@@ -18,7 +18,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func newAssetEditTestServer(t *testing.T) (*gorm.DB, *gin.Engine, string) {
+func newAssetEditTestServer(t testing.TB) (*gorm.DB, *gin.Engine, string) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:asset-edit-%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{})
 	if err != nil {
