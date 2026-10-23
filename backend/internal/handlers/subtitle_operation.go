@@ -632,6 +632,30 @@ func markSubtitlePublicationCommitted(operationID string) {
 	if !exists || operation.publicationCommitted {
 		return
 	}
+	markSubtitlePublicationCommittedLocked(operation)
+}
+
+func commitSubtitlePublicationIfActive(operationID string, ctx context.Context) bool {
+	subtitleExtractionOperations.Lock()
+	defer subtitleExtractionOperations.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false
+	}
+	operation, exists := subtitleExtractionOperations.items[operationID]
+	if !exists {
+		return true
+	}
+	if operation.publicationCommitted {
+		return true
+	}
+	if operation.Status != "running" || ctx.Err() != nil {
+		return false
+	}
+	markSubtitlePublicationCommittedLocked(operation)
+	return true
+}
+
+func markSubtitlePublicationCommittedLocked(operation *subtitleExtractionOperation) {
 	operation.publicationCommitted = true
 	if operation.Translation != nil {
 		operation.Translation.Cancellable = false

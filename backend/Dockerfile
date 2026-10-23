@@ -16,7 +16,8 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
     --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
     CGO_ENABLED=1 go build -o /out/mvforge-api ./cmd/api \
-    && CGO_ENABLED=0 go build -o /out/mvforge-hw-probe ./cmd/hwprobe
+    && CGO_ENABLED=0 go build -o /out/mvforge-hw-probe ./cmd/hwprobe \
+    && CGO_ENABLED=0 go build -o /out/mvforge-subtitle-sync-limited-exec ./cmd/subtitle-sync-limited-exec
 
 FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS intel-media
 
@@ -343,6 +344,7 @@ RUN tesseract --list-langs | grep -Fx 'jpn' \
 
 COPY --from=build /out/mvforge-api /usr/local/bin/mvforge-api
 COPY --from=build /out/mvforge-hw-probe /usr/local/bin/mvforge-hw-probe
+COPY --from=build /out/mvforge-subtitle-sync-limited-exec /usr/local/bin/mvforge-subtitle-sync-limited-exec
 COPY --from=ffmpeg /opt/ffmpeg/bin/ /opt/ffmpeg/bin/
 COPY --from=ffmpeg /opt/ffmpeg/lib/ /opt/ffmpeg/lib/
 COPY --from=intel-media /opt/intel/ /opt/intel/

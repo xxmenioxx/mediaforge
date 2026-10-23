@@ -104,6 +104,11 @@ import type {
   SubtitleTranslationQualityReviewResponse,
   SubtitleTranslationQualityReviewListItem,
   SubtitleTranslationQualityEditableCueResponse,
+  SubtitleSyncCapability,
+  SubtitleSyncInput,
+  SubtitleSyncApplyInput,
+  SubtitleSyncProposal,
+  SubtitleSyncProvenance,
   RemoteExecutorConfig,
   RemoteExecutorProbe,
   TrackProfileResolutionPreview,
@@ -422,6 +427,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
+  subtitleSyncCapability: () =>
+    request<SubtitleSyncCapability>('/api/assets/subtitle-sync/capability'),
+  previewSubtitleSync: (input: SubtitleSyncInput) =>
+    request<SubtitleSyncProposal>('/api/assets/subtitle-sync/preview', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  startSubtitleSync: (input: SubtitleSyncApplyInput) =>
+    request<{ operationId: string; status: 'running'; phase: string; progress: number }>('/api/assets/subtitle-sync/apply', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  subtitleSyncProvenance: (path: string, subtitlePath: string) =>
+    request<{ records: SubtitleSyncProvenance[] }>(`/api/assets/subtitle-sync/provenance?path=${encodeURIComponent(path)}&subtitlePath=${encodeURIComponent(subtitlePath)}`),
   decideSubtitleTranslationQuality: (operationId: string, input: SubtitleTranslationQualityDecisionInput) =>
     request<SubtitleTranslationQualityDecisionResponse>(`/api/assets/subtitle-operations/${encodeURIComponent(operationId)}/translation-quality-review`, {
       method: 'POST',
