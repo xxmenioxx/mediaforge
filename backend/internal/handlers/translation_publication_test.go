@@ -215,6 +215,10 @@ func TestPublishSubtitleTranslationRejectsInvalidStageAndMetadataFailure(t *test
 	if err := os.WriteFile(targets[0].FinalPath, old, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	oldRevision, err := captureTranslationExternalSourceRevision(targets[0].FinalPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, err = publishSubtitleTranslationOutputs(subtitleTranslationPublicationRequest{
 		Ctx: context.Background(), OperationID: operationID, Workspace: workspace, SourceRevision: revision, Targets: staged,
 		CommitMetadata:   func([]SubtitleArtifact) error { return errors.New("metadata commit failed") },
@@ -226,6 +230,10 @@ func TestPublishSubtitleTranslationRejectsInvalidStageAndMetadataFailure(t *test
 	got, readErr := os.ReadFile(targets[0].FinalPath)
 	if readErr != nil || string(got) != string(old) {
 		t.Fatalf("metadata failure did not restore existing translation: %q (%v)", got, readErr)
+	}
+	restoredRevision, revisionErr := captureTranslationExternalSourceRevision(targets[0].FinalPath, "")
+	if revisionErr != nil || restoredRevision.key() != oldRevision.key() {
+		t.Fatalf("metadata failure changed the restored destination revision: got=%q want=%q err=%v", restoredRevision.key(), oldRevision.key(), revisionErr)
 	}
 	if snapshotSubtitleOperation(operationID).publicationCommitted {
 		t.Fatal("metadata failure marked publication committed")

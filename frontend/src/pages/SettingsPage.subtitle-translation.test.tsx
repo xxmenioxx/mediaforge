@@ -82,6 +82,7 @@ describe('SubtitleTranslationSettingsCard', () => {
       provider: 'ollama',
       ollamaEndpoint: 'http://nas.local:11434',
       ollamaModel: 'qwen2.5:7b',
+      qualityReviewerModel: '',
       maxCuesPerRequest: 32,
       maxRequestBytes: 65536,
       maxContextCues: 8,
@@ -265,6 +266,7 @@ describe('SubtitleTranslationSettingsCard', () => {
       maxRequestBytes: 32000,
       maxContextCues: 6,
       maxContextChars: 3000,
+      qualityReviewerModel: '',
       enabled: false,
     });
     expect(api.testSubtitleTranslationConnection).not.toHaveBeenCalled();

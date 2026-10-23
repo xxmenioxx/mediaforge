@@ -43,15 +43,16 @@ func TestTranslationSettingsPersistAndReloadExactValues(t *testing.T) {
 	router := gin.New()
 	router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
 	want := models.JSONMap{
-		"provider":          translationProviderOllama,
-		"ollamaEndpoint":    "https://ollama.lan:11434/api",
-		"ollamaModel":       "qwen2.5:7b",
-		"maxCuesPerRequest": 24,
-		"maxRequestBytes":   32768,
-		"maxContextCues":    6,
-		"maxContextChars":   2048,
+		"provider":             translationProviderOllama,
+		"ollamaEndpoint":       "https://ollama.lan:11434/api",
+		"ollamaModel":          "qwen2.5:7b",
+		"qualityReviewerModel": "reviewer:latest",
+		"maxCuesPerRequest":    24,
+		"maxRequestBytes":      32768,
+		"maxContextCues":       6,
+		"maxContextChars":      2048,
 	}
-	request := httptest.NewRequest(http.MethodPost, "/api/settings/"+translationSettingsKey, strings.NewReader(`{"value":{"provider":"ollama","ollamaEndpoint":"https://ollama.lan:11434/api","ollamaModel":"qwen2.5:7b","maxCuesPerRequest":24,"maxRequestBytes":32768,"maxContextCues":6,"maxContextChars":2048}}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/settings/"+translationSettingsKey, strings.NewReader(`{"value":{"provider":"ollama","ollamaEndpoint":"https://ollama.lan:11434/api","ollamaModel":"qwen2.5:7b","qualityReviewerModel":"reviewer:latest","maxCuesPerRequest":24,"maxRequestBytes":32768,"maxContextCues":6,"maxContextChars":2048}}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -60,7 +61,7 @@ func TestTranslationSettingsPersistAndReloadExactValues(t *testing.T) {
 	}
 
 	loaded := loadTranslationSettings(db)
-	if loaded.Provider != want["provider"] || loaded.OllamaEndpoint != want["ollamaEndpoint"] || loaded.OllamaModel != want["ollamaModel"] || loaded.MaxCuesPerRequest != 24 || loaded.MaxRequestBytes != 32768 || loaded.MaxContextCues != 6 || loaded.MaxContextChars != 2048 {
+	if loaded.Provider != want["provider"] || loaded.OllamaEndpoint != want["ollamaEndpoint"] || loaded.OllamaModel != want["ollamaModel"] || loaded.QualityReviewerModel != want["qualityReviewerModel"] || loaded.MaxCuesPerRequest != 24 || loaded.MaxRequestBytes != 32768 || loaded.MaxContextCues != 6 || loaded.MaxContextChars != 2048 {
 		t.Fatalf("reloaded settings differ: %#v", loaded)
 	}
 }

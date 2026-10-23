@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -65,7 +65,7 @@ describe('Settings housekeeping preview authorization', () => {
     render(<Harness initialPreview={report()} onRun={onRun} />);
 
     const run = screen.getByRole('button', { name: 'Remove previewed candidates' });
-    expect((run as HTMLButtonElement).disabled).toBe(false);
+    await waitFor(() => expect((run as HTMLButtonElement).disabled).toBe(false));
     await user.click(run);
 
     expect(onRun).toHaveBeenCalledWith('preview-token-301');

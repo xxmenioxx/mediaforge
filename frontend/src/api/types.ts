@@ -689,7 +689,8 @@ export type SubtitleTranslationSettingsValue = {
   [key: string]: unknown;
 	provider: string;
   ollamaEndpoint: string;
-  ollamaModel: string;
+	ollamaModel: string;
+	qualityReviewerModel: string;
   maxCuesPerRequest: number;
   maxRequestBytes: number;
   maxContextCues: number;
@@ -706,12 +707,123 @@ export type SubtitleTranslationCapabilityInput = {
   source: SubtitleTranslationSourceSelector;
 };
 
+export type SubtitleTranslationQualityDecisionInput = {
+  cueId: string;
+  action: 'keep' | 'edit';
+  text?: string;
+};
+
+export type SubtitleTranslationQualityDecisionResponse = {
+  operationId: string;
+  cueId: string;
+  status: 'open' | 'reviewed';
+};
+
+export type SubtitleTranslationQualityReviewResponse = {
+  operationId: string;
+  status: 'open' | 'reviewed' | 'recovery_required';
+  quality: NonNullable<NonNullable<SubtitleExtractionOperation['translation']>['quality']>;
+  decisions: Array<{ cueId: string; action: 'keep' | 'edit'; text?: string; at: string }>;
+};
+
+export type SubtitleTranslationQualityEditableCueResponse = {
+  operationId: string;
+  cueId: string;
+  sourceIdentity: string;
+  sourceRevision: string;
+  targetRevisions: string[];
+  text: string;
+};
+
+export type SubtitleTranslationQualityReviewListItem = SubtitleTranslationQualityReviewResponse & { updatedAt: string };
+
 export type StartSubtitleTranslationInput = {
   path: string;
   source: SubtitleTranslationSourceSelector;
   sourceLanguage: string;
   targetLocale: string;
   outputRepresentation: string;
+};
+
+export type SubtitleSyncCapability = {
+  enabled: boolean;
+  fixedOffset: boolean;
+  automaticAlignment: boolean;
+  automaticAlignmentReason?: string;
+  automaticFormats?: string[];
+  segmentedAlignment: boolean;
+  engines: Array<{ name: string; version: string }>;
+};
+
+export type SubtitleSyncAudioReference = {
+  streamIndex: number;
+  streamId?: string;
+  codec: string;
+  language?: string;
+  title?: string;
+};
+
+export type SubtitleSyncCuePreview = {
+  cueIndex: number;
+  currentStartMs: number;
+  currentEndMs: number;
+  proposedStartMs: number;
+  proposedEndMs: number;
+};
+
+export type SubtitleSyncProposal = {
+  proposalId: string;
+  subtitlePath: string;
+  sourceIdentity: string;
+  sourceRevision: string;
+  representation: string;
+  referenceAudio: SubtitleSyncAudioReference;
+  engine: string;
+  engineVersion: string;
+  model: 'fixed_offset' | 'affine' | 'segmented' | string;
+  offsetMilliseconds: number;
+  confidence?: number;
+  scale: number;
+  segments: Array<{ startMilliseconds?: number; endMilliseconds?: number; offsetMilliseconds: number; scale: number }>;
+  qualityState: string;
+  analyzedAt: string;
+  diagnostics: string[];
+  preview: SubtitleSyncCuePreview[];
+};
+
+export type SubtitleSyncInput = {
+  path: string;
+  subtitlePath: string;
+  referenceAudioStreamIndex: number;
+  mode?: 'fixed_offset' | 'automatic';
+  offsetMilliseconds?: number;
+};
+
+export type SubtitleSyncApplyInput = SubtitleSyncInput & {
+  sourceRevision: string;
+  proposalId: string;
+};
+
+export type SubtitleSyncProvenance = {
+  operationId: string;
+  assetPath: string;
+  subtitlePath: string;
+  sourceIdentity: string;
+  sourceRevision: string;
+  referenceAudioStreamIndex: number;
+  referenceAudioStreamId?: string;
+  referenceAudioCodec: string;
+  referenceAudioLanguage?: string;
+  referenceAudioTitle?: string;
+  engine: string;
+  engineVersion: string;
+  model: string;
+  offsetMilliseconds: number;
+  scale: number;
+  segmentsJson: string;
+  qualityState: string;
+  analysisAt: string;
+  appliedAt: string;
 };
 
 export type StreamMetadataOverride = {
@@ -3431,6 +3543,10 @@ export type SubtitleExtractionOperation = {
     outputPath: string;
     provenance?: Record<string, unknown>;
   };
+  subtitleSync?: {
+    proposal: SubtitleSyncProposal;
+    appliedAt?: string;
+  };
   translation?: {
     provider?: string;
     model?: string;
@@ -3444,6 +3560,31 @@ export type SubtitleExtractionOperation = {
     retryable: boolean;
     cancellable: boolean;
     ocrReviewTarget?: CanonicalOCRReviewTarget;
+    quality?: {
+      policyVersion: string;
+      state: 'not_analyzed' | 'clean' | 'warnings' | 'review_required' | 'approved' | string;
+      cueCount: number;
+      cleanCount: number;
+      warningCount: number;
+      reviewCount: number;
+      persisted?: boolean;
+      persistenceWarning?: string;
+      truncated?: boolean;
+      reviewer?: {
+        provider: string;
+        model: string;
+        state: string;
+        diagnostic?: string;
+        findings?: Array<{ cueId: string; verdict: string; reason?: string; suggestedText?: string }>;
+      };
+      findings?: Array<{
+        cueId: string;
+        sourceOrdinal: number;
+        sourceText: string;
+        translatedText: string;
+        reasons: string[];
+      }>;
+    };
   };
   qualityReport?: SubtitleOCRQualityReport;
   proofreading?: SubtitleProofreadingReport;

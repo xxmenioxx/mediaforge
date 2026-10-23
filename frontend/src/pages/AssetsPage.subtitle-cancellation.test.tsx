@@ -147,6 +147,88 @@ describe('Asset Info subtitle cancellation controls', () => {
     expect(screen.getByRole('button', { name: 'Cancelling…' })).toHaveProperty('disabled', true);
   });
 
+  it('shows synchronization progress and cancellation, then offers retry after a terminal result', async () => {
+    const user = userEvent.setup();
+    const onCancelSync = vi.fn();
+    const onSync = vi.fn();
+    const subtitlePath = '/library/movie.eng.srt';
+    const subtitle = {
+      path: subtitlePath,
+      fileName: 'movie.eng.srt',
+      format: 'srt',
+      language: 'eng',
+      default: false,
+      forced: false,
+      sizeBytes: 100,
+      modifiedAt: '',
+    } as never;
+
+    const view = render(
+      <ExternalSubtitleList
+        values={[subtitle]}
+        loading={false}
+        deleting={false}
+        renaming={false}
+        onRename={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onSync={onSync}
+        onCancelSync={onCancelSync}
+        syncOperations={{ [subtitlePath]: {
+          id: 'subtitle-sync-operation-1',
+          assetPath: '/library/movie.mkv',
+          status: 'running',
+          phase: 'publishing',
+          progress: 80,
+          processed: 0,
+          total: 0,
+          streamIndex: -1,
+          format: 'srt',
+          kind: 'subtitle_sync',
+          message: 'Rechecking subtitle and audio identities before publication',
+        } } as never}
+      />,
+    );
+
+    expect(screen.getByText('Rechecking subtitle and audio identities before publication')).toBeTruthy();
+    expect(screen.getByText('80%')).toBeTruthy();
+    expect(screen.getByRole('progressbar', { name: 'Subtitle synchronization for movie.eng.srt' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Cancel sync' }));
+    expect(onCancelSync).toHaveBeenCalledWith(subtitle);
+
+    view.rerender(
+      <ExternalSubtitleList
+        values={[subtitle]}
+        loading={false}
+        deleting={false}
+        renaming={false}
+        onRename={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onSync={onSync}
+        onCancelSync={onCancelSync}
+        syncOperations={{ [subtitlePath]: {
+          id: 'subtitle-sync-operation-1',
+          assetPath: '/library/movie.mkv',
+          status: 'cancelled',
+          phase: 'cancelled',
+          progress: 80,
+          processed: 0,
+          total: 0,
+          streamIndex: -1,
+          format: 'srt',
+          kind: 'subtitle_sync',
+          message: 'Subtitle synchronization cancelled.',
+        } } as never}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Cancel sync' })).toBeNull();
+    expect(screen.getByText('Subtitle synchronization cancelled.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Sync again' }));
+    expect(onSync).toHaveBeenCalledWith(subtitle);
+  });
+
   it('shows cancellation as terminal and leaves the generation action available for retry', async () => {
     const user = userEvent.setup();
     const onGenerate = vi.fn();
