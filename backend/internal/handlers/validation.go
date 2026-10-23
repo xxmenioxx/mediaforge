@@ -543,6 +543,21 @@ func aspectRatioString(width, height int, sar string) string {
 }
 
 func validateRequiredSubtitleArtifacts(job models.QueueJob) ([]CheckResult, []string, models.JSONMap) {
+	return validateRequiredSubtitleArtifactsWithStagedContent(job, true)
+}
+
+func validateRequiredSubtitleArtifactDeclarations(job models.QueueJob) []CheckResult {
+	checks, _, _ := validateRequiredSubtitleArtifactsWithStagedContent(job, false)
+	failed := make([]CheckResult, 0, len(checks))
+	for _, check := range checks {
+		if check.Status == "failed" {
+			failed = append(failed, check)
+		}
+	}
+	return failed
+}
+
+func validateRequiredSubtitleArtifactsWithStagedContent(job models.QueueJob, checkStagedContent bool) ([]CheckResult, []string, models.JSONMap) {
 	expected := []ResolvedTrackSidecar{}
 	if plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); ok {
 		expected = resolvedSubtitleSidecarsForPlan(MediaJobPlan{ResolvedTracks: plan})
@@ -576,14 +591,16 @@ func validateRequiredSubtitleArtifacts(job models.QueueJob) ([]CheckResult, []st
 				status, message = "failed", "Requested subtitle sidecar is not ready: "+fallback(artifact.Error, artifact.Status)
 			} else if !strings.EqualFold(filepath.Ext(artifact.StagedPath), "."+artifact.Format) || (decision.Format != "" && !strings.EqualFold(artifact.Format, decision.Format)) || (decision.Mode != "" && !strings.EqualFold(artifact.Mode, decision.Mode)) {
 				status, message = "failed", "Subtitle sidecar extension or format does not match the resolved track plan."
-			} else if info, err := os.Stat(artifact.StagedPath); err != nil || info.IsDir() {
-				status, message = "failed", "Requested subtitle sidecar is not readable from staging."
-			} else if info.Size() <= 0 {
-				status, message = "failed", "Requested subtitle sidecar is empty."
-			} else if info.Size() > maxSidecarValidationBytes {
-				status, message = "unverified", "Requested subtitle sidecar exceeds the bounded content check; review its existing artifact without regenerating it."
-			} else if content, err := os.ReadFile(artifact.StagedPath); err != nil || !validOriginalSubtitleSidecar(artifact.Format, content) {
-				status, message = "failed", "Requested subtitle sidecar does not match its expected artifact type."
+			} else if checkStagedContent {
+				if info, err := os.Stat(artifact.StagedPath); err != nil || info.IsDir() {
+					status, message = "failed", "Requested subtitle sidecar is not readable from staging."
+				} else if info.Size() <= 0 {
+					status, message = "failed", "Requested subtitle sidecar is empty."
+				} else if info.Size() > maxSidecarValidationBytes {
+					status, message = "unverified", "Requested subtitle sidecar exceeds the bounded content check; review its existing artifact without regenerating it."
+				} else if content, err := os.ReadFile(artifact.StagedPath); err != nil || !validOriginalSubtitleSidecar(artifact.Format, content) {
+					status, message = "failed", "Requested subtitle sidecar does not match its expected artifact type."
+				}
 			}
 			if decision.Language != "" && decision.Language != "und" && strings.TrimSpace(artifact.Language) == "" {
 				warnings = append(warnings, fmt.Sprintf("Subtitle sidecar for stream %d is valid but language metadata is unavailable.", decision.StreamIndex))

@@ -29,6 +29,12 @@ type PublisherPublication struct {
 	SourceAssetRecordSizeBytes       int64      `json:"sourceAssetRecordSizeBytes" gorm:"not null;default:0"`
 	SourcePath                       string     `json:"sourcePath" gorm:"not null"`
 	State                            string     `json:"state" gorm:"not null;index"`
+	ManualRequestID                  string     `json:"manualRequestId,omitempty" gorm:"index"`
+	ManualRequestStatus              string     `json:"manualRequestStatus,omitempty" gorm:"index"`
+	ManualRequestReason              string     `json:"-"`
+	ManualRequestAttemptCount        int        `json:"-" gorm:"not null;default:0"`
+	ManualRequestedAt                *time.Time `json:"manualRequestedAt,omitempty"`
+	ManualRequestCompletedAt         *time.Time `json:"manualRequestCompletedAt,omitempty"`
 	HoldReason                       string     `json:"holdReason,omitempty"`
 	FailureCode                      string     `json:"failureCode,omitempty"`
 	FailureSummary                   string     `json:"failureSummary,omitempty"`
@@ -86,16 +92,17 @@ type PublisherAttemptEvidence struct {
 
 // PublisherAuditEvent is immutable, versioned evidence for operator decisions.
 type PublisherAuditEvent struct {
-	ID            uint      `json:"id" gorm:"primaryKey"`
-	EventID       string    `json:"eventId" gorm:"not null;uniqueIndex"`
-	PublicationID string    `json:"publicationId" gorm:"not null;index"`
-	Version       int       `json:"version" gorm:"not null"`
-	Action        string    `json:"action" gorm:"not null;index"`
-	ActorSource   string    `json:"actorSource" gorm:"not null"`
-	ActorID       string    `json:"actorId" gorm:"not null"`
-	Reason        string    `json:"reason,omitempty"`
-	Parameters    JSONMap   `json:"parameters,omitempty" gorm:"type:json"`
-	CreatedAt     time.Time `json:"createdAt" gorm:"not null;index"`
+	ID             uint      `json:"id" gorm:"primaryKey"`
+	EventID        string    `json:"eventId" gorm:"not null;uniqueIndex"`
+	PublicationID  string    `json:"publicationId" gorm:"not null;index"`
+	IdempotencyKey string    `json:"-" gorm:"uniqueIndex:idx_publisher_audit_idempotency_key,where:idempotency_key <> ''"`
+	Version        int       `json:"version" gorm:"not null"`
+	Action         string    `json:"action" gorm:"not null;index"`
+	ActorSource    string    `json:"actorSource" gorm:"not null"`
+	ActorID        string    `json:"actorId" gorm:"not null"`
+	Reason         string    `json:"reason,omitempty"`
+	Parameters     JSONMap   `json:"parameters,omitempty" gorm:"type:json"`
+	CreatedAt      time.Time `json:"createdAt" gorm:"not null;index"`
 }
 
 // AssetPublishedOutbox is the stable, retryable event identity emitted only

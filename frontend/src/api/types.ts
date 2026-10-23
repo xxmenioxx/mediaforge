@@ -1979,11 +1979,11 @@ export type ValidationStagingCleanupResult = {
 
 export type ValidationHistoryPage = { items: ValidationHistorySummary[]; total: number; limit: number; offset: number };
 
-export type PublishResult = {
+export type ManualPublishRequestResult = {
   jobId: number;
-  status: 'published' | 'already_published' | 'held' | 'blocked' | 'publishing';
-  sourcePath: string;
-  publishedPath: string;
+  requestId?: string;
+  publicationId?: string;
+  status: 'accepted' | 'processing' | 'already_published';
   message: string;
 };
 
@@ -2000,6 +2000,10 @@ export type PublisherPublication = {
   validationRunId: string;
   validationOverrideEventIds?: string[];
   state: 'READY' | 'HELD' | 'PUBLISHING' | 'PUBLISHED' | 'BLOCKED' | 'FAILED';
+  manualRequestId?: string;
+  manualRequestStatus?: 'accepted' | 'processing' | 'completed' | 'failed';
+  manualRequestedAt?: string;
+  manualRequestCompletedAt?: string;
   holdReason?: string;
   failureCode?: string;
   failureSummary?: string;

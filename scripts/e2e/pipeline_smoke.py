@@ -833,6 +833,18 @@ def assert_publisher_binding(
     }
 
 
+def assert_manual_publish_accepted(response: Any) -> str:
+    if not isinstance(response, dict) or response.get("status") != "accepted":
+        raise SmokeFailure("manual Publish did not return a durable accepted request")
+    publication_id = response.get("publicationId")
+    request_id = response.get("requestId")
+    if not isinstance(publication_id, str) or not publication_id.strip():
+        raise SmokeFailure("accepted manual Publish response is missing its publication identity")
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise SmokeFailure("accepted manual Publish response is missing its request identity")
+    return publication_id
+
+
 def extract_plan_summary(plans: Any) -> dict[str, Any]:
     if not isinstance(plans, list) or not plans:
         raise SmokeFailure("the completed QueueJob has no persisted ExecutionPlan")
@@ -1162,13 +1174,39 @@ def run_smoke(args: argparse.Namespace) -> int:
             raise SmokeFailure("Worker or Validation changed the synthetic source before publication")
 
         log("phase=publish-to-isolated-library")
-        published = api.request(
-            "POST", f"/api/publisher/jobs/{job_id}/publish", expected=(200,),
+        accepted = api.request(
+            "POST", f"/api/publisher/jobs/{job_id}/publish", expected=(202,),
             payload={"reason": "Synthetic isolated pipeline smoke"},
-            evidence_name="publish-result.json",
+            evidence_name="publish-accepted.json",
         )
+        expected_publication_id = assert_manual_publish_accepted(accepted)
+        publish_deadline = time.monotonic() + 120
+        publications: Any = None
+        while time.monotonic() < publish_deadline:
+            publications = api.request("GET", "/api/publisher/publications")
+            rows = publications.get("items") if isinstance(publications, dict) else None
+            matching = [
+                row.get("publication")
+                for row in rows or []
+                if isinstance(row, dict)
+                and isinstance(row.get("publication"), dict)
+                and row["publication"].get("publicationId") == expected_publication_id
+            ]
+            if matching:
+                publication = matching[0]
+                state = str(publication.get("state", "")).lower()
+                request_state = str(publication.get("manualRequestStatus", "")).lower()
+                if state == "published":
+                    break
+                if state in {"failed", "blocked"} or request_state == "failed":
+                    reason = publication.get("failureSummary") or publication.get("holdReason") or state
+                    raise SmokeFailure(f"accepted Publisher request failed before delivery: {reason}")
+            time.sleep(1)
+        else:
+            raise SmokeFailure("durably accepted Publisher request did not reach Published within 120 seconds")
+        evidence.json("publisher-publications.json", publications)
         published_path = container_media_path(
-            published.get("publishedPath") if isinstance(published, dict) else None,
+            publication.get("destinationPath"),
             "published Library path",
         )
         if not published_path.startswith("/media/library/published/"):
@@ -1191,9 +1229,6 @@ def run_smoke(args: argparse.Namespace) -> int:
             "resultFileSummary": result_path_summary,
             "publishedSummary": published_summary,
         })
-        publications = api.request(
-            "GET", "/api/publisher/publications", evidence_name="publisher-publications.json",
-        )
         publication_summary = assert_publisher_binding(
             publications,
             job_id,
