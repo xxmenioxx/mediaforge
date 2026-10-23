@@ -83,6 +83,7 @@ import { SubtitleOCRReviewDialog } from '../components/SubtitleOCRReviewDialog';
 import { SubtitleProofreadingDialog } from '../components/SubtitleProofreadingDialog';
 import { SubtitleCompositionEligibilityPanel } from '../components/SubtitleCompositionEligibilityPanel';
 import { BatchPreflightDialog } from '../components/BatchPreflightDialog';
+import { LegacyAnalysisRecords } from '../components/LegacyAnalysisRecords';
 import { createSingleQueueBatchID, invalidateQueueBatchPreflightReference, getSavedQueueBatchPreflightCandidateID, openQueueBatchPreflight, QUEUE_BATCH_PREFLIGHT_OPEN_EVENT } from '../utils/queueBatchPreflightEvents';
 import type { AdvisorFinding, AdvisorResponse, AppSetting, Asset, AssetArchivedOriginalProjection, AssetConversionOverrideState, AssetGroup, AssetInventory, AssetLogicalGroup, AssetSourceGroup, AssetMetadataSidecar, AssetTracksUpdateInput, AudioEnhancementProfile, CanonicalOCRReviewTarget, EffectiveAssetConfiguration, ExternalSubtitle, Library, MediaStreamInfo, Profile, ProfileAssignment, ProfileInput, QueueBatchPreflightResponse, QueueJob, QueueJobInput, QueueSelectedAssetsResponse, QualityRecommendationResponse, ScanResult, SnapshotOperation, StreamMetadataOverride, SubtitleCompositionInput, SubtitleExtractionOperation, SubtitleOCRQualityFinding, SubtitleOCRQualityReport, SubtitleSemanticRole, SubtitleSourceEligibility, SubtitleSyncProposal, SubtitleTranslationSourceSelector, UpscaleMode, UpscaleSharpen } from '../api/types';
 import { getTrackProfiles, subtitleSRTFallbackEnabled, type TrackProfile } from '../trackProfiles';
@@ -539,6 +540,7 @@ export function AssetsPage() {
           {queuePreflightResumeMessage ? <Alert severity={queuePreflightResumeMessage.startsWith('Could not') ? 'error' : 'info'} action={savedQueuePreflightID && !queuePreflightCandidate ? <Button color="inherit" size="small" disabled={queuePreflightResumePending} onClick={() => void resumeQueueBatchPreflight()}>Retry</Button> : undefined} sx={{ py: 0 }}>
             {queuePreflightResumeMessage}
           </Alert> : null}
+          {tab === 'raw' ? <LegacyAnalysisRecords settings={settings.data ?? []} /> : null}
           {assets.isError ? <Alert severity="warning" sx={{ py: 0 }}>Unable to read library paths from the backend container.</Alert> : null}
           {unsupportedLegacyTab ? <Alert severity="info" sx={{ py: 0 }}>This Assets link is no longer a supported inventory context. Open RAW or Library and use the persisted lifecycle filters.</Alert> : null}
           {tab === 'library' && libraryDecision === 'converted' ? <Alert severity="info" sx={{ py: 0 }}>Converted is a Library provenance projection. Re-processing and original retention remain independent lifecycle evidence.</Alert> : null}

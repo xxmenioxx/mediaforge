@@ -229,7 +229,7 @@ describe('Asset Info OCR review routing', () => {
       targetLocale: 'es-419',
       outputRepresentation: 'srt',
     });
-    expect(await within(translationDialog).findByText('Translation paused')).toBeTruthy();
+    expect(await within(translationDialog).findByText('Translation paused for source OCR review')).toBeTruthy();
     await user.click(within(translationDialog).getByRole('button', { name: 'Review OCR' }));
 
     const reviewDialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
