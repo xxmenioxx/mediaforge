@@ -47,6 +47,9 @@ class SyntheticScenario:
     subtitle_title: str
     subtitle_text: str
     chapters: tuple[tuple[int, int, str], ...]
+    kept_audio_stream_indexes: tuple[int, ...] | None = None
+    subtitle_action: str = "keep"
+    subtitle_sidecar_formats: tuple[str, ...] = ()
     source_video_codec: str = "h264"
     output_video_codec: str = "hevc"
     video_width: int = 320
@@ -63,6 +66,21 @@ class SyntheticScenario:
     @property
     def expected_stream_counts(self) -> dict[str, int]:
         return {"video": 1, "audio": len(self.audio_tracks), "subtitle": 1}
+
+    @property
+    def output_audio_stream_indexes(self) -> tuple[int, ...]:
+        if self.kept_audio_stream_indexes is not None:
+            return self.kept_audio_stream_indexes
+        return self.audio_stream_indexes
+
+    @property
+    def expected_output_stream_counts(self) -> dict[str, int]:
+        embedded_subtitles = int(self.subtitle_action in {"keep", "keep_and_extract"})
+        return {"video": 1, "audio": len(self.output_audio_stream_indexes), "subtitle": embedded_subtitles}
+
+    @property
+    def expected_output_audio_tracks(self) -> tuple[SyntheticAudioTrack, ...]:
+        return tuple(self.audio_tracks[index - 1] for index in self.output_audio_stream_indexes)
 
 
 HAPPY_PATH_SCENARIO = SyntheticScenario(
@@ -82,7 +100,23 @@ HAPPY_PATH_SCENARIO = SyntheticScenario(
         (5500, 8000, "Synthetic chapter 3"),
     ),
 )
-SCENARIOS = {HAPPY_PATH_SCENARIO.name: HAPPY_PATH_SCENARIO}
+TRACK_ACTIONS_SCENARIO = SyntheticScenario(
+    name="track-actions",
+    frame_rate=HAPPY_PATH_SCENARIO.frame_rate,
+    duration_seconds=HAPPY_PATH_SCENARIO.duration_seconds,
+    audio_tracks=HAPPY_PATH_SCENARIO.audio_tracks,
+    subtitle_language=HAPPY_PATH_SCENARIO.subtitle_language,
+    subtitle_title=HAPPY_PATH_SCENARIO.subtitle_title,
+    subtitle_text=HAPPY_PATH_SCENARIO.subtitle_text,
+    chapters=HAPPY_PATH_SCENARIO.chapters,
+    kept_audio_stream_indexes=(1,),
+    subtitle_action="extract",
+    subtitle_sidecar_formats=("srt", "ass"),
+)
+SCENARIOS = {
+    HAPPY_PATH_SCENARIO.name: HAPPY_PATH_SCENARIO,
+    TRACK_ACTIONS_SCENARIO.name: TRACK_ACTIONS_SCENARIO,
+}
 SUPPORTED_SCENARIOS = frozenset(SCENARIOS)
 REQUIRED_FINDING_STATES = {
     "artifact.identity": "PASS",
@@ -434,6 +468,7 @@ def assert_media_probe(
     label: str,
     *,
     expected_video_codec: str | None = None,
+    output: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(probe, dict):
         raise SmokeFailure(f"{label} ffprobe evidence is not an object")
@@ -449,10 +484,11 @@ def assert_media_probe(
         kind: counts.get(kind, 0)
         for kind in ("video", "audio", "subtitle")
     }
-    if actual_counts != scenario.expected_stream_counts or len(streams) != sum(scenario.expected_stream_counts.values()):
+    expected_counts = scenario.expected_output_stream_counts if output else scenario.expected_stream_counts
+    if actual_counts != expected_counts or len(streams) != sum(expected_counts.values()):
         raise SmokeFailure(
             f"{label} stream counts are {actual_counts} across {len(streams)} streams; "
-            f"expected {scenario.expected_stream_counts}"
+            f"expected {expected_counts}"
         )
     video = next(stream for stream in streams if isinstance(stream, dict) and stream.get("codec_type") == "video")
     expected_rate = Fraction(scenario.frame_rate)
@@ -474,11 +510,29 @@ def assert_media_probe(
         raise SmokeFailure(
             f"{label} video codec={video.get('codec_name')!r}, expected {expected_video_codec!r}"
         )
+    expected_audio_tracks = scenario.expected_output_audio_tracks if output else scenario.audio_tracks
+    actual_audio_tracks = [stream for stream in streams if isinstance(stream, dict) and stream.get("codec_type") == "audio"]
+    for index, (actual, expected) in enumerate(zip(actual_audio_tracks, expected_audio_tracks), start=1):
+        tags = actual.get("tags")
+        if not isinstance(tags, dict) or tags.get("language") != expected.language or tags.get("title") != expected.title:
+            raise SmokeFailure(
+                f"{label} audio track {index} metadata is {tags!r}; "
+                f"expected language={expected.language!r}, title={expected.title!r}"
+            )
     chapters = probe.get("chapters")
     if not isinstance(chapters, list) or len(chapters) != len(scenario.chapters):
         actual = len(chapters) if isinstance(chapters, list) else "unavailable"
         raise SmokeFailure(
             f"{label} chapter count is {actual}; expected exactly {len(scenario.chapters)}"
+        )
+    expected_chapter_titles = [title for _, _, title in scenario.chapters]
+    actual_chapter_titles = [
+        chapter.get("tags", {}).get("title") if isinstance(chapter, dict) else None
+        for chapter in chapters
+    ]
+    if actual_chapter_titles != expected_chapter_titles:
+        raise SmokeFailure(
+            f"{label} chapter titles are {actual_chapter_titles!r}; expected {expected_chapter_titles!r}"
         )
     media_format = probe.get("format")
     try:
@@ -489,7 +543,12 @@ def assert_media_probe(
         raise SmokeFailure(f"{label} duration={duration}, outside the existing 2-second smoke tolerance")
     return {
         "streamCounts": actual_counts,
+        "audioTracks": [
+            {"language": track.language, "title": track.title}
+            for track in expected_audio_tracks
+        ],
         "chapterCount": len(chapters),
+        "chapterTitles": actual_chapter_titles,
         "durationSeconds": duration,
         "videoFrameRate": str(expected_rate),
         "videoFieldOrder": video.get("field_order"),
@@ -541,10 +600,150 @@ def result_artifact_evidence(result_artifact: dict[str, Any], result_path: str) 
         "generatedAt": result_artifact.get("generatedAt"),
         "resultIdentity": result_artifact.get("resultIdentity"),
         "executionBinding": result_artifact.get("executionBinding"),
+        "artifactManifest": result_artifact.get("artifacts"),
         "primary": primary,
         "resultReportPath": result_path,
         "outputProbe": summarize_probe(result_artifact.get("outputProbe")),
     }
+
+
+def assert_subtitle_sidecar_content(path: Path, format_name: str, expected_text: str) -> None:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise SmokeFailure(f"{format_name.upper()} subtitle sidecar is missing or not UTF-8: {path}") from exc
+    if expected_text not in content:
+        raise SmokeFailure(f"{format_name.upper()} subtitle sidecar lost the synthetic cue text: {path}")
+    if format_name == "srt":
+        cue = re.search(
+            r"(?m)^\s*1\s*\r?\n\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+"
+            r"\d{2}:\d{2}:\d{2}[,.]\d{3}\s*\r?\n[^\r\n]+",
+            content,
+        )
+        if cue is None:
+            raise SmokeFailure(f"SRT subtitle sidecar has no valid first cue: {path}")
+    elif format_name == "ass":
+        if not all(marker in content for marker in ("[Script Info]", "[Events]", "Format:", "Dialogue:")):
+            raise SmokeFailure(f"ASS subtitle sidecar has no valid script/events/dialogue structure: {path}")
+    else:
+        raise SmokeFailure(f"unsupported required subtitle sidecar format {format_name!r}")
+
+
+def assert_result_artifact_manifest(
+    result_artifact: dict[str, Any],
+    job: dict[str, Any],
+    scenario: SyntheticScenario,
+    sandbox: Path,
+) -> dict[str, Any]:
+    artifact_manifest = result_artifact.get("artifacts")
+    if not isinstance(artifact_manifest, dict):
+        raise SmokeFailure("Result artifact has no artifact manifest")
+    track_snapshot = job.get("trackProfileSnapshot")
+    resolved = track_snapshot.get("resolvedTrackPlan") if isinstance(track_snapshot, dict) else None
+    if not isinstance(resolved, dict):
+        raise SmokeFailure("Result artifact cannot be checked without the frozen track plan")
+    planned = resolved.get("sidecarOutputs")
+    if not isinstance(planned, list):
+        raise SmokeFailure("frozen track plan has no sidecar output list")
+    expected_keys = []
+    for sidecar in planned:
+        if not isinstance(sidecar, dict):
+            raise SmokeFailure("frozen track plan contains a malformed sidecar output")
+        try:
+            expected_keys.append((int(sidecar["streamIndex"]), str(sidecar["format"]).lower()))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SmokeFailure(f"frozen sidecar output is missing stream/format identity: {sidecar!r}") from exc
+    scenario_keys = sorted((scenario.subtitle_stream_index, value.lower()) for value in scenario.subtitle_sidecar_formats)
+    if sorted(expected_keys) != scenario_keys:
+        raise SmokeFailure(f"frozen sidecar plan is {sorted(expected_keys)!r}; expected {scenario_keys!r}")
+
+    raw_entries = artifact_manifest.get("sidecars")
+    if raw_entries is None:
+        entries = []
+    elif isinstance(raw_entries, list):
+        entries = raw_entries
+    else:
+        raise SmokeFailure("Result artifact manifest sidecars are not a list")
+    actual_keys = []
+    artifact_ids = []
+    summaries = []
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("type") != "subtitle_sidecar":
+            raise SmokeFailure(f"Result artifact manifest contains an unexpected required artifact: {entry!r}")
+        try:
+            key = (int(entry["streamIndex"]), str(entry["format"]).lower())
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SmokeFailure(f"Result sidecar manifest entry has no stream/format identity: {entry!r}") from exc
+        artifact_id = entry.get("artifactId")
+        if not isinstance(artifact_id, str) or not artifact_id.strip():
+            raise SmokeFailure(f"Result sidecar manifest entry has no artifact ID: {entry!r}")
+        if entry.get("status") != "ready":
+            raise SmokeFailure(f"required Result sidecar {artifact_id} is not ready: {entry.get('status')!r}")
+        staged_path = container_media_path(entry.get("stagedPath"), f"{key[1].upper()} Result sidecar path")
+        host_path = host_path_for_media(sandbox, staged_path, f"{key[1].upper()} Result sidecar path")
+        if not host_path.is_file() or host_path.stat().st_size == 0:
+            raise SmokeFailure(f"required Result sidecar {artifact_id} is missing or empty: {staged_path}")
+        assert_subtitle_sidecar_content(host_path, key[1], scenario.subtitle_text)
+        actual_keys.append(key)
+        artifact_ids.append(artifact_id)
+        summaries.append({
+            "artifactId": artifact_id,
+            "streamIndex": key[0],
+            "format": key[1],
+            "status": entry.get("status"),
+            "stagedPath": staged_path,
+            "sizeBytes": host_path.stat().st_size,
+        })
+    if sorted(actual_keys) != sorted(expected_keys):
+        raise SmokeFailure(
+            f"Result sidecar manifest identities are {sorted(actual_keys)!r}; expected exactly {sorted(expected_keys)!r}"
+        )
+    if len(artifact_ids) != len(set(artifact_ids)):
+        raise SmokeFailure("Result sidecar manifest contains duplicate artifact IDs")
+    return {"requiredArtifactIds": sorted(artifact_ids), "sidecars": summaries}
+
+
+def assert_published_sidecars(
+    published_job: dict[str, Any],
+    manifest_summary: dict[str, Any],
+    scenario: SyntheticScenario,
+    sandbox: Path,
+) -> list[dict[str, Any]]:
+    artifacts = published_job.get("subtitleArtifacts")
+    if not isinstance(artifacts, list):
+        if manifest_summary["requiredArtifactIds"]:
+            raise SmokeFailure("published QueueJob has no subtitle artifact records")
+        return []
+    sidecars = [entry for entry in artifacts if isinstance(entry, dict) and entry.get("type") == "subtitle_sidecar"]
+    if len(sidecars) != len(artifacts):
+        raise SmokeFailure("published QueueJob contains an unexpected required artifact type")
+    expected_ids = manifest_summary["requiredArtifactIds"]
+    actual_ids = [entry.get("artifactId") for entry in sidecars]
+    if any(not isinstance(value, str) or not value for value in actual_ids):
+        raise SmokeFailure("published sidecar record has no artifact ID")
+    if sorted(actual_ids) != expected_ids:
+        raise SmokeFailure(f"published sidecar IDs are {sorted(actual_ids)!r}; expected {expected_ids!r}")
+    summaries = []
+    for entry in sidecars:
+        published_path = container_media_path(entry.get("publishedPath"), "published subtitle sidecar path")
+        if not published_path.startswith("/media/library/published/"):
+            raise SmokeFailure(f"Publisher wrote a required sidecar outside the isolated Library: {published_path}")
+        published_host_path = host_path_for_media(sandbox, published_path, "published subtitle sidecar path")
+        staged_path = container_media_path(entry.get("stagedPath"), "staged subtitle sidecar path")
+        staged_host_path = host_path_for_media(sandbox, staged_path, "staged subtitle sidecar path")
+        if not published_host_path.is_file() or published_host_path.stat().st_size == 0:
+            raise SmokeFailure(f"Publisher did not deliver required subtitle sidecar {published_path}")
+        if not staged_host_path.is_file() or sha256_file(published_host_path) != sha256_file(staged_host_path):
+            raise SmokeFailure(f"published subtitle sidecar differs from the Result artifact: {published_path}")
+        format_name = str(entry.get("format", "")).lower()
+        assert_subtitle_sidecar_content(published_host_path, format_name, scenario.subtitle_text)
+        summaries.append({
+            "artifactId": entry.get("artifactId"),
+            "format": format_name,
+            "publishedPath": published_path,
+            "sizeBytes": published_host_path.stat().st_size,
+        })
+    return summaries
 
 
 def validation_run_evidence(detail: dict[str, Any]) -> dict[str, Any]:
@@ -662,17 +861,43 @@ def assert_frozen_snapshots(job: dict[str, Any], scenario: SyntheticScenario) ->
         for stream in audio_streams
         if isinstance(stream, dict) and "streamIndex" in stream
     ) if isinstance(audio_streams, list) else []
-    if audio_indexes != list(scenario.audio_stream_indexes):
+    if audio_indexes != list(scenario.output_audio_stream_indexes):
         raise SmokeFailure(
-            f"frozen audio stream selection is {audio_indexes}; expected {list(scenario.audio_stream_indexes)}"
+            f"frozen audio stream selection is {audio_indexes}; expected {list(scenario.output_audio_stream_indexes)}"
+        )
+    removed_streams = resolved.get("removedAudioStreams")
+    removed_audio_indexes = sorted(
+        int(stream["streamIndex"])
+        for stream in removed_streams
+        if isinstance(stream, dict) and "streamIndex" in stream
+    ) if isinstance(removed_streams, list) else []
+    expected_removed_indexes = sorted(set(scenario.audio_stream_indexes) - set(scenario.output_audio_stream_indexes))
+    if removed_audio_indexes != expected_removed_indexes:
+        raise SmokeFailure(
+            f"frozen removed audio streams are {removed_audio_indexes}; expected {expected_removed_indexes}"
         )
     if not isinstance(subtitle_streams, list) or len(subtitle_streams) != 1:
         raise SmokeFailure("frozen track snapshot must select exactly one subtitle stream")
     subtitle = subtitle_streams[0]
     if not isinstance(subtitle, dict) or (
-        subtitle.get("streamIndex") != scenario.subtitle_stream_index or subtitle.get("action") != "keep"
+        subtitle.get("streamIndex") != scenario.subtitle_stream_index or subtitle.get("action") != scenario.subtitle_action
     ):
         raise SmokeFailure(f"frozen subtitle action is unexpected: {subtitle!r}")
+    sidecar_outputs = resolved.get("sidecarOutputs")
+    if not isinstance(sidecar_outputs, list):
+        raise SmokeFailure("frozen track snapshot has no sidecar output list")
+    actual_sidecar_keys = sorted(
+        (int(sidecar["streamIndex"]), str(sidecar["format"]).lower())
+        for sidecar in sidecar_outputs
+        if isinstance(sidecar, dict) and "streamIndex" in sidecar and "format" in sidecar
+    )
+    expected_sidecar_keys = sorted(
+        (scenario.subtitle_stream_index, value.lower()) for value in scenario.subtitle_sidecar_formats
+    )
+    if actual_sidecar_keys != expected_sidecar_keys or len(actual_sidecar_keys) != len(sidecar_outputs):
+        raise SmokeFailure(
+            f"frozen sidecar outputs are {actual_sidecar_keys!r}; expected exactly {expected_sidecar_keys!r}"
+        )
     if resolved.get("chapterPolicy") != "keep" or resolved.get("chaptersKept") is not True:
         raise SmokeFailure("frozen track snapshot does not require preserving chapters")
     return {
@@ -680,8 +905,10 @@ def assert_frozen_snapshots(job: dict[str, Any], scenario: SyntheticScenario) ->
         "profileSnapshotKeys": sorted(profile.keys()),
         "trackProfileSnapshotKeys": sorted(track_snapshot.keys()),
         "audioStreamIndexes": audio_indexes,
+        "removedAudioStreamIndexes": removed_audio_indexes,
         "subtitleStreamIndex": subtitle.get("streamIndex"),
         "subtitleAction": subtitle.get("action"),
+        "sidecarOutputs": actual_sidecar_keys,
         "chapterPolicy": resolved.get("chapterPolicy"),
         "chaptersKept": resolved.get("chaptersKept"),
     }
@@ -747,7 +974,7 @@ def assert_result_validation_binding(
     }
 
 
-def assert_required_findings(findings: Any) -> dict[str, str]:
+def assert_required_findings(findings: Any, scenario: SyntheticScenario | None = None) -> dict[str, str]:
     if not isinstance(findings, list):
         raise SmokeFailure("ValidationRun has no findings list")
     by_key: dict[str, list[dict[str, Any]]] = {}
@@ -755,7 +982,10 @@ def assert_required_findings(findings: Any) -> dict[str, str]:
         if isinstance(finding, dict) and isinstance(finding.get("key"), str):
             by_key.setdefault(finding["key"], []).append(finding)
     states: dict[str, str] = {}
-    for key, expected_state in REQUIRED_FINDING_STATES.items():
+    required_states = dict(REQUIRED_FINDING_STATES)
+    if scenario is not None and scenario.subtitle_sidecar_formats:
+        required_states["sidecars.package"] = "PASS"
+    for key, expected_state in required_states.items():
         matches = by_key.get(key, [])
         if len(matches) != 1:
             raise SmokeFailure(f"ValidationRun has {len(matches)} findings for required key {key!r}")
@@ -830,6 +1060,47 @@ def assert_publisher_binding(
             "publicationId", "queueJobId", "executionNumber", "resultArtifactId",
             "validationRunId", "state", "destinationPath", "originalArchiveStatus",
         )
+    }
+
+
+def assert_publisher_blocked(
+    publications: Any,
+    job_id: int,
+    execution_number: int,
+    artifact_id: str,
+    validation_run_id: str,
+) -> dict[str, Any]:
+    items = publications.get("items") if isinstance(publications, dict) else None
+    if not isinstance(items, list):
+        raise SmokeFailure("Publisher did not return its publication list after the incomplete-package request")
+    matching = [
+        row.get("publication")
+        for row in items
+        if isinstance(row, dict)
+        and isinstance(row.get("publication"), dict)
+        and row["publication"].get("queueJobId") == job_id
+        and row["publication"].get("executionNumber") == execution_number
+    ]
+    if len(matching) != 1:
+        raise SmokeFailure(f"expected one Publisher record for QueueJob {job_id}, found {len(matching)}")
+    publication = matching[0]
+    expected = {"resultArtifactId": artifact_id, "validationRunId": validation_run_id}
+    mismatches = {
+        key: {"expected": value, "actual": publication.get(key)}
+        for key, value in expected.items()
+        if publication.get(key) != value
+    }
+    if str(publication.get("state", "")).lower() != "blocked":
+        mismatches["state"] = {"expected": "blocked", "actual": publication.get("state")}
+    failure = str(publication.get("failureSummary") or "")
+    if "sidecar" not in failure.lower():
+        mismatches["failureSummary"] = {"expected": "required sidecar failure", "actual": failure}
+    if mismatches:
+        raise SmokeFailure(f"incomplete package did not block the bound Publisher record: {mismatches}")
+    return {
+        "publicationId": publication.get("publicationId"),
+        "state": publication.get("state"),
+        "failureSummary": failure,
     }
 
 
@@ -939,10 +1210,14 @@ def run_smoke(args: argparse.Namespace) -> int:
                 time.sleep(2)
 
         fixture_probe = probe_media(container, "/media/raw/synthetic-smoke.mkv")
+        evidence.json("ffprobe-summary.json", {"fixture": summarize_probe(fixture_probe)})
         fixture_summary = assert_media_probe(
             fixture_probe, scenario, "synthetic fixture", expected_video_codec=scenario.source_video_codec,
         )
-        evidence.json("ffprobe-summary.json", {"fixture": fixture_probe, "fixtureSummary": fixture_summary})
+        evidence.json("ffprobe-summary.json", {
+            "fixture": summarize_probe(fixture_probe),
+            "fixtureSummary": fixture_summary,
+        })
 
         log("phase=create-isolated-profile-and-library")
         profile = api.request(
@@ -999,9 +1274,10 @@ def run_smoke(args: argparse.Namespace) -> int:
                         "scope": "asset",
                         "trackDispositionVersion": 1,
                         "keepVideoStreams": [0],
-                        "keepAudioStreams": list(scenario.audio_stream_indexes),
+                        "keepAudioStreams": list(scenario.output_audio_stream_indexes),
                         "keepSubtitleStreams": [scenario.subtitle_stream_index],
-                        "subtitleDisposition": "keep",
+                        "subtitleDisposition": scenario.subtitle_action,
+                        "subtitleSidecarFormats": list(scenario.subtitle_sidecar_formats),
                         "attachmentPolicy": "remove",
                         "chapterPolicy": "keep",
                     }],
@@ -1081,6 +1357,7 @@ def run_smoke(args: argparse.Namespace) -> int:
         if job.get("status") != "completed":
             raise SmokeFailure(f"QueueJob {job_id} ended as {job.get('status')}: {job.get('errorMessage', '')}")
 
+        evidence.json("track-snapshot.json", job.get("trackProfileSnapshot"))
         frozen_snapshot_summary = assert_frozen_snapshots(job, scenario)
         plan_id = job.get("activeExecutionPlanId")
         if not isinstance(plan_id, int):
@@ -1113,6 +1390,7 @@ def run_smoke(args: argparse.Namespace) -> int:
         if not isinstance(artifacts, dict) or not isinstance(artifacts.get("result"), dict):
             raise SmokeFailure("completed QueueJob has no Result artifact")
         result_artifact = artifacts["result"]
+        evidence.json("result-artifact-manifest.json", result_artifact.get("artifacts"))
         primary_output = (result_artifact.get("artifacts") or {}).get("primary")
         if not isinstance(primary_output, dict) or primary_output.get("status") != "ready":
             raise SmokeFailure("Result artifact has no ready primary media output")
@@ -1121,15 +1399,24 @@ def run_smoke(args: argparse.Namespace) -> int:
         run_command(["docker", "exec", container, "/usr/bin/test", "-s", result_path], timeout=15)
         result_hash_before_publish = sha256_file(host_path_for_media(sandbox, result_path, "Result artifact path"))
         result_probe = result_artifact.get("outputProbe")
+        result_path_probe = probe_media(container, result_path)
+        evidence.json("ffprobe-summary.json", {
+            "fixture": summarize_probe(fixture_probe),
+            "resultArtifact": summarize_probe(result_probe),
+            "resultFile": summarize_probe(result_path_probe),
+        })
+        manifest_summary = assert_result_artifact_manifest(result_artifact, job, scenario, sandbox)
+        evidence.json("result-artifact-manifest-summary.json", manifest_summary)
         result_summary = assert_media_probe(
             result_probe, scenario, "Result artifact", expected_video_codec=scenario.output_video_codec,
+            output=True,
         )
-        result_path_probe = probe_media(container, result_path)
         result_path_summary = assert_media_probe(
             result_path_probe, scenario, "Result file", expected_video_codec=scenario.output_video_codec,
+            output=True,
         )
         evidence.json("ffprobe-summary.json", {
-            "fixture": fixture_probe,
+            "fixture": summarize_probe(fixture_probe),
             "resultArtifact": summarize_probe(result_probe),
             "resultFile": summarize_probe(result_path_probe),
             "fixtureSummary": fixture_summary,
@@ -1163,7 +1450,7 @@ def run_smoke(args: argparse.Namespace) -> int:
             persisted_run.get("findings")
         ):
             raise SmokeFailure("Validation response finding states differ from the persisted ValidationRun")
-        finding_states = assert_required_findings(persisted_run.get("findings"))
+        finding_states = assert_required_findings(persisted_run.get("findings"), scenario)
         evidence.json("required-validation-findings.json", finding_states)
         binding_summary = assert_result_validation_binding(job, active_plan, result_artifact, persisted_run)
         if validation_run.get("effectiveHandoff") != "ALLOWED":
@@ -1173,13 +1460,61 @@ def run_smoke(args: argparse.Namespace) -> int:
         if not source_path.is_file() or sha256_file(source_path) != source_hash_before:
             raise SmokeFailure("Worker or Validation changed the synthetic source before publication")
 
-        log("phase=publish-to-isolated-library")
-        accepted = api.request(
-            "POST", f"/api/publisher/jobs/{job_id}/publish", expected=(202,),
-            payload={"reason": "Synthetic isolated pipeline smoke"},
-            evidence_name="publish-accepted.json",
-        )
-        expected_publication_id = assert_manual_publish_accepted(accepted)
+        incomplete_package_summary = None
+        if scenario.subtitle_sidecar_formats:
+            log("phase=publisher-reject-incomplete-package")
+            ass_sidecar = next(
+                item for item in manifest_summary["sidecars"] if item.get("format") == "ass"
+            )
+            ass_path = host_path_for_media(sandbox, ass_sidecar["stagedPath"], "ASS Result sidecar path")
+            ass_content = ass_path.read_bytes()
+            try:
+                ass_path.unlink()
+                rejected = api.request(
+                    "POST", f"/api/publisher/jobs/{job_id}/publish", expected=(409,),
+                    payload={"reason": "Synthetic isolated smoke incomplete-package negative case"},
+                    evidence_name="incomplete-package-rejection.json",
+                )
+                rejection = str(rejected.get("error", "")) if isinstance(rejected, dict) else ""
+                if "required subtitle artifacts are not ready" not in rejection.lower():
+                    raise SmokeFailure(f"Publisher rejection did not identify the missing required sidecar: {rejection!r}")
+                blocked_publications = api.request(
+                    "GET", "/api/publisher/publications",
+                    evidence_name="publisher-incomplete-package-record.json",
+                )
+                incomplete_package_summary = assert_publisher_blocked(
+                    blocked_publications,
+                    job_id,
+                    result_artifact["executionBinding"].get("executionNumber"),
+                    result_artifact["resultIdentity"].get("artifactId"),
+                    run_id,
+                )
+                evidence.json("publisher-incomplete-package-summary.json", incomplete_package_summary)
+            finally:
+                ass_path.write_bytes(ass_content)
+            blocked_publication_id = incomplete_package_summary.get("publicationId")
+            if not isinstance(blocked_publication_id, str) or not blocked_publication_id:
+                raise SmokeFailure("blocked Publisher record has no publication identity for audited retry")
+            log("phase=restore-package-and-retry-publication")
+            accepted = api.request(
+                "POST", f"/api/publisher/publications/{blocked_publication_id}/actions", expected=(202,),
+                payload={
+                    "action": "retry",
+                    "reason": "Synthetic sidecar restored after incomplete-package negative case",
+                },
+                evidence_name="publish-retry-accepted.json",
+            )
+            expected_publication_id = assert_manual_publish_accepted(accepted)
+            if expected_publication_id != blocked_publication_id:
+                raise SmokeFailure("Publisher retry changed the blocked publication identity")
+        else:
+            log("phase=publish-to-isolated-library")
+            accepted = api.request(
+                "POST", f"/api/publisher/jobs/{job_id}/publish", expected=(202,),
+                payload={"reason": "Synthetic isolated pipeline smoke"},
+                evidence_name="publish-accepted.json",
+            )
+            expected_publication_id = assert_manual_publish_accepted(accepted)
         publish_deadline = time.monotonic() + 120
         publications: Any = None
         while time.monotonic() < publish_deadline:
@@ -1218,6 +1553,7 @@ def run_smoke(args: argparse.Namespace) -> int:
         published_probe = probe_media(container, published_path)
         published_summary = assert_media_probe(
             published_probe, scenario, "published package", expected_video_codec=scenario.output_video_codec,
+            output=True,
         )
         evidence.json("ffprobe-summary.json", {
             "fixture": fixture_probe,
@@ -1249,6 +1585,8 @@ def run_smoke(args: argparse.Namespace) -> int:
             raise SmokeFailure(f"QueueJob publication state is {published_job.get('publicationState')!r}")
         if published_job.get("publishedPath") != published_path:
             raise SmokeFailure("QueueJob published path differs from the delivered package path")
+        published_sidecars = assert_published_sidecars(published_job, manifest_summary, scenario, sandbox)
+        evidence.json("published-sidecars.json", published_sidecars)
         archived_path = container_media_path(
             published_job.get("originalArchivedPath"), "archived original path",
         )
@@ -1275,8 +1613,13 @@ def run_smoke(args: argparse.Namespace) -> int:
             "resultPath": result_path,
             "publishedPath": published_path,
             "resultAndPublishedPackageSha256": result_hash_before_publish,
+            "resultRequiredArtifactIds": manifest_summary["requiredArtifactIds"],
+            "publishedSidecars": published_sidecars,
             "streamCounts": published_summary["streamCounts"],
+            "resultChapterCount": result_summary["chapterCount"],
+            "resultChapterTitles": result_summary["chapterTitles"],
             "chapterCount": published_summary["chapterCount"],
+            "incompletePackagePublisherBlock": incomplete_package_summary,
             "originalArchivedPath": archived_path,
             "originalHashPreserved": True,
             "networkMode": "none",

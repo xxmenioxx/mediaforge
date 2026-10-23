@@ -13,6 +13,7 @@ on:
         default: happy-path
         options:
           - happy-path
+          - track-actions
 
 permissions:
   contents: read
@@ -42,12 +43,12 @@ jobs:
         run: python3 scripts/ci/select_ci_jobs.py
 
   pipeline-smoke:
-    name: pipeline-smoke (${{ inputs.scenario || 'happy-path' }})
+    name: pipeline-smoke (${{ inputs.scenario || 'all' }})
     needs: select
     if: ${{ !cancelled() && (needs.select.result != 'success' || needs.select.outputs.smoke == 'true') }}
     runs-on: ubuntu-24.04
     env:
-      E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.scenario || 'happy-path' }}
+      E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7.0.1
       # One runner builds the backend once; future scenarios should execute
@@ -87,15 +88,25 @@ jobs:
         run: ./scripts/ci/runner-disk-capacity.sh report "after Pipeline Smoke backend build" --buildkit
       - name: Run synthetic pipeline smoke
         id: smoke
-        run: ./scripts/e2e/run-pipeline-smoke.sh --scenario "${{ inputs.scenario || 'happy-path' }}" --image mvforge-backend:pipeline-smoke --run-id "$E2E_RUN_ID" --no-build
+        run: |
+          scenarios=(happy-path track-actions)
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            scenarios=("${{ inputs.scenario }}")
+          fi
+          for scenario in "${scenarios[@]}"; do
+            ./scripts/e2e/run-pipeline-smoke.sh --scenario "$scenario" --image mvforge-backend:pipeline-smoke --run-id "${E2E_RUN_ID}-${scenario}" --no-build
+          done
       - name: Upload bounded failure evidence
         if: ${{ failure() && steps.smoke.outcome == 'failure' }}
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: pipeline-smoke-${{ inputs.scenario || 'happy-path' }}-failure-evidence
-          path: ${{ runner.temp }}/mvforge-e2e-${{ env.E2E_RUN_ID }}/evidence/
+          name: pipeline-smoke-failure-evidence
+          path: ${{ runner.temp }}/mvforge-e2e-${{ env.E2E_RUN_ID }}-*/evidence/
           if-no-files-found: warn
           retention-days: 7
       - name: Remove this run's temporary root
         if: always()
-        run: python3 scripts/e2e/cleanup-run-root.py --run-id "$E2E_RUN_ID"
+        run: |
+          for scenario in happy-path track-actions; do
+            python3 scripts/e2e/cleanup-run-root.py --run-id "${E2E_RUN_ID}-${scenario}"
+          done
