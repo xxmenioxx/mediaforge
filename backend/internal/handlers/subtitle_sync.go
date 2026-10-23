@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,6 +316,9 @@ func (h AssetHandler) resolveAndAnalyzeSubtitleSync(ctx context.Context, assetPa
 	if err != nil {
 		return SubtitleSyncProposal{}, "", subtitleTranslationSourceResponse{}, err
 	}
+	if err := requireNoSubtitleSyncRecovery(source.ExternalPath); err != nil {
+		return SubtitleSyncProposal{}, "", subtitleTranslationSourceResponse{}, err
+	}
 	content, err := readBoundedTranslationSubtitle(source.ExternalPath)
 	if err != nil {
 		return SubtitleSyncProposal{}, "", subtitleTranslationSourceResponse{}, errors.New("selected subtitle is not readable or valid")
@@ -375,6 +379,11 @@ func resolveSubtitleSyncAudio(ctx context.Context, mediaPath string, streamIndex
 }
 
 func writeSubtitleSyncRequestError(c *gin.Context, err error) {
+	var recoveryErr *subtitleSyncRecoveryError
+	if errors.As(err, &recoveryErr) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "recovery": recoveryErr.status})
+		return
+	}
 	var resolutionErr *subtitleAssetResolutionError
 	if errors.As(err, &resolutionErr) {
 		writeSubtitleAssetResolutionError(c, err)
@@ -394,10 +403,20 @@ func (h AssetHandler) StartSubtitleSync(c *gin.Context) {
 		return
 	}
 	mode := normalizeSubtitleSyncMode(input.Mode)
+	if mode != subtitleSyncModeFixedOffset && mode != subtitleSyncModeAutomatic {
+		c.JSON(400, gin.H{"error": "analysis mode or fixed offset is invalid"})
+		return
+	}
+	mediaPath, source, err := h.resolveSubtitleSyncSource(c.Request.Context(), input.Path, input.SubtitlePath)
+	if err != nil {
+		writeSubtitleSyncRequestError(c, err)
+		return
+	}
+	if err := requireNoSubtitleSyncRecovery(source.ExternalPath); err != nil {
+		writeSubtitleSyncRequestError(c, err)
+		return
+	}
 	var proposal SubtitleSyncProposal
-	var mediaPath string
-	var source subtitleTranslationSourceResponse
-	var err error
 	if mode == subtitleSyncModeAutomatic {
 		if input.OffsetMilliseconds != nil {
 			c.JSON(400, gin.H{"error": "automatic apply uses the reviewed proposal offset"})
@@ -417,8 +436,7 @@ func (h AssetHandler) StartSubtitleSync(c *gin.Context) {
 			c.JSON(503, gin.H{"error": subtitleSyncAutomaticUnavailableReason()})
 			return
 		}
-		mediaPath, source, err = h.resolveSubtitleSyncSource(c.Request.Context(), input.Path, input.SubtitlePath)
-		if err == nil && (proposal.SourceRevision != strings.TrimSpace(input.SourceRevision) || proposal.SubtitlePath != source.ExternalPath || proposal.SourceIdentity != source.SourceIdentity || proposal.SourceRevision != source.SourceRevision) {
+		if proposal.SourceRevision != strings.TrimSpace(input.SourceRevision) || proposal.SubtitlePath != source.ExternalPath || proposal.SourceIdentity != source.SourceIdentity || proposal.SourceRevision != source.SourceRevision {
 			err = errors.New("subtitle sync proposal is stale; analyze the current subtitle and audio stream again")
 		}
 		if err == nil {
@@ -430,9 +448,6 @@ func (h AssetHandler) StartSubtitleSync(c *gin.Context) {
 		}
 	} else if mode == subtitleSyncModeFixedOffset && input.OffsetMilliseconds != nil {
 		proposal, mediaPath, source, err = h.resolveAndAnalyzeSubtitleSync(c.Request.Context(), input.Path, input.SubtitlePath, *input.ReferenceAudioStreamIndex, mode, *input.OffsetMilliseconds)
-	} else {
-		c.JSON(400, gin.H{"error": "analysis mode or fixed offset is invalid"})
-		return
 	}
 	if err != nil {
 		writeSubtitleSyncRequestError(c, err)
@@ -503,12 +518,17 @@ func (h AssetHandler) runSubtitleSyncOperation(ctx context.Context, operationID,
 	}
 	if err != nil {
 		status, phase, message := "error", "error", "Subtitle synchronization failed"
-		if errors.Is(err, context.Canceled) || (errors.Is(err, context.DeadlineExceeded) && ctx.Err() != nil) {
+		if errors.Is(err, errSubtitleSyncRecoveryRequired) {
+			phase, message = "recovery_required", "Subtitle synchronization requires recovery before another attempt"
+		} else if errors.Is(err, context.Canceled) || (errors.Is(err, context.DeadlineExceeded) && ctx.Err() != nil) {
 			status, phase, message = "cancelled", "cancelled", "Subtitle synchronization cancelled"
 		}
 		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
 			operation.Status, operation.Phase, operation.Message = status, phase, message
 			operation.Error, operation.Retryable = err.Error(), status == "error" || status == "cancelled"
+			if errors.Is(err, errSubtitleSyncRecoveryRequired) {
+				operation.Retryable = false
+			}
 		})
 		return
 	}
@@ -525,6 +545,18 @@ func (h AssetHandler) runSubtitleSyncOperation(ctx context.Context, operationID,
 }
 
 func (h AssetHandler) publishSubtitleSyncStage(ctx context.Context, operationID, workspace, mediaPath string, source subtitleTranslationSourceResponse, proposal SubtitleSyncProposal, stagePath string) error {
+	return h.publishSubtitleSyncStageWithHooks(ctx, operationID, workspace, mediaPath, source, proposal, stagePath, subtitleSyncPublicationHooks{})
+}
+
+type subtitleSyncPublicationHooks struct {
+	createRecoveryIntent  func(string, string, string, string, string, string) (*subtitleSyncRecoveryRecord, string, error)
+	restoreBackup         func(subtitleSyncRecoveryRecord, string) error
+	afterPublish          func()
+	afterProvenanceCreate func()
+	afterCommit           func()
+}
+
+func (h AssetHandler) publishSubtitleSyncStageWithHooks(ctx context.Context, operationID, workspace, mediaPath string, source subtitleTranslationSourceResponse, proposal SubtitleSyncProposal, stagePath string, hooks subtitleSyncPublicationHooks) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -535,16 +567,15 @@ func (h AssetHandler) publishSubtitleSyncStage(ctx context.Context, operationID,
 	if err := os.Chmod(stagePath, info.Mode().Perm()); err != nil {
 		return fmt.Errorf("could not preserve subtitle permissions: %w", err)
 	}
-	backupPath := filepath.Join(workspace, "source-before-sync")
-	if err := copyPublishedFile(source.ExternalPath, backupPath, true); err != nil {
-		return fmt.Errorf("could not stage the previous subtitle for rollback: %w", err)
-	}
 	if subtitlePublicationBeforeLockHook != nil {
 		subtitlePublicationBeforeLockHook()
 	}
 	subtitlePublicationMu.Lock()
 	defer subtitlePublicationMu.Unlock()
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := requireNoSubtitleSyncRecovery(source.ExternalPath); err != nil {
 		return err
 	}
 	current, err := resolveExternalSubtitleTranslationSource(mediaPath, source.ExternalPath)
@@ -558,17 +589,67 @@ func (h AssetHandler) publishSubtitleSyncStage(ctx context.Context, operationID,
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := publishStagedSubtitleFile(stagePath, source.ExternalPath); err != nil {
-		return fmt.Errorf("could not publish synchronized subtitle: %w", err)
+	createRecoveryIntent := hooks.createRecoveryIntent
+	if createRecoveryIntent == nil {
+		createRecoveryIntent = createSubtitleSyncRecoveryIntent
 	}
-	rollback := func(cause error) error {
-		if restoreErr := publishStagedSubtitleFile(backupPath, source.ExternalPath); restoreErr != nil {
-			return fmt.Errorf("%v; subtitle rollback failed: %w", cause, restoreErr)
+	recovery, markerPath, err := createRecoveryIntent(
+		source.ExternalPath, mediaPath, operationID, proposal.SourceIdentity, proposal.SourceRevision, stagePath,
+	)
+	if err != nil {
+		return err
+	}
+	current, err = resolveExternalSubtitleTranslationSource(mediaPath, source.ExternalPath)
+	if err != nil || current.SourceRevision != proposal.SourceRevision || current.SourceIdentity != proposal.SourceIdentity {
+		staleErr := staleTranslationSourceError("selected subtitle revision changed while recovery state was staged")
+		if clearErr := clearSubtitleSyncRecovery(*recovery, markerPath); clearErr != nil {
+			return markSubtitleSyncRecoveryRequired(recovery, markerPath, "not_persisted", fmt.Errorf("%v; unused recovery state cleanup failed: %w", staleErr, clearErr))
 		}
-		return cause
+		return staleErr
+	}
+	if err := publishStagedSubtitleFile(stagePath, source.ExternalPath); err != nil {
+		publishErr := fmt.Errorf("could not publish synchronized subtitle: %w", err)
+		currentDigest, digestErr := subtitleSyncSHA256File(source.ExternalPath)
+		if digestErr == nil && currentDigest == recovery.OriginalSHA256 {
+			if clearErr := clearSubtitleSyncRecovery(*recovery, markerPath); clearErr == nil {
+				return publishErr
+			} else {
+				publishErr = fmt.Errorf("%v; recovery state cleanup failed: %w", publishErr, clearErr)
+			}
+		}
+		return markSubtitleSyncRecoveryRequired(recovery, markerPath, "not_persisted", publishErr)
+	}
+	if hooks.afterPublish != nil {
+		hooks.afterPublish()
+	}
+	if hooks.restoreBackup == nil {
+		hooks.restoreBackup = restoreSubtitleSyncBackup
+	}
+	rollback := func(cause error, provenanceState string, deleteErr error) error {
+		restoreErr := hooks.restoreBackup(*recovery, source.ExternalPath)
+		if deleteErr == nil && restoreErr == nil {
+			if clearErr := clearSubtitleSyncRecovery(*recovery, markerPath); clearErr == nil {
+				return cause
+			} else {
+				restoreErr = fmt.Errorf("recovery state cleanup failed: %w", clearErr)
+			}
+		}
+		combined := cause
+		if deleteErr != nil {
+			combined = fmt.Errorf("%v; subtitle provenance compensation failed: %w", combined, deleteErr)
+		}
+		if restoreErr != nil {
+			combined = fmt.Errorf("%v; subtitle file compensation failed: %w", combined, restoreErr)
+		}
+		if deleteErr != nil {
+			provenanceState = "unknown"
+		} else if provenanceState == "present" {
+			provenanceState = "removed"
+		}
+		return markSubtitleSyncRecoveryRequired(recovery, markerPath, provenanceState, combined)
 	}
 	if err := ctx.Err(); err != nil {
-		return rollback(err)
+		return rollback(err, "not_persisted", nil)
 	}
 	segments, _ := json.Marshal(proposal.Segments)
 	provenance := models.SubtitleSyncProvenance{
@@ -582,15 +663,25 @@ func (h AssetHandler) publishSubtitleSyncStage(ctx context.Context, operationID,
 		QualityState: proposal.QualityState, AnalysisAt: proposal.AnalyzedAt, AppliedAt: time.Now().UTC(),
 	}
 	if err := h.db.Create(&provenance).Error; err != nil {
-		return rollback(fmt.Errorf("could not persist subtitle sync provenance: %w", err))
+		return rollback(fmt.Errorf("could not persist subtitle sync provenance: %w", err), "unknown", nil)
 	}
-	if err := ctx.Err(); err != nil {
-		if deleteErr := h.db.Delete(&provenance).Error; deleteErr != nil {
-			return fmt.Errorf("%v; sync provenance rollback failed: %w", err, deleteErr)
+	if hooks.afterProvenanceCreate != nil {
+		hooks.afterProvenanceCreate()
+	}
+	if !commitSubtitlePublicationIfActive(operationID, ctx) {
+		cause := ctx.Err()
+		if cause == nil {
+			cause = errors.New("subtitle operation stopped before publication committed")
 		}
-		return rollback(err)
+		deleteErr := h.db.Delete(&provenance).Error
+		return rollback(cause, "present", deleteErr)
 	}
-	markSubtitlePublicationCommitted(operationID)
+	if hooks.afterCommit != nil {
+		hooks.afterCommit()
+	}
+	if err := clearSubtitleSyncRecovery(*recovery, markerPath); err != nil {
+		return markSubtitleSyncRecoveryRequired(recovery, markerPath, "present", fmt.Errorf("subtitle and provenance were committed but recovery state cleanup failed: %w", err))
+	}
 	return nil
 }
 
@@ -616,5 +707,10 @@ func (h AssetHandler) SubtitleSyncProvenance(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "could not read subtitle synchronization provenance"})
 		return
 	}
-	c.JSON(200, gin.H{"records": records})
+	recovery, recoveryErr := inspectSubtitleSyncRecovery(validatedPath)
+	if recoveryErr != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "subtitle synchronization recovery state could not be fully verified", "records": records, "recovery": recovery})
+		return
+	}
+	c.JSON(200, gin.H{"records": records, "recovery": recovery})
 }
