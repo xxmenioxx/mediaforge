@@ -144,8 +144,9 @@ func TestManualPublishAcceptsOneDurableRequestAndMeetsLocalAckTarget(t *testing.
 	}
 
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	p50 := latencies[(len(latencies)*50+99)/100-1]
 	p95 := latencies[(len(latencies)*95+99)/100-1]
-	t.Logf("manual Publish ACK p95: %s across %d local SQLite fixture requests", p95, len(latencies))
+	t.Logf("manual Publish ACK p50: %s, p95: %s across %d local SQLite fixture requests", p50, p95, len(latencies))
 	if p95 > time.Second {
 		t.Fatalf("manual Publish ACK p95 %s exceeds the one-second target", p95)
 	}
