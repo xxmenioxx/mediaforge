@@ -4,6 +4,7 @@ Run one isolated scenario locally:
 
 ```bash
 ./scripts/e2e/run-pipeline-smoke.sh --scenario happy-path
+./scripts/e2e/run-pipeline-smoke.sh --scenario track-actions
 ```
 
 The runner uses `mvforge-backend:pipeline-smoke` when it is already present;
@@ -22,6 +23,16 @@ because Publisher performs readiness and destination checks afterward; the
 smoke then requires an ALLOWED Validation handoff and a published Publisher
 record bound to the same Result artifact and ValidationRun. It also compares
 the Result and published file hashes.
+
+The `track-actions` scenario uses the same deterministic two-audio, embedded
+SRT, three-chapter source. Its frozen Track plan keeps audio stream 1, removes
+audio stream 2, extracts subtitle stream 3 as required SRT and ASS sidecars, and
+keeps chapters. It checks exact output audio identity and count, no embedded
+subtitle or extra audio, valid sidecar text, exact Result manifest identities,
+the `sidecars.package` Validation finding, and the Result chapter evidence. It
+also temporarily removes the required ASS artifact to confirm Publisher blocks
+the incomplete package, restores it, and retries the same publication to prove
+that the complete package reaches the isolated Library.
 
 Each scenario invocation gets a unique temporary root, SQLite database, and
 filesystem. Add future scenarios to the scenario registry with their own

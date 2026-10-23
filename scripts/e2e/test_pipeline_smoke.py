@@ -32,7 +32,7 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             second_db = roots[1] / "config" / "mvforge.db"
             self.assertNotEqual(first_db, second_db)
             self.assertNotEqual(roots[0] / "raw", roots[1] / "raw")
-            self.assertEqual(pipeline_smoke.SUPPORTED_SCENARIOS, frozenset({"happy-path"}))
+            self.assertEqual(pipeline_smoke.SUPPORTED_SCENARIOS, frozenset({"happy-path", "track-actions"}))
 
     def test_happy_path_generates_deterministic_multistream_mkv_inputs_in_sandbox(self) -> None:
         scenario = pipeline_smoke.scenario_for("happy-path")
@@ -58,6 +58,7 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             for stream in ("0:v:0", "1:a:0", "2:a:0", "3:s:0"):
                 self.assertIn(stream, command)
             self.assertEqual(command[command.index("-map_chapters") + 1], "4")
+            self.assertNotIn("-map_metadata", command)
             self.assertEqual(command[-1], "/media/raw/synthetic-smoke.mkv")
 
             subtitle = (sandbox / "fixtures" / "synthetic-smoke.srt").read_text(encoding="utf-8")
@@ -65,7 +66,177 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             self.assertIn("MVForge synthetic pipeline subtitle", subtitle)
             self.assertEqual(chapters.count("[CHAPTER]"), 3)
             self.assertIn("TIMEBASE=1/1000", chapters)
+            for _, _, title in scenario.chapters:
+                self.assertIn(f"title={title}", chapters)
             self.assertEqual(chapters, chapters.replace("\r\n", "\n"))
+
+    def test_issue_286_track_actions_scenario_freezes_the_requested_subset(self) -> None:
+        scenario = pipeline_smoke.scenario_for("track-actions")
+        self.assertEqual(scenario.audio_stream_indexes, (1, 2))
+        self.assertEqual(scenario.output_audio_stream_indexes, (1,))
+        self.assertEqual(scenario.subtitle_action, "extract")
+        self.assertEqual(scenario.subtitle_sidecar_formats, ("srt", "ass"))
+        self.assertEqual(scenario.expected_stream_counts, {"video": 1, "audio": 2, "subtitle": 1})
+        self.assertEqual(scenario.expected_output_stream_counts, {"video": 1, "audio": 1, "subtitle": 0})
+        self.assertNotEqual(scenario.audio_tracks[0].language, scenario.audio_tracks[1].language)
+        self.assertNotEqual(scenario.audio_tracks[0].title, scenario.audio_tracks[1].title)
+        self.assertGreaterEqual(len(scenario.chapters), 2)
+
+        job = {
+            "profileSnapshot": {"preserveSubtitles": True, "preserveChapters": True},
+            "profileCapturedAt": "2026-10-23T00:00:00Z",
+            "trackProfileSnapshot": {"resolvedTrackPlan": {
+                "audioStreams": [{"streamIndex": 1}],
+                "removedAudioStreams": [{"streamIndex": 2}],
+                "subtitleStreams": [{"streamIndex": 3, "action": "extract"}],
+                "sidecarOutputs": [
+                    {"streamIndex": 3, "format": "srt"},
+                    {"streamIndex": 3, "format": "ass"},
+                ],
+                "chapterPolicy": "keep",
+                "chaptersKept": True,
+            }},
+        }
+        frozen = pipeline_smoke.assert_frozen_snapshots(job, scenario)
+        self.assertEqual(frozen["audioStreamIndexes"], [1])
+        self.assertEqual(frozen["removedAudioStreamIndexes"], [2])
+        self.assertEqual(frozen["subtitleAction"], "extract")
+        self.assertEqual(frozen["sidecarOutputs"], [(3, "ass"), (3, "srt")])
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_frozen_snapshots(
+                {**job, "trackProfileSnapshot": {"resolvedTrackPlan": {
+                    **job["trackProfileSnapshot"]["resolvedTrackPlan"],
+                    "audioStreams": [{"streamIndex": 1}, {"streamIndex": 2}],
+                    "removedAudioStreams": [],
+                }}},
+                scenario,
+            )
+
+    def test_issue_286_result_manifest_requires_valid_exact_srt_and_ass_sidecars(self) -> None:
+        scenario = pipeline_smoke.scenario_for("track-actions")
+        with tempfile.TemporaryDirectory() as temp_base:
+            sandbox = Path(temp_base) / "sandbox"
+            entries = []
+            contents = {
+                "srt": "1\n00:00:01,000 --> 00:00:02,500\nMVForge synthetic pipeline subtitle\n",
+                "ass": (
+                    "[Script Info]\nScriptType: v4.00+\n\n[Events]\n"
+                    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+                    "Dialogue: 0,0:00:01.00,0:00:02.50,Default,,0,0,0,,MVForge synthetic pipeline subtitle\n"
+                ),
+            }
+            for format_name in ("srt", "ass"):
+                sidecar_path = sandbox / "staging" / "job-1" / f"synthetic-smoke.eng.{format_name}"
+                sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+                sidecar_path.write_text(contents[format_name], encoding="utf-8")
+                entries.append({
+                    "artifactId": f"subtitle:3:converted:{format_name}",
+                    "type": "subtitle_sidecar",
+                    "streamIndex": 3,
+                    "format": format_name,
+                    "language": "eng",
+                    "default": True,
+                    "forced": False,
+                    "role": "unknown",
+                    "stagedPath": f"/media/staging/job-1/synthetic-smoke.eng.{format_name}",
+                    "status": "ready",
+                })
+            job = {"trackProfileSnapshot": {"resolvedTrackPlan": {
+                "sidecarOutputs": [
+                    {"streamIndex": 3, "format": "srt"},
+                    {"streamIndex": 3, "format": "ass"},
+                ],
+            }}}
+            result = {"artifacts": {"sidecars": entries}}
+            summary = pipeline_smoke.assert_result_artifact_manifest(result, job, scenario, sandbox)
+            self.assertEqual(summary["requiredArtifactIds"], ["subtitle:3:converted:ass", "subtitle:3:converted:srt"])
+            self.assertEqual({item["format"] for item in summary["sidecars"]}, {"srt", "ass"})
+            self.assertEqual(pipeline_smoke.result_artifact_evidence(result, "result.json")["artifactManifest"], result["artifacts"])
+
+            published_entries = []
+            for entry in entries:
+                published_path = f"/media/library/published/synthetic-smoke.eng.default.{entry['format']}"
+                host_path = sandbox / "library" / "published" / Path(published_path).name
+                host_path.parent.mkdir(parents=True, exist_ok=True)
+                host_path.write_bytes((sandbox / "staging" / "job-1" / Path(entry["stagedPath"]).name).read_bytes())
+                published_entries.append({**entry, "publishedPath": published_path})
+            published = pipeline_smoke.assert_published_sidecars(
+                {"subtitleArtifacts": published_entries}, summary, scenario, sandbox,
+                "/media/library/published/synthetic-smoke.mkv",
+            )
+            self.assertEqual({item["format"] for item in published}, {"srt", "ass"})
+            self.assertTrue(all(item["apiPublishedPath"] for item in published))
+            unpublished_paths = pipeline_smoke.assert_published_sidecars(
+                {"subtitleArtifacts": [{**entry, "publishedPath": ""} for entry in published_entries]},
+                summary,
+                scenario,
+                sandbox,
+                "/media/library/published/synthetic-smoke.mkv",
+            )
+            self.assertTrue(all(item["apiPublishedPath"] == "" for item in unpublished_paths))
+
+            with self.assertRaises(pipeline_smoke.SmokeFailure):
+                pipeline_smoke.assert_result_artifact_manifest(
+                    {"artifacts": {"sidecars": entries[:1]}}, job, scenario, sandbox,
+                )
+            with self.assertRaises(pipeline_smoke.SmokeFailure):
+                pipeline_smoke.assert_result_artifact_manifest(
+                    {"artifacts": {"sidecars": entries + [{**entries[0], "artifactId": "unexpected"}]}},
+                    job,
+                    scenario,
+                    sandbox,
+                )
+
+    def test_issue_286_incomplete_package_block_is_bound_to_result_and_validation(self) -> None:
+        blocked = pipeline_smoke.assert_publisher_blocked({"items": [{"publication": {
+            "publicationId": "publication-41",
+            "queueJobId": 41,
+            "executionNumber": 3,
+            "resultArtifactId": "job-result:41:execution:3",
+            "validationRunId": "validation-41",
+            "state": "BLOCKED",
+            "failureSummary": "Required delivery sidecar is not ready: missing.ass",
+        }}]}, 41, 3, "job-result:41:execution:3", "validation-41")
+        self.assertEqual(blocked["publicationId"], "publication-41")
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_publisher_blocked({"items": [{"publication": {
+                "publicationId": "publication-41",
+                "queueJobId": 41,
+                "executionNumber": 3,
+                "resultArtifactId": "job-result:41:execution:3",
+                "validationRunId": "stale-validation",
+                "state": "BLOCKED",
+                "failureSummary": "Required delivery sidecar is not ready: missing.ass",
+            }}]}, 41, 3, "job-result:41:execution:3", "validation-41")
+
+    def test_issue_286_output_probe_rejects_phantom_audio_embedded_subtitles_and_lost_chapters(self) -> None:
+        scenario = pipeline_smoke.scenario_for("track-actions")
+        probe = {
+            "format": {"duration": "8.008"},
+            "streams": [
+                {"index": 0, "codec_type": "video", "codec_name": "hevc", "width": 320, "height": 180,
+                 "avg_frame_rate": "24000/1001", "r_frame_rate": "24000/1001", "field_order": "progressive"},
+                {"index": 1, "codec_type": "audio", "codec_name": "aac",
+                 "tags": {"language": "eng", "title": "Original English Mono"}},
+            ],
+            "chapters": [
+                {"tags": {"title": "Synthetic chapter 1"}},
+                {"tags": {"title": "Synthetic chapter 2"}},
+                {"tags": {"title": "Synthetic chapter 3"}},
+            ],
+        }
+        summary = pipeline_smoke.assert_media_probe(probe, scenario, "Result artifact", output=True)
+        self.assertEqual(summary["streamCounts"], {"video": 1, "audio": 1, "subtitle": 0})
+        self.assertEqual(summary["audioTracks"], [{"language": "eng", "title": "Original English Mono"}])
+        self.assertEqual(summary["chapterTitles"], [title for _, _, title in scenario.chapters])
+        for streams, chapters in (
+            ([*probe["streams"], {"index": 2, "codec_type": "audio", "tags": {"language": "spa", "title": "Synthetic Spanish"}}], probe["chapters"]),
+            ([*probe["streams"], {"index": 2, "codec_type": "subtitle"}], probe["chapters"]),
+            (probe["streams"], probe["chapters"][:2]),
+            ([probe["streams"][0], {**probe["streams"][1], "tags": {"language": "spa", "title": "Original Spanish Mono"}}], probe["chapters"]),
+        ):
+            with self.assertRaises(pipeline_smoke.SmokeFailure):
+                pipeline_smoke.assert_media_probe({**probe, "streams": streams, "chapters": chapters}, scenario, "bad Result", output=True)
 
     def test_issue_364_cadence_fixture_reuses_the_existing_isolated_image_and_harness(self) -> None:
         with tempfile.TemporaryDirectory() as temp_base:
@@ -93,11 +264,17 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             "streams": [
                 {"index": 0, "codec_type": "video", "codec_name": "h264", "width": 320, "height": 180,
                  "avg_frame_rate": "24000/1001", "r_frame_rate": "24000/1001", "field_order": "progressive"},
-                {"index": 1, "codec_type": "audio", "codec_name": "aac"},
-                {"index": 2, "codec_type": "audio", "codec_name": "aac"},
+                {"index": 1, "codec_type": "audio", "codec_name": "aac",
+                 "tags": {"language": "eng", "title": "Synthetic English"}},
+                {"index": 2, "codec_type": "audio", "codec_name": "aac",
+                 "tags": {"language": "spa", "title": "Synthetic Spanish"}},
                 {"index": 3, "codec_type": "subtitle", "codec_name": "subrip"},
             ],
-            "chapters": [{}, {}, {}],
+            "chapters": [
+                {"tags": {"title": "Synthetic chapter 1"}},
+                {"tags": {"title": "Synthetic chapter 2"}},
+                {"tags": {"title": "Synthetic chapter 3"}},
+            ],
         }
         summary = pipeline_smoke.assert_media_probe(
             probe, scenario, "fixture", expected_video_codec="h264",
@@ -204,12 +381,13 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             )
 
     def test_manual_publish_acceptance_requires_durable_request_identity(self) -> None:
-        publication_id = pipeline_smoke.assert_manual_publish_accepted({
+        publication_id, request_id = pipeline_smoke.assert_manual_publish_accepted({
             "status": "accepted",
             "requestId": "manual-request-41",
             "publicationId": "publication-41",
         })
         self.assertEqual(publication_id, "publication-41")
+        self.assertEqual(request_id, "manual-request-41")
         for response in (
             {"status": "published", "requestId": "manual-request-41", "publicationId": "publication-41"},
             {"status": "accepted", "requestId": "manual-request-41"},
@@ -217,6 +395,36 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
         ):
             with self.subTest(response=response), self.assertRaises(pipeline_smoke.SmokeFailure):
                 pipeline_smoke.assert_manual_publish_accepted(response)
+
+    def test_publisher_retry_waits_for_the_current_attempt_after_prior_block(self) -> None:
+        blocked_prior_attempt = {
+            "manualRequestId": "manual-request-first",
+            "manualRequestStatus": "failed",
+            "state": "BLOCKED",
+        }
+        self.assertEqual(
+            pipeline_smoke.manual_publication_attempt_state(blocked_prior_attempt, "manual-request-retry"),
+            "pending",
+        )
+        accepted_retry = {
+            "manualRequestId": "manual-request-retry",
+            "manualRequestStatus": "accepted",
+            "state": "BLOCKED",
+        }
+        self.assertEqual(
+            pipeline_smoke.manual_publication_attempt_state(accepted_retry, "manual-request-retry"),
+            "pending",
+        )
+        failed_retry = {**accepted_retry, "manualRequestStatus": "failed"}
+        self.assertEqual(
+            pipeline_smoke.manual_publication_attempt_state(failed_retry, "manual-request-retry"),
+            "failed",
+        )
+        published_retry = {**accepted_retry, "state": "PUBLISHED"}
+        self.assertEqual(
+            pipeline_smoke.manual_publication_attempt_state(published_retry, "manual-request-retry"),
+            "published",
+        )
 
     def test_run_root_refuses_repository_and_nas_paths(self) -> None:
         for path in (pipeline_smoke.REPO_ROOT, Path("/volume1"), Path("/volume2")):
