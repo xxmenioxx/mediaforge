@@ -106,6 +106,7 @@ type subtitleExtractionOperation struct {
 	Result                 *SubtitleExtractionResult         `json:"result,omitempty"`
 	Kind                   string                            `json:"kind,omitempty"`
 	Translation            *subtitleTranslationOperationView `json:"translation,omitempty"`
+	SubtitleSync           *subtitleSyncOperationView        `json:"subtitleSync,omitempty"`
 	Composition            *subtitleCompositionOperationView `json:"composition,omitempty"`
 	QualityReport          *subtitleOCRQualityReport         `json:"qualityReport,omitempty"`
 	Proofreading           *subtitleProofreadingReport       `json:"proofreading,omitempty"`

@@ -28,6 +28,10 @@ type assEvent struct {
 	SourceOrdinal        int
 	Start                float64
 	End                  float64
+	StartStart           int
+	StartEnd             int
+	EndStart             int
+	EndEnd               int
 	TextStart            int
 	TextEnd              int
 	StyleStart           int
@@ -227,6 +231,8 @@ func parseTranslationASSEvent(line string, lineStart int, format []string, sourc
 		return translationASSEvent{}, err
 	}
 	styleStart, styleEnd := -1, -1
+	startStart, startEnd := assEventFieldRange(line[valueStart:], valueStart, startIndex, len(format))
+	endStart, endEnd := assEventFieldRange(line[valueStart:], valueStart, endIndex, len(format))
 	styleValue := ""
 	if styleIndex, exists := fieldIndex["style"]; exists {
 		styleStart, styleEnd = assEventFieldRange(line[valueStart:], valueStart, styleIndex, len(format))
@@ -236,6 +242,10 @@ func parseTranslationASSEvent(line string, lineStart int, format []string, sourc
 		SourceOrdinal: sourceOrdinal,
 		Start:         start,
 		End:           end,
+		StartStart:    lineStart + startStart,
+		StartEnd:      lineStart + startEnd,
+		EndStart:      lineStart + endStart,
+		EndEnd:        lineStart + endEnd,
 		TextStart:     lineStart + textStart,
 		TextEnd:       lineStart + len(line),
 		StyleStart:    lineStart + styleStart,

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type subtitleTranslationPublicationTarget struct {
@@ -230,6 +231,8 @@ type subtitleTranslationRollbackEntry struct {
 	FinalPath  string
 	BackupPath string
 	Existed    bool
+	Mode       os.FileMode
+	ModTime    time.Time
 }
 
 // publishSubtitleTranslationOutputs holds the canonical subtitle publication
@@ -271,6 +274,8 @@ func publishSubtitleTranslationOutputs(request subtitleTranslationPublicationReq
 		}
 		rollbackEntries[index].BackupPath = backupPath
 		rollbackEntries[index].Existed = true
+		rollbackEntries[index].Mode = info.Mode()
+		rollbackEntries[index].ModTime = info.ModTime()
 	}
 
 	rollback := func() error {
@@ -279,6 +284,13 @@ func publishSubtitleTranslationOutputs(request subtitleTranslationPublicationReq
 			if entry.Existed {
 				if err := copyPublishedFile(entry.BackupPath, entry.FinalPath, true); err != nil {
 					failures = append(failures, "restore existing destination failed")
+					continue
+				}
+				if err := os.Chmod(entry.FinalPath, entry.Mode); err != nil {
+					failures = append(failures, "restore existing destination permissions failed")
+				}
+				if err := os.Chtimes(entry.FinalPath, entry.ModTime, entry.ModTime); err != nil {
+					failures = append(failures, "restore existing destination revision timestamp failed")
 				}
 			} else {
 				if err := os.Remove(entry.FinalPath); err != nil && !os.IsNotExist(err) {
@@ -366,8 +378,15 @@ func publishSubtitleTranslationOutputs(request subtitleTranslationPublicationReq
 	if request.CommitPublication != nil {
 		if err := request.CommitPublication(publishedArtifacts); err != nil {
 			rollbackErr := rollback()
-			if request.OnRecoveryRequired != nil {
+			var metadataRollbackErr error
+			if request.CommitMetadata != nil && request.RollbackMetadata != nil {
+				metadataRollbackErr = request.RollbackMetadata(publishedArtifacts)
+			}
+			if request.OnRecoveryRequired != nil && (request.RollbackMetadata == nil || rollbackErr != nil || metadataRollbackErr != nil) {
 				request.OnRecoveryRequired("publication_checkpoint_commit_uncertain")
+			}
+			if metadataRollbackErr != nil {
+				return nil, fmt.Errorf("cannot commit translated publication checkpoint: %w; metadata rollback diagnostic: %s", err, boundedSubtitleTranslationError(metadataRollbackErr))
 			}
 			if rollbackErr != nil {
 				return nil, fmt.Errorf("cannot commit translated publication checkpoint: %w; file rollback diagnostic: %s", err, boundedSubtitleTranslationError(rollbackErr))
