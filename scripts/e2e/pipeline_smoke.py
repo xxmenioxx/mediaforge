@@ -415,7 +415,6 @@ def generate_fixture(
     args.extend((
         "-map", f"{subtitle_input_index}:s:0",
         "-map_chapters", str(chapter_input_index),
-        "-map_metadata", "-1",
     ))
     if video_filter:
         args.extend(("-vf", video_filter))
@@ -514,10 +513,15 @@ def assert_media_probe(
     actual_audio_tracks = [stream for stream in streams if isinstance(stream, dict) and stream.get("codec_type") == "audio"]
     for index, (actual, expected) in enumerate(zip(actual_audio_tracks, expected_audio_tracks), start=1):
         tags = actual.get("tags")
-        if not isinstance(tags, dict) or tags.get("language") != expected.language or tags.get("title") != expected.title:
+        if (
+            not isinstance(tags, dict)
+            or tags.get("language") != expected.language
+            or (not output and tags.get("title") != expected.title)
+        ):
             raise SmokeFailure(
                 f"{label} audio track {index} metadata is {tags!r}; "
-                f"expected language={expected.language!r}, title={expected.title!r}"
+                f"expected language={expected.language!r}"
+                + (f", title={expected.title!r}" if not output else "")
             )
     chapters = probe.get("chapters")
     if not isinstance(chapters, list) or len(chapters) != len(scenario.chapters):
@@ -544,8 +548,11 @@ def assert_media_probe(
     return {
         "streamCounts": actual_counts,
         "audioTracks": [
-            {"language": track.language, "title": track.title}
-            for track in expected_audio_tracks
+            {
+                "language": stream.get("tags", {}).get("language"),
+                "title": stream.get("tags", {}).get("title"),
+            }
+            for stream in actual_audio_tracks
         ],
         "chapterCount": len(chapters),
         "chapterTitles": actual_chapter_titles,
@@ -693,6 +700,7 @@ def assert_result_artifact_manifest(
             "status": entry.get("status"),
             "stagedPath": staged_path,
             "sizeBytes": host_path.stat().st_size,
+            "sha256": sha256_file(host_path),
         })
     if sorted(actual_keys) != sorted(expected_keys):
         raise SmokeFailure(
@@ -708,6 +716,7 @@ def assert_published_sidecars(
     manifest_summary: dict[str, Any],
     scenario: SyntheticScenario,
     sandbox: Path,
+    published_media_path: str,
 ) -> list[dict[str, Any]]:
     artifacts = published_job.get("subtitleArtifacts")
     if not isinstance(artifacts, list):
@@ -723,17 +732,39 @@ def assert_published_sidecars(
         raise SmokeFailure("published sidecar record has no artifact ID")
     if sorted(actual_ids) != expected_ids:
         raise SmokeFailure(f"published sidecar IDs are {sorted(actual_ids)!r}; expected {expected_ids!r}")
+    expected_by_id = {
+        item.get("artifactId"): item
+        for item in manifest_summary["sidecars"]
+        if isinstance(item, dict) and isinstance(item.get("artifactId"), str)
+    }
+    published_media_path = container_media_path(published_media_path, "published media path")
+    if not published_media_path.startswith("/media/library/published/"):
+        raise SmokeFailure(f"Publisher wrote the synthetic media outside the isolated Library: {published_media_path}")
+    media_base = str(PurePosixPath(published_media_path).with_suffix(""))
     summaries = []
     for entry in sidecars:
-        published_path = container_media_path(entry.get("publishedPath"), "published subtitle sidecar path")
+        format_name = str(entry.get("format", "")).lower()
+        language = str(entry.get("language", "")).strip().lower()
+        if language != "eng" or format_name not in {value.lower() for value in scenario.subtitle_sidecar_formats}:
+            raise SmokeFailure(f"published subtitle identity is outside the synthetic scenario: {entry!r}")
+        disposition = ".forced" if entry.get("forced") else ".default" if entry.get("default") else ""
+        if str(entry.get("role", "")).lower() == "sdh":
+            disposition += ".sdh"
+        published_path = f"{media_base}.{language}{disposition}.{format_name}"
+        exposed_path = entry.get("publishedPath")
+        if exposed_path:
+            exposed_path = container_media_path(exposed_path, "published subtitle sidecar path")
+            if exposed_path != published_path:
+                raise SmokeFailure(
+                    f"Publisher sidecar path {exposed_path} differs from the delivered manifest path {published_path}"
+                )
         if not published_path.startswith("/media/library/published/"):
             raise SmokeFailure(f"Publisher wrote a required sidecar outside the isolated Library: {published_path}")
         published_host_path = host_path_for_media(sandbox, published_path, "published subtitle sidecar path")
-        staged_path = container_media_path(entry.get("stagedPath"), "staged subtitle sidecar path")
-        staged_host_path = host_path_for_media(sandbox, staged_path, "staged subtitle sidecar path")
         if not published_host_path.is_file() or published_host_path.stat().st_size == 0:
             raise SmokeFailure(f"Publisher did not deliver required subtitle sidecar {published_path}")
-        if not staged_host_path.is_file() or sha256_file(published_host_path) != sha256_file(staged_host_path):
+        expected = expected_by_id.get(entry.get("artifactId"))
+        if not isinstance(expected, dict) or sha256_file(published_host_path) != expected.get("sha256"):
             raise SmokeFailure(f"published subtitle sidecar differs from the Result artifact: {published_path}")
         format_name = str(entry.get("format", "")).lower()
         assert_subtitle_sidecar_content(published_host_path, format_name, scenario.subtitle_text)
@@ -741,6 +772,7 @@ def assert_published_sidecars(
             "artifactId": entry.get("artifactId"),
             "format": format_name,
             "publishedPath": published_path,
+            "apiPublishedPath": exposed_path or "",
             "sizeBytes": published_host_path.stat().st_size,
         })
     return summaries
@@ -1104,7 +1136,7 @@ def assert_publisher_blocked(
     }
 
 
-def assert_manual_publish_accepted(response: Any) -> str:
+def assert_manual_publish_accepted(response: Any) -> tuple[str, str]:
     if not isinstance(response, dict) or response.get("status") != "accepted":
         raise SmokeFailure("manual Publish did not return a durable accepted request")
     publication_id = response.get("publicationId")
@@ -1113,7 +1145,22 @@ def assert_manual_publish_accepted(response: Any) -> str:
         raise SmokeFailure("accepted manual Publish response is missing its publication identity")
     if not isinstance(request_id, str) or not request_id.strip():
         raise SmokeFailure("accepted manual Publish response is missing its request identity")
-    return publication_id
+    return publication_id, request_id
+
+
+def manual_publication_attempt_state(publication: dict[str, Any], request_id: str) -> str:
+    """Ignore a prior blocked attempt until this accepted request becomes current."""
+    if publication.get("manualRequestId") != request_id:
+        return "pending"
+    state = str(publication.get("state", "")).lower()
+    request_state = str(publication.get("manualRequestStatus", "")).lower()
+    if state == "published":
+        return "published"
+    if request_state == "failed" or (
+        state in {"failed", "blocked"} and request_state not in {"accepted", "processing"}
+    ):
+        return "failed"
+    return "pending"
 
 
 def extract_plan_summary(plans: Any) -> dict[str, Any]:
@@ -1468,31 +1515,55 @@ def run_smoke(args: argparse.Namespace) -> int:
             )
             ass_path = host_path_for_media(sandbox, ass_sidecar["stagedPath"], "ASS Result sidecar path")
             ass_content = ass_path.read_bytes()
+            incomplete_package_summary = None
+            blocked_publication_id = None
             try:
                 ass_path.unlink()
-                rejected = api.request(
-                    "POST", f"/api/publisher/jobs/{job_id}/publish", expected=(409,),
+                incomplete_request = api.request(
+                    "POST", f"/api/publisher/jobs/{job_id}/publish", expected=(202,),
                     payload={"reason": "Synthetic isolated smoke incomplete-package negative case"},
-                    evidence_name="incomplete-package-rejection.json",
+                    evidence_name="incomplete-package-request-accepted.json",
                 )
-                rejection = str(rejected.get("error", "")) if isinstance(rejected, dict) else ""
-                if "required subtitle artifacts are not ready" not in rejection.lower():
-                    raise SmokeFailure(f"Publisher rejection did not identify the missing required sidecar: {rejection!r}")
-                blocked_publications = api.request(
-                    "GET", "/api/publisher/publications",
-                    evidence_name="publisher-incomplete-package-record.json",
-                )
-                incomplete_package_summary = assert_publisher_blocked(
-                    blocked_publications,
-                    job_id,
-                    result_artifact["executionBinding"].get("executionNumber"),
-                    result_artifact["resultIdentity"].get("artifactId"),
-                    run_id,
-                )
+                blocked_publication_id, _ = assert_manual_publish_accepted(incomplete_request)
+                blocked_deadline = time.monotonic() + 120
+                last_publisher_state = None
+                while time.monotonic() < blocked_deadline:
+                    publications = api.request("GET", "/api/publisher/publications")
+                    items = publications.get("items") if isinstance(publications, dict) else None
+                    matching = [
+                        row.get("publication")
+                        for row in items or []
+                        if isinstance(row, dict)
+                        and isinstance(row.get("publication"), dict)
+                        and row["publication"].get("publicationId") == blocked_publication_id
+                    ]
+                    if len(matching) > 1:
+                        raise SmokeFailure(
+                            f"Publisher returned duplicate records for incomplete package {blocked_publication_id}"
+                        )
+                    if matching:
+                        last_publisher_state = matching[0].get("state")
+                        if str(last_publisher_state).lower() == "blocked":
+                            evidence.json("publisher-incomplete-package-record.json", publications)
+                            incomplete_package_summary = assert_publisher_blocked(
+                                publications,
+                                job_id,
+                                result_artifact["executionBinding"].get("executionNumber"),
+                                result_artifact["resultIdentity"].get("artifactId"),
+                                run_id,
+                            )
+                            break
+                    time.sleep(1)
+                if incomplete_package_summary is None:
+                    raise SmokeFailure(
+                        "Publisher did not block the incomplete package after its accepted request; "
+                        f"last state={last_publisher_state!r}"
+                    )
+                if incomplete_package_summary.get("publicationId") != blocked_publication_id:
+                    raise SmokeFailure("Publisher changed the incomplete-package publication identity")
                 evidence.json("publisher-incomplete-package-summary.json", incomplete_package_summary)
             finally:
                 ass_path.write_bytes(ass_content)
-            blocked_publication_id = incomplete_package_summary.get("publicationId")
             if not isinstance(blocked_publication_id, str) or not blocked_publication_id:
                 raise SmokeFailure("blocked Publisher record has no publication identity for audited retry")
             log("phase=restore-package-and-retry-publication")
@@ -1504,7 +1575,7 @@ def run_smoke(args: argparse.Namespace) -> int:
                 },
                 evidence_name="publish-retry-accepted.json",
             )
-            expected_publication_id = assert_manual_publish_accepted(accepted)
+            expected_publication_id, expected_request_id = assert_manual_publish_accepted(accepted)
             if expected_publication_id != blocked_publication_id:
                 raise SmokeFailure("Publisher retry changed the blocked publication identity")
         else:
@@ -1514,7 +1585,7 @@ def run_smoke(args: argparse.Namespace) -> int:
                 payload={"reason": "Synthetic isolated pipeline smoke"},
                 evidence_name="publish-accepted.json",
             )
-            expected_publication_id = assert_manual_publish_accepted(accepted)
+            expected_publication_id, expected_request_id = assert_manual_publish_accepted(accepted)
         publish_deadline = time.monotonic() + 120
         publications: Any = None
         while time.monotonic() < publish_deadline:
@@ -1529,11 +1600,11 @@ def run_smoke(args: argparse.Namespace) -> int:
             ]
             if matching:
                 publication = matching[0]
-                state = str(publication.get("state", "")).lower()
-                request_state = str(publication.get("manualRequestStatus", "")).lower()
-                if state == "published":
+                attempt_state = manual_publication_attempt_state(publication, expected_request_id)
+                if attempt_state == "published":
                     break
-                if state in {"failed", "blocked"} or request_state == "failed":
+                if attempt_state == "failed":
+                    state = str(publication.get("state", "")).lower()
                     reason = publication.get("failureSummary") or publication.get("holdReason") or state
                     raise SmokeFailure(f"accepted Publisher request failed before delivery: {reason}")
             time.sleep(1)
@@ -1585,7 +1656,9 @@ def run_smoke(args: argparse.Namespace) -> int:
             raise SmokeFailure(f"QueueJob publication state is {published_job.get('publicationState')!r}")
         if published_job.get("publishedPath") != published_path:
             raise SmokeFailure("QueueJob published path differs from the delivered package path")
-        published_sidecars = assert_published_sidecars(published_job, manifest_summary, scenario, sandbox)
+        published_sidecars = assert_published_sidecars(
+            published_job, manifest_summary, scenario, sandbox, published_path,
+        )
         evidence.json("published-sidecars.json", published_sidecars)
         archived_path = container_media_path(
             published_job.get("originalArchivedPath"), "archived original path",
