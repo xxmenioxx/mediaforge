@@ -14,7 +14,6 @@ import {
 } from '@mui/material';
 import SaveIcon from '@mui/icons-material/Save';
 import DeleteIcon from '@mui/icons-material/DeleteOutline';
-import { useState } from 'react';
 import type { ReactNode } from 'react';
 import type { AppSetting, Profile } from '../api/types';
 import {
@@ -26,6 +25,7 @@ import {
   updateAssetDefaultsDomain,
 } from '../utils/assetDefaults';
 import { canonicalSubtitleLanguage, subtitleLanguageOptions, subtitlePreferredActionOptions } from '../utils/subtitleLanguages';
+import { useSettingsDraftValue } from '../hooks/useSettingsDraftValue';
 
 type Props = {
   value: unknown;
@@ -34,6 +34,8 @@ type Props = {
   runtimeEncoders?: Record<string, { listed?: boolean; usable?: boolean; reason?: string }>;
   saving: boolean;
   onSave: (value: AssetDefaultsValue) => void;
+  onDraftChange?: (value: AssetDefaultsValue) => void;
+  draftOnly?: boolean;
 };
 
 function profileOptions(settings: AppSetting[], key: string) {
@@ -97,13 +99,8 @@ function AssetDefaultsDomainCard({
   </Stack></CardContent></Card>;
 }
 
-export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders = {}, saving, onSave }: Props) {
-  const [draft, setDraft] = useState<AssetDefaultsValue>(() => assetDefaultsValue(value));
-  const [previousValue, setPreviousValue] = useState(value);
-  if (previousValue !== value) {
-    setPreviousValue(value);
-    setDraft(assetDefaultsValue(value));
-  }
+export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders = {}, saving, onSave, onDraftChange, draftOnly }: Props) {
+  const [draft, setDraft] = useSettingsDraftValue(value, assetDefaultsValue, onDraftChange);
   const update = (domain: 'video' | 'audio' | 'tracks', patch: Record<string, unknown>) => setDraft((current) => updateAssetDefaultsDomain(current, domain, patch));
   const videoOptions = profiles.filter((profile) => !profile.disabled).map((profile) => ({ key: String(profile.id), name: profile.name }));
   const encoderOptions = Object.entries(runtimeEncoders)
@@ -173,6 +170,6 @@ export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders =
         <Grid size={{ xs: 12, md: 6 }}><TextField select fullWidth label="Default subtitle language" value={defaultSubtitleLanguage} onChange={(event) => update('tracks', { custom: { defaultSubtitleLanguage: event.target.value } })}><MenuItem value="">None</MenuItem>{subtitleLanguageOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label} · {option.value}</MenuItem>)}</TextField></Grid>
       </Grid>
     </AssetDefaultsDomainCard>
-    <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save Asset Defaults</Button>
+    {!draftOnly ? <Button startIcon={<SaveIcon />} variant="contained" disabled={saving} onClick={() => onSave(draft)}>Save Asset Defaults</Button> : null}
   </Stack>;
 }

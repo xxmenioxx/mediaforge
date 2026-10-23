@@ -203,10 +203,10 @@ describe('SettingsPage Jellyfin mapping persistence', () => {
     expect(savedMappingIsDisplayed()).toBeTruthy();
     expect(stateReads).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole('button', { name: /back to settings dashboard/i }));
-    await user.click(screen.getByRole('button', { name: /open assets & storage/i }));
-    await user.click(screen.getByRole('button', { name: /back to settings dashboard/i }));
-    await user.click(screen.getByRole('button', { name: /open providers & integrations/i }));
+    await user.click(screen.getByRole('button', { name: 'Assets & Storage' }));
+    expect(await screen.findByRole('heading', { name: 'Assets & Storage' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Providers & Integrations' }));
+    expect(await screen.findByRole('heading', { name: 'Providers & Integrations' })).toBeTruthy();
     expect(savedMappingIsDisplayed()).toBeTruthy();
 
     view.unmount();
