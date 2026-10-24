@@ -119,6 +119,44 @@ describe('SubtitleOCRReviewDialog', () => {
     expect(await within(dialog).findByText('No OCR findings require a decision for this revision.')).toBeTruthy();
   });
 
+  it('shows Dictionary and AI suggestions while keeping Accept and Reject human-only', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.analyzeSubtitleOCR).mockResolvedValue({ operationId: 'ocr-review-operation', status: 'running', phase: 'analyzing', progress: 20 });
+    vi.mocked(api.subtitleExtractionOperation).mockResolvedValue({
+      ...operation('completed', 'completed'),
+      qualityReport: {
+        artifactPath: '/media/movie.eng.srt', format: 'srt', logicalTransformKey: 'logical-review',
+        revision: { artifactPath: '/media/movie.eng.srt', artifactIdentity: 'srt', sizeBytes: 10, modifiedAtUnixNano: '10', contentHash: 'hash', logicalTransform: 'logical-review' },
+        revisionSet: [], baselineRevision: 'baseline-review', analyzerVersion: 'quality-v1', repairVersion: 'repair-v1',
+        cleanCount: 0, suspiciousCount: 1, reviewCount: 0, canCorrect: true,
+        ocrAI: { enabled: true, state: 'suggestions_ready', model: 'ocr-fixture:latest', notice: 'Review suggestions manually.', suggestedCount: 1, unassessedCount: 0 },
+        findings: [{
+          cueId: 1, originalText: 'The h0use', suggestion: 'The home', candidateSource: 'contextual-ocr-dictionary',
+          aiSuggestion: { cueId: 1, originalHash: 'original-hash', proposedText: 'The house', reason: 'Likely OCR confusion.', model: 'ocr-fixture:latest', baselineRevision: 'baseline-review' },
+          status: 'suspicious', baselineRevision: 'baseline-review', startSeconds: 1, endSeconds: 2,
+        }],
+      },
+    } as never);
+    renderReview(exactTarget);
+    const dialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
+    expect(await within(dialog).findByText(/OCR AI: suggestions_ready · ocr-fixture:latest/)).toBeTruthy();
+    expect(within(dialog).getByText('Original:')).toBeTruthy();
+    expect(within(dialog).getByText('The h0use')).toBeTruthy();
+    expect(within(dialog).getByText('Dictionary suggestion:')).toBeTruthy();
+    expect(within(dialog).getByText('The home', { selector: 'p' })).toBeTruthy();
+    expect(within(dialog).getByText('AI Suggestion · ocr-fixture:latest:')).toBeTruthy();
+    expect(within(dialog).getByText('The house')).toBeTruthy();
+
+    const correctedText = within(dialog).getByLabelText('Corrected text for cue 1');
+    await user.click(within(dialog).getByRole('button', { name: 'Accept AI suggestion' }));
+    expect((correctedText as HTMLTextAreaElement).value).toBe('The house');
+    expect(api.correctSubtitleOCR).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole('button', { name: 'Reject AI suggestion' }));
+    expect(within(dialog).queryByText('AI Suggestion · ocr-fixture:latest:')).toBeNull();
+    expect((correctedText as HTMLTextAreaElement).value).toBe('The home');
+    expect(api.correctSubtitleOCR).not.toHaveBeenCalled();
+  });
+
   it('saves a Correct decision and returns control to the Translation owner', async () => {
     const user = userEvent.setup();
     const onSaved = vi.fn();

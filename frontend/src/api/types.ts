@@ -3661,6 +3661,14 @@ export type SubtitleOCRQualityFinding = {
   cueId: number;
   originalText: string;
   suggestion?: string;
+  aiSuggestion?: {
+    cueId: number;
+    originalHash: string;
+    proposedText: string;
+    reason: string;
+    model: string;
+    baselineRevision: string;
+  };
   status: 'clean' | 'suspicious' | 'review' | string;
   reasons?: string[];
   evidence?: string[];
@@ -3748,6 +3756,14 @@ export type SubtitleOCRQualityReport = {
   canCorrect: boolean;
   findings: SubtitleOCRQualityFinding[];
   reviewTarget?: CanonicalOCRReviewTarget;
+  ocrAI?: {
+    enabled: boolean;
+    state: string;
+    model?: string;
+    notice?: string;
+    suggestedCount: number;
+    unassessedCount: number;
+  };
 };
 
 export type OCRDictionaryLanguage = 'eng' | 'spa' | 'jpn' | 'jpn_vert';

@@ -57,6 +57,7 @@ export function SubtitleOCRReviewDialog({
   const [analysisError, setAnalysisError] = useState('');
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [decisions, setDecisions] = useState<Record<number, ReviewDecision>>({});
+  const [dismissedAISuggestions, setDismissedAISuggestions] = useState<Record<number, boolean>>({});
   const [previewOpen, setPreviewOpen] = useState(false);
   const [selectionMessage, setSelectionMessage] = useState('');
   const [saving, setSaving] = useState(false);
@@ -73,6 +74,7 @@ export function SubtitleOCRReviewDialog({
     setSaveError('');
     setDecisions({});
     setDrafts({});
+    setDismissedAISuggestions({});
     setPreviewOpen(false);
     setSelectionMessage('');
     setAnalysisOperationId('');
@@ -147,6 +149,33 @@ export function SubtitleOCRReviewDialog({
       return next;
     });
     setSelectionMessage(`Cue ${cueId} remains pending and will not be approved.`);
+  }
+
+  function acceptAISuggestion(finding: SubtitleOCRQualityFinding) {
+    const suggestion = finding.aiSuggestion;
+    if (!suggestion || suggestion.cueId !== finding.cueId || suggestion.baselineRevision !== report?.baselineRevision) {
+      setSelectionMessage('This AI suggestion no longer matches the reviewed cue revision.');
+      return;
+    }
+    setDrafts((current) => ({ ...current, [finding.cueId]: suggestion.proposedText }));
+    chooseDecision(finding.cueId, 'correct');
+    setSelectionMessage(`AI suggestion for cue ${finding.cueId} is staged as a correction. Review it and confirm before saving.`);
+  }
+
+  function rejectAISuggestion(finding: SubtitleOCRQualityFinding) {
+    const suggestion = finding.aiSuggestion;
+    if (!suggestion) return;
+    setDismissedAISuggestions((current) => ({ ...current, [finding.cueId]: true }));
+    const currentDraft = drafts[finding.cueId] ?? finding.suggestion ?? finding.originalText;
+    if (currentDraft === suggestion.proposedText) {
+      setDrafts((current) => ({ ...current, [finding.cueId]: finding.suggestion ?? finding.originalText }));
+      setDecisions((current) => {
+        const next = { ...current };
+        delete next[finding.cueId];
+        return next;
+      });
+    }
+    setSelectionMessage(`AI suggestion for cue ${finding.cueId} was rejected and will not be saved.`);
   }
 
   async function cancelAnalysis() {
@@ -253,6 +282,15 @@ export function SubtitleOCRReviewDialog({
                 <Chip size="small" label={`${report.suspiciousCount} suspicious`} color="warning" />
                 <Chip size="small" label={`${report.reviewCount} review`} color={report.reviewCount ? 'error' : 'default'} />
               </Stack>
+              {report.ocrAI ? (
+                <Alert severity={['configuration_changed', 'invalid_settings', 'model_unavailable', 'provider_failed', 'provider_unavailable', 'resource_unavailable', 'settings_unavailable'].includes(report.ocrAI.state) ? 'warning' : 'info'}>
+                  <Typography fontWeight={700}>
+                    OCR AI: {report.ocrAI.state}{report.ocrAI.model ? ` · ${report.ocrAI.model}` : ''}
+                  </Typography>
+                  {report.ocrAI.notice ? <Typography variant="body2">{report.ocrAI.notice}</Typography> : null}
+                  {report.ocrAI.unassessedCount > 0 ? <Typography variant="body2">{report.ocrAI.unassessedCount} suspicious cue(s) were not assessed by AI.</Typography> : null}
+                </Alert>
+              ) : null}
               {findings.length === 0 ? <Alert severity="success">No OCR findings require a decision for this revision.</Alert> : null}
               {findings.map((finding) => (
                 <Stack key={finding.cueId} spacing={1} sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
@@ -263,7 +301,25 @@ export function SubtitleOCRReviewDialog({
                   <Typography variant="body2" color="text.secondary">{(finding.reasons ?? []).join(' · ') || 'OCR quality finding'}</Typography>
                   <Typography variant="caption" color="text.secondary">{cueLayoutSummary(finding)}</Typography>
                   <Typography variant="body2"><strong>Original:</strong> {finding.originalText}</Typography>
-                  {finding.suggestion ? <Typography variant="body2"><strong>Available suggestion:</strong> {finding.suggestion}</Typography> : null}
+                  {finding.suggestion ? (
+                    <Typography variant="body2">
+                      <strong>{finding.candidateSource === 'contextual-ocr-dictionary' ? 'Dictionary suggestion:' : 'Deterministic suggestion:'}</strong> {finding.suggestion}
+                    </Typography>
+                  ) : null}
+                  {finding.aiSuggestion && !dismissedAISuggestions[finding.cueId] &&
+                    finding.aiSuggestion.cueId === finding.cueId && finding.aiSuggestion.baselineRevision === report.baselineRevision ? (
+                    <Alert severity="info">
+                      <Stack spacing={0.75}>
+                        <Typography variant="body2"><strong>AI Suggestion · {finding.aiSuggestion.model}:</strong> {finding.aiSuggestion.proposedText}</Typography>
+                        <Typography variant="caption">{finding.aiSuggestion.reason}</Typography>
+                        <Typography variant="caption">Accept stages this as a correction. It is saved only after you review and confirm the decision preview.</Typography>
+                        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                          <Button size="small" variant="outlined" disabled={saving} onClick={() => acceptAISuggestion(finding)}>Accept AI suggestion</Button>
+                          <Button size="small" color="warning" disabled={saving} onClick={() => rejectAISuggestion(finding)}>Reject AI suggestion</Button>
+                        </Stack>
+                      </Stack>
+                    </Alert>
+                  ) : null}
                   <TextField
                     size="small"
                     multiline
