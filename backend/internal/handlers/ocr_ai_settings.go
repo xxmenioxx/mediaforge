@@ -45,6 +45,9 @@ func normalizeOCRAISettingsValue(value models.JSONMap) (models.JSONMap, error) {
 	if len(model) > ocrAIModelMaxLength || strings.ContainsAny(model, "\x00\r\n") {
 		return nil, fmt.Errorf("model must be a model identifier up to %d characters", ocrAIModelMaxLength)
 	}
+	if enabled && model == "" {
+		return nil, fmt.Errorf("model is required when OCR AI is enabled")
+	}
 
 	normalized["enabled"] = enabled
 	normalized["model"] = model

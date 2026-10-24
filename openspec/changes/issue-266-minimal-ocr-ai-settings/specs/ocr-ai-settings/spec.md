@@ -4,6 +4,8 @@
 
 The system MUST persist OCR AI Settings under an OCR-specific setting key with an `enabled` boolean and an independently selected model identifier. A missing setting MUST resolve to `enabled: false` and an empty model. Saving or migrating OCR AI Settings MUST NOT copy, change, or clear the Translation model or enablement. The same model identifier MAY be selected independently for both features.
 
+When `enabled` is true, the saved model identifier MUST be non-empty after trimming and satisfy the existing model identifier bounds and character checks. When `enabled` is false, the model MAY be empty or retain a selected identifier.
+
 #### Scenario: Existing Translation configuration is present
 
 - **WHEN** an existing database is opened and has Translation settings but no OCR AI settings
@@ -15,6 +17,12 @@ The system MUST persist OCR AI Settings under an OCR-specific setting key with a
 - **WHEN** an operator saves an OCR AI model identifier
 - **THEN** the identifier is stored only in the OCR AI setting
 - **AND** the Translation model is not read or changed
+
+#### Scenario: Enabling without a valid model is rejected
+
+- **WHEN** a Settings API write enables OCR AI with an empty, whitespace-only, or otherwise invalid model identifier
+- **THEN** the write is rejected before any setting is persisted
+- **AND** the previous OCR AI and Translation settings remain unchanged
 
 ### Requirement: OCR model validation reuses the shared provider
 

@@ -10,7 +10,7 @@ The Settings registry persists JSON values by key. Translation keeps its own sel
 
 Use the additive `ocrAISettings` key with `enabled` and `model` fields. Its default is disabled with no model selected. The model remains an opaque identifier selected by the operator. Translation's model is never read to populate this value, and the same model ID remains valid for both features when selected separately.
 
-The registry trims and bounds the model identifier, validates its type, and preserves extension fields. It does not make network calls during a Settings write. Model existence and provider availability are checked through the existing #261 endpoints.
+The registry trims and bounds the model identifier, validates its type, and preserves extension fields. An enabled setting requires a non-empty model after trimming; disabled settings may keep the model empty or retain a selection. Validation is local and does not make network calls during a Settings write. Model existence and provider availability are checked through the existing #261 endpoints.
 
 ### Add a safe default to existing databases
 
