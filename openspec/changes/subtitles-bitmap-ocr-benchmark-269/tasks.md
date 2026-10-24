@@ -16,3 +16,8 @@
 
 - [x] 4.1 Run focused benchmark validation and `./scripts/verify.sh --auto`; record exact outcomes and any limitations.
 - [x] 4.2 Keep peak RSS run-wide rather than candidate-specific and enforce report shape in the harness; verify each row excludes RSS and the report contains exactly one aggregate value.
+
+## 5. Representative-fixture qualification (pending)
+
+- [ ] 5.1 Obtain authorized, disposable PGS/VobSub cue fixtures with human-verified confusable glyph and shadow/outline ground truth.
+- [ ] 5.2 Measure the unchanged SeConv baseline and supported alternatives on the target runtime, including accuracy, correction/review errors, cue-level resources, and SRT/ASS integrity before reconsidering production preprocessing.
