@@ -24,7 +24,7 @@ export const defaultLibraryTypes: LibraryType[] = [
 export const defaultAssetCategories = ['movie', 'anime', 'series', 'episode', 'season', 'extras', 'special', 'concert', 'music-video', 'documentary'];
 const ordinarySettingsKeys = [
   'testEncodePolicy', 'assetDefaults', 'validation', 'runtimePolicy', 'directPlay',
-  'workingHours', 'storageRoles', 'workspace', 'housekeeping',
+  'workingHours', 'storageRoles', 'workspace', 'housekeeping', 'ocrAISettings',
 ] as const;
 
 export function buildSettingsForm(base: Omit<SettingsForm, 'advancedJson'>): SettingsForm {

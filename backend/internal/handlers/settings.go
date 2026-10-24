@@ -124,6 +124,9 @@ func (h SettingsHandler) List(c *gin.Context) {
 		if err := migrateOllamaProviderSettings(tx); err != nil {
 			return err
 		}
+		if err := migrateOCRAISettings(tx); err != nil {
+			return err
+		}
 		if err := migrateLegacyJellyfinCredential(tx, secrets); err != nil {
 			return err
 		}
