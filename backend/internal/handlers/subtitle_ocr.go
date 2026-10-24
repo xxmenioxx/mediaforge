@@ -1105,10 +1105,11 @@ func seconvFormat(format string) string {
 }
 
 func normalizedOCRLanguage(requested string, detected string) string {
-	value := strings.ToLower(strings.TrimSpace(requested))
+	value := strings.TrimSpace(requested)
 	if value == "" {
-		value = strings.ToLower(strings.TrimSpace(detected))
+		value = detected
 	}
+	value = normalizedTrackLanguageValue(value)
 	switch value {
 	case "es", "spa", "esp", "spanish":
 		return "spa"
