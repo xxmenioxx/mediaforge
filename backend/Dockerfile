@@ -314,6 +314,8 @@ COPY licenses/ /notices/backend/
 
 FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
 
+ARG TESSERACT_PACKAGE_VERSION=5.5.0-1+b1
+ARG TESSERACT_LANGPACK_VERSION=1:4.1.0-2
 ARG LIBX264_PACKAGE_VERSION=2:0.164.3108+git31e19f9-2+b1
 ARG LIBX265_PACKAGE_VERSION=4.1-2
 ARG LIBBLURAY_PACKAGE_VERSION=1:1.3.4-1+b2
@@ -335,12 +337,24 @@ RUN apt-get update \
        "libx264-164=${LIBX264_PACKAGE_VERSION}" \
        "libx265-215=${LIBX265_PACKAGE_VERSION}" \
        libx11-6 libxext6 libxfixes3 libwayland-client0 \
-       "libzimg2=${ZIMG_PACKAGE_VERSION}" ocl-icd-libopencl1 sqlite3 hunspell-en-us hunspell-es tesseract-ocr \
-       tesseract-ocr-eng tesseract-ocr-jpn tesseract-ocr-jpn-vert tesseract-ocr-spa tzdata \
+       "libzimg2=${ZIMG_PACKAGE_VERSION}" ocl-icd-libopencl1 sqlite3 hunspell-en-us hunspell-es \
+       "tesseract-ocr=${TESSERACT_PACKAGE_VERSION}" \
+       "tesseract-ocr-eng=${TESSERACT_LANGPACK_VERSION}" \
+       "tesseract-ocr-fra=${TESSERACT_LANGPACK_VERSION}" \
+       "tesseract-ocr-jpn=${TESSERACT_LANGPACK_VERSION}" \
+       "tesseract-ocr-jpn-vert=${TESSERACT_LANGPACK_VERSION}" \
+       "tesseract-ocr-kor=${TESSERACT_LANGPACK_VERSION}" \
+       "tesseract-ocr-spa=${TESSERACT_LANGPACK_VERSION}" tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-RUN tesseract --list-langs | grep -Fx 'jpn' \
-    && tesseract --list-langs | grep -Fx 'jpn_vert'
+RUN set -eu; \
+    languages="$(tesseract --list-langs)"; \
+    for language in eng fra jpn jpn_vert kor spa; do \
+      if ! printf '%s\n' "$languages" | grep -Fx "$language" >/dev/null; then \
+        echo "Required Tesseract language data is unavailable: $language" >&2; \
+        exit 1; \
+      fi; \
+    done
 
 COPY --from=build /out/mvforge-api /usr/local/bin/mvforge-api
 COPY --from=build /out/mvforge-hw-probe /usr/local/bin/mvforge-hw-probe
