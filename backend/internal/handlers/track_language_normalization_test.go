@@ -93,8 +93,8 @@ func TestResolveTrackProfileForAssetMatchesCanonicalLanguagesWithoutCollapsingIn
 		t.Fatal(err)
 	}
 	profile := map[string]any{
-		"audioMode": "languages", "audioLanguages": []string{"KOR"}, "dropCommentary": false,
-		"subtitleMode": "languages", "subtitleLanguages": []string{"FRE"},
+		"audioMode": "languages", "audioLanguages": models.JSONList{"ko-KR"}, "dropCommentary": false,
+		"subtitleMode": "languages", "subtitleLanguages": models.JSONList{"fr-FR"},
 		"subtitleDisposition": "keep", "attachmentPolicy": "auto", "chapterPolicy": "keep",
 	}
 	resolved := resolveTrackProfileForAsset(db, path, profile)

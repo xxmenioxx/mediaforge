@@ -14,6 +14,7 @@ on:
         options:
           - happy-path
           - track-actions
+          - language-normalization
           - cadence-progressive
           - cadence-ivtc
           - cadence-ambiguous
@@ -92,7 +93,7 @@ jobs:
       - name: Run synthetic pipeline smoke
         id: smoke
         run: |
-          scenarios=(happy-path track-actions cadence-progressive cadence-ivtc cadence-ambiguous)
+          scenarios=(happy-path track-actions language-normalization cadence-progressive cadence-ivtc cadence-ambiguous)
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             scenarios=("${{ inputs.scenario }}")
           fi
@@ -110,6 +111,6 @@ jobs:
       - name: Remove this run's temporary root
         if: always()
         run: |
-          for scenario in happy-path track-actions cadence-progressive cadence-ivtc cadence-ambiguous; do
+          for scenario in happy-path track-actions language-normalization cadence-progressive cadence-ivtc cadence-ambiguous; do
             python3 scripts/e2e/cleanup-run-root.py --run-id "${E2E_RUN_ID}-${scenario}"
           done

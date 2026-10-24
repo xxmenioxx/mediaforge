@@ -20,6 +20,14 @@ func workerStringSlice(value any) []string {
 			}
 		}
 		return result
+	case models.JSONList:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+				result = append(result, text)
+			}
+		}
+		return result
 	default:
 		return nil
 	}

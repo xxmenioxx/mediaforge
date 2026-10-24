@@ -49,6 +49,13 @@ class SyntheticScenario:
     subtitle_text: str
     chapters: tuple[tuple[int, int, str], ...]
     kept_audio_stream_indexes: tuple[int, ...] | None = None
+    track_profile_scope: str = "asset"
+    track_profile_audio_mode: str | None = None
+    track_profile_audio_languages: tuple[str, ...] = ()
+    track_profile_subtitle_mode: str | None = None
+    track_profile_subtitle_languages: tuple[str, ...] = ()
+    expected_resolved_audio_languages: tuple[str, ...] = ()
+    expected_resolved_subtitle_language: str | None = None
     subtitle_action: str = "keep"
     subtitle_sidecar_formats: tuple[str, ...] = ()
     source_video_codec: str = "h264"
@@ -131,6 +138,23 @@ TRACK_ACTIONS_SCENARIO = SyntheticScenario(
     subtitle_action="extract",
     subtitle_sidecar_formats=("srt", "ass"),
 )
+LANGUAGE_NORMALIZATION_SCENARIO = replace(
+    TRACK_ACTIONS_SCENARIO,
+    name="language-normalization",
+    audio_tracks=(
+        SyntheticAudioTrack(440, "kor", "Synthetic Korean"),
+        SyntheticAudioTrack(880, "eng", "Synthetic English"),
+    ),
+    subtitle_language="fra",
+    subtitle_title="Synthetic French subtitles",
+    track_profile_audio_mode="languages",
+    track_profile_audio_languages=("ko-KR",),
+    track_profile_subtitle_mode="languages",
+    track_profile_subtitle_languages=("fr-FR",),
+    expected_resolved_audio_languages=("kor",),
+    expected_resolved_subtitle_language="fra",
+    track_profile_scope="path",
+)
 CADENCE_PROGRESSIVE_SCENARIO = replace(
     HAPPY_PATH_SCENARIO,
     name="cadence-progressive",
@@ -187,6 +211,7 @@ CADENCE_AMBIGUOUS_SCENARIO = replace(
 SCENARIOS = {
     HAPPY_PATH_SCENARIO.name: HAPPY_PATH_SCENARIO,
     TRACK_ACTIONS_SCENARIO.name: TRACK_ACTIONS_SCENARIO,
+    LANGUAGE_NORMALIZATION_SCENARIO.name: LANGUAGE_NORMALIZATION_SCENARIO,
     CADENCE_PROGRESSIVE_SCENARIO.name: CADENCE_PROGRESSIVE_SCENARIO,
     CADENCE_IVTC_SCENARIO.name: CADENCE_IVTC_SCENARIO,
     CADENCE_AMBIGUOUS_SCENARIO.name: CADENCE_AMBIGUOUS_SCENARIO,
@@ -212,6 +237,30 @@ def scenario_for(name: str) -> SyntheticScenario:
         return SCENARIOS[name]
     except KeyError as exc:
         raise SmokeFailure(f"unsupported scenario {name!r}; available: {sorted(SCENARIOS)}") from exc
+
+
+def track_profile_for_scenario(key: str, scenario: SyntheticScenario) -> dict[str, Any]:
+    profile: dict[str, Any] = {
+        "key": key,
+        "scope": scenario.track_profile_scope,
+        "trackDispositionVersion": 1,
+        "keepVideoStreams": [0],
+        "subtitleDisposition": scenario.subtitle_action,
+        "subtitleSidecarFormats": list(scenario.subtitle_sidecar_formats),
+        "attachmentPolicy": "remove",
+        "chapterPolicy": "keep",
+    }
+    if scenario.track_profile_audio_mode is not None:
+        profile["audioMode"] = scenario.track_profile_audio_mode
+        profile["audioLanguages"] = list(scenario.track_profile_audio_languages)
+    else:
+        profile["keepAudioStreams"] = list(scenario.output_audio_stream_indexes)
+    if scenario.track_profile_subtitle_mode is not None:
+        profile["subtitleMode"] = scenario.track_profile_subtitle_mode
+        profile["subtitleLanguages"] = list(scenario.track_profile_subtitle_languages)
+    else:
+        profile["keepSubtitleStreams"] = [scenario.subtitle_stream_index]
+    return profile
 PIPELINE_AUTOMATION_SETTINGS = {
     "autoAnalysisEnabled": False,
     "reviewMode": "automatic",
@@ -621,6 +670,29 @@ def assert_media_probe(
                 f"expected language={expected.language!r}"
                 + (f", title={expected.title!r}" if not output else "")
             )
+    expected_subtitle_languages = (
+        [scenario.subtitle_language]
+        if not output or scenario.subtitle_action in {"keep", "keep_and_extract"}
+        else []
+    )
+    actual_subtitle_tracks = [
+        stream for stream in streams
+        if isinstance(stream, dict) and stream.get("codec_type") == "subtitle"
+    ]
+    if len(actual_subtitle_tracks) != len(expected_subtitle_languages):
+        raise SmokeFailure(
+            f"{label} subtitle stream count is {len(actual_subtitle_tracks)}; "
+            f"expected {len(expected_subtitle_languages)}"
+        )
+    for index, (actual, expected_language) in enumerate(
+        zip(actual_subtitle_tracks, expected_subtitle_languages), start=1,
+    ):
+        tags = actual.get("tags")
+        if not isinstance(tags, dict) or tags.get("language") != expected_language:
+            raise SmokeFailure(
+                f"{label} subtitle track {index} metadata is {tags!r}; "
+                f"expected language={expected_language!r}"
+            )
     chapters = probe.get("chapters")
     if not isinstance(chapters, list) or len(chapters) != len(scenario.chapters):
         actual = len(chapters) if isinstance(chapters, list) else "unavailable"
@@ -651,6 +723,13 @@ def assert_media_probe(
                 "title": stream.get("tags", {}).get("title"),
             }
             for stream in actual_audio_tracks
+        ],
+        "subtitleTracks": [
+            {
+                "language": stream.get("tags", {}).get("language"),
+                "title": stream.get("tags", {}).get("title"),
+            }
+            for stream in actual_subtitle_tracks
         ],
         "chapterCount": len(chapters),
         "chapterTitles": actual_chapter_titles,
@@ -759,6 +838,11 @@ def assert_result_artifact_manifest(
             expected_keys.append((int(sidecar["streamIndex"]), str(sidecar["format"]).lower()))
         except (KeyError, TypeError, ValueError) as exc:
             raise SmokeFailure(f"frozen sidecar output is missing stream/format identity: {sidecar!r}") from exc
+        if sidecar.get("language") != scenario.subtitle_language:
+            raise SmokeFailure(
+                f"frozen sidecar language is {sidecar.get('language')!r}; "
+                f"expected {scenario.subtitle_language!r}"
+            )
     scenario_keys = sorted((scenario.subtitle_stream_index, value.lower()) for value in scenario.subtitle_sidecar_formats)
     if sorted(expected_keys) != scenario_keys:
         raise SmokeFailure(f"frozen sidecar plan is {sorted(expected_keys)!r}; expected {scenario_keys!r}")
@@ -785,6 +869,11 @@ def assert_result_artifact_manifest(
             raise SmokeFailure(f"Result sidecar manifest entry has no artifact ID: {entry!r}")
         if entry.get("status") != "ready":
             raise SmokeFailure(f"required Result sidecar {artifact_id} is not ready: {entry.get('status')!r}")
+        if entry.get("language") != scenario.subtitle_language:
+            raise SmokeFailure(
+                f"Result sidecar {artifact_id} language is {entry.get('language')!r}; "
+                f"expected {scenario.subtitle_language!r}"
+            )
         staged_path = container_media_path(entry.get("stagedPath"), f"{key[1].upper()} Result sidecar path")
         host_path = host_path_for_media(sandbox, staged_path, f"{key[1].upper()} Result sidecar path")
         if not host_path.is_file() or host_path.stat().st_size == 0:
@@ -796,6 +885,7 @@ def assert_result_artifact_manifest(
             "artifactId": artifact_id,
             "streamIndex": key[0],
             "format": key[1],
+            "language": entry.get("language"),
             "status": entry.get("status"),
             "stagedPath": staged_path,
             "sizeBytes": host_path.stat().st_size,
@@ -844,7 +934,7 @@ def assert_published_sidecars(
     for entry in sidecars:
         format_name = str(entry.get("format", "")).lower()
         language = str(entry.get("language", "")).strip().lower()
-        if language != "eng" or format_name not in {value.lower() for value in scenario.subtitle_sidecar_formats}:
+        if language != scenario.subtitle_language or format_name not in {value.lower() for value in scenario.subtitle_sidecar_formats}:
             raise SmokeFailure(f"published subtitle identity is outside the synthetic scenario: {entry!r}")
         disposition = ".forced" if entry.get("forced") else ".default" if entry.get("default") else ""
         if str(entry.get("role", "")).lower() == "sdh":
@@ -996,6 +1086,17 @@ def assert_frozen_snapshots(job: dict[str, Any], scenario: SyntheticScenario) ->
         raise SmokeFailure(
             f"frozen audio stream selection is {audio_indexes}; expected {list(scenario.output_audio_stream_indexes)}"
         )
+    if scenario.expected_resolved_audio_languages:
+        selected_languages = sorted(
+            str(stream.get("language"))
+            for stream in audio_streams
+            if isinstance(stream, dict) and stream.get("language") is not None
+        ) if isinstance(audio_streams, list) else []
+        expected_languages = sorted(scenario.expected_resolved_audio_languages)
+        if selected_languages != expected_languages:
+            raise SmokeFailure(
+                f"frozen audio languages are {selected_languages!r}; expected canonical {expected_languages!r}"
+            )
     removed_streams = resolved.get("removedAudioStreams")
     removed_audio_indexes = sorted(
         int(stream["streamIndex"])
@@ -1014,6 +1115,14 @@ def assert_frozen_snapshots(job: dict[str, Any], scenario: SyntheticScenario) ->
         subtitle.get("streamIndex") != scenario.subtitle_stream_index or subtitle.get("action") != scenario.subtitle_action
     ):
         raise SmokeFailure(f"frozen subtitle action is unexpected: {subtitle!r}")
+    if (
+        scenario.expected_resolved_subtitle_language is not None
+        and subtitle.get("language") != scenario.expected_resolved_subtitle_language
+    ):
+        raise SmokeFailure(
+            f"frozen subtitle language is {subtitle.get('language')!r}; "
+            f"expected canonical {scenario.expected_resolved_subtitle_language!r}"
+        )
     sidecar_outputs = resolved.get("sidecarOutputs")
     if not isinstance(sidecar_outputs, list):
         raise SmokeFailure("frozen track snapshot has no sidecar output list")
@@ -1036,8 +1145,13 @@ def assert_frozen_snapshots(job: dict[str, Any], scenario: SyntheticScenario) ->
         "profileSnapshotKeys": sorted(profile.keys()),
         "trackProfileSnapshotKeys": sorted(track_snapshot.keys()),
         "audioStreamIndexes": audio_indexes,
+        "audioLanguages": sorted(
+            str(stream.get("language")) for stream in audio_streams
+            if isinstance(stream, dict) and stream.get("language") is not None
+        ) if isinstance(audio_streams, list) else [],
         "removedAudioStreamIndexes": removed_audio_indexes,
         "subtitleStreamIndex": subtitle.get("streamIndex"),
+        "subtitleLanguage": subtitle.get("language"),
         "subtitleAction": subtitle.get("action"),
         "sidecarOutputs": actual_sidecar_keys,
         "chapterPolicy": resolved.get("chapterPolicy"),
@@ -1666,22 +1780,12 @@ def run_smoke(args: argparse.Namespace) -> int:
             raise SmokeFailure("library creation did not return an integer id")
 
         track_profile_key = "pipeline-smoke-tracks"
+        track_profile = track_profile_for_scenario(track_profile_key, scenario)
         api.request(
             "POST", "/api/settings/trackProfiles", expected=(200,), evidence_name="track-profile-setting.json",
             payload={
                 "value": {
-                    "profiles": [{
-                        "key": track_profile_key,
-                        "scope": "asset",
-                        "trackDispositionVersion": 1,
-                        "keepVideoStreams": [0],
-                        "keepAudioStreams": list(scenario.output_audio_stream_indexes),
-                        "keepSubtitleStreams": [scenario.subtitle_stream_index],
-                        "subtitleDisposition": scenario.subtitle_action,
-                        "subtitleSidecarFormats": list(scenario.subtitle_sidecar_formats),
-                        "attachmentPolicy": "remove",
-                        "chapterPolicy": "keep",
-                    }],
+                    "profiles": [track_profile],
                 },
             },
         )

@@ -34,7 +34,8 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
             self.assertNotEqual(first_db, second_db)
             self.assertNotEqual(roots[0] / "raw", roots[1] / "raw")
             self.assertEqual(pipeline_smoke.SUPPORTED_SCENARIOS, frozenset({
-                "happy-path", "track-actions", "cadence-progressive", "cadence-ivtc", "cadence-ambiguous",
+                "happy-path", "track-actions", "language-normalization",
+                "cadence-progressive", "cadence-ivtc", "cadence-ambiguous",
             }))
 
     def test_happy_path_generates_deterministic_multistream_mkv_inputs_in_sandbox(self) -> None:
@@ -115,6 +116,67 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
                 scenario,
             )
 
+    def test_issue_330_language_scenario_uses_language_policy_and_frozen_canonical_tracks(self) -> None:
+        scenario = pipeline_smoke.scenario_for("language-normalization")
+        self.assertEqual(scenario.track_profile_audio_mode, "languages")
+        self.assertEqual(scenario.track_profile_scope, "path")
+        self.assertEqual(scenario.track_profile_audio_languages, ("ko-KR",))
+        self.assertEqual(scenario.track_profile_subtitle_mode, "languages")
+        self.assertEqual(scenario.track_profile_subtitle_languages, ("fr-FR",))
+        self.assertEqual(scenario.expected_resolved_audio_languages, ("kor",))
+        self.assertEqual(scenario.expected_resolved_subtitle_language, "fra")
+        self.assertEqual(scenario.audio_tracks[0].language, "kor")
+        self.assertEqual(scenario.subtitle_language, "fra")
+        profile = pipeline_smoke.track_profile_for_scenario("synthetic-language-policy", scenario)
+        self.assertEqual(profile["audioMode"], "languages")
+        self.assertEqual(profile["scope"], "path")
+        self.assertEqual(profile["audioLanguages"], ["ko-KR"])
+        self.assertNotIn("keepAudioStreams", profile)
+        self.assertEqual(profile["subtitleMode"], "languages")
+        self.assertEqual(profile["subtitleLanguages"], ["fr-FR"])
+        self.assertNotIn("keepSubtitleStreams", profile)
+
+        with tempfile.TemporaryDirectory() as temp_base:
+            root = pipeline_smoke.create_run_root(temp_base, "issue-330-fixture")
+            sandbox = root / "sandbox"
+            pipeline_smoke.prepare_sandbox(sandbox)
+            with patch.object(pipeline_smoke, "run_command") as run_command:
+                pipeline_smoke.generate_fixture(pipeline_smoke.DEFAULT_IMAGE, sandbox, scenario)
+            command = run_command.call_args.args[0]
+            self.assertIn("language=kor", command)
+            self.assertIn("language=fra", command)
+            self.assertEqual(command[-1], "/media/raw/synthetic-smoke.mkv")
+
+        job = {
+            "profileSnapshot": {"preserveSubtitles": True, "preserveChapters": True},
+            "profileCapturedAt": "2026-10-23T00:00:00Z",
+            "trackProfileSnapshot": {"resolvedTrackPlan": {
+                "audioStreams": [{"streamIndex": 1, "language": "kor"}],
+                "removedAudioStreams": [{"streamIndex": 2, "language": "eng"}],
+                "subtitleStreams": [{"streamIndex": 3, "language": "fra", "action": "extract"}],
+                "sidecarOutputs": [
+                    {"streamIndex": 3, "format": "srt"},
+                    {"streamIndex": 3, "format": "ass"},
+                ],
+                "chapterPolicy": "keep",
+                "chaptersKept": True,
+            }},
+        }
+        frozen = pipeline_smoke.assert_frozen_snapshots(job, scenario)
+        self.assertEqual(frozen["audioStreamIndexes"], [1])
+        self.assertEqual(frozen["audioLanguages"], ["kor"])
+        self.assertEqual(frozen["subtitleLanguage"], "fra")
+
+        wrong_language = {
+            **job,
+            "trackProfileSnapshot": {"resolvedTrackPlan": {
+                **job["trackProfileSnapshot"]["resolvedTrackPlan"],
+                "audioStreams": [{"streamIndex": 1, "language": "ko"}],
+            }},
+        }
+        with self.assertRaises(pipeline_smoke.SmokeFailure):
+            pipeline_smoke.assert_frozen_snapshots(wrong_language, scenario)
+
     def test_issue_286_result_manifest_requires_valid_exact_srt_and_ass_sidecars(self) -> None:
         scenario = pipeline_smoke.scenario_for("track-actions")
         with tempfile.TemporaryDirectory() as temp_base:
@@ -146,8 +208,8 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
                 })
             job = {"trackProfileSnapshot": {"resolvedTrackPlan": {
                 "sidecarOutputs": [
-                    {"streamIndex": 3, "format": "srt"},
-                    {"streamIndex": 3, "format": "ass"},
+                    {"streamIndex": 3, "format": "srt", "language": "eng"},
+                    {"streamIndex": 3, "format": "ass", "language": "eng"},
                 ],
             }}}
             result = {"artifacts": {"sidecars": entries}}
@@ -482,7 +544,8 @@ class PipelineSmokeIsolationTests(unittest.TestCase):
                  "tags": {"language": "eng", "title": "Synthetic English"}},
                 {"index": 2, "codec_type": "audio", "codec_name": "aac",
                  "tags": {"language": "spa", "title": "Synthetic Spanish"}},
-                {"index": 3, "codec_type": "subtitle", "codec_name": "subrip"},
+                {"index": 3, "codec_type": "subtitle", "codec_name": "subrip",
+                 "tags": {"language": "eng", "title": "Synthetic English subtitles"}},
             ],
             "chapters": [
                 {"tags": {"title": "Synthetic chapter 1"}},

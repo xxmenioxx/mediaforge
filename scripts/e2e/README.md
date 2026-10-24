@@ -5,6 +5,7 @@ Run one isolated scenario locally:
 ```bash
 ./scripts/e2e/run-pipeline-smoke.sh --scenario happy-path
 ./scripts/e2e/run-pipeline-smoke.sh --scenario track-actions
+./scripts/e2e/run-pipeline-smoke.sh --scenario language-normalization
 ./scripts/e2e/run-pipeline-smoke.sh --scenario cadence-progressive
 ./scripts/e2e/run-pipeline-smoke.sh --scenario cadence-ivtc
 ./scripts/e2e/run-pipeline-smoke.sh --scenario cadence-ambiguous
@@ -36,6 +37,15 @@ the `sidecars.package` Validation finding, and the Result chapter evidence. It
 also temporarily removes the required ASS artifact to confirm Publisher blocks
 the incomplete package, restores it, and retries the same publication to prove
 that the complete package reaches the isolated Library.
+
+The `language-normalization` scenario generates Korean (`kor`) and English
+audio plus a French (`fra`) SRT stream. Its path-scoped Track Profile requests
+`ko-KR` and `fr-FR` by language, without explicit stream indexes. The smoke
+checks source tags with ffprobe, verifies Queue freezes the original stream
+indexes with canonical `kor`/`fra` identities, and runs the isolated FFmpeg
+worker through Result ffprobe and a passing ValidationRun. The generated media,
+sidecars, database, and filesystem state stay under the temporary sandbox; no
+binary media fixture is checked in.
 
 Each scenario invocation gets a unique temporary root, SQLite database, and
 filesystem. Add future scenarios to the scenario registry with their own
