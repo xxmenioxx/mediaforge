@@ -1,4 +1,5 @@
 import type { AppSetting, AssetConversionOverrideState, StreamMetadataOverride, SubtitleSemanticRole } from './api/types';
+import { normalizeTrackLanguage, normalizeTrackLanguageList } from './utils/subtitleLanguages';
 
 export type SubtitleTransform = {
   streamIndex: number;
@@ -198,20 +199,27 @@ function normalizeTrackProfile(value: unknown): TrackProfile | null {
     keepVideoStreams: numbers(item.keepVideoStreams), keepAudioStreams: numbers(item.keepAudioStreams), keepSubtitleStreams: numbers(item.keepSubtitleStreams),
     videoMetadata: metadata(item.videoMetadata), audioMetadata: metadata(item.audioMetadata), subtitleMetadata: metadata(item.subtitleMetadata),
     subtitleTransforms: transforms(item.subtitleTransforms),
-	  subtitleDisposition: disposition(item.subtitleDisposition), subtitleRules: rules(item.subtitleRules),
+	  subtitleDisposition: disposition(item.subtitleDisposition), subtitleRules: rules(item.subtitleRules).map((rule) => ({
+	    ...rule,
+	    language: rule.language?.trim() ? normalizeTrackLanguage(rule.language) : undefined,
+	  })),
 	  subtitleSidecarFormats: sidecarFormats(item.subtitleSidecarFormats).length ? sidecarFormats(item.subtitleSidecarFormats) : undefined,
 	  attachmentPolicy: item.attachmentPolicy === 'keep' || item.attachmentPolicy === 'remove' ? item.attachmentPolicy : 'auto',
 	  fontAttachmentExportPolicy: item.fontAttachmentExportPolicy === 'all' ? 'all' : 'none',
 	  chapterPolicy: item.chapterPolicy === 'remove' ? 'remove' : 'keep',
     videoMode: item.videoMode === 'all' || item.videoMode === 'require-one' ? item.videoMode : 'first',
     audioMode: item.audioMode === 'all' || item.audioMode === 'default' || item.audioMode === 'none' ? item.audioMode : 'languages',
-    audioLanguages: strings(item.audioLanguages), audioRequired: item.audioRequired !== false, dropCommentary: item.dropCommentary !== false,
-    defaultAudioLanguage: typeof item.defaultAudioLanguage === 'string' ? item.defaultAudioLanguage : '',
+    audioLanguages: normalizeTrackLanguageList(strings(item.audioLanguages)), audioRequired: item.audioRequired !== false, dropCommentary: item.dropCommentary !== false,
+    defaultAudioLanguage: optionalTrackLanguage(item.defaultAudioLanguage),
     subtitleMode: item.subtitleMode === 'all' || item.subtitleMode === 'none' || item.subtitleMode === 'forced' || item.subtitleMode === 'languages' ? item.subtitleMode : 'forced-or-languages',
-    subtitleLanguages: strings(item.subtitleLanguages), subtitlesRequired: item.subtitlesRequired === true,
-    defaultSubtitleLanguage: typeof item.defaultSubtitleLanguage === 'string' ? item.defaultSubtitleLanguage : '',
+    subtitleLanguages: normalizeTrackLanguageList(strings(item.subtitleLanguages)), subtitlesRequired: item.subtitlesRequired === true,
+    defaultSubtitleLanguage: optionalTrackLanguage(item.defaultSubtitleLanguage),
     validationMode: item.validationMode === 'block' || item.validationMode === 'warn' ? item.validationMode : 'review',
     notes: typeof item.notes === 'string' ? item.notes : '', disabled: item.disabled === true,
     deletedAt: typeof item.deletedAt === 'string' ? item.deletedAt : undefined,
   };
+}
+
+function optionalTrackLanguage(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? normalizeTrackLanguage(value) : '';
 }

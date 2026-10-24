@@ -26,6 +26,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { ExternalSubtitle, MediaStreamInfo, SubtitleSyncInput, SubtitleSyncProposal } from '../api/types';
+import { trackLanguageLabel } from '../utils/subtitleLanguages';
 
 function formatTimestamp(milliseconds: number) {
   const hours = Math.floor(milliseconds / 3_600_000);
@@ -36,7 +37,7 @@ function formatTimestamp(milliseconds: number) {
 }
 
 function audioLabel(stream: MediaStreamInfo) {
-  const parts = [`#${stream.index}`, stream.language || 'und', stream.codec.toUpperCase()];
+  const parts = [`#${stream.index}`, trackLanguageLabel(stream.language || 'und'), stream.codec.toUpperCase()];
   if (stream.title) parts.push(stream.title);
   return parts.join(' · ');
 }
@@ -130,7 +131,7 @@ export function SubtitleSyncDialog({
         <Stack spacing={1.5}>
           {subtitle ? (
             <>
-              <Typography variant="body2"><strong>Subtitle:</strong> {subtitle.language || 'Unknown language'} · {subtitle.format.toUpperCase()} · {subtitle.fileName}</Typography>
+              <Typography variant="body2"><strong>Subtitle:</strong> {trackLanguageLabel(subtitle.language || 'und')} · {subtitle.format.toUpperCase()} · {subtitle.fileName}</Typography>
               <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>Source: {subtitle.path}</Typography>
               <FormControl fullWidth size="small">
                 <InputLabel id="subtitle-sync-audio-label">Reference audio</InputLabel>

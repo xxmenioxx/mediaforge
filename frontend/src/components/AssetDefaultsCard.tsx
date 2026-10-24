@@ -24,7 +24,7 @@ import {
   type AssetDefaultsValue,
   updateAssetDefaultsDomain,
 } from '../utils/assetDefaults';
-import { canonicalSubtitleLanguage, subtitleLanguageOptions, subtitlePreferredActionOptions } from '../utils/subtitleLanguages';
+import { canonicalSubtitleLanguage, normalizeTrackLanguage, subtitleLanguageOptions, subtitlePreferredActionOptions } from '../utils/subtitleLanguages';
 import { useSettingsDraftValue } from '../hooks/useSettingsDraftValue';
 
 type Props = {
@@ -113,6 +113,9 @@ export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders =
   const audio = draft.audio;
   const tracks = draft.tracks;
   const audioCustom = audio.custom;
+  const preferredAudioLanguage = typeof audioCustom.preferredDefaultLanguage === 'string' && audioCustom.preferredDefaultLanguage.trim()
+    ? normalizeTrackLanguage(audioCustom.preferredDefaultLanguage)
+    : '';
   const addCompatibleTrack = Boolean(audioCustom.addCompatibleTrack);
   const trackCustom = tracks.custom;
   const formats = Array.isArray(trackCustom.subtitleSidecarFormats) ? trackCustom.subtitleSidecarFormats.join(',') : 'srt';
@@ -140,7 +143,7 @@ export function AssetDefaultsCard({ value, settings, profiles, runtimeEncoders =
         <Grid size={{ xs: 12, md: 4 }}><TextField disabled={!addCompatibleTrack} fullWidth type="number" label="Quality / bitrate" value={Number(audioCustom.compatibleTrackQuality ?? 192)} onChange={(event) => update('audio', { custom: { compatibleTrackQuality: Number(event.target.value) } })} /></Grid>
         <Grid size={{ xs: 12, md: 4 }}><TextField disabled={!addCompatibleTrack} select fullWidth label="Channels" value={String(audioCustom.compatibleTrackChannels ?? 2)} onChange={(event) => update('audio', { custom: { compatibleTrackChannels: Number(event.target.value) } })}><MenuItem value="1">1</MenuItem><MenuItem value="2">2</MenuItem><MenuItem value="6">6</MenuItem><MenuItem value="8">8</MenuItem></TextField></Grid>
         <Grid size={{ xs: 12, md: 6 }}><TextField disabled={!addCompatibleTrack} select fullWidth label="Source stream" value={String(audioCustom.compatibleTrackSource ?? 'resolved')} onChange={(event) => update('audio', { custom: { compatibleTrackSource: event.target.value } })}><MenuItem value="resolved">Resolved audio stream</MenuItem><MenuItem value="default">Default audio stream</MenuItem></TextField></Grid>
-        <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Preferred default language" value={String(audioCustom.preferredDefaultLanguage ?? '')} onChange={(event) => update('audio', { custom: { preferredDefaultLanguage: event.target.value } })} placeholder="eng" /></Grid>
+        <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Preferred default language" value={preferredAudioLanguage} onChange={(event) => update('audio', { custom: { preferredDefaultLanguage: event.target.value } })} placeholder="eng" helperText="Track language aliases normalize when saved." /></Grid>
       </Grid>
     </AssetDefaultsDomainCard>
     <AssetDefaultsDomainCard title="Tracks General" domain={tracks} options={trackOptions} onChange={(patch) => update('tracks', patch)}>

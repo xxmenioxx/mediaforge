@@ -269,20 +269,43 @@ func normalizeTrackProfilesForStorage(value models.JSONMap) models.JSONMap {
 		for key, item := range profile {
 			copy[key] = item
 		}
-		if storedSettingProfileScope(copy) == "path" {
-			for _, key := range []string{"keepVideoStreams", "keepAudioStreams", "keepSubtitleStreams", "videoMetadata", "audioMetadata", "subtitleMetadata", "subtitleTransforms"} {
-				delete(copy, key)
+		for _, key := range []string{"audioLanguages", "subtitleLanguages"} {
+			if _, exists := copy[key]; exists {
+				copy[key] = normalizedTrackLanguageList(copy[key])
 			}
-			if rules := workerSliceValue(copy["subtitleRules"]); rules != nil {
-				semantic := models.JSONList{}
-				for _, rawRule := range rules {
-					rule := settingProfileObject(rawRule)
+		}
+		for _, key := range []string{"defaultAudioLanguage", "defaultSubtitleLanguage"} {
+			if _, exists := copy[key]; exists {
+				copy[key] = normalizedOptionalTrackLanguage(copy[key])
+			}
+		}
+		if rules, exists := copy["subtitleRules"]; exists {
+			normalizedRules := models.JSONList{}
+			for _, rawRule := range workerSliceValue(rules) {
+				rule := settingProfileObject(rawRule)
+				if storedSettingProfileScope(copy) == "path" {
 					if _, concrete := rule["streamIndex"]; concrete {
 						continue
 					}
-					semantic = append(semantic, rawRule)
 				}
-				copy["subtitleRules"] = semantic
+				if rule == nil {
+					normalizedRules = append(normalizedRules, rawRule)
+					continue
+				}
+				normalizedRule := models.JSONMap{}
+				for ruleKey, value := range rule {
+					normalizedRule[ruleKey] = value
+				}
+				if language, exists := normalizedRule["language"]; exists && strings.TrimSpace(workerStringValue(language)) != "" {
+					normalizedRule["language"] = normalizedTrackLanguageValue(workerStringValue(language))
+				}
+				normalizedRules = append(normalizedRules, normalizedRule)
+			}
+			copy["subtitleRules"] = normalizedRules
+		}
+		if storedSettingProfileScope(copy) == "path" {
+			for _, key := range []string{"keepVideoStreams", "keepAudioStreams", "keepSubtitleStreams", "videoMetadata", "audioMetadata", "subtitleMetadata", "subtitleTransforms"} {
+				delete(copy, key)
 			}
 		}
 		normalized = append(normalized, copy)
@@ -328,6 +351,20 @@ func validateMVForgePreferences(value models.JSONMap) error {
 		return fmt.Errorf("at least one preferred language is required")
 	}
 	return nil
+}
+
+func normalizeMVForgePreferencesForStorage(value models.JSONMap) models.JSONMap {
+	result := models.JSONMap{}
+	for key, item := range value {
+		result[key] = item
+	}
+	languages := normalizedPreferenceLanguages(value["preferredLanguages"])
+	normalizedLanguages := models.JSONList{}
+	for _, language := range languages {
+		normalizedLanguages = append(normalizedLanguages, language)
+	}
+	result["preferredLanguages"] = normalizedLanguages
+	return result
 }
 
 func validateSettingProfileAssignments(db *gorm.DB, mediaType string, value models.JSONMap) error {

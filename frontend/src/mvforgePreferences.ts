@@ -1,5 +1,6 @@
 import type { AppSetting, AssetConversionOverrideState, MVForgePreferences, MVForgeQualityGoal, ProfileInput } from './api/types';
 import { applyHardwareQualityPreset } from './utils/hardwareQualityPresets';
+import { normalizeTrackLanguageList } from './utils/subtitleLanguages';
 
 export const defaultMVForgePreferences: MVForgePreferences = {
   qualityGoal: 'balanced',
@@ -24,7 +25,7 @@ export function getMVForgePreferences(settings?: Array<Pick<AppSetting, 'key' | 
     ? raw.preferredVideoEncoder.trim()
     : 'auto';
   const preferredLanguages = Array.isArray(raw.preferredLanguages)
-    ? uniqueStrings(raw.preferredLanguages.filter((value): value is string => typeof value === 'string'))
+    ? normalizeTrackLanguageList(raw.preferredLanguages)
     : [];
   return {
     qualityGoal,
@@ -104,10 +105,6 @@ function isHardwareEncoder(value: string) {
 
 function isQualityGoal(value: unknown): value is MVForgeQualityGoal {
   return ['maximum_savings', 'balanced', 'conservative', 'maximum_quality', 'archive'].includes(String(value));
-}
-
-function uniqueStrings(values: string[]) {
-  return [...new Set(values.map((value) => value.trim().toLowerCase()).filter(Boolean))];
 }
 
 function videoCodecForPreferredEncoder(encoder: string) {

@@ -13,26 +13,27 @@ var supportedSubtitleLanguages = map[string]struct{}{
 }
 
 var subtitleLanguageAliases = map[string]string{
-	"es":  "spa",
-	"esp": "spa",
-	"en":  "eng",
-	"ja":  "jpn",
-	"fr":  "fra",
-	"fre": "fra",
-	"de":  "deu",
-	"ger": "deu",
-	"it":  "ita",
-	"pt":  "por",
-	"ko":  "kor",
-	"zh":  "zho",
-	"chi": "zho",
+	"es":    "spa",
+	"esp":   "spa",
+	"en":    "eng",
+	"ja":    "jpn",
+	"fr":    "fra",
+	"fre":   "fra",
+	"de":    "deu",
+	"ger":   "deu",
+	"it":    "ita",
+	"pt":    "por",
+	"ko":    "kor",
+	"ko-kr": "kor",
+	"ko_kr": "kor",
+	"zh":    "zho",
+	"chi":   "zho",
+	"fr-fr": "fra",
+	"fr_fr": "fra",
 }
 
 func canonicalSubtitleLanguage(value string) (string, bool) {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if canonical, ok := subtitleLanguageAliases[value]; ok {
-		value = canonical
-	}
+	value = normalizedTrackLanguageValue(value)
 	_, ok := supportedSubtitleLanguages[value]
 	return value, ok
 }
@@ -83,11 +84,52 @@ func normalizedTrackLanguageValue(value string) string {
 	if value == "" {
 		return "und"
 	}
-	if canonical, ok := canonicalSubtitleLanguage(value); ok {
-		return canonical
-	}
 	if canonical, ok := subtitleLanguageAliases[value]; ok {
 		return canonical
 	}
 	return value
+}
+
+func sidecarLanguageForTrack(sourceLanguage, canonicalLanguage string) string {
+	sourceLanguage = strings.ToLower(strings.TrimSpace(sourceLanguage))
+	if sourceLanguage != "" {
+		return sourceLanguage
+	}
+	return canonicalLanguage
+}
+
+func normalizedTrackLanguageList(value any) models.JSONList {
+	result := models.JSONList{}
+	seen := map[string]bool{}
+	for _, raw := range workerStringSlice(value) {
+		language := strings.TrimSpace(raw)
+		if language == "" {
+			continue
+		}
+		language = normalizedTrackLanguageValue(language)
+		if !seen[language] {
+			seen[language] = true
+			result = append(result, language)
+		}
+	}
+	return result
+}
+
+func normalizedTrackLanguageSet(value any) map[string]bool {
+	result := map[string]bool{}
+	for _, language := range workerStringSlice(value) {
+		language = strings.TrimSpace(language)
+		if language != "" {
+			result[normalizedTrackLanguageValue(language)] = true
+		}
+	}
+	return result
+}
+
+func normalizedOptionalTrackLanguage(value any) string {
+	language := strings.TrimSpace(workerStringValue(value))
+	if language == "" {
+		return ""
+	}
+	return normalizedTrackLanguageValue(language)
 }

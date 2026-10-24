@@ -20,6 +20,7 @@ import {
 import { api, createCompatiblePreviewOwnerId, waitForCompatiblePreviewReady } from '../api/client';
 import { SourceBitrateQualityEvidence } from './SourceBitrateQualityEvidence';
 import { getTrackProfiles, type TrackProfile } from '../trackProfiles';
+import { normalizeTrackLanguage, trackLanguageLabel } from '../utils/subtitleLanguages';
 import type {
   AppSetting,
   AudioEnhancementProfile,
@@ -321,7 +322,7 @@ function SubtitleDecisionReview({
       No source subtitle streams were found. No subtitle preparation, OCR, or sidecars are planned.
     </Alert>;
   }
-  const languages = [...new Set(subtitlePlan.decisions.map((decision) => decision.language || 'und'))];
+  const languages = [...new Set(subtitlePlan.decisions.map((decision) => normalizeTrackLanguage(decision.language || 'und')))].map(trackLanguageLabel);
 
   return <Stack spacing={0.75} data-testid="subtitle-plan-summary">
     <Stack direction="row" flexWrap="wrap" useFlexGap gap={0.75}>
@@ -354,7 +355,7 @@ function SubtitleDecisionReview({
           const sidecars = subtitlePlan.sidecars.filter((item) => item.streamIndex === decision.streamIndex);
           const plannedDefault = subtitlePlan.defaultSubtitle.streamIndex === decision.streamIndex;
           const metadata = [
-            decision.language || 'und',
+            trackLanguageLabel(decision.language || 'und'),
             subtitleCodecLabel(decision.codec),
             decision.title,
             decision.forced || decision.effectiveForced ? 'Forced' : '',
