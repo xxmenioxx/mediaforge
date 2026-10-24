@@ -40,6 +40,7 @@ import type { AnalysisPolicyValue, ProfileSampleEstimatePolicyValue } from './se
 import { OperationsSettingsDomain } from './settings/OperationsSettings';
 import { AssetsStorageSettingsDomain, rebuildAssetTypes, summarizeLibrariesByType } from './settings/AssetsStorageSettings';
 import { PipelineSettingsDomain } from './settings/PipelineSettings';
+import { OCRAISettingsCard, ocrAISettingsValue } from './settings/OCRAISettingsCard';
 export { HousekeepingCard } from './settings/OperationsSettings';
 import { encoderNamesForWorker } from '../utils/workerEncoders';
 import { DirectPlayCard, directPlayValue, RemoteExecutorsCard, remoteExecutorsValue, RuntimeProfilesCard, runtimePolicyValue, RuntimeSnapshotCard, WorkersCard } from './settings/RuntimeSettings';
@@ -219,6 +220,8 @@ export function SettingsPage() {
   const runtimeProfilesQuery = useQuery({ queryKey: ['runtime-profiles'], queryFn: api.runtimeProfiles });
   const profilesQuery = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const schedulerRecovery = useQuery({ queryKey: ['scheduler-recovery'], queryFn: api.schedulerRecovery });
+  const ollamaProviderSetting = settings.data?.find((item) => item.key === 'ollamaProviderSettings');
+  const ollamaProviderConfigurationRevision = ollamaProviderSetting?.updatedAt ?? 'unconfigured';
   const autoPublisherSetting = settings.data?.find((item) => item.key === 'pipelineAutomation');
   const autoPublisherEnabled = settings.data
     ? autoPublisherSetting?.value.autoPublisherEnabled === true
@@ -371,6 +374,9 @@ export function SettingsPage() {
           { key: 'cancellationPolicy', value: nextForm.cancellationPolicy as unknown as Record<string, unknown> },
           { key: 'housekeeping', value: nextForm.ordinarySettings.housekeeping },
         );
+      }
+      if (draftSection === 'subtitles') {
+        batch.push({ key: 'ocrAISettings', value: nextForm.ordinarySettings.ocrAISettings });
       }
       if (draftSection === 'test-encode') {
         batch.push({ key: 'testEncodePolicy', value: nextForm.ordinarySettings.testEncodePolicy });
@@ -801,7 +807,7 @@ export function SettingsPage() {
     'providers-integrations': ['jellyfin'],
     archive: ['originalRetentionPolicy', 'storageRoles'],
     operations: ['housekeeping', 'cancellationPolicy'],
-    subtitles: ['subtitleSettings', 'subtitleTranslationSettings'],
+    subtitles: ['subtitleSettings', 'subtitleTranslationSettings', 'ocrAISettings'],
     'test-encode': ['testEncodePolicy'],
   };
   const currentSectionKeys = settingKeysBySection[section] ?? [];
@@ -1054,6 +1060,15 @@ export function SettingsPage() {
                 value={subtitleTranslationSettingsValue(settings.data?.find((item) => item.key === 'subtitleTranslationSettings')?.value)}
                 saving={updateSetting.isPending}
                 onSave={(value) => updateSetting.mutate({ key: 'subtitleTranslationSettings', value })}
+              />
+            ) : null}
+
+            {section === 'subtitles' ? (
+              <OCRAISettingsCard
+                value={ocrAISettingsValue(form.ordinarySettings.ocrAISettings)}
+                providerConfigured={ollamaProviderSetting?.value.state === 'configured'}
+                providerConfigurationRevision={ollamaProviderConfigurationRevision}
+                onDraftChange={(value) => updateOrdinarySettingDraft('ocrAISettings', value)}
               />
             ) : null}
 

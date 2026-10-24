@@ -906,6 +906,12 @@ export const api = {
       method: 'DELETE',
     }),
   settings: () => request<AppSetting[]>('/api/settings'),
+  listOllamaModels: () => request<import('./types').OllamaModelsResponse>('/api/settings/ollama/models'),
+  testOllamaModelReadiness: (modelId: string) =>
+    request<import('./types').OllamaModelReadinessResponse>('/api/settings/ollama/model-readiness', {
+      method: 'POST',
+      body: JSON.stringify({ modelId }),
+    }),
   testJellyfinConnection: () => request<import('./types').JellyfinConnectionResult>('/api/settings/jellyfin/test-connection', { method: 'POST', body: JSON.stringify({}) }),
   jellyfinIntegrationState: () => request<import('./types').JellyfinIntegrationState>('/api/settings/jellyfin/state'),
   jellyfinOutcomes: () => request<import('./types').JellyfinIntegrationOutcome[]>('/api/jellyfin/outcomes'),

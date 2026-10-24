@@ -702,6 +702,37 @@ export type SubtitleTranslationSettingsValue = {
   readinessDiagnostic?: string;
 };
 
+export type OCRAISettingsValue = {
+  [key: string]: unknown;
+  enabled: boolean;
+  model: string;
+};
+
+export type OllamaInstalledModel = {
+  id: string;
+  name: string;
+  digest?: string;
+  sizeBytes?: number;
+  modifiedAt?: string;
+  details?: Record<string, unknown>;
+};
+
+export type OllamaModelsResponse = {
+  state: string;
+  discoveredAt?: string;
+  installedModels: OllamaInstalledModel[];
+  diagnostic?: string;
+};
+
+export type OllamaModelReadinessResponse = {
+  state: string;
+  modelId: string;
+  available: boolean;
+  checkedAt: string;
+  diagnostic?: string;
+  scope: string;
+};
+
 export type SubtitleTranslationCapabilityInput = {
   path: string;
   source: SubtitleTranslationSourceSelector;
