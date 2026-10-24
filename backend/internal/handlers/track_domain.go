@@ -343,9 +343,7 @@ func resolveDefaultAudioTrack(
 	profile map[string]any,
 	streams []ResolvedTrackStream,
 ) ResolvedDefaultTrack {
-	requested := strings.ToLower(strings.TrimSpace(
-		workerStringValue(profile["defaultAudioLanguage"]),
-	))
+	requested := normalizedOptionalTrackLanguage(profile["defaultAudioLanguage"])
 
 	if requested == "" {
 		return ResolvedDefaultTrack{Status: "unchanged"}
@@ -372,9 +370,7 @@ func resolveDefaultSubtitleTrack(
 	profile map[string]any,
 	streams []ResolvedSubtitleTrack,
 ) ResolvedDefaultTrack {
-	requested := strings.ToLower(strings.TrimSpace(
-		workerStringValue(profile["defaultSubtitleLanguage"]),
-	))
+	requested := normalizedOptionalTrackLanguage(profile["defaultSubtitleLanguage"])
 
 	if requested == "" {
 		return ResolvedDefaultTrack{Status: "unchanged"}

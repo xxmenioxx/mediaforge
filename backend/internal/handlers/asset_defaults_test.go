@@ -103,6 +103,8 @@ func TestAssetDefaultsPreferredSubtitleRulesNormalizeAndValidate(t *testing.T) {
 				models.JSONMap{"language": "es", "action": "keep_and_extract"},
 				models.JSONMap{"language": "eng", "action": "extract"},
 				models.JSONMap{"language": "spa", "action": "keep"},
+				models.JSONMap{"language": "fr-FR", "action": "extract"},
+				models.JSONMap{"language": "fre", "action": "keep"},
 			},
 		}},
 	})
@@ -110,12 +112,16 @@ func TestAssetDefaultsPreferredSubtitleRulesNormalizeAndValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules := settingProfileObject(assetDefaultsDomain(value, "tracks")["custom"])["preferredSubtitleRules"]
-	if got := workerSliceValue(rules); len(got) != 2 {
+	if got := workerSliceValue(rules); len(got) != 3 {
 		t.Fatalf("preferred rules were not deduplicated: %#v", rules)
 	}
 	first := settingProfileObject(workerSliceValue(rules)[0])
 	if first["language"] != "spa" || first["action"] != "keep" {
 		t.Fatalf("canonical preferred rule=%#v", first)
+	}
+	third := settingProfileObject(workerSliceValue(rules)[2])
+	if third["language"] != "fra" || third["action"] != "keep" {
+		t.Fatalf("regional French aliases did not deduplicate canonically: %#v", third)
 	}
 	for _, language := range []string{"foo", "spanish", "xyz-custom"} {
 		_, err := validateAssetDefaultsValue(nil, models.JSONMap{
@@ -146,6 +152,8 @@ func TestAssetDefaultsDefaultSubtitleLanguageNormalizeAndValidate(t *testing.T) 
 		{name: "legacy spanish", input: "es", want: "spa"},
 		{name: "legacy english", input: "en", want: "eng"},
 		{name: "legacy japanese", input: "ja", want: "jpn"},
+		{name: "Korean region tag", input: "ko-KR", want: "kor"},
+		{name: "French region tag", input: "fr-FR", want: "fra"},
 		{name: "blank", input: "", want: ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -167,6 +175,25 @@ func TestAssetDefaultsDefaultSubtitleLanguageNormalizeAndValidate(t *testing.T) 
 		})
 		if err == nil {
 			t.Fatalf("unsupported default subtitle language %q was accepted", language)
+		}
+	}
+}
+
+func TestAssetDefaultsAudioPreferredLanguageUsesTrackNormalization(t *testing.T) {
+	for _, test := range []struct{ input, want string }{
+		{input: "KO-KR", want: "kor"},
+		{input: "fre", want: "fra"},
+		{input: "FR-CA", want: "fr-ca"},
+	} {
+		value, err := validateAssetDefaultsValue(nil, models.JSONMap{
+			"audio": models.JSONMap{"custom": models.JSONMap{"preferredDefaultLanguage": test.input}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := workerStringValue(settingProfileObject(assetDefaultsDomain(value, "audio")["custom"])["preferredDefaultLanguage"])
+		if got != test.want {
+			t.Fatalf("preferred audio language %q normalized to %q, want %q", test.input, got, test.want)
 		}
 	}
 }

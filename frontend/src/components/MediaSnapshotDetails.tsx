@@ -1,6 +1,7 @@
 import { Alert, Box, Card, CardContent, Checkbox, Chip, Grid, Stack, Switch, TextField, Typography } from '@mui/material';
 import type { MediaStreamInfo, ScanResult, StreamMetadataOverride } from '../api/types';
 import { formatHEVCLevel } from '../utils/hevcLevel';
+import { trackLanguageLabel } from '../utils/subtitleLanguages';
 
 type MediaSnapshotDetailsProps = {
   scan: ScanResult;
@@ -545,11 +546,7 @@ function streamFlags(stream: MediaStreamInfo) {
 }
 
 function languageLabel(language: string) {
-  if (!language || language === 'und') {
-    return 'Undetermined';
-  }
-
-  return language.toUpperCase();
+  return trackLanguageLabel(language);
 }
 
 function friendlyContainer(container: string) {

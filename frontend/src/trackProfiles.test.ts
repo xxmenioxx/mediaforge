@@ -17,6 +17,26 @@ const conversion: AssetConversionOverrideState = {
 };
 
 describe('trackProfileWithConversion', () => {
+	it('normalizes legacy language aliases on reload while preserving explicit stream indexes', () => {
+		const [profile] = getTrackProfiles([{ key: 'trackProfiles', value: { profiles: [{
+			...emptyTrackProfile,
+			key: 'language-aliases', name: 'Language aliases',
+			audioLanguages: ['KO', 'ko-KR', 'kor', 'FR-CA'],
+			subtitleLanguages: ['fr', 'fr-FR', 'fre', 'und'],
+			defaultAudioLanguage: 'KO-KR', defaultSubtitleLanguage: 'FRA',
+			subtitleRules: [{ language: 'fr-FR', action: 'extract' }],
+			keepAudioStreams: [6], keepSubtitleStreams: [],
+		}] } }] as unknown as AppSetting[]);
+
+		expect(profile.audioLanguages).toEqual(['kor', 'fr-ca']);
+		expect(profile.subtitleLanguages).toEqual(['fra', 'und']);
+		expect(profile.defaultAudioLanguage).toBe('kor');
+		expect(profile.defaultSubtitleLanguage).toBe('fra');
+		expect(profile.subtitleRules[0].language).toBe('fra');
+		expect(profile.keepAudioStreams).toEqual([6]);
+		expect(profile.keepSubtitleStreams).toEqual([]);
+	});
+
 	it('reads the persisted ASS fallback setting without mutating output selections', () => {
 		expect(subtitleSRTFallbackEnabled(undefined)).toBe(false);
 		expect(subtitleSRTFallbackEnabled([{ key: 'subtitleSettings', value: { generateSRTFallbackForASS: true } }] as unknown as AppSetting[])).toBe(true);

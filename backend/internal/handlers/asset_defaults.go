@@ -159,6 +159,7 @@ func validateAssetDefaultsValueWithWarnings(db *gorm.DB, value models.JSONMap) (
 	}
 	if audio := assetDefaultsDomain(result, "audio"); audio != nil {
 		custom := settingProfileObject(audio["custom"])
+		custom["preferredDefaultLanguage"] = normalizedOptionalTrackLanguage(custom["preferredDefaultLanguage"])
 		if boolValue(custom["addCompatibleTrack"], false) {
 			channels := assetDefaultsIntSetting(custom["compatibleTrackChannels"], 2)
 			if channels < 1 || channels > 8 {
@@ -449,7 +450,7 @@ func applyAssetDefaultsAudioToTrackProfile(job models.QueueJob, profile map[stri
 	}
 	if strings.TrimSpace(workerStringValue(profile["defaultAudioLanguage"])) == "" {
 		if language := strings.TrimSpace(workerStringValue(audio["preferredDefaultLanguage"])); language != "" {
-			profile["defaultAudioLanguage"] = strings.ToLower(language)
+			profile["defaultAudioLanguage"] = normalizedTrackLanguage(language)
 		}
 	}
 	return profile

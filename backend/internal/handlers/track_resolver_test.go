@@ -948,13 +948,13 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Clean("/media/raw/show/episode.mkv")
-	if err := db.Create(&models.ScanResult{Path: path, AudioStreams: models.JSONList{map[string]any{"index": 1, "codec": "aac", "language": "jpn"}}, SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": "ass", "language": "jpn", "title": "Full"}}, AttachmentStreams: models.JSONList{map[string]any{"index": 7, "type": "attachment", "codec": "ttf", "filename": "Font.ttf", "mimeType": "font/ttf", "attachmentKind": "FONT", "fontFormat": "TTF"}}, AttachmentInventoryAvailable: true}).Error; err != nil {
+	if err := db.Create(&models.ScanResult{Path: path, AudioStreams: models.JSONList{map[string]any{"index": 1, "codec": "aac", "language": "ko-KR"}}, SubtitleStreams: models.JSONList{map[string]any{"index": 2, "codec": "ass", "language": "fr-FR", "title": "Full"}}, AttachmentStreams: models.JSONList{map[string]any{"index": 7, "type": "attachment", "codec": "ttf", "filename": "Font.ttf", "mimeType": "font/ttf", "attachmentKind": "FONT", "fontFormat": "TTF"}}, AttachmentInventoryAvailable: true}).Error; err != nil {
 		t.Fatal(err)
 	}
 	setting := models.AppSetting{
 		Key: "trackProfiles",
 		Value: models.JSONMap{"profiles": models.JSONList{
-			models.JSONMap{"key": "tracks", "scope": "path", "trackDispositionVersion": 1, "audioMode": "all", "subtitleMode": "all", "subtitleDisposition": "keep_and_extract", "subtitleRules": models.JSONList{models.JSONMap{"streamIndex": 2, "roles": models.JSONList{"full"}, "action": "keep_and_extract"}}, "subtitleSidecarFormats": models.JSONList{"original", "srt"}, "attachmentPolicy": "auto", "fontAttachmentExportPolicy": "all", "chapterPolicy": "keep"},
+			models.JSONMap{"key": "tracks", "scope": "path", "trackDispositionVersion": 1, "audioMode": "languages", "audioLanguages": models.JSONList{"KOR"}, "defaultAudioLanguage": "ko-KR", "subtitleMode": "languages", "subtitleLanguages": models.JSONList{"fre"}, "defaultSubtitleLanguage": "FR", "subtitleDisposition": "keep_and_extract", "subtitleRules": models.JSONList{models.JSONMap{"language": "fr-FR", "roles": models.JSONList{"full"}, "action": "keep_and_extract"}}, "subtitleSidecarFormats": models.JSONList{"original", "srt"}, "attachmentPolicy": "auto", "fontAttachmentExportPolicy": "all", "chapterPolicy": "keep"},
 		}},
 	}
 	if err := db.Create(&setting).Error; err != nil {
@@ -973,7 +973,7 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	frozen, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
-	if !ok || frozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || frozen.SubtitleStreams[0].Role != SubtitleRoleFull || !frozen.AttachmentsKept || len(frozen.SidecarOutputs) != 2 || len(frozen.FontAttachments) != 1 {
+	if !ok || len(frozen.AudioStreams) != 1 || frozen.AudioStreams[0].StreamIndex != 1 || len(frozen.SubtitleStreams) != 1 || frozen.SubtitleStreams[0].StreamIndex != 2 || frozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || frozen.SubtitleStreams[0].Role != SubtitleRoleFull || frozen.DefaultAudio.StreamIndex == nil || *frozen.DefaultAudio.StreamIndex != 1 || frozen.DefaultSubtitle.StreamIndex == nil || *frozen.DefaultSubtitle.StreamIndex != 2 || !frozen.AttachmentsKept || len(frozen.SidecarOutputs) != 2 || len(frozen.FontAttachments) != 1 {
 		t.Fatalf("canonical plan was not frozen: %#v", job.TrackProfileSnapshot)
 	}
 	for _, sidecar := range frozen.SidecarOutputs {
@@ -986,7 +986,7 @@ func TestQueueTrackPlanSnapshotIsImmutableAfterProfileEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	stillFrozen, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
-	if !ok || stillFrozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || stillFrozen.SubtitleStreams[0].Role != SubtitleRoleFull || !stillFrozen.ChaptersKept || len(stillFrozen.SidecarOutputs) != 2 || len(stillFrozen.FontAttachments) != 1 {
+	if !ok || len(stillFrozen.AudioStreams) != 1 || stillFrozen.AudioStreams[0].StreamIndex != 1 || len(stillFrozen.SubtitleStreams) != 1 || stillFrozen.SubtitleStreams[0].StreamIndex != 2 || stillFrozen.SubtitleStreams[0].Action != SubtitleDispositionKeepAndExtract || stillFrozen.SubtitleStreams[0].Role != SubtitleRoleFull || stillFrozen.DefaultAudio.StreamIndex == nil || *stillFrozen.DefaultAudio.StreamIndex != 1 || stillFrozen.DefaultSubtitle.StreamIndex == nil || *stillFrozen.DefaultSubtitle.StreamIndex != 2 || !stillFrozen.ChaptersKept || len(stillFrozen.SidecarOutputs) != 2 || len(stillFrozen.FontAttachments) != 1 {
 		t.Fatalf("queued decision changed after profile edit: %#v", stillFrozen)
 	}
 	override := currentConversionOverrideForJob(job, nil)

@@ -1661,7 +1661,7 @@ func resolveTrackProfileForAsset(db *gorm.DB, mediaPath string, profile map[stri
 	}
 	if _, exists := profile["keepAudioStreams"]; !exists {
 		mode := workerStringValue(profile["audioMode"])
-		languages := stringSet(profile["audioLanguages"])
+		languages := normalizedTrackLanguageSet(profile["audioLanguages"])
 		indexes := snapshotStreamIndexes(scan.AudioStreams, func(stream map[string]any) bool {
 			if mode == "none" {
 				return false
@@ -1673,7 +1673,7 @@ func resolveTrackProfileForAsset(db *gorm.DB, mediaPath string, profile map[stri
 				return boolValue(stream["default"], false)
 			}
 			if mode == "languages" {
-				return languages[strings.ToLower(workerStringValue(stream["language"]))]
+				return languages[normalizedTrackLanguage(workerStringValue(stream["language"]))]
 			}
 			return true
 		})
@@ -1687,10 +1687,10 @@ func resolveTrackProfileForAsset(db *gorm.DB, mediaPath string, profile map[stri
 	}
 	if _, exists := profile["keepSubtitleStreams"]; !exists {
 		mode := workerStringValue(profile["subtitleMode"])
-		languages := stringSet(profile["subtitleLanguages"])
+		languages := normalizedTrackLanguageSet(profile["subtitleLanguages"])
 		profile["keepSubtitleStreams"] = snapshotStreamIndexes(scan.SubtitleStreams, func(stream map[string]any) bool {
 			forced := boolValue(stream["forced"], false)
-			languageMatch := languages[strings.ToLower(workerStringValue(stream["language"]))]
+			languageMatch := languages[normalizedTrackLanguage(workerStringValue(stream["language"]))]
 			switch mode {
 			case "none":
 				return false
@@ -1718,7 +1718,7 @@ func resolveTrackProfileForAsset(db *gorm.DB, mediaPath string, profile map[stri
 }
 
 func defaultLanguageMetadata(streams models.JSONList, selected any, language string) map[string]any {
-	language = strings.ToLower(strings.TrimSpace(language))
+	language = normalizedOptionalTrackLanguage(language)
 	if language == "" {
 		return nil
 	}
@@ -1732,7 +1732,7 @@ func defaultLanguageMetadata(streams models.JSONList, selected any, language str
 	for _, raw := range streams {
 		stream := settingProfileObject(raw)
 		index := streamIndexValue(stream["index"])
-		if selectedIndexes[index] && strings.EqualFold(strings.TrimSpace(workerStringValue(stream["language"])), language) {
+		if selectedIndexes[index] && normalizedTrackLanguage(workerStringValue(stream["language"])) == language {
 			defaultIndex = index
 			break
 		}

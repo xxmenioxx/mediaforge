@@ -60,6 +60,7 @@ import type { ErrorInfo, MouseEvent, ReactNode } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { filterAssetGroups, subtitleOCRReviewKey, subtitleOCRSidecarSelection, subtitleOperationStopsPolling } from '../utils/assetPageHelpers';
+import { normalizeTrackLanguage, trackLanguageLabel } from '../utils/subtitleLanguages';
 import { MediaSnapshotDetails } from '../components/MediaSnapshotDetails';
 import { TrackMaintenancePanel } from '../components/TrackMaintenancePanel';
 import { TestEncodeDialog } from '../components/TestEncodeDialog';
@@ -6263,7 +6264,7 @@ async function generateExternalSubtitle(
                         const formats = conversionDraft.subtitleSidecarFormatsByStream?.[String(stream.index)];
                         const value = formats?.length ? formats.join('+') : 'inherit';
                         const textCompatible = ['ass', 'ssa'].includes(stream.codec.toLowerCase());
-                        return <TextField key={stream.index} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={value} disabled={rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending} onChange={(event) => updateSubtitleSidecarFormats(stream.index, event.target.value)}>
+                        return <TextField key={stream.index} select fullWidth size="small" label={`#${stream.index} · ${trackLanguageLabel(stream.language || 'und')} · ${stream.codec.toUpperCase()}`} value={value} disabled={rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending} onChange={(event) => updateSubtitleSidecarFormats(stream.index, event.target.value)}>
                           <MenuItem value="inherit">Inherit Track Profile</MenuItem>
                           <MenuItem value="original">Original format only</MenuItem>
                           {textCompatible ? <MenuItem value="srt">SRT compatibility only</MenuItem> : null}
@@ -6278,7 +6279,7 @@ async function generateExternalSubtitle(
                         const override = conversionDraft.subtitleRoleOverrides?.[String(stream.index)];
                         const roleValue = override?.role ?? 'auto';
                         const automatic = stream.role ?? 'unknown';
-                        return <TextField key={`role-${stream.index}`} select fullWidth size="small" label={`#${stream.index} · ${(stream.language || 'und').toUpperCase()} · ${stream.codec.toUpperCase()}`} value={roleValue} disabled={rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending} onChange={(event) => updateSubtitleRole(stream.index, event.target.value as SubtitleSemanticRole | 'auto')} helperText={`Automatic: ${automatic} · ${stream.roleProvenance ?? 'snapshot'}${stream.roleConfidence ? ` · ${stream.roleConfidence} confidence` : ''}`}>
+                        return <TextField key={`role-${stream.index}`} select fullWidth size="small" label={`#${stream.index} · ${trackLanguageLabel(stream.language || 'und')} · ${stream.codec.toUpperCase()}`} value={roleValue} disabled={rowLocked || !assetInfoCapability(asset, 'manageTracks').allowed || saveAssetTracks.isPending} onChange={(event) => updateSubtitleRole(stream.index, event.target.value as SubtitleSemanticRole | 'auto')} helperText={`Automatic: ${automatic} · ${stream.roleProvenance ?? 'snapshot'}${stream.roleConfidence ? ` · ${stream.roleConfidence} confidence` : ''}`}>
                           <MenuItem value="auto">Automatic ({automatic})</MenuItem>
                           {(['full', 'forced', 'signs', 'commentary', 'sdh', 'unknown'] as SubtitleSemanticRole[]).map((role) => <MenuItem key={role} value={role}>{role}</MenuItem>)}
                         </TextField>;
@@ -6857,7 +6858,7 @@ function AdvisorSummary({ advisor, audioProfile }: { advisor: AdvisorResponse; a
           <Grid size={{ xs: 12 }}>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               <Chip label={`Source audio: ${sourceCodec}`} size="small" />
-              {primaryAudio?.language ? <Chip label={`Language: ${primaryAudio.language}`} size="small" /> : null}
+              {primaryAudio?.language ? <Chip label={`Language: ${trackLanguageLabel(primaryAudio.language)}`} size="small" /> : null}
               {primaryAudio?.channelLayout ? <Chip label={primaryAudio.channelLayout} size="small" /> : null}
               {primaryAudio?.sampleRate ? <Chip label={`${primaryAudio.sampleRate} Hz`} size="small" /> : null}
               <Chip
@@ -6994,7 +6995,7 @@ export function EmbeddedSubtitleActions({
             >
               <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between" spacing={1}>
                 <Stack sx={{ minWidth: 0 }}>
-                  <Typography fontWeight={700}>#{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()}</Typography>
+                  <Typography fontWeight={700}>#{stream.index} · {trackLanguageLabel(stream.language || 'und')} · {stream.codec.toUpperCase()}</Typography>
                   {stream.title ? <Typography color="text.secondary" variant="body2">{stream.title}</Typography> : null}
                   {sourceEligibility ? <Typography color="text.secondary" variant="caption" sx={{ overflowWrap: 'anywhere' }}>Identity: {sourceEligibility.sourceIdentity} · Revision: {sourceEligibility.sourceRevision || 'unavailable'} · Role: {sourceEligibility.role} ({sourceEligibility.roleProvenance})</Typography> : null}
                   {bitmap ? <Typography color="warning.main" variant="caption">Bitmap track: generation runs local OCR and may require text corrections afterward.</Typography> : null}
@@ -7269,7 +7270,7 @@ export function ExternalSubtitleList({
                 <Typography fontWeight={700} sx={{ overflowWrap: 'anywhere' }}>{subtitle.fileName}</Typography>
                 <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
                   <Chip label={subtitle.format.toUpperCase()} size="small" />
-                  {subtitle.language ? <Chip label={subtitle.language.toUpperCase()} size="small" /> : null}
+                  {subtitle.language ? <Chip label={trackLanguageLabel(subtitle.language)} size="small" /> : null}
                   {subtitle.default ? <Chip label="Default" color="primary" size="small" /> : null}
                   {subtitle.forced ? <Chip label="Forced" color="warning" size="small" /> : null}
                   <Chip label={formatBytes(subtitle.sizeBytes)} size="small" />
@@ -7753,7 +7754,7 @@ function AssetConversionOverridePanel({
                 <MenuItem value={-1}>Automatic / default audio track</MenuItem>
                 {scan.audioStreams.map((stream) => (
                   <MenuItem key={stream.index} value={stream.index}>
-                    #{stream.index} · {(stream.language || 'und').toUpperCase()} · {stream.codec.toUpperCase()}
+                    #{stream.index} · {trackLanguageLabel(stream.language || 'und')} · {stream.codec.toUpperCase()}
                   </MenuItem>
                 ))}
               </TextField>
@@ -8622,7 +8623,7 @@ function validateTrackProfile(profile: TrackProfile, scan: ScanResult) {
 	  checkIndexes('subtitle', profile.keepSubtitleStreams, scan.subtitleStreams);
 	}
   if (profile.videoMode === 'require-one' && scan.videoStreams.length !== 1) reasons.push(`requires exactly one video stream; found ${scan.videoStreams.length}`);
-  const languages = (streams: MediaStreamInfo[]) => new Set(streams.map((stream) => stream.language.toLowerCase()).filter(Boolean));
+  const languages = (streams: MediaStreamInfo[]) => new Set(streams.map((stream) => normalizeTrackLanguage(stream.language)));
   if (profile.audioRequired && scan.audioStreams.length === 0) reasons.push('requires an audio stream');
   if (profile.audioMode === 'languages' && profile.audioRequired && !profile.audioLanguages.some((language) => languages(scan.audioStreams).has(language))) reasons.push(`required audio languages not found: ${profile.audioLanguages.join(', ')}`);
   if (profile.subtitlesRequired && scan.subtitleStreams.length === 0) reasons.push('requires a subtitle stream');

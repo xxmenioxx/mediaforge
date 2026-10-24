@@ -1,5 +1,6 @@
 import { Alert, Box, Chip, LinearProgress, Stack, Table, TableBody, TableCell, TableRow, Typography } from '@mui/material';
 import type { ScanResult, TrackProfileResolutionPreview as ResolutionPreview } from '../api/types';
+import { trackLanguageLabel } from '../utils/subtitleLanguages';
 
 type Props = {
   scan: ScanResult;
@@ -34,7 +35,7 @@ export function TrackProfileResolutionPreview({ scan, preview, loading, error }:
                 const stream = streams.find((candidate) => candidate.index === decision.index);
                 return <TableRow key={decision.index}>
                   <TableCell sx={{ width: 128 }}><Chip size="small" color={decision.kept ? 'success' : 'default'} label={label === 'Subtitles' ? subtitleActionLabel(subtitleActions.get(decision.index) ?? 'remove') : decision.kept ? 'Keep' : 'Remove'} /></TableCell>
-                  <TableCell sx={{ wordBreak: 'break-word' }}>#{decision.index} · {stream?.codec?.toUpperCase() || 'UNKNOWN'}{stream?.language ? ` · ${stream.language.toUpperCase()}` : ''}{stream?.title ? ` · ${stream.title}` : ''}</TableCell>
+                  <TableCell sx={{ wordBreak: 'break-word' }}>#{decision.index} · {stream?.codec?.toUpperCase() || 'UNKNOWN'}{stream?.language ? ` · ${trackLanguageLabel(stream.language)}` : ''}{stream?.title ? ` · ${stream.title}` : ''}</TableCell>
                   <TableCell sx={{ color: 'text.secondary' }}>{trackPreviewReasonLabel(decision.reason)}</TableCell>
                 </TableRow>;
               })}

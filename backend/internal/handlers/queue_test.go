@@ -3057,7 +3057,7 @@ func TestQueueSelectedAssetsPreflightFreezesInheritedAudioOnlySnapshot(t *testin
 	}
 }
 
-func TestQueueSelectedAssetsPreflightIsolatesTrackSnapshotsPerAsset(t *testing.T) {
+func TestQueueSelectedAssetsPreflightFreezesCanonicalTrackLanguagesPerAsset(t *testing.T) {
 	db := queueSelectedAssetsTestDB(t)
 	sourceDir := t.TempDir()
 	logicalPath := filepath.Join(sourceDir, "Selected")
@@ -3093,9 +3093,11 @@ func TestQueueSelectedAssetsPreflightIsolatesTrackSnapshotsPerAsset(t *testing.T
 		t.Fatal(err)
 	}
 	defaults := defaultAssetDefaultsValue()
+	defaults["audio"].(models.JSONMap)["custom"] = models.JSONMap{"preferredDefaultLanguage": "ko-KR"}
 	defaults["tracks"].(models.JSONMap)["custom"] = models.JSONMap{
 		"trackDispositionVersion": canonicalTrackDispositionVersion,
-		"audioMode":               "all", "subtitleMode": "all", "subtitleDisposition": "extract",
+		"audioMode":               "languages", "audioLanguages": models.JSONList{"KOR"},
+		"subtitleMode": "languages", "subtitleLanguages": models.JSONList{"FRA"}, "subtitleDisposition": "extract",
 		"subtitleSidecarFormats": models.JSONList{"srt"}, "attachmentPolicy": "auto",
 		"fontAttachmentExportPolicy": "none", "chapterPolicy": "keep", "ocrMode": "clean",
 	}
@@ -3106,19 +3108,19 @@ func TestQueueSelectedAssetsPreflightIsolatesTrackSnapshotsPerAsset(t *testing.T
 		{
 			Path: firstPath, FileName: filepath.Base(firstPath), VideoCodec: "h264", Width: 1920, Height: 1080,
 			VideoStreams:    models.JSONList{models.JSONMap{"index": 0, "codec": "h264", "width": 1920, "height": 1080}},
-			AudioStreams:    models.JSONList{models.JSONMap{"index": 1, "codec": "aac", "language": "eng"}},
-			SubtitleStreams: models.JSONList{models.JSONMap{"index": 3, "codec": "subrip", "language": "eng"}},
+			AudioStreams:    models.JSONList{models.JSONMap{"index": 1, "codec": "aac", "language": "ko-KR"}},
+			SubtitleStreams: models.JSONList{models.JSONMap{"index": 3, "codec": "subrip", "language": "fr-FR"}},
 		},
 		{
 			Path: secondPath, FileName: filepath.Base(secondPath), VideoCodec: "h264", Width: 1920, Height: 1080,
 			VideoStreams: models.JSONList{models.JSONMap{"index": 0, "codec": "h264", "width": 1920, "height": 1080}},
 			AudioStreams: models.JSONList{
-				models.JSONMap{"index": 1, "codec": "aac", "language": "eng"},
-				models.JSONMap{"index": 2, "codec": "ac3", "language": "jpn"},
+				models.JSONMap{"index": 1, "codec": "aac", "language": "ko"},
+				models.JSONMap{"index": 2, "codec": "ac3", "language": "kor"},
 			},
 			SubtitleStreams: models.JSONList{
-				models.JSONMap{"index": 4, "codec": "subrip", "language": "eng"},
-				models.JSONMap{"index": 5, "codec": "subrip", "language": "spa"},
+				models.JSONMap{"index": 4, "codec": "subrip", "language": "fre"},
+				models.JSONMap{"index": 5, "codec": "subrip", "language": "fra"},
 			},
 		},
 	} {
@@ -3173,6 +3175,10 @@ func TestQueueSelectedAssetsPreflightIsolatesTrackSnapshotsPerAsset(t *testing.T
 					t.Errorf("job %d frozen audio index[%d]=%d, want %d", job.ID, index, got, want)
 				}
 			}
+		}
+		wantDefaultAudio := wantAudio[job.MediaPath][0]
+		if plan.DefaultAudio.StreamIndex == nil || *plan.DefaultAudio.StreamIndex != wantDefaultAudio {
+			t.Errorf("job %d canonical audio default=%#v, want index %d", job.ID, plan.DefaultAudio, wantDefaultAudio)
 		}
 
 		probeStreams := []any{map[string]any{"codec_type": "video"}}

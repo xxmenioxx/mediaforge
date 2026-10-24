@@ -54,6 +54,63 @@ func TestSettingsUpdateUpsertsExistingKey(t *testing.T) {
 	}
 }
 
+func TestSettingsSaveAndReloadCanonicalTrackLanguages(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:settings-language-normalization?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AppSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/settings/:key", NewSettingsHandler(db).Update)
+
+	settings := map[string]string{
+		"mvforgePreferences": `{"value":{"qualityGoal":"balanced","executionPreference":"software","preferredVideoEncoder":"auto","preferredLanguages":["KO-KR","kor","Fr-FR","fre","EN","fr-CA","UND"]}}`,
+		"trackProfiles":      `{"value":{"profiles":[{"key":"aliases","name":"Aliases","scope":"asset","audioMode":"languages","audioLanguages":["KO-KR","kor","FR-CA"],"defaultAudioLanguage":"ko-KR","subtitleMode":"languages","subtitleLanguages":["fr-FR","fre"],"defaultSubtitleLanguage":"FR-FR","subtitleDisposition":"keep","subtitleRules":[{"language":"fre","action":"extract"}],"attachmentPolicy":"auto","chapterPolicy":"keep","keepAudioStreams":[4],"keepSubtitleStreams":[]}]}}`,
+	}
+	for key, body := range settings {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/settings/"+key, strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("settings %s update status=%d body=%s", key, response.Code, response.Body.String())
+		}
+	}
+
+	var preferences models.AppSetting
+	if err := db.First(&preferences, "key = ?", "mvforgePreferences").Error; err != nil {
+		t.Fatal(err)
+	}
+	if got, want := workerStringSlice(preferences.Value["preferredLanguages"]), []string{"kor", "fra", "eng", "fr-ca", "und"}; !slices.Equal(got, want) {
+		t.Fatalf("reloaded preferred languages=%#v, want %#v", got, want)
+	}
+
+	var profileSetting models.AppSetting
+	if err := db.First(&profileSetting, "key = ?", "trackProfiles").Error; err != nil {
+		t.Fatal(err)
+	}
+	profiles := settingProfileValues(profileSetting.Value["profiles"])
+	profile := settingProfileObject(profiles[0])
+	if got, want := workerStringSlice(profile["audioLanguages"]), []string{"kor", "fr-ca"}; !slices.Equal(got, want) {
+		t.Fatalf("reloaded audio languages=%#v, want %#v", got, want)
+	}
+	if got, want := workerStringSlice(profile["subtitleLanguages"]), []string{"fra"}; !slices.Equal(got, want) {
+		t.Fatalf("reloaded subtitle languages=%#v, want %#v", got, want)
+	}
+	if workerStringValue(profile["defaultAudioLanguage"]) != "kor" || workerStringValue(profile["defaultSubtitleLanguage"]) != "fra" {
+		t.Fatalf("reloaded default languages were not canonical: %#v", profile)
+	}
+	if got := workerStringValue(settingProfileObject(workerSliceValue(profile["subtitleRules"])[0])["language"]); got != "fra" {
+		t.Fatalf("reloaded subtitle rule language=%q, want fra", got)
+	}
+	if got := streamIndexValue(workerSliceValue(profile["keepAudioStreams"])[0]); got != 4 || len(workerSliceValue(profile["keepSubtitleStreams"])) != 0 {
+		t.Fatalf("reloaded explicit stream indexes changed: audio=%#v subtitles=%#v", profile["keepAudioStreams"], profile["keepSubtitleStreams"])
+	}
+}
+
 func TestGenerateSRTFallbackForASSMissingDefaultsFalse(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:settings-subtitle-fallback-missing?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

@@ -400,7 +400,11 @@ func normalizeCompositionCueClass(class CompositionCueClass, role SubtitleSemant
 }
 
 func normalizedCompositionLanguage(language string) string {
-	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(language), "_", "-"))
+	language = strings.TrimSpace(language)
+	if language == "" {
+		return ""
+	}
+	return normalizedTrackLanguage(strings.ReplaceAll(language, "_", "-"))
 }
 
 func normalizedCompositionText(event assEvent) string {

@@ -249,8 +249,11 @@ func normalizedPreferenceLanguages(value any) []string {
 	seen := map[string]bool{}
 	result := []string{}
 	for _, value := range values {
-		value = strings.ToLower(strings.TrimSpace(value))
-		if value != "" && !seen[value] {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		value = normalizedTrackLanguageValue(value)
+		if !seen[value] {
 			seen[value] = true
 			result = append(result, value)
 		}

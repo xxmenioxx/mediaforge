@@ -176,6 +176,22 @@ describe('BatchPreflightDialog', () => {
     vi.stubGlobal('open', mocks.open);
   });
 
+  it('renders canonical language labels for legacy alias-tagged frozen decisions', async () => {
+    const user = userEvent.setup();
+    const legacy = candidateWithSubtitlePlan();
+    const asset = legacy.assets[0];
+    const subtitlePlan = asset.plan?.subtitlePlan;
+    if (!subtitlePlan) throw new Error('test candidate is missing its subtitle plan');
+    subtitlePlan.decisions[0].language = 'fr-FR';
+    subtitlePlan.decisions[3].language = 'FRE';
+
+    render(<BatchPreflightDialog candidate={legacy} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    expect(screen.getByText('Languages: French (fra) · English (eng) · Japanese (jpn)')).toBeTruthy();
+    await user.click(screen.getByText(/View all subtitle decisions/));
+    expect(screen.getByText(/Stream 2 · French \(fra\) · SRT/)).toBeTruthy();
+  });
+
   it('shows the frozen Extract fallback truthfully and saves an exact Queue-only stream override', async () => {
     const user = userEvent.setup();
     const initial = candidateWithSubtitlePlan('extract');
@@ -192,14 +208,14 @@ describe('BatchPreflightDialog', () => {
     expect(screen.getByText('Kept in MKV 1')).toBeTruthy();
     expect(screen.getByText('Sidecar streams 4')).toBeTruthy();
     expect(screen.getByText('Removed 0')).toBeTruthy();
-    expect(screen.getByText('Languages: spa · eng · jpn · fra')).toBeTruthy();
+    expect(screen.getByText('Languages: Spanish (spa) · English (eng) · Japanese (jpn) · French (fra)')).toBeTruthy();
     expect(screen.getByText(/action rules, not a stream filter/)).toBeTruthy();
     expect(screen.getByText(/1 additional language will also be extracted/)).toBeTruthy();
     expect(screen.queryByText(/Stream 5/)).toBeNull();
 
     await user.click(screen.getByText(/View all subtitle decisions/));
-    expect(screen.getByText(/Stream 2 · spa · SRT · Spanish · Source default/)).toBeTruthy();
-    expect(screen.getByText(/Stream 4 · jpn · ASS · Signs and songs/)).toBeTruthy();
+    expect(screen.getByText(/Stream 2 · Spanish \(spa\) · SRT · Spanish · Source default/)).toBeTruthy();
+    expect(screen.getByText(/Stream 4 · Japanese \(jpn\) · ASS · Signs and songs/)).toBeTruthy();
     expect(screen.getAllByText(/Requested outputs have not been generated/).length).toBe(4);
     expect(screen.getByText(/SRT.*ORIGINAL/)).toBeTruthy();
     expect(screen.getByText(/OCR fra \/ accurate/)).toBeTruthy();
@@ -233,7 +249,7 @@ describe('BatchPreflightDialog', () => {
     expect(screen.getByText('Sidecar streams 3')).toBeTruthy();
     expect(screen.getByText('Removed 1')).toBeTruthy();
     await user.click(screen.getByText(/View all subtitle decisions/));
-    const french = screen.getByText(/Stream 5 · fra · PGS · French/).closest('[data-testid="subtitle-decision-row"]');
+    const french = screen.getByText(/Stream 5 · French \(fra\) · PGS · French/).closest('[data-testid="subtitle-decision-row"]');
     expect(french?.textContent).toContain('Remove / Skip');
     expect(french?.textContent).toContain('No sidecar planned');
     expect(french?.textContent).not.toContain('OCR');

@@ -98,6 +98,9 @@ func buildSettingDefinitions() map[string]settingDefinition {
 	definitions["mvforgePreferences"] = withValidation(definitions["mvforgePreferences"], func(_ settingsMutationContext, value models.JSONMap) error {
 		return validateMVForgePreferences(value)
 	})
+	definitions["mvforgePreferences"] = withNormalizer(definitions["mvforgePreferences"], func(_ settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
+		return normalizeMVForgePreferencesForStorage(value), nil
+	})
 	definitions[translationSettingsKey] = withNormalizer(definitions[translationSettingsKey], func(ctx settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
 		return translationSettingsForUpdate(ctx.db, value)
 	})

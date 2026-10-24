@@ -212,6 +212,18 @@ describe('AssetDefaultsCard', () => {
     }));
   });
 
+  it('shows a canonical alias for a saved preferred audio language', () => {
+    render(<AssetDefaultsCard
+      value={{ ...value, audio: { source: 'custom', custom: { preferredDefaultLanguage: 'KO-KR' } } }}
+      settings={settings}
+      profiles={profiles}
+      saving={false}
+      onSave={vi.fn()}
+    />);
+
+    expect((screen.getByLabelText('Preferred default language') as HTMLInputElement).value).toBe('kor');
+  });
+
   it('allows an empty default subtitle language', async () => {
     const user = userEvent.setup();
     render(<AssetDefaultsCard value={value} settings={settings} profiles={profiles} saving={false} onSave={vi.fn()} />);

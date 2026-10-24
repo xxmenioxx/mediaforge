@@ -12,6 +12,7 @@ import {
 } from '@mui/material';
 import type { MVForgePreferences } from '../../api/types';
 import { defaultMVForgePreferences } from '../../mvforgePreferences';
+import { normalizeTrackLanguageList, subtitleLanguageOptions, trackLanguageLabel } from '../../utils/subtitleLanguages';
 
 export function GeneralSettingsDomain({ value, availableEncoders, onChange }: {
   value: MVForgePreferences;
@@ -95,10 +96,12 @@ function MVForgePreferencesCard({ value, availableEncoders, onChange }: {
               <Autocomplete
                 multiple
                 freeSolo
-                options={['jpn', 'spa', 'eng', 'fra', 'deu', 'ita', 'por', 'kor', 'zho']}
+                options={subtitleLanguageOptions.map((option) => option.value)}
                 value={draft.preferredLanguages}
-                onChange={(_, languages) => onChange({ ...draft, preferredLanguages: [...new Set(languages.map((language) => language.trim().toLowerCase()).filter(Boolean))], preferredVideoEncoder: selectedEncoder })}
-                renderInput={(params) => <TextField {...params} label="Preferred languages" helperText="Ordered favorites used to prefill language fields; they do not select or remove tracks automatically." />}
+                onChange={(_, languages) => onChange({ ...draft, preferredLanguages: normalizeTrackLanguageList(languages), preferredVideoEncoder: selectedEncoder })}
+                getOptionLabel={trackLanguageLabel}
+                renderOption={(props, language) => <li {...props}>{trackLanguageLabel(language)}</li>}
+                renderInput={(params) => <TextField {...params} label="Preferred languages" helperText="Ordered favorites used to prefill language fields; aliases normalize to the same language and do not select or remove tracks automatically." />}
               />
             </Grid>
           </Grid>
