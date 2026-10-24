@@ -12,7 +12,6 @@ export const subtitleLanguageOptions = [
 
 export const trackLanguageOptions = [
   ...subtitleLanguageOptions,
-  { value: 'lat', label: 'Latin Spanish' },
   { value: 'und', label: 'Undetermined' },
 ] as const;
 

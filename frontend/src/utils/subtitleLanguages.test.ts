@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalSubtitleLanguage, normalizeTrackLanguage, normalizeTrackLanguageList, trackLanguageLabel } from './subtitleLanguages';
+import {
+  canonicalSubtitleLanguage,
+  normalizeTrackLanguage,
+  normalizeTrackLanguageList,
+  trackLanguageLabel,
+  trackLanguageOptions,
+} from './subtitleLanguages';
 
 describe('track language normalization', () => {
   it.each([
@@ -38,5 +44,12 @@ describe('track language normalization', () => {
     expect(trackLanguageLabel('FR-FR')).toBe('French (fra)');
     expect(trackLanguageLabel('fr-CA')).toBe('fr-ca');
     expect(trackLanguageLabel('und')).toBe('Undetermined (und)');
+  });
+
+  it('does not label Latin as Latin American Spanish', () => {
+    expect(trackLanguageOptions.map((option) => String(option.value))).not.toContain('lat');
+    expect(trackLanguageLabel('lat')).toBe('lat');
+    expect(normalizeTrackLanguage('es-419')).toBe('es-419');
+    expect(canonicalSubtitleLanguage('es-419')).toBe('');
   });
 });
