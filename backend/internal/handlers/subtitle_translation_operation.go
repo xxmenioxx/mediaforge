@@ -77,20 +77,30 @@ func subtitleOCRFailedError(cause error) error {
 	return &subtitleTranslationDomainError{failureClass: subtitleTranslationFailureOCRFailed, cause: cause}
 }
 
+type subtitleTranslationDiagnosticsView struct {
+	Category         string `json:"category"`
+	BatchIndex       int    `json:"batchIndex"`
+	BatchCount       int    `json:"batchCount"`
+	ExpectedCueCount *int   `json:"expectedCueCount,omitempty"`
+	ActualCueCount   *int   `json:"actualCueCount,omitempty"`
+	HTTPStatus       int    `json:"httpStatus,omitempty"`
+}
+
 type subtitleTranslationOperationView struct {
-	Provider                string                            `json:"provider,omitempty"`
-	Model                   string                            `json:"model,omitempty"`
-	RequestedSourceLanguage string                            `json:"requestedSourceLanguage,omitempty"`
-	TargetLocale            string                            `json:"targetLocale,omitempty"`
-	OutputRepresentation    string                            `json:"outputRepresentation,omitempty"`
-	ContextMode             string                            `json:"contextMode,omitempty"`
-	ContextSource           string                            `json:"contextSource,omitempty"`
-	FailureClass            string                            `json:"failureClass,omitempty"`
-	Diagnostic              string                            `json:"diagnostic,omitempty"`
-	Retryable               bool                              `json:"retryable"`
-	Cancellable             bool                              `json:"cancellable"`
-	OCRReviewTarget         *canonicalOCRReviewTarget         `json:"ocrReviewTarget,omitempty"`
-	Quality                 *subtitleTranslationQualityReport `json:"quality,omitempty"`
+	Provider                string                              `json:"provider,omitempty"`
+	Model                   string                              `json:"model,omitempty"`
+	RequestedSourceLanguage string                              `json:"requestedSourceLanguage,omitempty"`
+	TargetLocale            string                              `json:"targetLocale,omitempty"`
+	OutputRepresentation    string                              `json:"outputRepresentation,omitempty"`
+	ContextMode             string                              `json:"contextMode,omitempty"`
+	ContextSource           string                              `json:"contextSource,omitempty"`
+	FailureClass            string                              `json:"failureClass,omitempty"`
+	Diagnostic              string                              `json:"diagnostic,omitempty"`
+	ProviderDiagnostics     *subtitleTranslationDiagnosticsView `json:"providerDiagnostics,omitempty"`
+	Retryable               bool                                `json:"retryable"`
+	Cancellable             bool                                `json:"cancellable"`
+	OCRReviewTarget         *canonicalOCRReviewTarget           `json:"ocrReviewTarget,omitempty"`
+	Quality                 *subtitleTranslationQualityReport   `json:"quality,omitempty"`
 }
 
 func setSubtitleTranslationQuality(operationID string, quality subtitleTranslationQualityReport) {
@@ -384,6 +394,17 @@ func subtitleTranslationDiagnostic(class subtitleTranslationFailureClass) string
 	}
 }
 
+func subtitleTranslationDiagnosticsForError(err error) *subtitleTranslationDiagnosticsView {
+	var diagnostic *translationResponseDiagnosticError
+	if !errors.As(err, &diagnostic) || diagnostic == nil || diagnostic.Category == "" {
+		return nil
+	}
+	return &subtitleTranslationDiagnosticsView{
+		Category: diagnostic.Category, BatchIndex: diagnostic.BatchIndex, BatchCount: diagnostic.BatchCount,
+		ExpectedCueCount: diagnostic.ExpectedCueCount, ActualCueCount: diagnostic.ActualCueCount, HTTPStatus: diagnostic.HTTPStatus,
+	}
+}
+
 func subtitleTranslationFailurePhase(operationID string, err error) string {
 	switch subtitleTranslationFailureClassOf(err) {
 	case subtitleTranslationFailureOCRReviewRequired:
@@ -549,6 +570,7 @@ func setSubtitleTranslationTerminal(operationID, status, phase, message string, 
 		if operation.Translation != nil {
 			operation.Translation.FailureClass = string(failureClass)
 			operation.Translation.Diagnostic = ""
+			operation.Translation.ProviderDiagnostics = subtitleTranslationDiagnosticsForError(err)
 			operation.Translation.Retryable = status == "error" || status == "cancelled"
 			operation.Translation.Cancellable = false
 			if failureClass != "" {

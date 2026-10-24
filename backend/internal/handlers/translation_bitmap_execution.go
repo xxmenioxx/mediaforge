@@ -146,14 +146,14 @@ func executeBitmapTranslation(ctx context.Context, request bitmapTranslationExec
 		}
 		result, err := request.Provider.Translate(ctx, batch)
 		if err != nil {
-			return bitmapTranslationExecutionResult{}, err
+			return bitmapTranslationExecutionResult{}, withTranslationBatchDiagnostic(err, index, len(batches), len(batch.Cues))
 		}
 		if err := ctx.Err(); err != nil {
 			return bitmapTranslationExecutionResult{}, err
 		}
 		validated, err := validateTranslationBatchResult(batch, result)
 		if err != nil {
-			return bitmapTranslationExecutionResult{}, fmt.Errorf("validate translated bitmap batch %d: %w", index, err)
+			return bitmapTranslationExecutionResult{}, withTranslationBatchDiagnostic(err, index, len(batches), len(batch.Cues))
 		}
 		translated = append(translated, validated...)
 		metrics = aggregateTranslationProviderMetrics(metrics, result.Metrics)

@@ -164,7 +164,7 @@ func serializeTranslatedASSDocument(document translationASSDocument, translated 
 	}
 	result, err := document.ReconstructDialogueProviderTexts(translated)
 	if err != nil {
-		return nil, malformedTranslationResultError("protected ASS/SSA translation structure is invalid: %v", err)
+		return nil, malformedTranslationResponseError(translationResponseDiagnosticASSStructureInvalid, nil, nil)
 	}
 	return []byte(result), nil
 }

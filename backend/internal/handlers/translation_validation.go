@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -11,6 +12,100 @@ import (
 // translationProviderResultWire is deliberately narrower than the internal
 // provider result. Strict decoding prevents a provider from smuggling timing,
 // ordering, or subtitle structure through an otherwise valid cue result.
+const (
+	translationResponseDiagnosticOuterEnvelopeInvalid    = "outer_envelope_invalid_json"
+	translationResponseDiagnosticOuterEnvelopeTruncated  = "outer_envelope_truncated"
+	translationResponseDiagnosticAssistantContentEmpty   = "assistant_content_empty"
+	translationResponseDiagnosticInnerJSONInvalid        = "inner_json_invalid"
+	translationResponseDiagnosticInnerJSONTruncated      = "inner_json_truncated"
+	translationResponseDiagnosticInnerJSONTrailing       = "inner_json_trailing_data"
+	translationResponseDiagnosticResponseTruncated       = "response_truncated"
+	translationResponseDiagnosticResponseTooLarge        = "response_too_large"
+	translationResponseDiagnosticContractVersionMismatch = "contract_version_mismatch"
+	translationResponseDiagnosticCueCountMismatch        = "cue_count_mismatch"
+	translationResponseDiagnosticCueIdentityInvalid      = "cue_identity_invalid"
+	translationResponseDiagnosticCueOrderInvalid         = "cue_order_invalid"
+	translationResponseDiagnosticCueTextEmpty            = "cue_text_empty"
+	translationResponseDiagnosticASSStructureInvalid     = "ass_structure_invalid"
+	translationResponseDiagnosticHTTPStatus              = "http_non_2xx"
+	translationResponseDiagnosticProviderUnavailable     = "provider_unavailable"
+	translationResponseDiagnosticProviderTimeout         = "provider_timeout"
+	translationResponseDiagnosticProviderCancelled       = "provider_cancelled"
+	translationResponseDiagnosticProviderConfiguration   = "provider_configuration"
+	translationResponseDiagnosticProviderResponseInvalid = "provider_response_invalid"
+)
+
+type translationResponseDiagnosticError struct {
+	Category         string
+	BatchIndex       int
+	BatchCount       int
+	ExpectedCueCount *int
+	ActualCueCount   *int
+	HTTPStatus       int
+	Cause            error
+}
+
+func (diagnostic *translationResponseDiagnosticError) Error() string {
+	if diagnostic == nil {
+		return "translation response rejected"
+	}
+	if diagnostic.HTTPStatus > 0 {
+		return fmt.Sprintf("Ollama returned HTTP status %d", diagnostic.HTTPStatus)
+	}
+	return "translation response rejected (" + diagnostic.Category + ")"
+}
+
+func (diagnostic *translationResponseDiagnosticError) Unwrap() error {
+	if diagnostic == nil {
+		return nil
+	}
+	return diagnostic.Cause
+}
+
+func malformedTranslationResponseError(category string, expectedCueCount, actualCueCount *int) *TranslationProviderError {
+	return &TranslationProviderError{
+		Class: translationProviderErrorMalformed,
+		Err: &translationResponseDiagnosticError{
+			Category: category, ExpectedCueCount: expectedCueCount, ActualCueCount: actualCueCount,
+		},
+	}
+}
+
+func translationCueCountPointer(count int) *int {
+	return &count
+}
+
+func withTranslationBatchDiagnostic(err error, batchIndex, batchCount, expectedCueCount int) error {
+	if err == nil {
+		return nil
+	}
+	var existing *translationResponseDiagnosticError
+	diagnostic := translationResponseDiagnosticError{}
+	if errors.As(err, &existing) && existing != nil {
+		diagnostic = *existing
+	} else {
+		switch translationProviderErrorClassOf(err) {
+		case translationProviderErrorUnavailable:
+			diagnostic.Category = translationResponseDiagnosticProviderUnavailable
+		case translationProviderErrorTimeout:
+			diagnostic.Category = translationResponseDiagnosticProviderTimeout
+		case translationProviderErrorCancelled:
+			diagnostic.Category = translationResponseDiagnosticProviderCancelled
+		case translationProviderErrorConfiguration:
+			diagnostic.Category = translationResponseDiagnosticProviderConfiguration
+		default:
+			diagnostic.Category = translationResponseDiagnosticProviderResponseInvalid
+		}
+	}
+	diagnostic.BatchIndex = batchIndex + 1
+	diagnostic.BatchCount = batchCount
+	diagnostic.Cause = err
+	if diagnostic.ExpectedCueCount == nil {
+		diagnostic.ExpectedCueCount = translationCueCountPointer(expectedCueCount)
+	}
+	return &diagnostic
+}
+
 type translationProviderResultWire struct {
 	ContractVersion string                         `json:"contractVersion"`
 	Cues            []translationProviderCueWire   `json:"cues"`
@@ -39,14 +134,22 @@ func decodeTranslationBatchResult(payload []byte) (TranslationBatchResult, error
 
 	var wire translationProviderResultWire
 	if err := decoder.Decode(&wire); err != nil {
-		return TranslationBatchResult{}, malformedTranslationResultError("decode provider response: %v", err)
+		category := translationResponseDiagnosticInnerJSONInvalid
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			category = translationResponseDiagnosticInnerJSONTruncated
+		}
+		return TranslationBatchResult{}, malformedTranslationResponseError(category, nil, nil)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return TranslationBatchResult{}, malformedTranslationResultError("provider response contains multiple JSON values")
+			return TranslationBatchResult{}, malformedTranslationResponseError(translationResponseDiagnosticInnerJSONTrailing, nil, nil)
 		}
-		return TranslationBatchResult{}, malformedTranslationResultError("decode trailing provider response: %v", err)
+		category := translationResponseDiagnosticInnerJSONTrailing
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			category = translationResponseDiagnosticInnerJSONTruncated
+		}
+		return TranslationBatchResult{}, malformedTranslationResponseError(category, nil, nil)
 	}
 
 	result := TranslationBatchResult{
@@ -75,10 +178,10 @@ func validateTranslationBatchResult(batch TranslationBatch, result TranslationBa
 		return nil, malformedTranslationResultError("unsupported translation request contract version")
 	}
 	if result.ContractVersion != batch.ContractVersion {
-		return nil, malformedTranslationResultError("unsupported translation response contract version")
+		return nil, malformedTranslationResponseError(translationResponseDiagnosticContractVersionMismatch, nil, nil)
 	}
 	if len(result.Cues) != len(batch.Cues) {
-		return nil, malformedTranslationResultError("translation response cue count does not match request")
+		return nil, malformedTranslationResponseError(translationResponseDiagnosticCueCountMismatch, translationCueCountPointer(len(batch.Cues)), translationCueCountPointer(len(result.Cues)))
 	}
 
 	expectedIndexes := make(map[string]int, len(batch.Cues))
@@ -96,22 +199,22 @@ func validateTranslationBatchResult(batch TranslationBatch, result TranslationBa
 	seen := make(map[string]struct{}, len(result.Cues))
 	for index, cue := range result.Cues {
 		if strings.TrimSpace(cue.ID) == "" {
-			return nil, malformedTranslationResultError("translation response contains an empty cue ID")
+			return nil, malformedTranslationResponseError(translationResponseDiagnosticCueIdentityInvalid, nil, nil)
 		}
 		if _, exists := seen[cue.ID]; exists {
-			return nil, malformedTranslationResultError("translation response contains duplicate cue ID %q", cue.ID)
+			return nil, malformedTranslationResponseError(translationResponseDiagnosticCueIdentityInvalid, nil, nil)
 		}
 		seen[cue.ID] = struct{}{}
 
 		expectedIndex, exists := expectedIndexes[cue.ID]
 		if !exists {
-			return nil, malformedTranslationResultError("translation response contains unexpected cue ID %q", cue.ID)
+			return nil, malformedTranslationResponseError(translationResponseDiagnosticCueIdentityInvalid, nil, nil)
 		}
 		if expectedIndex != index {
-			return nil, malformedTranslationResultError("translation response reordered cue ID %q", cue.ID)
+			return nil, malformedTranslationResponseError(translationResponseDiagnosticCueOrderInvalid, nil, nil)
 		}
 		if strings.TrimSpace(cue.Text) == "" {
-			return nil, malformedTranslationResultError("translation response contains empty text for cue %q", cue.ID)
+			return nil, malformedTranslationResponseError(translationResponseDiagnosticCueTextEmpty, nil, nil)
 		}
 		validated[index] = cue
 	}
@@ -135,11 +238,11 @@ func validateTranslationASSBatchResult(document translationASSDocument, batch Tr
 		}
 	}
 	if len(translatableEvents) != len(validated) {
-		return nil, malformedTranslationResultError("translation response does not match ASS/SSA dialogue cue count")
+		return nil, malformedTranslationResponseError(translationResponseDiagnosticCueCountMismatch, translationCueCountPointer(len(translatableEvents)), translationCueCountPointer(len(validated)))
 	}
 	for index, event := range translatableEvents {
 		if _, err := event.Dialogue.ReconstructProviderText(validated[index].Text); err != nil {
-			return nil, malformedTranslationResultError("validate ASS/SSA cue %d: %v", index, err)
+			return nil, malformedTranslationResponseError(translationResponseDiagnosticASSStructureInvalid, nil, nil)
 		}
 	}
 	return validated, nil

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -113,16 +114,30 @@ func TestOllamaTranslationProviderUsesConfiguredChatEndpointAndContract(t *testi
 						Role    string `json:"role"`
 						Content string `json:"content"`
 					} `json:"messages"`
-					Stream    bool   `json:"stream"`
-					Format    string `json:"format"`
-					KeepAlive string `json:"keep_alive"`
+					Stream    bool            `json:"stream"`
+					Format    json.RawMessage `json:"format"`
+					KeepAlive string          `json:"keep_alive"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Errorf("decode request: %v", err)
 					return
 				}
-				if request.Model != "qwen2.5:7b" || request.Stream || request.Format != "json" || request.KeepAlive != "30m" || len(request.Messages) != 1 || request.Messages[0].Role != "user" {
+				if request.Model != "qwen2.5:7b" || request.Stream || request.KeepAlive != "30m" || len(request.Messages) != 1 || request.Messages[0].Role != "user" {
 					t.Errorf("unexpected Ollama request envelope: %#v", request)
+				}
+				var schema map[string]any
+				if err := json.Unmarshal(request.Format, &schema); err != nil {
+					t.Errorf("decode structured-output schema: %v", err)
+				} else {
+					properties, ok := schema["properties"].(map[string]any)
+					version, versionOK := properties["contractVersion"].(map[string]any)
+					cues, cuesOK := properties["cues"].(map[string]any)
+					cueProperties, cuePropertiesOK := cues["items"].(map[string]any)["properties"].(map[string]any)
+					idSchema, idOK := cueProperties["id"].(map[string]any)
+					idEnum, enumOK := idSchema["enum"].([]any)
+					if schema["type"] != "object" || schema["additionalProperties"] != false || !ok || !versionOK || version["const"] != translationProviderContractVersion || !cuesOK || cues["minItems"] != float64(1) || cues["maxItems"] != float64(1) || !cuePropertiesOK || !idOK || !enumOK || len(idEnum) != 1 || idEnum[0] != "cue-1" {
+						t.Errorf("Ollama schema did not bind the response to the current contract and cue: %#v", schema)
+					}
 				}
 				content := request.Messages[0].Content
 				for _, expected := range []string{"translation-provider-v1", "en", "es-419", "cue-1", "Hello", "nearby", "Title"} {
@@ -164,6 +179,120 @@ func TestOllamaTranslationProviderUsesConfiguredChatEndpointAndContract(t *testi
 				t.Fatalf("unexpected mapped metrics: %#v", result.Metrics)
 			}
 		})
+	}
+}
+
+func TestTranslateGemmaStructuredOutputSupportsSyntheticASSTranslation(t *testing.T) {
+	sourceContent := []byte("[Script Info]\nScriptType: v4.00+\n[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,{\\an8\\pos(10,20)\\i1}Hello world{\\i0}\nDialogue: 0,0:00:03.00,0:00:04.00,Default,Good morning\n")
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var request struct {
+			Messages []ollamaChatMessage `json:"messages"`
+			Format   json.RawMessage     `json:"format"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode Ollama request: %v", err)
+			return
+		}
+		if len(request.Messages) != 1 {
+			t.Errorf("messages=%d, want 1", len(request.Messages))
+			return
+		}
+		parts := strings.SplitN(request.Messages[0].Content, "\n\n", 2)
+		if len(parts) != 2 {
+			t.Errorf("translation prompt did not contain one bounded batch payload")
+			return
+		}
+		var batch TranslationBatch
+		if err := json.Unmarshal([]byte(parts[1]), &batch); err != nil {
+			t.Errorf("decode synthetic batch: %v", err)
+			return
+		}
+		translated := make([]map[string]string, 0, len(batch.Cues))
+		for _, cue := range batch.Cues {
+			text := strings.NewReplacer("Hello", "Hola", "world", "mundo", "Good morning", "Buenos días").Replace(cue.Text)
+			translated = append(translated, map[string]string{"id": cue.ID, "text": text})
+		}
+		inner, err := json.Marshal(map[string]any{"contractVersion": batch.ContractVersion, "cues": translated})
+		if err != nil {
+			t.Errorf("encode structured response: %v", err)
+			return
+		}
+		writeOllamaTestResponse(t, w, string(inner), 20, 12, 31_000_000)
+	}))
+	defer server.Close()
+	provider, err := newOllamaTranslationProvider(ollamaTestSettings(server.URL, "translategemma:12b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := subtitleTranslationSourceResponse{Representation: "ass", Language: "en"}
+	request := subtitleTranslationOperationRequest{SourceIdentity: "synthetic-ass-source", RequestedSourceLanguage: "en", TargetLocale: "es-419", RequestedRepresentation: "ass", Provider: translationProviderOllama, ProviderModel: "translategemma:12b"}
+	result, err := executeTextTranslation(context.Background(), source, sourceContent, request, provider, defaultTranslationSettings(), nil, nil)
+	if err != nil {
+		t.Fatalf("synthetic EN to es-419 ASS translation failed: %v", err)
+	}
+	if requests != 1 || !bytes.Equal(sourceContent, []byte("[Script Info]\nScriptType: v4.00+\n[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,{\\an8\\pos(10,20)\\i1}Hello world{\\i0}\nDialogue: 0,0:00:03.00,0:00:04.00,Default,Good morning\n")) {
+		t.Fatalf("source ASS changed or requests=%d", requests)
+	}
+	output := string(result.Outputs["ass"])
+	for _, expected := range []string{"0,0:00:01.00,0:00:02.00,Default,{\\an8\\pos(10,20)\\i1}Hola mundo{\\i0}", "0,0:00:03.00,0:00:04.00,Default,Buenos días"} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("ASS output lost translated text, timing, or protected style: missing %q in %q", expected, output)
+		}
+	}
+}
+
+type syntheticTranslationProvider func(context.Context, TranslationBatch) (TranslationBatchResult, error)
+
+func (provider syntheticTranslationProvider) Translate(ctx context.Context, batch TranslationBatch) (TranslationBatchResult, error) {
+	return provider(ctx, batch)
+}
+
+func TestExecuteTextTranslationRejectsProtectedASSMutationBeforeOutput(t *testing.T) {
+	sourceContent := []byte("[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,{\\an8\\pos(10,20)}Hello\n")
+	provider := syntheticTranslationProvider(func(_ context.Context, batch TranslationBatch) (TranslationBatchResult, error) {
+		return TranslationBatchResult{ContractVersion: batch.ContractVersion, Cues: []TranslatedCue{{ID: batch.Cues[0].ID, Text: "Hola"}}}, nil
+	})
+	source := subtitleTranslationSourceResponse{Representation: "ass", Language: "en"}
+	request := subtitleTranslationOperationRequest{SourceIdentity: "synthetic-ass-protected", RequestedSourceLanguage: "en", TargetLocale: "es-419", RequestedRepresentation: "ass", Provider: translationProviderOllama, ProviderModel: "qwen2.5:7b"}
+	result, err := executeTextTranslation(context.Background(), source, sourceContent, request, provider, defaultTranslationSettings(), nil, nil)
+	if err == nil || len(result.Outputs) != 0 {
+		t.Fatalf("protected ASS mutation produced output: result=%#v err=%v", result, err)
+	}
+	var diagnostic *translationResponseDiagnosticError
+	if !errors.As(err, &diagnostic) || diagnostic.Category != translationResponseDiagnosticASSStructureInvalid || diagnostic.BatchIndex != 1 || diagnostic.BatchCount != 1 {
+		t.Fatalf("ASS diagnostic=%#v err=%v", diagnostic, err)
+	}
+	if string(sourceContent) != "[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,{\\an8\\pos(10,20)}Hello\n" {
+		t.Fatal("source ASS was modified")
+	}
+}
+
+func TestExecuteTextTranslationRejectsLaterBatchWithoutPartialOutput(t *testing.T) {
+	sourceContent := []byte("[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,Hello\nDialogue: 0,0:00:03.00,0:00:04.00,Default,Goodbye\n")
+	providerCalls := 0
+	provider := syntheticTranslationProvider(func(_ context.Context, batch TranslationBatch) (TranslationBatchResult, error) {
+		providerCalls++
+		if providerCalls == 1 {
+			return TranslationBatchResult{ContractVersion: batch.ContractVersion, Cues: []TranslatedCue{{ID: batch.Cues[0].ID, Text: "Hola"}}}, nil
+		}
+		return TranslationBatchResult{ContractVersion: "translation-provider-v0", Cues: []TranslatedCue{{ID: batch.Cues[0].ID, Text: "Adiós"}}}, nil
+	})
+	source := subtitleTranslationSourceResponse{Representation: "ass", Language: "en"}
+	request := subtitleTranslationOperationRequest{SourceIdentity: "synthetic-ass-batches", RequestedSourceLanguage: "en", TargetLocale: "es-419", RequestedRepresentation: "ass", Provider: translationProviderOllama, ProviderModel: "qwen2.5:7b"}
+	settings := defaultTranslationSettings()
+	settings.MaxCuesPerRequest = 1
+	result, err := executeTextTranslation(context.Background(), source, sourceContent, request, provider, settings, nil, nil)
+	if err == nil || len(result.Outputs) != 0 || providerCalls != 2 {
+		t.Fatalf("later malformed batch was not rejected atomically: calls=%d result=%#v err=%v", providerCalls, result, err)
+	}
+	var diagnostic *translationResponseDiagnosticError
+	if !errors.As(err, &diagnostic) || diagnostic.Category != translationResponseDiagnosticContractVersionMismatch || diagnostic.BatchIndex != 2 || diagnostic.BatchCount != 2 {
+		t.Fatalf("later-batch diagnostic=%#v err=%v", diagnostic, err)
+	}
+	if string(sourceContent) != "[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,Hello\nDialogue: 0,0:00:03.00,0:00:04.00,Default,Goodbye\n" {
+		t.Fatal("source ASS was modified")
 	}
 }
 
@@ -400,6 +529,10 @@ func TestOllamaTranslationProviderHTTPStatusFailures(t *testing.T) {
 			if err == nil || translationProviderErrorClassOf(err) != translationProviderErrorUnavailable {
 				t.Fatalf("HTTP failure class=%q err=%v", translationProviderErrorClassOf(err), err)
 			}
+			var diagnostic *translationResponseDiagnosticError
+			if !errors.As(err, &diagnostic) || diagnostic.Category != translationResponseDiagnosticHTTPStatus || diagnostic.HTTPStatus != status {
+				t.Fatalf("HTTP diagnostic=%#v, want status %d", diagnostic, status)
+			}
 			if !strings.Contains(err.Error(), fmt.Sprintf("%d", status)) || strings.Contains(err.Error(), "sensitive provider response body") {
 				t.Fatalf("HTTP failure diagnostic was not bounded: %v", err)
 			}
@@ -410,14 +543,17 @@ func TestOllamaTranslationProviderHTTPStatusFailures(t *testing.T) {
 
 func TestOllamaTranslationProviderMalformedResponses(t *testing.T) {
 	cases := []struct {
-		name    string
-		payload string
+		name           string
+		payload        string
+		wantDiagnostic string
 	}{
-		{name: "invalid outer JSON", payload: "{"},
-		{name: "missing message", payload: `{}`},
-		{name: "empty assistant content", payload: `{"message":{"content":""}}`},
-		{name: "invalid inner JSON", payload: `{"message":{"content":"not-json"}}`},
-		{name: "unknown inner field", payload: `{"message":{"content":"{\"contractVersion\":\"translation-provider-v1\",\"cues\":[{\"id\":\"cue-1\",\"text\":\"Hola\",\"start\":1}]}"}}`},
+		{name: "invalid outer JSON", payload: `not-json`, wantDiagnostic: translationResponseDiagnosticOuterEnvelopeInvalid},
+		{name: "truncated outer JSON", payload: `{"message":`, wantDiagnostic: translationResponseDiagnosticOuterEnvelopeTruncated},
+		{name: "missing message", payload: `{}`, wantDiagnostic: translationResponseDiagnosticAssistantContentEmpty},
+		{name: "empty assistant content", payload: `{"message":{"content":""}}`, wantDiagnostic: translationResponseDiagnosticAssistantContentEmpty},
+		{name: "invalid inner JSON", payload: `{"message":{"content":"not-json"}}`, wantDiagnostic: translationResponseDiagnosticInnerJSONInvalid},
+		{name: "truncated inner JSON", payload: `{"message":{"content":"{"}}`, wantDiagnostic: translationResponseDiagnosticInnerJSONTruncated},
+		{name: "unknown inner field", payload: `{"message":{"content":"{\"contractVersion\":\"translation-provider-v1\",\"cues\":[{\"id\":\"cue-1\",\"text\":\"Hola\",\"start\":1}]}"}}`, wantDiagnostic: translationResponseDiagnosticInnerJSONInvalid},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -433,9 +569,39 @@ func TestOllamaTranslationProviderMalformedResponses(t *testing.T) {
 			if err == nil || translationProviderErrorClassOf(err) != translationProviderErrorMalformed {
 				t.Fatalf("malformed response class=%q err=%v", translationProviderErrorClassOf(err), err)
 			}
+			var diagnostic *translationResponseDiagnosticError
+			if !errors.As(err, &diagnostic) || diagnostic.Category != test.wantDiagnostic {
+				t.Fatalf("diagnostic=%#v, want %q", diagnostic, test.wantDiagnostic)
+			}
+			if strings.Contains(err.Error(), "Hola") || strings.Contains(err.Error(), "not-json") {
+				t.Fatalf("diagnostic exposed provider content: %v", err)
+			}
 			assertEmptyOllamaResult(t, result)
 		})
 	}
+}
+
+func TestOllamaTranslationProviderRejectsTruncatedCompletion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message": map[string]string{"role": "assistant", "content": `{"contractVersion":"translation-provider-v1","cues":[{"id":"cue-1","text":"Hola"}]}`},
+			"done":    true, "done_reason": "length",
+		})
+	}))
+	defer server.Close()
+	provider, err := newOllamaTranslationProvider(ollamaTestSettings(server.URL, "model"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := provider.Translate(context.Background(), ollamaTestBatch())
+	if err == nil || translationProviderErrorClassOf(err) != translationProviderErrorMalformed {
+		t.Fatalf("truncated completion class=%q err=%v", translationProviderErrorClassOf(err), err)
+	}
+	var diagnostic *translationResponseDiagnosticError
+	if !errors.As(err, &diagnostic) || diagnostic.Category != translationResponseDiagnosticResponseTruncated {
+		t.Fatalf("truncated completion diagnostic=%#v", diagnostic)
+	}
+	assertEmptyOllamaResult(t, result)
 }
 
 func TestOllamaTranslationProviderRejectsConfiguredRequestBodyOverflow(t *testing.T) {
@@ -481,8 +647,13 @@ func TestOllamaTranslationProviderRejectsMalformedOrOversizedResponsesWithoutRet
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := provider.Translate(context.Background(), ollamaTestBatch()); err == nil || strings.Contains(err.Error(), strings.Repeat("x", 100)) {
+		if _, err := provider.Translate(context.Background(), ollamaTestBatch()); err == nil || translationProviderErrorClassOf(err) != translationProviderErrorMalformed || strings.Contains(err.Error(), strings.Repeat("x", 100)) {
 			t.Fatalf("oversized response was not safely bounded: %v", err)
+		} else {
+			var diagnostic *translationResponseDiagnosticError
+			if !errors.As(err, &diagnostic) || diagnostic.Category != translationResponseDiagnosticResponseTooLarge {
+				t.Fatalf("oversized response diagnostic=%#v", diagnostic)
+			}
 		}
 	})
 }
