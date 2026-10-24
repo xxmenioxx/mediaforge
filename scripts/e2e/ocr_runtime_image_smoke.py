@@ -5,9 +5,9 @@ Run after building the supported image, for example:
   python3 scripts/e2e/ocr_runtime_image_smoke.py --image mvforge-backend:issue-419
 
 This smoke checks runtime capability and model loadability using only a
-synthetic blank PGM image. It does not measure recognition accuracy.
-The repository has no decodable synthetic PGS/VobSub fixture for a real SeConv
-recognition pass, so that integration remains explicitly BLOCKED.
+synthetic blank PGM image. It does not run SeConv against a PGS/VobSub fixture
+and does not measure recognition accuracy. The independent SeConv E2E status is
+reported separately and can be supplied after that runner has executed.
 """
 
 from __future__ import annotations
@@ -136,7 +136,11 @@ def synthetic_model_probe(image: str, language: str) -> float:
     return (time.perf_counter() - started) * 1000
 
 
-def verify_image(image: str) -> dict[str, object]:
+def verify_image(
+    image: str,
+    *,
+    independent_seconv_e2e_status: str = "NOT_RUN",
+) -> dict[str, object]:
     languages_output = run_checked(
         container_command(image, "tesseract", ["--list-langs"])
     )
@@ -164,11 +168,8 @@ def verify_image(image: str) -> dict[str, object]:
         ),
         "synthetic_blank_model_probe_ms": probes,
         "runtime_capability_package_list_model_init": "PASS",
-        "seconv_pgs_vobsub_recognition_e2e": "BLOCKED",
-        "seconv_e2e_block_reason": (
-            "No decodable synthetic PGS/VobSub fixture or generator is available; "
-            "existing geometry fixtures use SeConv and Tesseract stubs."
-        ),
+        "seconv_pgs_vobsub_recognition_e2e": "NOT_RUN_BY_THIS_SMOKE",
+        "independent_seconv_e2e": independent_seconv_e2e_status,
         "accuracy_claim": False,
     }
 
@@ -176,9 +177,18 @@ def verify_image(image: str) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True, help="built MVForge backend image")
+    parser.add_argument(
+        "--independent-seconv-e2e-status",
+        choices=("PASS", "FAIL", "NOT_RUN"),
+        default="NOT_RUN",
+        help="status from a separately executed SeConv E2E; this smoke never runs that E2E",
+    )
     args = parser.parse_args()
     try:
-        report = verify_image(args.image)
+        report = verify_image(
+            args.image,
+            independent_seconv_e2e_status=args.independent_seconv_e2e_status,
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"OCR runtime image smoke failed: {exc}", file=sys.stderr)
         return 1

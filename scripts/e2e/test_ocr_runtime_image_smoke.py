@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import ocr_runtime_image_smoke
 
@@ -107,6 +108,40 @@ spa
         ]
         with self.assertRaisesRegex(RuntimeError, "pinned versions"):
             ocr_runtime_image_smoke.parse_package_inventory("\n".join(rows))
+
+    def test_report_separates_capability_smoke_from_independent_seconv_e2e(self) -> None:
+        languages = "eng\nfra\njpn\njpn_vert\nkor\nspa\n"
+        packages = "\n".join(
+            f"{package}\t{version}\t100"
+            for package, version in ocr_runtime_image_smoke.EXPECTED_PACKAGE_VERSIONS.items()
+        )
+        with (
+            patch.object(ocr_runtime_image_smoke, "run_checked", side_effect=[languages, packages, "1234"]),
+            patch.object(ocr_runtime_image_smoke, "synthetic_model_probe", return_value=1.0),
+        ):
+            report = ocr_runtime_image_smoke.verify_image("mvforge-backend:test")
+
+        self.assertEqual(report["runtime_capability_package_list_model_init"], "PASS")
+        self.assertEqual(report["seconv_pgs_vobsub_recognition_e2e"], "NOT_RUN_BY_THIS_SMOKE")
+        self.assertEqual(report["independent_seconv_e2e"], "NOT_RUN")
+
+        with (
+            patch.object(ocr_runtime_image_smoke, "run_checked", side_effect=[languages, packages, "1234"]),
+            patch.object(ocr_runtime_image_smoke, "synthetic_model_probe", return_value=1.0),
+        ):
+            report = ocr_runtime_image_smoke.verify_image(
+                "mvforge-backend:test", independent_seconv_e2e_status="PASS"
+            )
+        self.assertEqual(report["independent_seconv_e2e"], "PASS")
+
+        with (
+            patch.object(ocr_runtime_image_smoke, "run_checked", side_effect=[languages, packages, "1234"]),
+            patch.object(ocr_runtime_image_smoke, "synthetic_model_probe", return_value=1.0),
+        ):
+            report = ocr_runtime_image_smoke.verify_image(
+                "mvforge-backend:test", independent_seconv_e2e_status="FAIL"
+            )
+        self.assertEqual(report["independent_seconv_e2e"], "FAIL")
 
 
 if __name__ == "__main__":

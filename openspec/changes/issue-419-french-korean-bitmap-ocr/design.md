@@ -15,18 +15,30 @@ capability report before recognition. Unknown or unsupported values retain the
 existing `eng` default; this change does not broaden that behavior or alter the
 OCR algorithm.
 
-A dedicated runtime image smoke will inspect the running language list and
-installed package sizes, then initialize the French and Korean models against
+A dedicated runtime image smoke inspects the running language list and
+installed package sizes, then initializes the French and Korean models against
 a synthetic blank PGM. It reports container image size and package installed
 sizes. The synthetic probe measures model initialization only and is not an
-accuracy or production-throughput benchmark.
+accuracy or production-throughput benchmark. Its report marks runtime
+capability as PASS after all checks complete and marks SeConv PGS/VobSub E2E as
+`NOT_RUN_BY_THIS_SMOKE`; a separately executed E2E status is recorded as
+PASS/FAIL only when supplied from that run.
 
-The repository does not contain a decodable synthetic PGS/VobSub fixture or a
-generator that can exercise actual SeConv recognition. Existing PGS test
-fixtures cover parser/geometry behavior and stub SeConv/Tesseract. Therefore the
-runtime capability smoke reports package/list/model initialization as PASS and
-SeConv-to-PGS/VobSub recognition E2E as BLOCKED; the PGM probe is not presented
-as an OCR recognition substitute.
+Versioned fixture inputs consist of locally authored French/Korean PNGs and
+their synthetic PGS SUPs. The fixture manifest pins SHA-256 for these source
+files. The standalone SeConv E2E does not require a checked-in MKV: it copies
+the verified SUP files into a temporary directory, then uses FFmpeg from the
+supported backend image with `-copyts` to mux a synthetic black FFV1 video and
+two PGS tracks. ffprobe must confirm the FFV1 video, subtitle stream indexes 1
+(`fra`) and 2 (`kor`), PGS codecs, titles, and cue-boundary packet timestamps
+before the OCR test runs. The generated MKV has no fixed hash because FFmpeg
+version and container metadata can vary; its SHA-256 is instead compared
+before and after OCR, and the temporary directory is removed automatically.
+The Go E2E then executes real SeConv and Tesseract in the supported image and
+validates effective language, stream identity, cue timing, bitmap geometry,
+and valid SRT/ASS sidecars. Recognition text only needs to be non-empty, so
+this functional capability check does not imply exact-text recognition
+accuracy. OCR accuracy results remain separate from runtime capability.
 
 No real media, NAS path, production database, or new package source is used.
 

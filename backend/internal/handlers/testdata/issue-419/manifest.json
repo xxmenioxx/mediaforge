@@ -39,14 +39,15 @@
       {"index": 1, "language": "fra", "title": "synthetic-french"},
       {"index": 2, "language": "kor", "title": "synthetic-korean"}
     ],
-    "muxCommand": "ffmpeg -copyts -f lavfi -i color=c=black:s=1280x720:r=25:d=6 -i french.sup -i korean.sup -map 0:v:0 -map 1:s:0 -map 2:s:0 -c:v ffv1 -c:s copy -metadata:s:s:0 language=fra -metadata:s:s:0 title=synthetic-french -metadata:s:s:1 language=kor -metadata:s:s:1 title=synthetic-korean -shortest two-bitmap-tracks.mkv",
+    "muxCommand": "ffmpeg -y -copyts -f lavfi -i color=c=black:s=1280x720:r=25:d=6 -i <temporary>/french.sup -i <temporary>/korean.sup -map 0:v:0 -map 1:s:0 -map 2:s:0 -c:v ffv1 -c:s copy -metadata:s:s:0 language=fra -metadata:s:s:0 title=synthetic-french -metadata:s:s:1 language=kor -metadata:s:s:1 title=synthetic-korean -shortest <temporary>/two-bitmap-tracks.mkv",
+    "generatedAtRuntime": true,
+    "verification": "ffprobe checks FFV1 video, subtitle stream indexes 1/2, hdmv_pgs_subtitle codecs, fra/kor language tags, titles, and cue-boundary packet timestamps",
     "sourceSubtitleCueIntervalsSeconds": [[1.0, 2.5], [3.0, 4.5]],
     "timestampHandling": "Use FFmpeg -copyts during mux; ffprobe confirmed the MKV and backend-extracted SUP retain starts at 1.0 and 3.0 seconds. Without -copyts the mux shifted starts to 0.0 and 2.0 seconds."
   },
   "sha256": {
     "french.sup": "ba89a799c9bf9b85257142786862228a48e0d670499901f8c89b890f04e0f0d2",
     "korean.sup": "bcc33e46da38202f39e7425b1809bfe2f2e79b4c6591bf59e8afe03ae464cfe3",
-    "two-bitmap-tracks.mkv": "f379490140e455970b3d2fbb4fc08742c214e0fbf429e9f86261ec5ee7cadf8a",
     "fra/png/00_00_01_000__00_00_02_500_00001.png": "fbd5ea4034488dcdb00a714ab0f17ded42021c2de23823af71b5a2e39406b1ce",
     "fra/png/00_00_03_000__00_00_04_500_00001.png": "c5b4a6e122f8fae5c042eb098c3026fdfdec4ba26b2dbc8184d54b3ce9ccc0dc",
     "kor/png/00_00_01_000__00_00_02_500_00001.png": "8ba3cc920bc7f769404e72ae52127a67907fdb313dc44557063e4ac35adba4ee",
