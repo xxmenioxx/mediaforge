@@ -1,0 +1,56 @@
+{
+  "kind": "synthetic-only-bitmap-ocr-fixture",
+  "generator": {
+    "repository": "https://github.com/dam-cav/img-to-pgs-sup",
+    "commit": "f595c0b83cdb27fffb652140fc9501661acfb155",
+    "license": "MIT",
+    "command": "python pgs-sup-generator/pgs_sup_generator.py --path <language>/png --width 1280 --height 720 --outfile <language>.sup",
+    "isolatedPythonRequirements": {
+      "numpy": "1.26.3",
+      "opencv-python": "4.9.0.80",
+      "Pillow": "10.2.0",
+      "pytesseract": "0.3.10"
+    },
+    "notes": "The generator and its dependencies are not copied into MVForge. The PNGs are locally authored Pillow images."
+  },
+  "sourceText": {
+    "fra": ["Bonjour, à bientôt!", "Déjà vu!"],
+    "kor": ["안녕하세요", "고맙습니다"]
+  },
+  "png": {
+    "size": [640, 120],
+    "background": "white",
+    "foreground": "black",
+    "font": "Verdana for French; AppleSDGothicNeo for Korean, locally installed fonts used only at fixture authoring time",
+    "fontSize": 42,
+    "textOrigin": [18, 29],
+    "sequenceTimingFilenameConvention": "HH_mm_ss_SSS__HH_mm_ss_SSS_XXXXX.png"
+  },
+  "pgs": {
+    "canvas": [1280, 720],
+    "expectedBitmapOrigin": [320, 590],
+    "cuesSeconds": [[1.0, 2.5], [3.0, 4.5]],
+    "codec": "hdmv_pgs_subtitle",
+    "independentProbe": "ffprobe recognized both raw SUP streams as hdmv_pgs_subtitle 1280x720 and reported PTS at 1.0, 2.5, 3.0, and 4.5 seconds"
+  },
+  "mkv": {
+    "video": "synthetic black 1280x720 at 25 fps, FFV1",
+    "subtitleStreams": [
+      {"index": 1, "language": "fra", "title": "synthetic-french"},
+      {"index": 2, "language": "kor", "title": "synthetic-korean"}
+    ],
+    "muxCommand": "ffmpeg -y -copyts -f lavfi -i color=c=black:s=1280x720:r=25:d=6 -i <temporary>/french.sup -i <temporary>/korean.sup -map 0:v:0 -map 1:s:0 -map 2:s:0 -c:v ffv1 -c:s copy -metadata:s:s:0 language=fra -metadata:s:s:0 title=synthetic-french -metadata:s:s:1 language=kor -metadata:s:s:1 title=synthetic-korean -shortest <temporary>/two-bitmap-tracks.mkv",
+    "generatedAtRuntime": true,
+    "verification": "ffprobe checks FFV1 video, subtitle stream indexes 1/2, hdmv_pgs_subtitle codecs, fra/kor language tags, titles, and cue-boundary packet timestamps",
+    "sourceSubtitleCueIntervalsSeconds": [[1.0, 2.5], [3.0, 4.5]],
+    "timestampHandling": "Use FFmpeg -copyts during mux; ffprobe confirmed the MKV and backend-extracted SUP retain starts at 1.0 and 3.0 seconds. Without -copyts the mux shifted starts to 0.0 and 2.0 seconds."
+  },
+  "sha256": {
+    "french.sup": "ba89a799c9bf9b85257142786862228a48e0d670499901f8c89b890f04e0f0d2",
+    "korean.sup": "bcc33e46da38202f39e7425b1809bfe2f2e79b4c6591bf59e8afe03ae464cfe3",
+    "fra/png/00_00_01_000__00_00_02_500_00001.png": "fbd5ea4034488dcdb00a714ab0f17ded42021c2de23823af71b5a2e39406b1ce",
+    "fra/png/00_00_03_000__00_00_04_500_00001.png": "c5b4a6e122f8fae5c042eb098c3026fdfdec4ba26b2dbc8184d54b3ce9ccc0dc",
+    "kor/png/00_00_01_000__00_00_02_500_00001.png": "8ba3cc920bc7f769404e72ae52127a67907fdb313dc44557063e4ac35adba4ee",
+    "kor/png/00_00_03_000__00_00_04_500_00001.png": "8fce1ee0299c9013913046f0328ac233af3128cd7c82a18a7a8907d4e0a4c735"
+  }
+}
