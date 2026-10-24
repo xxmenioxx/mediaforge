@@ -35,7 +35,7 @@ type ollamaChatRequest struct {
 	Model     string              `json:"model"`
 	Messages  []ollamaChatMessage `json:"messages"`
 	Stream    bool                `json:"stream"`
-	Format    string              `json:"format"`
+	Format    any                 `json:"format"`
 	KeepAlive string              `json:"keep_alive"`
 }
 
@@ -48,9 +48,11 @@ type ollamaChatResponse struct {
 	Message struct {
 		Content string `json:"content"`
 	} `json:"message"`
-	PromptEvalCount int   `json:"prompt_eval_count"`
-	EvalCount       int   `json:"eval_count"`
-	TotalDuration   int64 `json:"total_duration"`
+	PromptEvalCount int    `json:"prompt_eval_count"`
+	EvalCount       int    `json:"eval_count"`
+	TotalDuration   int64  `json:"total_duration"`
+	Done            *bool  `json:"done"`
+	DoneReason      string `json:"done_reason"`
 }
 
 type ollamaResponseBodyLimitError struct {
@@ -243,7 +245,7 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 			Content: prompt,
 		}},
 		Stream:    false,
-		Format:    "json",
+		Format:    ollamaTranslationResponseSchema(batch),
 		KeepAlive: ollamaModelKeepAlive,
 	}
 	encodedRequest, err := json.Marshal(requestBody)
@@ -274,10 +276,14 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorUnavailable, Err: fmt.Errorf("Ollama returned HTTP status %d", response.StatusCode)}
+		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorUnavailable, Err: &translationResponseDiagnosticError{Category: translationResponseDiagnosticHTTPStatus, HTTPStatus: response.StatusCode}}
 	}
 	encodedResponse, err := readBoundedOllamaResponse(ctx, response.Body)
 	if err != nil {
+		var limitErr *ollamaResponseBodyLimitError
+		if errors.As(err, &limitErr) {
+			return TranslationBatchResult{}, malformedTranslationResponseError(translationResponseDiagnosticResponseTooLarge, translationCueCountPointer(len(batch.Cues)), nil)
+		}
 		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -285,10 +291,17 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 	}
 	var outer ollamaChatResponse
 	if err := json.Unmarshal(encodedResponse, &outer); err != nil {
-		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorMalformed, Err: fmt.Errorf("decode Ollama response: %w", err)}
+		category := translationResponseDiagnosticOuterEnvelopeInvalid
+		if ollamaJSONErrorIsTruncated(err) {
+			category = translationResponseDiagnosticOuterEnvelopeTruncated
+		}
+		return TranslationBatchResult{}, malformedTranslationResponseError(category, translationCueCountPointer(len(batch.Cues)), nil)
+	}
+	if (outer.Done != nil && !*outer.Done) || strings.EqualFold(strings.TrimSpace(outer.DoneReason), "length") {
+		return TranslationBatchResult{}, malformedTranslationResponseError(translationResponseDiagnosticResponseTruncated, translationCueCountPointer(len(batch.Cues)), nil)
 	}
 	if strings.TrimSpace(outer.Message.Content) == "" {
-		return TranslationBatchResult{}, malformedTranslationResultError("Ollama response has no assistant message content")
+		return TranslationBatchResult{}, malformedTranslationResponseError(translationResponseDiagnosticAssistantContentEmpty, translationCueCountPointer(len(batch.Cues)), nil)
 	}
 	result, err := decodeTranslationBatchResult([]byte(outer.Message.Content))
 	if err != nil {
@@ -306,6 +319,35 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 		LatencyMillis: ollamaDurationMillis(outer.TotalDuration),
 	}
 	return result, nil
+}
+
+func ollamaTranslationResponseSchema(batch TranslationBatch) map[string]any {
+	cueIDs := make([]string, 0, len(batch.Cues))
+	for _, cue := range batch.Cues {
+		cueIDs = append(cueIDs, cue.ID)
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"contractVersion": map[string]any{"type": "string", "const": batch.ContractVersion},
+			"cues": map[string]any{
+				"type":     "array",
+				"minItems": len(batch.Cues),
+				"maxItems": len(batch.Cues),
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id":   map[string]any{"type": "string", "enum": cueIDs},
+						"text": map[string]any{"type": "string", "minLength": 1},
+					},
+					"required":             []string{"id", "text"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"required":             []string{"contractVersion", "cues"},
+		"additionalProperties": false,
+	}
 }
 
 func ollamaTranslationPrompt(batch TranslationBatch) (string, error) {
@@ -334,6 +376,14 @@ func ollamaTranslationPrompt(batch TranslationBatch) (string, error) {
 		translationLanguageName(sourceLanguage), sourceLanguage, targetLabel,
 	)
 	return instructions + string(payload), nil
+}
+
+func ollamaJSONErrorIsTruncated(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var syntaxErr *json.SyntaxError
+	return errors.As(err, &syntaxErr) && syntaxErr.Error() == "unexpected end of JSON input"
 }
 
 func readBoundedOllamaResponse(ctx context.Context, body io.Reader) ([]byte, error) {

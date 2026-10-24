@@ -899,11 +899,22 @@ func executeTextTranslation(
 		}
 		result, err := provider.Translate(ctx, batch)
 		if err != nil {
-			return subtitleTranslationExecutionResult{}, err
+			return subtitleTranslationExecutionResult{}, withTranslationBatchDiagnostic(err, index, len(batches), len(batch.Cues))
 		}
 		validated, err := validateTranslationBatchResult(batch, result)
 		if err != nil {
-			return subtitleTranslationExecutionResult{}, fmt.Errorf("validate translated text batch %d: %w", index, err)
+			return subtitleTranslationExecutionResult{}, withTranslationBatchDiagnostic(err, index, len(batches), len(batch.Cues))
+		}
+		if source.Representation != translationRepresentationSRT {
+			for cueIndex, cue := range validated {
+				protectedIndex := len(translated) + cueIndex
+				if protectedIndex >= len(protected) {
+					return subtitleTranslationExecutionResult{}, withTranslationBatchDiagnostic(malformedTranslationResponseError(translationResponseDiagnosticASSStructureInvalid, nil, nil), index, len(batches), len(batch.Cues))
+				}
+				if _, err := protected[protectedIndex].ReconstructProviderText(cue.Text); err != nil {
+					return subtitleTranslationExecutionResult{}, withTranslationBatchDiagnostic(malformedTranslationResponseError(translationResponseDiagnosticASSStructureInvalid, nil, nil), index, len(batches), len(batch.Cues))
+				}
+			}
 		}
 		translated = append(translated, validated...)
 		metrics = aggregateTranslationProviderMetrics(metrics, result.Metrics)

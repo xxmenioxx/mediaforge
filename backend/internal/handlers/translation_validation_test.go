@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -274,4 +275,45 @@ func containsTranslationStructure(text string) bool {
 
 func containsTranslationText(text, expected string) bool {
 	return strings.Contains(text, expected)
+}
+
+func TestValidateTranslationBatchResultReportsSanitizedFailureCategories(t *testing.T) {
+	batch := translationValidationTestBatch()
+	cases := []struct {
+		name          string
+		result        TranslationBatchResult
+		category      string
+		expectedCount *int
+		actualCount   *int
+	}{
+		{name: "contract version", result: TranslationBatchResult{ContractVersion: "translation-provider-v0", Cues: []TranslatedCue{{ID: "cue-1", Text: "Hola"}, {ID: "cue-2", Text: "Mundo"}}}, category: translationResponseDiagnosticContractVersionMismatch},
+		{name: "cue count", result: TranslationBatchResult{ContractVersion: translationProviderContractVersion, Cues: []TranslatedCue{{ID: "cue-1", Text: "Hola"}}}, category: translationResponseDiagnosticCueCountMismatch, expectedCount: translationCueCountPointer(2), actualCount: translationCueCountPointer(1)},
+		{name: "duplicate cue ID", result: TranslationBatchResult{ContractVersion: translationProviderContractVersion, Cues: []TranslatedCue{{ID: "cue-1", Text: "Hola"}, {ID: "cue-1", Text: "PRIVATE_SOURCE_TEXT"}}}, category: translationResponseDiagnosticCueIdentityInvalid},
+		{name: "unexpected cue ID", result: TranslationBatchResult{ContractVersion: translationProviderContractVersion, Cues: []TranslatedCue{{ID: "cue-1", Text: "Hola"}, {ID: "PRIVATE_ID", Text: "Mundo"}}}, category: translationResponseDiagnosticCueIdentityInvalid},
+		{name: "reordered cue IDs", result: TranslationBatchResult{ContractVersion: translationProviderContractVersion, Cues: []TranslatedCue{{ID: "cue-2", Text: "Mundo"}, {ID: "cue-1", Text: "Hola"}}}, category: translationResponseDiagnosticCueOrderInvalid},
+		{name: "empty cue text", result: TranslationBatchResult{ContractVersion: translationProviderContractVersion, Cues: []TranslatedCue{{ID: "cue-1", Text: "Hola"}, {ID: "cue-2", Text: " "}}}, category: translationResponseDiagnosticCueTextEmpty},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := validateTranslationBatchResult(batch, test.result)
+			if err == nil || translationProviderErrorClassOf(err) != translationProviderErrorMalformed {
+				t.Fatalf("expected malformed response, got %v", err)
+			}
+			var diagnostic *translationResponseDiagnosticError
+			if !errors.As(err, &diagnostic) || diagnostic.Category != test.category {
+				t.Fatalf("diagnostic=%#v, want category %q", diagnostic, test.category)
+			}
+			if test.expectedCount != nil && (diagnostic.ExpectedCueCount == nil || *diagnostic.ExpectedCueCount != *test.expectedCount) {
+				t.Fatalf("expected count diagnostic=%#v, want %d", diagnostic.ExpectedCueCount, *test.expectedCount)
+			}
+			if test.actualCount != nil && (diagnostic.ActualCueCount == nil || *diagnostic.ActualCueCount != *test.actualCount) {
+				t.Fatalf("actual count diagnostic=%#v, want %d", diagnostic.ActualCueCount, *test.actualCount)
+			}
+			for _, secret := range []string{"PRIVATE_ID", "PRIVATE_SOURCE_TEXT", "cue-1", "cue-2"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("diagnostic exposed source identity or response data %q: %v", secret, err)
+				}
+			}
+		})
+	}
 }

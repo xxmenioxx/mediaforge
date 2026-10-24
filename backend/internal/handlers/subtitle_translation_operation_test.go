@@ -308,6 +308,42 @@ func TestSubtitleTranslationOperationFailureViewIsTypedAndSecretSafe(t *testing.
 	}
 }
 
+func TestSubtitleTranslationOperationIncludesSanitizedBatchDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+	request := testSubtitleTranslationOperationRequest(filepath.Join(root, "movie.mkv"))
+	expected, actual := 3, 2
+	providerErr := &TranslationProviderError{Class: translationProviderErrorMalformed, Err: &translationResponseDiagnosticError{
+		Category: translationResponseDiagnosticCueCountMismatch, ExpectedCueCount: &expected, ActualCueCount: &actual,
+		Cause: errors.New("PRIVATE_SUBTITLE_TEXT /private/source.mkv"),
+	}}
+	wrapped := withTranslationBatchDiagnostic(providerErr, 1, 4, expected)
+	operationID, startErr := startSubtitleTranslationOperation(request, func(_ context.Context, _ string, _ string, _ subtitleTranslationOperationRequest) error {
+		return wrapped
+	})
+	if startErr != nil {
+		t.Fatal(startErr)
+	}
+	defer deleteSubtitleTranslationOperation(operationID)
+	operation := waitForSubtitleTranslationOperation(t, operationID, "error")
+	if operation.Translation == nil || operation.Translation.ProviderDiagnostics == nil {
+		t.Fatalf("sanitized provider diagnostics missing: %#v", operation.Translation)
+	}
+	diagnostics := operation.Translation.ProviderDiagnostics
+	if diagnostics.Category != translationResponseDiagnosticCueCountMismatch || diagnostics.BatchIndex != 2 || diagnostics.BatchCount != 4 || diagnostics.ExpectedCueCount == nil || *diagnostics.ExpectedCueCount != expected || diagnostics.ActualCueCount == nil || *diagnostics.ActualCueCount != actual {
+		t.Fatalf("unexpected provider diagnostics: %#v", diagnostics)
+	}
+	encoded, err := json.Marshal(operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"PRIVATE_SUBTITLE_TEXT", "/private/source.mkv"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("serialized operation leaked %q: %s", secret, encoded)
+		}
+	}
+}
+
 func TestSubtitleTranslationFailureClassDoesNotTreatPlainDeadlineAsProviderTimeout(t *testing.T) {
 	if got := subtitleTranslationFailureClassOf(context.DeadlineExceeded); got != subtitleTranslationFailureTranslationFailed {
 		t.Fatalf("plain deadline class=%q, want %q", got, subtitleTranslationFailureTranslationFailed)
