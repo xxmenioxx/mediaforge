@@ -34,7 +34,7 @@ export type SettingsSection = (typeof settingsSections)[number];
 
 export type SettingsDraftSection = Extract<
   SettingsSection,
-  'general' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'validation' | 'archive' | 'operations' | 'test-encode' | 'advanced'
+  'general' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'validation' | 'archive' | 'operations' | 'subtitles' | 'test-encode' | 'advanced'
 >;
 
 type SettingsSectionDefinition = {

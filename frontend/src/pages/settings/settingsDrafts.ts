@@ -11,7 +11,7 @@ export type StoredSettingsDraft = {
   section: SettingsSection;
 };
 
-const draftSections: SettingsDraftSection[] = ['general', 'pipeline', 'analysis', 'runtime', 'assets', 'asset-defaults', 'validation', 'archive', 'operations', 'test-encode', 'advanced'];
+const draftSections: SettingsDraftSection[] = ['general', 'pipeline', 'analysis', 'runtime', 'assets', 'asset-defaults', 'validation', 'archive', 'operations', 'subtitles', 'test-encode', 'advanced'];
 
 type LegacySettingsForm = Omit<SettingsForm, 'mvforgePreferences' | 'analysisPolicy' | 'profileSampleEstimatePolicy' | 'ordinarySettings'>;
 
@@ -122,6 +122,8 @@ export function settingsDraftSnapshot(form: SettingsForm, section: SettingsDraft
       };
     case 'operations':
       return { cancellationPolicy: form.cancellationPolicy, housekeeping: form.ordinarySettings.housekeeping };
+    case 'subtitles':
+      return form.ordinarySettings.ocrAISettings;
     case 'test-encode':
       return form.ordinarySettings.testEncodePolicy;
     case 'advanced':
@@ -195,6 +197,8 @@ export function mergeSettingsDraftSection(
         cancellationPolicy: source.cancellationPolicy,
         ordinarySettings: { ...target.ordinarySettings, housekeeping: source.ordinarySettings.housekeeping },
       };
+    case 'subtitles':
+      return { ...target, ordinarySettings: { ...target.ordinarySettings, ocrAISettings: source.ordinarySettings.ocrAISettings } };
     case 'test-encode':
       return { ...target, ordinarySettings: { ...target.ordinarySettings, testEncodePolicy: source.ordinarySettings.testEncodePolicy } };
     case 'advanced':

@@ -3,12 +3,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return {
+    ApiRequestError: actual.ApiRequestError,
     api: {
       ...actual.api,
       settings: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock('../api/client', async (importOriginal) => {
       schedulerRecovery: vi.fn(),
       updateSetting: vi.fn(),
       updateSettingsBatch: vi.fn(),
+      listOllamaModels: vi.fn(),
     },
   };
 });
@@ -32,16 +34,28 @@ function CurrentSettingsSearch() {
   return <div data-testid="settings-search">{location.search}</div>;
 }
 
-function renderSettings(initialPath: string) {
+function SettingsRouteControls() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button onClick={() => navigate('/settings?section=general')}>Test route General</button>
+      <button onClick={() => navigate('/settings?section=subtitles')}>Test route Subtitles</button>
+    </>
+  );
+}
+
+function renderSettings(initialPath: string, includeRouteControls = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <MemoryRouter initialEntries={[initialPath]}>
       <QueryClientProvider client={queryClient}>
         <SettingsPage />
         <CurrentSettingsSearch />
+        {includeRouteControls ? <SettingsRouteControls /> : null}
       </QueryClientProvider>
     </MemoryRouter>,
   );
+  return { ...view, queryClient };
 }
 
 function sidebarDraftStatus(sectionTitle: string): boolean {
@@ -135,6 +149,69 @@ describe('Settings domain navigation and drafts', () => {
     expect(batch.settings[0].value).toEqual(expect.objectContaining({ maxConcurrentJobs: 3 }));
     expect(api.updateSetting).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Saved'));
+  }, 15000);
+
+  it('preserves the OCR AI draft through settings refetch and navigation, then saves and refetches it centrally', async () => {
+    const user = userEvent.setup();
+    const initialSettings = [
+      { key: 'workers', value: { defaultWorkerName: 'local', autoWorkerEnabled: true, maxConcurrentJobs: 2, maxJobsPerBatch: 8, delaySecondsBetweenJobs: 0, batchCooldownSeconds: 0, dryRunOnly: false } },
+      { key: 'ollamaProviderSettings', value: { state: 'configured' } },
+      { key: 'subtitleTranslationSettings', value: { enabled: true, model: 'translation-model' } },
+      { key: 'ocrAISettings', value: { enabled: false, model: '' } },
+    ];
+    const changedElsewhereSettings = initialSettings.map((setting) => setting.key === 'ocrAISettings'
+      ? { ...setting, value: { enabled: false, model: 'external-model' } }
+      : setting);
+    const savedSettings = initialSettings.map((setting) => setting.key === 'ocrAISettings'
+      ? { ...setting, value: { enabled: false, model: 'ocr-model:latest' } }
+      : setting);
+    vi.mocked(api.settings).mockReset()
+      .mockResolvedValueOnce(initialSettings as never)
+      .mockResolvedValueOnce(changedElsewhereSettings as never)
+      .mockResolvedValueOnce(changedElsewhereSettings as never)
+      .mockResolvedValue(savedSettings as never);
+    vi.mocked(api.listOllamaModels).mockResolvedValue({
+      state: 'available',
+      installedModels: [{ id: 'ocr-model:latest', name: 'ocr-model:latest' }],
+    } as never);
+
+    let page = renderSettings('/settings?section=subtitles', true);
+    const modelSelect = await screen.findByRole('combobox', { name: 'OCR AI model' });
+    expect(modelSelect.textContent).toContain('No model selected');
+
+    await user.click(screen.getByRole('button', { name: 'Load installed models' }));
+    await waitFor(() => expect(api.listOllamaModels).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('combobox', { name: 'OCR AI model' }));
+    await user.click(await screen.findByRole('option', { name: 'ocr-model:latest' }));
+    expect(screen.getByRole('status').textContent).toBe('Unsaved changes');
+    expect(sidebarDraftStatus('Subtitles')).toBe(true);
+
+    await page.queryClient.invalidateQueries({ queryKey: ['settings'] });
+    expect(api.settings).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('combobox', { name: 'OCR AI model' }).textContent).toContain('ocr-model:latest');
+    expect(await screen.findByText(/settings changed elsewhere/i)).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Test route General' }));
+    expect(await screen.findByRole('heading', { name: 'General' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Test route Subtitles' }));
+    expect(await screen.findByRole('heading', { name: 'Subtitles' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'OCR AI model' }).textContent).toContain('ocr-model:latest');
+
+    page.unmount();
+    page = renderSettings('/settings?section=subtitles', true);
+    expect((await screen.findByRole('combobox', { name: 'OCR AI model' })).textContent).toContain('ocr-model:latest');
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Unsaved changes'));
+
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateSettingsBatch).mock.calls[0][0].settings).toEqual([
+      { key: 'ocrAISettings', value: { enabled: false, model: 'ocr-model:latest' } },
+    ]);
+    await waitFor(() => expect(api.settings).toHaveBeenCalledTimes(4));
+    expect(screen.getByRole('combobox', { name: 'OCR AI model' }).textContent).toContain('ocr-model:latest');
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Saved'));
+    expect(sidebarDraftStatus('Subtitles')).toBe(false);
+    expect(api.updateSetting).not.toHaveBeenCalled();
   }, 15000);
 
   it('uses the section save bar for General and atomic Analysis settings', async () => {
