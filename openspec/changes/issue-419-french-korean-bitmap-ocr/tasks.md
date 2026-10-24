@@ -4,8 +4,9 @@
   fail the build if any required canonical language is absent.
 - [x] Add repeatable container smoke and regression tests for exact runtime
   capabilities and fail-closed missing-language behavior.
-- [ ] Add a decodable synthetic PGS/VobSub fixture and run SeConv recognition;
-  the current repository has no such fixture/generator, and this is explicitly
-  BLOCKED rather than substituted with direct Tesseract model initialization.
+- [x] Add a decodable synthetic French/Korean PGS fixture and run real
+  SeConv/Tesseract recognition in the supported image. The backend E2E validates
+  SRT/ASS sidecars, cue timing, selected stream identity, and bitmap geometry;
+  OCR assertions require recognized text without claiming perfect Korean accuracy.
 - [x] Rebuild and smoke the version-pinned image, then run focused tests, strict
   OpenSpec, and the canonical verifier.
