@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -115,6 +116,7 @@ type subtitleOCRQualityFinding struct {
 	CueID                  int                         `json:"cueId"`
 	OriginalText           string                      `json:"originalText"`
 	Suggestion             string                      `json:"suggestion,omitempty"`
+	AISuggestion           *subtitleOCRAISuggestion    `json:"aiSuggestion,omitempty"`
 	Status                 string                      `json:"status"`
 	Reasons                []string                    `json:"reasons,omitempty"`
 	Evidence               []string                    `json:"evidence,omitempty"`
@@ -156,6 +158,7 @@ type subtitleOCRQualityReport struct {
 	CanCorrect          bool                        `json:"canCorrect"`
 	Findings            []subtitleOCRQualityFinding `json:"findings"`
 	ReviewTarget        *canonicalOCRReviewTarget   `json:"reviewTarget,omitempty"`
+	OCRAI               *subtitleOCRAIReport        `json:"ocrAI,omitempty"`
 }
 
 type subtitleOCRCorrection struct {
@@ -428,6 +431,8 @@ type subtitleOCRAnalyzeInput struct {
 	Format              string                    `json:"format"`
 	LogicalTransformKey string                    `json:"logicalTransformKey,omitempty"`
 	ReviewTarget        *canonicalOCRReviewTarget `json:"reviewTarget,omitempty"`
+	aiLifecycle         *AIModelLifecycle         `json:"-"`
+	ollamaHTTPClient    *http.Client              `json:"-"`
 }
 
 type subtitleOCRCorrectionInput struct {
@@ -1592,6 +1597,16 @@ func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace
 			})
 			return
 		}
+		report, err = enrichSubtitleOCRReportWithAI(ctx, operationID, report, input.ReviewTarget, dictionaryDB, input.aiLifecycle, input.ollamaHTTPClient)
+		if err != nil {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "error"
+				operation.Phase = "error"
+				operation.Message = "OCR review target became stale during analysis"
+				operation.Error = err.Error()
+			})
+			return
+		}
 		updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
 			operation.Status = "completed"
 			operation.Phase = "completed"
@@ -1852,6 +1867,8 @@ func (h AssetHandler) AnalyzeSubtitleOCR(c *gin.Context) {
 		input.SidecarPath = paths[0]
 		input.SidecarPaths = paths
 	}
+	input.aiLifecycle = h.aiModelLifecycle
+	input.ollamaHTTPClient = h.ollamaHTTPClient
 	operationID, err := startSubtitleOCRAnalysisOperation(input, h.db)
 	if err != nil {
 		c.JSON(409, gin.H{"error": err.Error()})
