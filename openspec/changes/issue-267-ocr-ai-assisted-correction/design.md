@@ -12,7 +12,7 @@ Read `ocrAISettings.enabled` and `ocrAISettings.model` for this feature. Disable
 
 ### Require resource admission before inference
 
-Do not send a chat request unless the shared AI lifecycle and inference admission gate are available. The selected model must be resident and available under the existing shared model lifecycle. Resource admission, missing model, offline provider, cancellation, and malformed/provider errors are reported as non-fatal OCR AI states. They do not remove deterministic findings, mutate canonical cues, or block OCR review and Translation.
+Do not send a chat request unless the shared AI lifecycle has made the explicitly selected model resident and the inference admission gate grants a lease. Call the existing `EnsureReady` path before acquiring the inference lease; an installed but nonresident model may use its existing bounded, admission-gated no-prompt warmup and `/api/ps` readiness check. Never pull a missing model or select another model. Preserve the exact source/artifact/baseline and OCR settings/model before and after the readiness wait, and attribute both model-load and inference admission to the OCR AI consumer while Translation keeps its own consumer identity. Resource denial, a missing model, an offline provider, warmup failure, cancellation, and malformed/provider errors are reported as non-fatal OCR AI states. They do not remove deterministic findings, mutate canonical cues, or block OCR review and Translation.
 
 ### Limit and fence input
 

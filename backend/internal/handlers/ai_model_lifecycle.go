@@ -23,13 +23,18 @@ import (
 )
 
 const (
-	aiModelReadinessDeadline = 5 * time.Minute
-	aiModelStatusCacheTTL    = 5 * time.Second
-	aiModelReadinessPoll     = time.Second
-	aiModelMaxActiveOps      = 250
+	aiModelConsumerAssetInfoTranslation = "asset-info-translation"
+	aiModelConsumerSubtitleOCR          = "subtitle-ocr-ai"
+	aiModelReadinessDeadline            = 5 * time.Minute
+	aiModelStatusCacheTTL               = 5 * time.Second
+	aiModelReadinessPoll                = time.Second
+	aiModelMaxActiveOps                 = 250
 )
 
-var errResourceAdmissionUnavailable = errors.New("resource admission unavailable")
+var (
+	errResourceAdmissionUnavailable = errors.New("resource admission unavailable")
+	errAIModelWarmupFailed          = errors.New("AI model warmup failed")
+)
 
 type aiModelAdmission interface {
 	Admit(context.Context, airesource.Request) airesource.Decision
@@ -173,7 +178,21 @@ func modelIsResident(models []ollamaResidentModel, exactModel string) (bool, tim
 	return false, time.Time{}
 }
 
-func (l *aiModelLifecycle) EnsureReady(ctx context.Context, operationID, endpoint, configurationRevision, model string, onPhase func(string, string)) error {
+func resolveAIModelLifecycleConsumerID(consumerIDs []string) (string, error) {
+	if len(consumerIDs) > 1 {
+		return "", errors.New("AI model lifecycle accepts one consumer identity")
+	}
+	consumerID := aiModelConsumerAssetInfoTranslation
+	if len(consumerIDs) == 1 {
+		consumerID = strings.TrimSpace(consumerIDs[0])
+	}
+	if consumerID == "" {
+		return "", errors.New("AI model lifecycle consumer identity is unavailable")
+	}
+	return consumerID, nil
+}
+
+func (l *aiModelLifecycle) EnsureReady(ctx context.Context, operationID, endpoint, configurationRevision, model string, onPhase func(string, string), consumerIDs ...string) error {
 	if l == nil || l.admission == nil || l.db == nil {
 		return errors.New("AI model lifecycle is unavailable")
 	}
@@ -190,6 +209,10 @@ func (l *aiModelLifecycle) EnsureReady(ctx context.Context, operationID, endpoin
 	model = strings.TrimSpace(model)
 	if model == "" || strings.TrimSpace(endpoint) == "" || strings.TrimSpace(configurationRevision) == "" {
 		return errors.New("selected Ollama model configuration is incomplete")
+	}
+	consumerID, err := resolveAIModelLifecycleConsumerID(consumerIDs)
+	if err != nil {
+		return err
 	}
 	key := lifecycleKey(configurationRevision, model)
 	providerConfigurationID := ollamaProviderConfigurationID(endpoint)
@@ -219,7 +242,7 @@ func (l *aiModelLifecycle) EnsureReady(ctx context.Context, operationID, endpoin
 			sharedCtx, cancel := context.WithCancel(context.Background())
 			flight = &lifecycleFlight{done: make(chan struct{}), cancel: cancel, waiters: map[string]lifecycleWaiter{}}
 			l.flights[key] = flight
-			go l.warmSingleflight(sharedCtx, key, endpoint, providerConfigurationID, configurationRevision, model, flight)
+			go l.warmSingleflight(sharedCtx, key, endpoint, providerConfigurationID, configurationRevision, model, consumerID, flight)
 		}
 		flight.waiters[waiterID] = lifecycleWaiter{id: waiterID, callback: onPhase}
 		l.mu.Unlock()
@@ -264,8 +287,8 @@ func (l *aiModelLifecycle) emitFlightPhase(flight *lifecycleFlight, phase, reaso
 	}
 }
 
-func (l *aiModelLifecycle) warmSingleflight(ctx context.Context, key, endpoint, providerConfigurationID, configurationRevision, model string, flight *lifecycleFlight) {
-	err := l.warm(ctx, key, endpoint, providerConfigurationID, configurationRevision, model, flight)
+func (l *aiModelLifecycle) warmSingleflight(ctx context.Context, key, endpoint, providerConfigurationID, configurationRevision, model, consumerID string, flight *lifecycleFlight) {
+	err := l.warm(ctx, key, endpoint, providerConfigurationID, configurationRevision, model, consumerID, flight)
 	l.mu.Lock()
 	flight.err = err
 	if l.flights[key] == flight {
@@ -275,7 +298,7 @@ func (l *aiModelLifecycle) warmSingleflight(ctx context.Context, key, endpoint, 
 	l.mu.Unlock()
 }
 
-func (l *aiModelLifecycle) warm(ctx context.Context, key, endpoint, providerConfigurationID, configurationRevision, model string, flight *lifecycleFlight) (resultErr error) {
+func (l *aiModelLifecycle) warm(ctx context.Context, key, endpoint, providerConfigurationID, configurationRevision, model, consumerID string, flight *lifecycleFlight) (resultErr error) {
 	setState := func(state, reason string, expiry time.Time) {
 		l.mu.Lock()
 		current := l.states[key]
@@ -328,7 +351,7 @@ func (l *aiModelLifecycle) warm(ctx context.Context, key, endpoint, providerConf
 	workflowID := "model-load:" + configurationRevision + ":" + model
 	lease, err := l.admit(ctx, airesource.Request{
 		CapacityDomain: l.capacityDomain, ProviderConfigurationID: providerConfigurationID, ModelID: model,
-		ConsumerID: "asset-info-translation", WorkflowID: workflowID, RequestID: requestID,
+		ConsumerID: consumerID, WorkflowID: workflowID, RequestID: requestID,
 		Purpose: airesource.PurposeModelLoad, OperationDeadline: time.Now().Add(subtitleOperationTimeout),
 	}, func(reason string) {
 		l.emitFlightPhase(flight, "WAITING_FOR_RESOURCES", reason)
@@ -376,7 +399,7 @@ func (l *aiModelLifecycle) warm(ctx context.Context, key, endpoint, providerConf
 		}
 		setState("FAILED", "warmup_failed", time.Time{})
 		l.emitFlightPhase(flight, "FAILED", "Ollama model warmup did not complete")
-		return errors.New("Ollama model warmup did not complete")
+		return fmt.Errorf("%w: Ollama model warmup did not complete", errAIModelWarmupFailed)
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -394,7 +417,7 @@ func (l *aiModelLifecycle) warm(ctx context.Context, key, endpoint, providerConf
 		if !time.Now().Before(readyDeadline) {
 			setState("FAILED", "model_readiness_timeout", time.Time{})
 			l.emitFlightPhase(flight, "FAILED", "Ollama did not report the selected model as resident before the readiness deadline")
-			return errors.New("Ollama did not report the selected model as resident before the readiness deadline")
+			return fmt.Errorf("%w: Ollama did not report the selected model as resident before the readiness deadline", errAIModelWarmupFailed)
 		}
 		timer := time.NewTimer(readinessPoll)
 		select {
@@ -550,14 +573,18 @@ func (l *aiModelLifecycle) setModelState(key, state, reason string, expiresAt ti
 	l.states[key] = current
 }
 
-func (l *aiModelLifecycle) acquireInference(ctx context.Context, operationID, workflowID, endpoint, configurationRevision, model string, onPhase func(string, string)) (*airesource.Lease, error) {
+func (l *aiModelLifecycle) acquireInference(ctx context.Context, operationID, workflowID, endpoint, configurationRevision, model string, onPhase func(string, string), consumerIDs ...string) (*airesource.Lease, error) {
+	consumerID, err := resolveAIModelLifecycleConsumerID(consumerIDs)
+	if err != nil {
+		return nil, err
+	}
 	requestID, err := newAdmissionRequestID()
 	if err != nil {
 		return nil, err
 	}
 	lease, err := l.admit(ctx, airesource.Request{
 		CapacityDomain: l.capacityDomain, ProviderConfigurationID: ollamaProviderConfigurationID(endpoint), ModelID: model,
-		ConsumerID: "asset-info-translation", WorkflowID: workflowID, RequestID: requestID,
+		ConsumerID: consumerID, WorkflowID: workflowID, RequestID: requestID,
 		Purpose: airesource.PurposeInference, OperationDeadline: time.Now().Add(subtitleOperationTimeout),
 	}, func(reason string) {
 		if onPhase != nil {
@@ -729,13 +756,13 @@ func (p lifecycleTranslationProvider) Translate(ctx context.Context, batch Trans
 	if p.manager == nil || p.provider == nil {
 		return TranslationBatchResult{}, errors.New("protected Translation provider is unavailable")
 	}
-	if err := p.manager.EnsureReady(ctx, p.operationID, p.endpoint, p.configurationRevision, p.model, p.onPhase); err != nil {
+	if err := p.manager.EnsureReady(ctx, p.operationID, p.endpoint, p.configurationRevision, p.model, p.onPhase, aiModelConsumerAssetInfoTranslation); err != nil {
 		return TranslationBatchResult{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return TranslationBatchResult{}, err
 	}
-	lease, err := p.manager.acquireInference(ctx, p.operationID, p.workflowID, p.endpoint, p.configurationRevision, p.model, p.onPhase)
+	lease, err := p.manager.acquireInference(ctx, p.operationID, p.workflowID, p.endpoint, p.configurationRevision, p.model, p.onPhase, aiModelConsumerAssetInfoTranslation)
 	if err != nil {
 		return TranslationBatchResult{}, err
 	}

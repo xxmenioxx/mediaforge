@@ -169,11 +169,48 @@ func enrichSubtitleOCRReportWithAI(
 			return report, nil
 		}
 
+		configurationRevision := providerConfigurationRevision(providerConfiguration.SharedEndpoint, selection.Model)
+		if readyErr := lifecycle.manager.EnsureReady(
+			ctx, operationID, providerConfiguration.SharedEndpoint, configurationRevision, selection.Model, nil, aiModelConsumerSubtitleOCR,
+		); readyErr != nil {
+			if ctx.Err() != nil {
+				report.OCRAI.State = "cancelled"
+				report.OCRAI.Notice = "AI review was cancelled while preparing the selected model; deterministic OCR review remains available."
+			} else if errors.Is(readyErr, errAIModelWarmupFailed) {
+				report.OCRAI.State = "warmup_failed"
+				report.OCRAI.Notice = "The selected OCR model could not be loaded; no suggestion request was sent."
+			} else if errors.Is(readyErr, errResourceAdmissionUnavailable) || strings.Contains(strings.ToLower(readyErr.Error()), "admission") {
+				report.OCRAI.State = "resource_unavailable"
+				report.OCRAI.Notice = "AI resource admission did not grant model readiness; no suggestion request was sent."
+			} else {
+				report.OCRAI.State = "model_unavailable"
+				report.OCRAI.Notice = "The explicitly selected OCR model is unavailable; no suggestion request was sent."
+			}
+			return report, nil
+		}
+		if ctx.Err() != nil {
+			report.OCRAI.State = "cancelled"
+			report.OCRAI.Notice = "AI review was cancelled while preparing the selected model; deterministic OCR review remains available."
+			return report, nil
+		}
+		if err := validateSubtitleOCRAIReviewTarget(target); err != nil {
+			report.OCRAI.State = "stale"
+			report.OCRAI.Notice = "The exact OCR source or sidecar revision changed while preparing the model; AI suggestions were discarded."
+			return report, err
+		}
+		currentSelection, selectionErr = loadSubtitleOCRAISelection(db)
+		currentProvider, currentProviderErr = loadOllamaProviderConfiguration(db)
+		if selectionErr != nil || currentSelection != selection || currentProviderErr != nil ||
+			currentProvider.State != ollamaProviderStateConfigured || currentProvider.SharedEndpoint != providerConfiguration.SharedEndpoint {
+			report.OCRAI.State = "configuration_changed"
+			report.OCRAI.Notice = "OCR AI settings changed while preparing the model; suggestions were discarded."
+			return report, nil
+		}
+
 		end := min(start+subtitleProofreadingMaxBatchCues, len(cues))
 		batch := cues[start:end]
-		configurationRevision := providerConfigurationRevision(providerConfiguration.SharedEndpoint, selection.Model)
 		lease, admissionErr := lifecycle.manager.acquireInference(
-			ctx, operationID, workflowID, providerConfiguration.SharedEndpoint, configurationRevision, selection.Model, nil,
+			ctx, operationID, workflowID, providerConfiguration.SharedEndpoint, configurationRevision, selection.Model, nil, aiModelConsumerSubtitleOCR,
 		)
 		if admissionErr != nil {
 			report.OCRAI.State = "resource_unavailable"

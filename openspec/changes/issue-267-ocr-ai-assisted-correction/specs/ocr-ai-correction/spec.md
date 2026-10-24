@@ -21,12 +21,33 @@ OCR AI assistance MUST be disabled when no OCR AI setting exists and MUST use on
 
 OCR AI MUST use the shared Ollama provider and shared resource admission lifecycle. It MUST make no inference request when admission or the explicitly selected model is unavailable. It MUST consider only suspicious cues remaining after deterministic dictionary and quality analysis, and MUST bound cue text, contextual text, batch size, and total cue count. Clean or already-resolved cues MUST NOT be sent.
 
+Before acquiring an inference lease, OCR AI MUST call the shared model lifecycle readiness path for the explicit OCR model. An installed but nonresident model MAY be warmed through the existing bounded model-load admission and no-prompt warmup; readiness MUST be confirmed by the shared residency authority. The operation MUST revalidate the captured source/artifact/baseline and OCR settings/model after readiness returns and before inference. It MUST NOT pull an unavailable model or infer using Translation's model. Model-load and inference admission MUST be attributed to the OCR AI consumer; Translation attribution MUST remain unchanged.
+
 #### Scenario: Resource admission is unavailable
 
 - **WHEN** OCR AI is enabled but the shared lifecycle or inference admission gate is unavailable or denies the request
 - **THEN** the report exposes a resource-unavailable state
 - **AND** no inference request is made
 - **AND** canonical OCR findings and review remain available
+
+#### Scenario: An installed OCR model cold-starts before inference
+
+- **WHEN** the explicitly selected OCR model is installed but is not resident and model-load admission is granted
+- **THEN** the shared lifecycle sends one bounded no-prompt warmup for that exact model
+- **AND** it waits until the exact model is reported resident before acquiring inference admission
+- **AND** the subsequent chat uses the exact OCR model and is attributed to the OCR AI consumer
+
+#### Scenario: Warmup or readiness fails
+
+- **WHEN** model-load admission is denied, warmup fails, readiness times out, or the operation is cancelled while waiting
+- **THEN** no OCR inference request is sent and no AI suggestion is exposed
+- **AND** deterministic OCR findings and review remain available
+
+#### Scenario: Source or OCR settings change during warmup
+
+- **WHEN** the source/artifact/baseline revision or explicit OCR model settings change while the shared lifecycle waits for readiness
+- **THEN** the operation discards the readiness result before acquiring inference admission
+- **AND** it sends no OCR inference request and exposes no suggestion
 
 #### Scenario: Only bounded suspicious cues are submitted
 

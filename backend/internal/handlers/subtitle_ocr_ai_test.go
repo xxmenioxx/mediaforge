@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/airesource"
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -57,10 +58,18 @@ type subtitleOCRAITestServer struct {
 	mu            sync.Mutex
 	chatCalls     int
 	processCalls  int
+	tagsCalls     int
+	warmupCalls   int
 	requestModels []string
+	warmupModels  []string
+	events        []string
 	requests      []subtitleProofreadingProviderRequest
 	mutate        func()
 	resident      bool
+	installed     bool
+	warmupFailed  bool
+	warmupStarted chan struct{}
+	warmupRelease chan struct{}
 	malformed     bool
 	model         string
 	suggestion    string
@@ -68,13 +77,14 @@ type subtitleOCRAITestServer struct {
 
 func newSubtitleOCRAITestServer(t *testing.T, model string) *subtitleOCRAITestServer {
 	t.Helper()
-	state := &subtitleOCRAITestServer{model: model, resident: true, suggestion: "Hello world"}
+	state := &subtitleOCRAITestServer{model: model, resident: true, installed: true, suggestion: "Hello world"}
 	state.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/api/ps":
 			state.mu.Lock()
 			state.processCalls++
+			state.events = append(state.events, "ps")
 			resident := state.resident
 			state.mu.Unlock()
 			models := []map[string]string{}
@@ -82,6 +92,57 @@ func newSubtitleOCRAITestServer(t *testing.T, model string) *subtitleOCRAITestSe
 				models = append(models, map[string]string{"name": state.model, "model": state.model})
 			}
 			_ = json.NewEncoder(writer).Encode(map[string]any{"models": models})
+		case "/api/tags":
+			state.mu.Lock()
+			state.tagsCalls++
+			state.events = append(state.events, "tags")
+			installed := state.installed
+			state.mu.Unlock()
+			models := []map[string]string{}
+			if installed {
+				models = append(models, map[string]string{"name": state.model, "model": state.model})
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]any{"models": models})
+		case "/api/generate":
+			var body map[string]json.RawMessage
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			var model string
+			_ = json.Unmarshal(body["model"], &model)
+			if _, hasPrompt := body["prompt"]; hasPrompt {
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			state.mu.Lock()
+			state.warmupCalls++
+			state.warmupModels = append(state.warmupModels, model)
+			state.events = append(state.events, "warmup")
+			started, release, failed := state.warmupStarted, state.warmupRelease, state.warmupFailed
+			state.mu.Unlock()
+			if started != nil {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+			}
+			if release != nil {
+				select {
+				case <-release:
+				case <-request.Context().Done():
+					return
+				}
+			}
+			if failed {
+				writer.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(writer).Encode(map[string]string{"error": "fixture warmup failed"})
+				return
+			}
+			state.mu.Lock()
+			state.resident = true
+			state.mu.Unlock()
+			_ = json.NewEncoder(writer).Encode(map[string]any{"done": true})
 		case "/api/chat":
 			var chat ollamaChatRequest
 			if err := json.NewDecoder(request.Body).Decode(&chat); err != nil {
@@ -90,6 +151,7 @@ func newSubtitleOCRAITestServer(t *testing.T, model string) *subtitleOCRAITestSe
 			}
 			state.mu.Lock()
 			state.chatCalls++
+			state.events = append(state.events, "chat")
 			state.requestModels = append(state.requestModels, chat.Model)
 			state.mu.Unlock()
 			if len(chat.Messages) != 1 {
@@ -147,6 +209,21 @@ func (state *subtitleOCRAITestServer) captured() ([]string, []subtitleProofreadi
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	return append([]string(nil), state.requestModels...), append([]subtitleProofreadingProviderRequest(nil), state.requests...)
+}
+
+func (state *subtitleOCRAITestServer) warmupCounts() (tags, warmups int, models []string, events []string) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.tagsCalls, state.warmupCalls, append([]string(nil), state.warmupModels...), append([]string(nil), state.events...)
+}
+
+func (state *subtitleOCRAITestServer) waitForWarmup(t *testing.T) {
+	t.Helper()
+	select {
+	case <-state.warmupStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("model warmup did not begin")
+	}
 }
 
 func newSubtitleOCRAITestDB(t *testing.T, endpoint string, enabled bool, model string) *gorm.DB {
@@ -239,7 +316,8 @@ func TestSubtitleOCRAIUsesExplicitModelAndLeavesCanonicalApprovalFlowUnchanged(t
 	admission.mu.Lock()
 	admitted := append([]airesource.Request(nil), admission.requests...)
 	admission.mu.Unlock()
-	if len(admitted) != 1 || admitted[0].ModelID != subtitleOCRAITestModel || admitted[0].Purpose != airesource.PurposeInference {
+	if len(admitted) != 1 || admitted[0].ModelID != subtitleOCRAITestModel || admitted[0].Purpose != airesource.PurposeInference ||
+		admitted[0].ConsumerID != aiModelConsumerSubtitleOCR {
 		t.Fatalf("resource admission did not fence inference to the selected OCR model: %#v", admitted)
 	}
 	afterSidecar, err := os.ReadFile(fixture.sidecar)
@@ -321,10 +399,31 @@ func TestSubtitleOCRAIDisabledAndAdmissionUnavailableSendNoModelRequests(t *test
 			t.Fatalf("missing admission gate made provider requests: /api/ps=%d /api/chat=%d", process, chat)
 		}
 	})
+	t.Run("model-load admission denied", func(t *testing.T) {
+		fixture := newCanonicalOCRReviewFixture(t, "Hello|world", 2)
+		server := newSubtitleOCRAITestServer(t, subtitleOCRAITestModel)
+		server.resident = false
+		db := newSubtitleOCRAITestDB(t, server.server.URL, true, subtitleOCRAITestModel)
+		admission := &subtitleOCRAITestAdmission{decisionStatus: airesource.Denied}
+		lifecycle := subtitleOCRAIEnabledLifecycle(db, server, admission, true)
+		report := newSubtitleOCRAIFixtureReport(t, fixture)
+		report, err := enrichSubtitleOCRReportWithAI(context.Background(), "ocr-ai-denied-load", report, fixture.target, db, lifecycle, server.server.Client())
+		if err != nil || report.OCRAI == nil || report.OCRAI.State != "resource_unavailable" || report.Findings[0].AISuggestion != nil {
+			t.Fatalf("denied model-load admission was not a nonfatal fail-closed result: report=%#v err=%v", report.OCRAI, err)
+		}
+		_, chat := server.counts()
+		_, warmups, _, _ := server.warmupCounts()
+		admission.mu.Lock()
+		requests := append([]airesource.Request(nil), admission.requests...)
+		admission.mu.Unlock()
+		if warmups != 0 || chat != 0 || len(requests) != 1 || requests[0].Purpose != airesource.PurposeModelLoad {
+			t.Fatalf("denied model-load admission allowed warmup or inference: warmups=%d chat=%d requests=%#v", warmups, chat, requests)
+		}
+	})
 }
 
-func TestSubtitleOCRAIRequiresResidentSelectedModelAndRejectsMalformedResponse(t *testing.T) {
-	t.Run("model is not resident", func(t *testing.T) {
+func TestSubtitleOCRAIColdStartsSelectedModelAndRejectsMalformedResponse(t *testing.T) {
+	t.Run("model is installed but not resident", func(t *testing.T) {
 		fixture := newCanonicalOCRReviewFixture(t, "Hello|world", 2)
 		server := newSubtitleOCRAITestServer(t, subtitleOCRAITestModel)
 		server.resident = false
@@ -333,12 +432,54 @@ func TestSubtitleOCRAIRequiresResidentSelectedModelAndRejectsMalformedResponse(t
 		lifecycle := subtitleOCRAIEnabledLifecycle(db, server, admission, true)
 		report := newSubtitleOCRAIFixtureReport(t, fixture)
 		report, err := enrichSubtitleOCRReportWithAI(context.Background(), "ocr-ai-not-resident", report, fixture.target, db, lifecycle, server.server.Client())
-		if err != nil || report.OCRAI == nil || report.OCRAI.State != "model_unavailable" {
-			t.Fatalf("nonresident OCR model was not reported safely: report=%#v err=%v", report.OCRAI, err)
+		if err != nil || report.OCRAI == nil || report.OCRAI.State != "suggestions_ready" || report.Findings[0].AISuggestion == nil {
+			t.Fatalf("installed nonresident OCR model did not cold-start into suggestions: report=%#v err=%v", report.OCRAI, err)
 		}
 		process, chat := server.counts()
-		if process != 1 || chat != 0 || admission.releases != 1 {
-			t.Fatalf("nonresident model reached inference or leaked admission: /api/ps=%d /api/chat=%d releases=%d", process, chat, admission.releases)
+		tags, warmups, warmupModels, events := server.warmupCounts()
+		if process < 2 || tags != 1 || warmups != 1 || chat != 1 || len(warmupModels) != 1 ||
+			warmupModels[0] != subtitleOCRAITestModel || admission.releases != 2 {
+			t.Fatalf("cold-start lifecycle did not warm then infer with released leases: /api/ps=%d /api/tags=%d /api/generate=%d /api/chat=%d warmupModels=%v releases=%d", process, tags, warmups, chat, warmupModels, admission.releases)
+		}
+		warmupIndex, chatIndex := -1, -1
+		for i, event := range events {
+			if event == "warmup" && warmupIndex < 0 {
+				warmupIndex = i
+			}
+			if event == "chat" && chatIndex < 0 {
+				chatIndex = i
+			}
+		}
+		if warmupIndex < 0 || chatIndex <= warmupIndex {
+			t.Fatalf("inference chat did not follow model warmup: %v", events)
+		}
+		admission.mu.Lock()
+		admitted := append([]airesource.Request(nil), admission.requests...)
+		admission.mu.Unlock()
+		if len(admitted) != 2 || admitted[0].Purpose != airesource.PurposeModelLoad ||
+			admitted[1].Purpose != airesource.PurposeInference || admitted[0].ConsumerID != aiModelConsumerSubtitleOCR ||
+			admitted[1].ConsumerID != aiModelConsumerSubtitleOCR || admitted[0].ModelID != subtitleOCRAITestModel ||
+			admitted[1].ModelID != subtitleOCRAITestModel {
+			t.Fatalf("model-load and inference admission were not attributed to OCR AI: %#v", admitted)
+		}
+	})
+	t.Run("warmup failure does not infer or attach suggestions", func(t *testing.T) {
+		fixture := newCanonicalOCRReviewFixture(t, "Hello|world", 2)
+		server := newSubtitleOCRAITestServer(t, subtitleOCRAITestModel)
+		server.resident = false
+		server.warmupFailed = true
+		db := newSubtitleOCRAITestDB(t, server.server.URL, true, subtitleOCRAITestModel)
+		admission := &subtitleOCRAITestAdmission{}
+		lifecycle := subtitleOCRAIEnabledLifecycle(db, server, admission, true)
+		report := newSubtitleOCRAIFixtureReport(t, fixture)
+		report, err := enrichSubtitleOCRReportWithAI(context.Background(), "ocr-ai-warmup-failed", report, fixture.target, db, lifecycle, server.server.Client())
+		if err != nil || report.OCRAI == nil || report.OCRAI.State != "warmup_failed" || report.Findings[0].AISuggestion != nil {
+			t.Fatalf("failed warmup was not reported without suggestions: report=%#v err=%v", report.OCRAI, err)
+		}
+		_, chat := server.counts()
+		_, warmups, _, _ := server.warmupCounts()
+		if warmups != 1 || chat != 0 || admission.releases != 1 {
+			t.Fatalf("failed warmup reached inference or leaked the load lease: warmups=%d chat=%d releases=%d", warmups, chat, admission.releases)
 		}
 	})
 	t.Run("malformed response", func(t *testing.T) {
@@ -352,6 +493,119 @@ func TestSubtitleOCRAIRequiresResidentSelectedModelAndRejectsMalformedResponse(t
 		report, err := enrichSubtitleOCRReportWithAI(context.Background(), "ocr-ai-malformed", report, fixture.target, db, lifecycle, server.server.Client())
 		if err != nil || report.OCRAI == nil || report.OCRAI.State != "provider_failed" || report.Findings[0].AISuggestion != nil {
 			t.Fatalf("malformed model response was not discarded: report=%#v err=%v", report, err)
+		}
+	})
+}
+
+func TestSubtitleOCRAIRevalidatesAfterWarmupAndHonorsCancellation(t *testing.T) {
+	t.Run("cancel during warmup", func(t *testing.T) {
+		fixture := newCanonicalOCRReviewFixture(t, "Hello|world", 2)
+		server := newSubtitleOCRAITestServer(t, subtitleOCRAITestModel)
+		server.resident = false
+		server.warmupStarted = make(chan struct{}, 1)
+		server.warmupRelease = make(chan struct{})
+		db := newSubtitleOCRAITestDB(t, server.server.URL, true, subtitleOCRAITestModel)
+		admission := &subtitleOCRAITestAdmission{}
+		lifecycle := subtitleOCRAIEnabledLifecycle(db, server, admission, true)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		fixtureReport := newSubtitleOCRAIFixtureReport(t, fixture)
+		type result struct {
+			report subtitleOCRQualityReport
+			err    error
+		}
+		completed := make(chan result, 1)
+		go func() {
+			report, err := enrichSubtitleOCRReportWithAI(ctx, "ocr-ai-cancel-warmup", fixtureReport, fixture.target, db, lifecycle, server.server.Client())
+			completed <- result{report: report, err: err}
+		}()
+		server.waitForWarmup(t)
+		cancel()
+		got := <-completed
+		select {
+		case <-server.warmupRelease:
+		default:
+			close(server.warmupRelease)
+		}
+		if got.err != nil || got.report.OCRAI == nil || got.report.OCRAI.State != "cancelled" || got.report.Findings[0].AISuggestion != nil {
+			t.Fatalf("cancelled warmup produced inference or suggestions: state=%#v suggestion=%#v err=%v", got.report.OCRAI, got.report.Findings[0].AISuggestion, got.err)
+		}
+		_, chat := server.counts()
+		if chat != 0 {
+			t.Fatalf("cancelled model warmup issued %d chat requests", chat)
+		}
+	})
+	t.Run("source revision changes during warmup", func(t *testing.T) {
+		fixture := newCanonicalOCRReviewFixture(t, "Hello|world", 2)
+		server := newSubtitleOCRAITestServer(t, subtitleOCRAITestModel)
+		server.resident = false
+		server.warmupStarted = make(chan struct{}, 1)
+		server.warmupRelease = make(chan struct{})
+		var releaseOnce sync.Once
+		releaseWarmup := func() { releaseOnce.Do(func() { close(server.warmupRelease) }) }
+		defer releaseWarmup()
+		db := newSubtitleOCRAITestDB(t, server.server.URL, true, subtitleOCRAITestModel)
+		admission := &subtitleOCRAITestAdmission{}
+		lifecycle := subtitleOCRAIEnabledLifecycle(db, server, admission, true)
+		fixtureReport := newSubtitleOCRAIFixtureReport(t, fixture)
+		type result struct {
+			report subtitleOCRQualityReport
+			err    error
+		}
+		completed := make(chan result, 1)
+		go func() {
+			report, err := enrichSubtitleOCRReportWithAI(context.Background(), "ocr-ai-source-changed-warmup", fixtureReport, fixture.target, db, lifecycle, server.server.Client())
+			completed <- result{report: report, err: err}
+		}()
+		server.waitForWarmup(t)
+		if err := os.WriteFile(fixture.mediaPath, []byte("changed protected source during warmup"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		releaseWarmup()
+		got := <-completed
+		if !errors.Is(got.err, errSubtitleOCRAIStaleTarget) || got.report.OCRAI == nil || got.report.OCRAI.State != "stale" || got.report.Findings[0].AISuggestion != nil {
+			t.Fatalf("source change during model warmup was not fenced: state=%#v suggestion=%#v err=%v", got.report.OCRAI, got.report.Findings[0].AISuggestion, got.err)
+		}
+		_, chat := server.counts()
+		if chat != 0 {
+			t.Fatalf("stale source reached inference with %d chat requests", chat)
+		}
+	})
+	t.Run("OCR model setting changes during warmup", func(t *testing.T) {
+		fixture := newCanonicalOCRReviewFixture(t, "Hello|world", 2)
+		server := newSubtitleOCRAITestServer(t, subtitleOCRAITestModel)
+		server.resident = false
+		server.warmupStarted = make(chan struct{}, 1)
+		server.warmupRelease = make(chan struct{})
+		var releaseOnce sync.Once
+		releaseWarmup := func() { releaseOnce.Do(func() { close(server.warmupRelease) }) }
+		defer releaseWarmup()
+		db := newSubtitleOCRAITestDB(t, server.server.URL, true, subtitleOCRAITestModel)
+		admission := &subtitleOCRAITestAdmission{}
+		lifecycle := subtitleOCRAIEnabledLifecycle(db, server, admission, true)
+		fixtureReport := newSubtitleOCRAIFixtureReport(t, fixture)
+		type result struct {
+			report subtitleOCRQualityReport
+			err    error
+		}
+		completed := make(chan result, 1)
+		go func() {
+			report, err := enrichSubtitleOCRReportWithAI(context.Background(), "ocr-ai-settings-changed-warmup", fixtureReport, fixture.target, db, lifecycle, server.server.Client())
+			completed <- result{report: report, err: err}
+		}()
+		server.waitForWarmup(t)
+		if err := db.Model(&models.AppSetting{}).Where("key = ?", ocrAISettingsKey).
+			Update("value", models.JSONMap{"enabled": true, "model": "replacement-ocr-model:latest"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		releaseWarmup()
+		got := <-completed
+		if got.err != nil || got.report.OCRAI == nil || got.report.OCRAI.State != "configuration_changed" || got.report.Findings[0].AISuggestion != nil {
+			t.Fatalf("OCR model change during warmup was not fenced: state=%#v suggestion=%#v err=%v", got.report.OCRAI, got.report.Findings[0].AISuggestion, got.err)
+		}
+		_, chat := server.counts()
+		if chat != 0 {
+			t.Fatalf("settings change during warmup reached inference with %d chat requests", chat)
 		}
 	})
 }
