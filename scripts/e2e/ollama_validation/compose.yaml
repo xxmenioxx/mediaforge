@@ -1,0 +1,157 @@
+name: ${COMPOSE_PROJECT_NAME:?run id required}
+
+services:
+  sandbox-init:
+    image: ${MOCK_IMAGE:?mock image required}
+    command: ["--init-data", "/media"]
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.10
+    volumes:
+      - type: volume
+        source: sandbox-data
+        target: /media
+    networks: [private]
+    labels: &run-labels
+      mvforge.sandbox.owner: ollama-validation
+      mvforge.sandbox.run-id: ${RUN_ID:?run id required}
+      mvforge.sandbox.source-sha: ${SOURCE_SHA:?source sha required}
+      mvforge.sandbox.mode: mock
+    restart: "no"
+
+  backend:
+    image: ${BACKEND_IMAGE:?backend image required}
+    build:
+      context: ${BACKEND_CONTEXT:?exact backend source snapshot required}
+      dockerfile: Dockerfile
+      labels:
+        mvforge.sandbox.owner: ollama-validation
+        mvforge.sandbox.run-id: ${RUN_ID:?run id required}
+        mvforge.sandbox.source-sha: ${SOURCE_SHA:?source sha required}
+        mvforge.sandbox.mode: mock
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 1.5
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    environment:
+      MVFORGE_API_HOST: 0.0.0.0
+      MVFORGE_API_PORT: "8080"
+      MVFORGE_DB_PATH: /media/config/mvforge.db
+      MVFORGE_AI_MODEL_LIFECYCLE_ENABLED: "false"
+      MVFORGE_OCR_LIFECYCLE_ROOT: /media/ocr/work
+      MVFORGE_OCR_PERSISTENT_ROOT: /media/ocr/state
+      XDG_CACHE_HOME: /media/cache/xdg
+      XDG_CONFIG_HOME: /media/config/xdg
+      XDG_DATA_HOME: /media/config/data
+      XDG_STATE_HOME: /media/config/state
+      TMPDIR: /media/tmp
+    volumes:
+      - type: volume
+        source: sandbox-data
+        target: /media
+    expose: ["8080"]
+    networks: [private]
+    labels: *run-labels
+    depends_on:
+      sandbox-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    restart: "no"
+
+  ollama-mock:
+    image: ${MOCK_IMAGE:?mock image required}
+    build:
+      context: ${CHECKOUT_CONTEXT:?worktree path required}
+      dockerfile: scripts/e2e/ollama_validation/Dockerfile.mock
+      labels:
+        mvforge.sandbox.owner: ollama-validation
+        mvforge.sandbox.run-id: ${RUN_ID:?run id required}
+        mvforge.sandbox.source-sha: ${SOURCE_SHA:?source sha required}
+        mvforge.sandbox.mode: mock
+    command: ["--serve"]
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.25
+    expose: ["11434"]
+    networks: [private]
+    labels: *run-labels
+    healthcheck:
+      test: ["CMD", "/mock-ollama", "--healthcheck"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+    restart: "no"
+
+  test-runner:
+    image: ${TEST_IMAGE:?test image required}
+    build:
+      context: ${CHECKOUT_CONTEXT:?worktree path required}
+      dockerfile: scripts/e2e/ollama_validation/Dockerfile.tests
+      labels:
+        mvforge.sandbox.owner: ollama-validation
+        mvforge.sandbox.run-id: ${RUN_ID:?run id required}
+        mvforge.sandbox.source-sha: ${SOURCE_SHA:?source sha required}
+        mvforge.sandbox.mode: mock
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 4g
+    cpus: 2
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    environment:
+      OLLAMA_SANDBOX_ENDPOINT: http://ollama-mock:11434
+      MVFORGE_API_URL: http://backend:8080
+      TMPDIR: /media/tmp
+    command: ["-test.run=^$"]
+    volumes:
+      - type: volume
+        source: sandbox-data
+        target: /media
+    networks: [private]
+    labels: *run-labels
+    depends_on:
+      backend:
+        condition: service_healthy
+      ollama-mock:
+        condition: service_started
+    restart: "no"
+
+networks:
+  private:
+    name: ${COMPOSE_PROJECT_NAME:?run id required}-private
+    driver: bridge
+    internal: true
+    labels:
+      mvforge.sandbox.owner: ollama-validation
+      mvforge.sandbox.run-id: ${RUN_ID:?run id required}
+      mvforge.sandbox.source-sha: ${SOURCE_SHA:?source sha required}
+
+volumes:
+  sandbox-data:
+    name: ${COMPOSE_PROJECT_NAME:?run id required}-data
+    labels:
+      mvforge.sandbox.owner: ollama-validation
+      mvforge.sandbox.run-id: ${RUN_ID:?run id required}
+      mvforge.sandbox.source-sha: ${SOURCE_SHA:?source sha required}

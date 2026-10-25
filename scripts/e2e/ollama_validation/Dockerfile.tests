@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1.7
+ARG GO_IMAGE=golang:1.25-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73
+FROM ${GO_IMAGE}
+WORKDIR /src/backend
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+ENV GOCACHE=/root/.cache/go-build
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    go test -c -tags=ollama_sandbox -o /usr/local/bin/ollama-sandbox.test ./internal/handlers \
+    && go test -c -o /usr/local/bin/ollama-focused.test ./internal/handlers
+ENV TMPDIR=/media/tmp
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/ollama-sandbox.test"]

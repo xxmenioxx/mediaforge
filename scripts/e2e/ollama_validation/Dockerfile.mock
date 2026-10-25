@@ -1,0 +1,18 @@
+ARG GO_IMAGE=golang:1.25-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73
+FROM ${GO_IMAGE} AS build
+WORKDIR /src
+RUN mkdir -p /out/media/config/xdg /out/media/config/data /out/media/config/state \
+    /out/media/media /out/media/raw /out/media/staging /out/media/ocr/work \
+    /out/media/ocr/state /out/media/reports /out/media/cache/xdg \
+    /out/media/cache/go /out/media/tmp /out/media/sidecars /out/media/work \
+    && chown -R 65532:65532 /out/media \
+    && chmod -R 0750 /out/media
+COPY scripts/e2e/ollama_validation/mock_ollama.go ./mock_ollama.go
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/mock-ollama ./mock_ollama.go
+
+FROM scratch
+COPY --from=build /out/mock-ollama /mock-ollama
+COPY --from=build --chown=65532:65532 /out/media /media
+USER 65532:65532
+EXPOSE 11434
+ENTRYPOINT ["/mock-ollama"]
