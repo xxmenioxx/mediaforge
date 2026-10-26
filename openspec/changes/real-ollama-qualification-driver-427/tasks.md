@@ -21,3 +21,11 @@
 - [x] 4.3 Document host telemetry collection, Ollama residency, critical-service guard, key custody, and exact-endpoint egress as distinct trust boundaries; keep `real-preflight` NO-GO.
 - [x] 4.4 Add negative tests for stale RAM/CPU/swap/provider/guard data, forged signatures, wrong identities/domain, invalid values, unavailable files, unsigned publication, and no lease/fallback.
 - [x] 4.5 Run focused Go tests, OpenSpec strict, `git diff --check`, and `./scripts/verify.sh --auto`; confirm no production/NAS access or real inference.
+
+## 5. Fixture-only Linux observer core
+
+- [x] 5.1 Implement bounded parsers for Linux RAM/swap and two-sample CPU counters, with negative synthetic fixtures.
+- [x] 5.2 Decode pre-supplied Ollama `/api/ps` JSON without network contact, and return `unavailable` for unknown critical service evidence.
+- [x] 5.3 Serialize the #431 Ed25519 envelope using a supplied private key, without implementing key custody, file publication, or a daemon.
+- [x] 5.4 Document that no host attestation, production service probes, provisioned signer or real Ollama qualification is provided.
+- [ ] 5.5 Run focused Go tests, strict OpenSpec and canonical verifier, and confirm remote CI/Smoke PASS before considering integration.
