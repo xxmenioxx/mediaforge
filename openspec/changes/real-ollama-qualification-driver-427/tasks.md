@@ -13,3 +13,11 @@
 
 - [x] 3.1 Run focused preflight tests and the existing isolated mock sandbox; confirm no real endpoint, NAS Docker Engine, production database, or filesystem is accessed.
 - [x] 3.2 Validate OpenSpec strict, then run `git diff --check` and `./scripts/verify.sh --full`.
+
+## 4. Trusted observation and canonical admission increment
+
+- [x] 4.1 Add a bounded read-only Ed25519 snapshot reader with exact collector/component identities, capacity-domain binding, schema/value checks, and separately timestamped RAM, swap, CPU, provider residency, and critical-service observations.
+- [x] 4.2 Wire production routes to the trusted source and existing #265 evaluator; reject unsigned observations and evict cached evidence on source failure without changing lifecycle ownership.
+- [x] 4.3 Document host telemetry collection, Ollama residency, critical-service guard, key custody, and exact-endpoint egress as distinct trust boundaries; keep `real-preflight` NO-GO.
+- [x] 4.4 Add negative tests for stale RAM/CPU/swap/provider/guard data, forged signatures, wrong identities/domain, invalid values, unavailable files, unsigned publication, and no lease/fallback.
+- [x] 4.5 Run focused Go tests, OpenSpec strict, `git diff --check`, and `./scripts/verify.sh --auto`; confirm no production/NAS access or real inference.

@@ -16,6 +16,7 @@ const gibibyte int64 = 1 << 30
 
 var supportedMetrics = map[string]struct{}{
 	"cpuLoadPerCore":      {},
+	"cpuUsagePercent":     {},
 	"gpuUsagePercent":     {},
 	"swapPressurePercent": {},
 	"zramPressurePercent": {},

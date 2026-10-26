@@ -33,15 +33,28 @@ var ErrInvalidLease = errors.New("invalid or unknown AI resource lease")
 // Service is a provider-neutral, durable admission port. Observations are
 // pushed by owning adapters; this service does not poll providers or hosts.
 type Service struct {
-	db        *gorm.DB
-	mu        sync.Mutex
-	latest    map[string]Observation
-	watchers  map[string]chan struct{}
-	lastGrant map[string]Purpose
+	db            *gorm.DB
+	trustedSource TrustedObservationSource
+	mu            sync.Mutex
+	latest        map[string]Observation
+	watchers      map[string]chan struct{}
+	lastGrant     map[string]Purpose
 }
 
 func NewService(db *gorm.DB) *Service {
 	return &Service{db: db, latest: map[string]Observation{}, watchers: map[string]chan struct{}{}, lastGrant: map[string]Purpose{}}
+}
+
+// NewServiceWithTrustedObservationSource binds admission to one authenticated
+// observation source. Plain PublishObservation calls are rejected in this
+// mode; source failures clear cached evidence and fail closed.
+func NewServiceWithTrustedObservationSource(db *gorm.DB, source TrustedObservationSource) *Service {
+	if source == nil {
+		source = NewSignedObservationFileSource(SignedObservationFileConfig{})
+	}
+	service := NewService(db)
+	service.trustedSource = source
+	return service
 }
 
 func (s *Service) Admit(ctx context.Context, request Request) Decision {
@@ -56,6 +69,9 @@ func (s *Service) Admit(ctx context.Context, request Request) Decision {
 	key := requestKey(request)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.trustedSource != nil {
+		_ = s.refreshTrustedObservationLocked(ctx, request.CapacityDomain, true)
+	}
 	decision := Decision{Status: Unavailable, Reason: "admission_store_unavailable"}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		settings, err := loadSettings(tx)
@@ -189,6 +205,9 @@ func (s *Service) Preview(ctx context.Context, request Request) Decision {
 	request = normalizeRequest(request)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.trustedSource != nil {
+		_ = s.refreshTrustedObservationLocked(ctx, request.CapacityDomain, false)
+	}
 	now := time.Now().UTC()
 	var decision Decision
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -225,6 +244,9 @@ func (s *Service) PublishObservation(ctx context.Context, observation Observatio
 	if s == nil || s.db == nil || strings.TrimSpace(observation.CapacityDomain) == "" {
 		return errors.New("capacity domain and admission store are required")
 	}
+	if s.trustedSource != nil {
+		return errors.New("unsigned observations are disabled for trusted admission")
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -236,6 +258,28 @@ func (s *Service) PublishObservation(ctx context.Context, observation Observatio
 	}
 	s.latest[observation.CapacityDomain] = cloneObservation(observation)
 	return s.processWaiters(ctx, observation.CapacityDomain, time.Now().UTC())
+}
+
+// refreshTrustedObservationLocked replaces rather than merges cached evidence.
+// A missing, stale, forged, or mismatched source cannot fall back to an older
+// sample. The caller must hold s.mu.
+func (s *Service) refreshTrustedObservationLocked(ctx context.Context, capacityDomain string, processWaiters bool) error {
+	if s.trustedSource == nil {
+		return nil
+	}
+	observation, err := s.trustedSource.CurrentObservation(ctx, capacityDomain)
+	if err != nil || observation.CapacityDomain != capacityDomain || !observation.authenticatedSource {
+		delete(s.latest, capacityDomain)
+		if err != nil {
+			return err
+		}
+		return ErrTrustedObservationIdentity
+	}
+	s.latest[capacityDomain] = cloneObservation(observation)
+	if !processWaiters {
+		return nil
+	}
+	return s.processWaiters(ctx, capacityDomain, time.Now().UTC())
 }
 
 // Await blocks only on an event or the durable ticket's deadline. It does not
@@ -269,9 +313,15 @@ func (s *Service) Await(ctx context.Context, handle WaitHandle) Decision {
 			s.watchers[handle.id] = channel
 		}
 		deadline := record.WaitDeadline
+		capacityDomain := record.CapacityDomain
+		pollTrustedSource := s.trustedSource != nil
 		s.mu.Unlock()
 
-		timer := time.NewTimer(time.Until(deadline))
+		waitDuration := time.Until(deadline)
+		if pollTrustedSource && waitDuration > 5*time.Second {
+			waitDuration = 5 * time.Second
+		}
+		timer := time.NewTimer(waitDuration)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
@@ -289,7 +339,13 @@ func (s *Service) Await(ctx context.Context, handle WaitHandle) Decision {
 				}
 			}
 		case <-timer.C:
-			s.expireWait(handle, time.Now().UTC())
+			if pollTrustedSource && time.Now().Before(deadline) {
+				s.mu.Lock()
+				_ = s.refreshTrustedObservationLocked(ctx, capacityDomain, true)
+				s.mu.Unlock()
+			} else {
+				s.expireWait(handle, time.Now().UTC())
+			}
 		}
 	}
 }
