@@ -350,12 +350,18 @@ class IsolationConfigTests(unittest.TestCase):
 
     def test_real_execution_mode_and_admission_overrides_are_not_exposed(self) -> None:
         parser = build_parser()
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            parser.parse_args(["--mode", "run-real"])
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            parser.parse_args(["--mode", "real-preflight", "--authorize-real"])
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            parser.parse_args(["--mode", "real-preflight", "--admission-status", "ADMITTED"])
+        self.assertEqual(parser.parse_args([]).mode, "mock")
+        unsupported = (
+            ["--mode", "run-real"],
+            ["--mode", "real-preflight", "--authorize-real"],
+            ["--mode", "real-preflight", "--admission-status", "ADMITTED"],
+            ["--mode", "real-preflight", "--host-telemetry-file", "fixture.json"],
+            ["--mode", "real-preflight", "--critical-service-allow"],
+            ["--mode", "real-preflight", "--egress-verified"],
+        )
+        for arguments in unsupported:
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(arguments)
 
 
 if __name__ == "__main__":
