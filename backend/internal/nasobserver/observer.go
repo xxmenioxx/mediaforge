@@ -4,6 +4,7 @@
 package nasobserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -229,27 +230,104 @@ func ParseOllamaPS(content []byte, providerID, source string, observedAt time.Ti
 		len(content) == 0 || len(content) > maxResidencyBody {
 		return Provider{}, errors.New("invalid Ollama residency evidence")
 	}
-	var response struct {
-		Models *[]struct {
-			Name string `json:"name"`
-		} `json:"models"`
+	if err := validateUniqueJSON(content); err != nil {
+		return Provider{}, errors.New("malformed Ollama residency JSON")
 	}
-	if err := json.Unmarshal(content, &response); err != nil || response.Models == nil || len(*response.Models) > maxModels {
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(content, &response); err != nil || response == nil {
 		return Provider{}, errors.New("missing or malformed Ollama residency")
 	}
-	models := make([]ResidentModel, 0, len(*response.Models))
-	seen := make(map[string]struct{}, len(*response.Models))
-	for _, m := range *response.Models {
-		if !validIdentity(m.Name) {
+	modelsJSON, present := response["models"]
+	if !present {
+		return Provider{}, errors.New("missing or malformed Ollama residency")
+	}
+	var models []json.RawMessage
+	if err := json.Unmarshal(modelsJSON, &models); err != nil || models == nil || len(models) > maxModels {
+		return Provider{}, errors.New("missing or malformed Ollama residency")
+	}
+	residents := make([]ResidentModel, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, modelJSON := range models {
+		var model map[string]json.RawMessage
+		if err := json.Unmarshal(modelJSON, &model); err != nil || model == nil {
 			return Provider{}, errors.New("unidentified resident model")
 		}
-		if _, exists := seen[m.Name]; exists {
+		nameJSON, present := model["name"]
+		var name string
+		if !present || json.Unmarshal(nameJSON, &name) != nil || !validIdentity(name) {
+			return Provider{}, errors.New("unidentified resident model")
+		}
+		if _, exists := seen[name]; exists {
 			return Provider{}, errors.New("duplicate resident model identity")
 		}
-		seen[m.Name] = struct{}{}
-		models = append(models, ResidentModel{ProviderConfigurationID: providerID, ModelID: m.Name})
+		seen[name] = struct{}{}
+		residents = append(residents, ResidentModel{ProviderConfigurationID: providerID, ModelID: name})
 	}
-	return Provider{SourceIdentity: source, Available: true, ObservedAt: observedAt, ResidentModels: models}, nil
+	return Provider{SourceIdentity: source, Available: true, ObservedAt: observedAt, ResidentModels: residents}, nil
+}
+
+func validateUniqueJSON(content []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	if err := consumeJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values are not allowed")
+		}
+		return err
+	}
+	return nil
+}
+
+func consumeJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, isDelimiter := token.(json.Delim)
+	if !isDelimiter {
+		return nil
+	}
+	switch delim {
+	case '{':
+		keys := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("invalid JSON object key")
+			}
+			if _, duplicate := keys[key]; duplicate {
+				return errors.New("duplicate JSON object key")
+			}
+			keys[key] = struct{}{}
+			if err := consumeJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return errors.New("unterminated JSON object")
+		}
+	case '[':
+		for decoder.More() {
+			if err := consumeJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return errors.New("unterminated JSON array")
+		}
+	default:
+		return errors.New("unexpected JSON delimiter")
+	}
+	return nil
 }
 
 // ServiceSignals describe independently observed critical-service activity.
