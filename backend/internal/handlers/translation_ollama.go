@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	ollamaTranslationHTTPTimeout     = 60 * time.Second
-	ollamaTranslationRequestTimeout  = 5 * time.Minute
+	ollamaTranslationHTTPTimeout     = 5 * time.Minute
+	ollamaTranslationRequestTimeout  = ollamaTranslationHTTPTimeout
 	ollamaModelKeepAlive             = "30m"
 	ollamaTranslationMaxRequestBody  = 2 * 1024 * 1024
 	ollamaTranslationMaxResponseBody = 2 * 1024 * 1024

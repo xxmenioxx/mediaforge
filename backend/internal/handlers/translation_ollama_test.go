@@ -345,6 +345,13 @@ func TestOllamaTranslationRequestDeadlineUsesEarlierOperationDeadline(t *testing
 	}
 }
 
+func TestSharedOllamaHTTPClientAllowsBoundedTranslationRequest(t *testing.T) {
+	client := NewOllamaProviderHTTPClient()
+	if client.Timeout < ollamaTranslationRequestTimeout {
+		t.Fatalf("shared Ollama HTTP timeout=%s, shorter than translation request cap %s", client.Timeout, ollamaTranslationRequestTimeout)
+	}
+}
+
 func ollamaSyntheticBatch(cueCount int) TranslationBatch {
 	batch := TranslationBatch{ContractVersion: translationProviderContractVersion, SourceLanguage: "en", TargetLocale: "es-419"}
 	for index := 1; index <= cueCount; index++ {
