@@ -31,6 +31,7 @@ DATA_VOLUME_SERVICES = {"sandbox-init", "backend", "test-runner"}
 TMPFS_SERVICES = {"backend", "test-runner"}
 MAX_TMPFS_BYTES = 64 * 1024**2
 FORBIDDEN_PATHS = ("/volume1", "/volume2", "/mnt/nas", "/nas-media-stack", "/media/raw/movies")
+REAL_WORKFLOWS = {"translation-ass", "translation-srt", "ocr-ai"}
 
 
 class HarnessError(RuntimeError):
@@ -525,31 +526,75 @@ def _cleanup(docker: Docker, project: str, run_id: str, source_sha: str, env_fil
     return retained
 
 
-def validate_real_plan(endpoint: str, model: str) -> dict[str, Any]:
-    parsed = urlsplit(endpoint)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise HarnessError("real-plan requires an exact HTTP(S) endpoint without credentials, query, or fragment")
+def validate_real_preflight(endpoint: str, model: str, workflow: str, source_sha: str, run_id: str) -> dict[str, Any]:
+    try:
+        parsed = urlsplit(endpoint)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as error:
+        raise HarnessError("real-preflight endpoint must be a valid exact HTTP(S) service root") from error
+    if parsed.scheme not in {"http", "https"} or not hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise HarnessError("real-preflight requires an exact HTTP(S) endpoint without credentials, query, or fragment")
     if parsed.path not in {"", "/"}:
-        raise HarnessError("real-plan endpoint must name the Ollama service root")
+        raise HarnessError("real-preflight endpoint must name the Ollama service root")
+    if port is None or port < 1 or port > 65535:
+        raise HarnessError("real-preflight endpoint must include an explicit valid port")
     if not model or model != model.strip() or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", model):
-        raise HarnessError("real-plan requires one exact model name")
+        raise HarnessError("real-preflight requires one exact model name")
+    if workflow not in REAL_WORKFLOWS:
+        raise HarnessError("real-preflight requires a supported synthetic workflow")
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise HarnessError("real-preflight requires the exact full lowercase 40-character Git SHA")
+    if not re.fullmatch(r"[0-9a-f]{12,32}", run_id):
+        raise HarnessError("real-preflight requires a unique lowercase hexadecimal run ID")
+
+    blockers = [
+        "moment_of_run_authorization_unavailable",
+        "source_sha_not_bound_to_verified_sandbox_image",
+        "source_attributed_nas_telemetry_unavailable",
+        "swap_pressure_and_capacity_domain_unverified",
+        "ollama_residency_source_unavailable",
+        "critical_service_guard_source_unavailable",
+        "model_load_admission_authority_unavailable",
+        "inference_admission_authority_unavailable",
+        "exact_endpoint_egress_enforcement_unverified",
+    ]
     return {
-        "mode": "real-plan",
-        "result": "PASS",
+        "mode": "real-preflight",
+        "result": "BLOCKED",
         "endpoint": f"{parsed.scheme}://{parsed.netloc}",
         "model": model,
+        "workflow": workflow,
+        "sourceSha": source_sha,
+        "runId": run_id,
         "executionAllowed": False,
+        "providerContacted": False,
+        "modelWarmupExecuted": False,
         "realInferenceExecuted": False,
+        "blockers": blockers,
         "checks": {
             "explicitEndpointAndModel": "PASS",
+            "explicitWorkflowSourceShaAndRunId": "PASS",
+            "sandboxImageSourceSha": "UNVERIFIED",
+            "momentOfRunAuthorization": "UNAVAILABLE",
+            "hostRamCpuSwapTelemetry": "UNAVAILABLE",
+            "actualCapacityDomainBinding": "UNVERIFIED",
+            "ollamaProviderIdentityAndResidency": "UNAVAILABLE",
+            "criticalServiceActivity": "UNAVAILABLE",
+            "modelLoadAdmissionLease": "UNAVAILABLE",
+            "inferenceAdmissionLease": "UNAVAILABLE",
+            "restrictedExactEndpointEgress": "UNVERIFIED",
             "productionSQLiteOrSettingsRead": "NOT_RUN",
-            "hostTelemetry": "PENDING_REAL_ENGINE_OBSERVATION",
-            "liveResourceAdmission": "PENDING_APPLICATION_ADMISSION",
             "maximumConcurrentInference": 1,
-            "simulatedAdmissionAuthorizesRealInference": False,
-            "decision": "NO_GO_UNTIL_LIVE_TELEMETRY_AND_ADMISSION_ARE_VERIFIED",
+            "previewOrCallerEvidenceAuthorizesExecution": False,
+            "decision": "NO_GO_MISSING_TRUSTED_TELEMETRY_ADMISSION_AND_EGRESS",
         },
     }
+
+
+def validate_real_plan(endpoint: str, model: str, workflow: str, source_sha: str, run_id: str) -> dict[str, Any]:
+    """Compatibility spelling for the explicit, non-contacting real preflight."""
+    return validate_real_preflight(endpoint, model, workflow, source_sha, run_id)
 
 
 def run_mock(args: argparse.Namespace) -> dict[str, Any]:
@@ -760,22 +805,25 @@ def run_mock(args: argparse.Namespace) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("mock", "real-plan"), default="mock")
+    parser.add_argument("--mode", choices=("mock", "real-plan", "real-preflight"), default="mock")
     parser.add_argument("--base-sha", default=BASE_SHA)
     parser.add_argument("--context", help="Docker context; defaults to the current context")
     parser.add_argument("--allow-remote-engine", action="store_true", help="Allow an isolated remote Docker Engine; its named volume is created on that engine host")
-    parser.add_argument("--endpoint", help="Exact Ollama endpoint for real-plan; never contacted")
-    parser.add_argument("--model", help="Exact OCR or Translation model for real-plan")
+    parser.add_argument("--endpoint", help="Exact Ollama endpoint for non-contacting real preflight")
+    parser.add_argument("--model", help="Exact OCR or Translation model for non-contacting real preflight")
+    parser.add_argument("--workflow", choices=sorted(REAL_WORKFLOWS), help="Synthetic qualification workflow")
+    parser.add_argument("--source-sha", help="Exact full Git commit SHA to qualify; never inferred")
+    parser.add_argument("--run-id", help="Unique lowercase hexadecimal run identity")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     try:
-        if args.mode == "real-plan":
-            if not args.endpoint or not args.model:
-                raise HarnessError("real-plan requires --endpoint and --model")
-            report = validate_real_plan(args.endpoint, args.model)
+        if args.mode in {"real-plan", "real-preflight"}:
+            if not all((args.endpoint, args.model, args.workflow, args.source_sha, args.run_id)):
+                raise HarnessError("real-preflight requires --endpoint, --model, --workflow, --source-sha, and --run-id")
+            report = validate_real_preflight(args.endpoint, args.model, args.workflow, args.source_sha, args.run_id)
         else:
             report = run_mock(args)
         print(json.dumps(report, indent=2, sort_keys=True))

@@ -41,18 +41,23 @@ python3 -m unittest discover -s scripts/e2e/ollama_validation -p 'test_*.py'
 
 They reject production bind mounts, Docker socket, host networking, published ports, privileged/device access, external networks, excessive resources, real-provider endpoints in mock mode, production SQLite paths, and mismatched source contexts.
 
-## Real-provider preparation
+## Real-provider preflight (non-contacting, currently NO-GO)
 
-The only implemented real-provider command is a non-contacting plan:
+The only real-provider command is a non-contacting preflight:
 
 ```bash
 python3 scripts/e2e/ollama_validation_sandbox.py \
-  --mode real-plan \
+  --mode real-preflight \
   --endpoint 'http://<exact-ollama-host>:11434' \
-  --model '<exact-installed-model>'
+  --model '<exact-installed-model>' \
+  --workflow translation-ass \
+  --source-sha '<full-lowercase-40-character-git-sha>' \
+  --run-id '<12-to-32-character-lowercase-hex-id>'
 ```
 
-It validates the declaration and emits `executionAllowed: false`; it does not resolve or contact the endpoint, query any database, start a container, warm a model, or perform inference. `actualHostTelemetry` and live Resource Admission remain pending and make the plan NO-GO. A mock or preview admission never authorizes a real request. This change does not provide an executable `run-real` command; enabling one requires a separate reviewed implementation that routes the sandbox application's normal OCR/Translation operations through live #265 admission, uses measured host telemetry, enforces one inference, and proves cancel/timeout cleanup. No real mode was run for this change.
+The command validates only the declared target syntax and returns `BLOCKED`, `executionAllowed: false`, `providerContacted: false`, and `realInferenceExecuted: false`. The legacy `real-plan` spelling is an alias with the same behavior. It does not resolve or contact the endpoint, query any database, start a container, warm a model, or perform inference. It does not accept evidence files, Preview results, mock decisions, or caller-supplied admission booleans.
+
+This checkout has no source-attributed shared-NAS telemetry adapter for RAM/CPU/swap, no provider residency adapter, no critical-service guard adapter, no real `MODEL_LOAD` and `INFERENCE` lease path for the isolated sandbox, no verified egress rule restricted to the exact Ollama endpoint, and no proof binding the declared SHA to a verified sandbox image. The available RuntimeState projection reads the local database and is not sufficient to bind measurements to the shared NAS. Therefore the preflight is intentionally **NO-GO** and there is no `run-real` mode. No real endpoint or NAS Docker Engine was contacted.
 
 ## Cleanup and retained evidence
 
@@ -62,17 +67,17 @@ The command prints a JSON summary with source SHA, checks, tests, image IDs, res
 
 ## NAS GO / NO-GO checklist
 
-### GO only after a separately authorized real run has all of these
+### GO conditions for a separately reviewed future implementation
 
-- Exact deployed MVForge SHA and supported image identity are independently confirmed.
-- The sandbox uses a unique Compose project, private network, engine-host temporary volume, and isolated SQLite; effective mounts show no production library, staging, or config path.
-- The exact Ollama endpoint and already-installed model are declared; no model download, daemon restart, or global Ollama setting change is needed.
-- Fresh host CPU/RAM/swap telemetry is observed by the sandbox application, and a real positive #265 Resource Admission is recorded for the exact model and operation. A preview, mock, stale reading, or operator assertion does not count.
-- The application enforces at most one active inference. The test uses only generated subtitle fixtures and has a verified cancel/timeout path.
-- Jellyfin, MVForge, FFmpeg, storage health, and available memory show no critical workload or capacity conflict immediately before the run.
-- No production SQLite, library, sidecar, staging path, or Publisher destination is mounted or writable from the sandbox.
-- A restoration/cleanup plan lists only the sandbox project resources; cleanup is verified by run ID and labels.
+- A reviewed source provides fresh, authenticated RAM, swap, CPU, actual capacity-domain, Ollama residency, and critical-service observations for the shared NAS; observation provenance and age are checked by the application.
+- The source SHA is bound to the exact backend image and sandbox configuration that the qualification will execute.
+- The isolated application obtains real positive #265 `MODEL_LOAD` and `INFERENCE` leases for the exact provider configuration, model, workflow, request identity, and capacity domain. `WAITING`, `DENIED`, `UNAVAILABLE`, Preview, and mock evidence remain NO-GO.
+- A network boundary is tested to allow only the exact declared Ollama endpoint and to deny production networks, Docker engines, and arbitrary egress.
+- A separate moment-of-run operator authorization is bound to exact endpoint, model, workflow, source SHA, and run ID; model install/residency is verified read-only without downloads, eviction, or daemon changes.
+- The sandbox uses a unique Compose project, private network, engine-host temporary volume, isolated SQLite, synthetic fixtures, and inspected effective mounts/resources; there is no production library, staging, config, DB, or Publisher destination mounted.
+- The canonical lifecycle enforces one total inference, purpose-scoped lease release, cancellation/timeout cleanup, unchanged Translation cue/ASS structure, human OCR review, and publication only within the temporary sandbox.
+- Jellyfin, MVForge, FFmpeg, storage health, and available memory are clear immediately before and during the separately authorized run; cleanup is verified by run ID and ownership labels.
 
 ### NO-GO
 
-Stop if any isolation check fails, the Ollama endpoint/model is ambiguous or unavailable, telemetry is missing/stale, live admission is denied or unavailable, concurrency cannot be held to one, critical services are active, storage is unhealthy, or cleanup ownership cannot be proven. Do not turn a mock PASS into a real-provider PASS.
+Stop if any isolation check fails, a trusted signal is unavailable or stale, the capacity domain/provider/model is mismatched, either live admission is not granted, exact-endpoint egress cannot be proven, authorization is absent, concurrency cannot be held to one, critical services are active, storage is unhealthy, or cleanup ownership cannot be proven. Do not turn a mock PASS, Preview, or this preflight into a real-provider PASS. The current repository state satisfies NO-GO; the checklist is not executable authorization.
