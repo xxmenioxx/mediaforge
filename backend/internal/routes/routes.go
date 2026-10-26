@@ -34,7 +34,7 @@ func New(db *gorm.DB) *gin.Engine {
 
 	libraries := handlers.NewLibraryHandler(db)
 	logs := handlers.NewLogHandler(db)
-	resourceAdmission := airesource.NewService(db)
+	resourceAdmission := airesource.NewServiceWithTrustedObservationSource(db, airesource.NewSignedObservationFileSourceFromEnvironment())
 	ollamaHTTPClient := handlers.NewOllamaProviderHTTPClient()
 	aiModelLifecycle := handlers.NewAIModelLifecycle(db, resourceAdmission, ollamaHTTPClient)
 	assets := handlers.NewAssetHandlerWithLifecycle(db, aiModelLifecycle)

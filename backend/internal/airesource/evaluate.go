@@ -57,7 +57,7 @@ func evaluate(settings Settings, request Request, observation Observation, reser
 	if request.Purpose == PurposeInference && request.ContextTokens > profile.MaximumContextTokens {
 		return Decision{Status: Unavailable, Reason: "model_estimate_incompatible"}
 	}
-	metricDecision := evaluateMetrics(settings, observation.Host, now, maxAge)
+	metricDecision := evaluateMetrics(settings, observation.Host, now, maxAge, observation.authenticatedSource)
 	if metricDecision.Status != "" {
 		return metricDecision
 	}
@@ -199,8 +199,19 @@ func reservationDemand(settings Settings, observation Observation, reservation a
 	return profile.InferenceBaseBytes + kvBytes, true
 }
 
-func evaluateMetrics(settings Settings, host HostObservation, now time.Time, maxAge time.Duration) Decision {
-	for _, metricName := range settings.RequiredMetrics {
+func evaluateMetrics(settings Settings, host HostObservation, now time.Time, maxAge time.Duration, authenticatedSource bool) Decision {
+	requiredMetrics := settings.RequiredMetrics
+	if authenticatedSource {
+		// Authentication does not replace an explicit pressure policy.
+		// An absent threshold must never silently authorize real model work.
+		for _, metricName := range []string{"cpuUsagePercent", "swapPressurePercent"} {
+			if _, configured := settings.PressureThresholds[metricName]; !configured {
+				return Decision{Status: Unavailable, Reason: "trusted_pressure_threshold_missing"}
+			}
+		}
+		requiredMetrics = append(append([]string(nil), requiredMetrics...), "cpuUsagePercent", "swapPressurePercent")
+	}
+	for _, metricName := range requiredMetrics {
 		metric, exists := host.Metrics[metricName]
 		if !exists || !metric.Available || !fresh(metric.ObservedAt, now, maxAge) || math.IsNaN(metric.Value) || math.IsInf(metric.Value, 0) || metric.Value < 0 {
 			return Decision{Status: Unavailable, Reason: "required_pressure_metric_unavailable"}

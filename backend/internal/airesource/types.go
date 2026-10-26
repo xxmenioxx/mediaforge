@@ -67,6 +67,7 @@ type MetricObservation struct {
 }
 
 type HostObservation struct {
+	SourceIdentity       string
 	AvailableMemoryKnown bool
 	TotalMemoryBytes     int64
 	AvailableMemoryBytes int64
@@ -80,6 +81,7 @@ type ResidentModel struct {
 }
 
 type ProviderObservation struct {
+	SourceIdentity string
 	Available      bool
 	ObservedAt     time.Time
 	ResidentModels []ResidentModel
@@ -95,10 +97,18 @@ type CriticalServiceObservation struct {
 // Observation is a normalized, provider-neutral capacity sample. Adapters
 // publish it; the admission package never polls a provider or host itself.
 type Observation struct {
-	CapacityDomain string
-	Host           HostObservation
-	Provider       ProviderObservation
-	Critical       CriticalServiceObservation
+	CapacityDomain      string
+	Host                HostObservation
+	Provider            ProviderObservation
+	Critical            CriticalServiceObservation
+	authenticatedSource bool
+}
+
+// TrustedObservationSource supplies one source-authenticated snapshot for the
+// requested shared capacity domain. Implementations must not infer missing
+// signals or contact a provider as part of reading the snapshot.
+type TrustedObservationSource interface {
+	CurrentObservation(context.Context, string) (Observation, error)
 }
 
 type ObservationPublisher interface {
@@ -138,6 +148,8 @@ type AuthorityStatus struct {
 	HostMemory           string `json:"hostMemory"`
 	ProviderResidency    string `json:"providerResidency"`
 	CriticalServiceGuard string `json:"criticalServiceGuard"`
+	CPUUsage             string `json:"cpuUsage,omitempty"`
+	SwapPressure         string `json:"swapPressure,omitempty"`
 }
 
 type OutcomeReason struct {

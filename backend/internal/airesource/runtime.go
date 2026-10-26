@@ -3,6 +3,7 @@ package airesource
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/anuelvs/mvforge/backend/internal/models"
@@ -52,8 +53,33 @@ func HostObservationFromRuntimeState(state models.RuntimeState) HostObservation 
 	return host
 }
 
+// trustedPressureMetricStatus exposes CPU/swap freshness independently.
+func trustedPressureMetricStatus(host HostObservation, name string, now time.Time, maximumAge time.Duration) string {
+	metric, exists := host.Metrics[name]
+	if !exists || !metric.Available {
+		return "unavailable"
+	}
+	if metric.ObservedAt.IsZero() {
+		return "unknown"
+	}
+	if !fresh(metric.ObservedAt, now, maximumAge) {
+		return "stale"
+	}
+	if math.IsNaN(metric.Value) || math.IsInf(metric.Value, 0) || metric.Value < 0 || metric.Value > 100 {
+		return "unavailable"
+	}
+	return "fresh"
+}
+
 func observationIsFresh(observation Observation, now time.Time, maximumAge time.Duration) bool {
-	return fresh(observation.Host.ObservedAt, now, maximumAge) &&
-		fresh(observation.Provider.ObservedAt, now, maximumAge) &&
-		fresh(observation.Critical.ObservedAt, now, maximumAge)
+	if !fresh(observation.Host.ObservedAt, now, maximumAge) ||
+		!fresh(observation.Provider.ObservedAt, now, maximumAge) ||
+		!fresh(observation.Critical.ObservedAt, now, maximumAge) {
+		return false
+	}
+	if !observation.authenticatedSource {
+		return true
+	}
+	return trustedPressureMetricStatus(observation.Host, "cpuUsagePercent", now, maximumAge) == "fresh" &&
+		trustedPressureMetricStatus(observation.Host, "swapPressurePercent", now, maximumAge) == "fresh"
 }

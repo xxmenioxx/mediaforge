@@ -46,6 +46,36 @@ The qualification preflight SHALL require fresh, source-attributed observations 
 - **WHEN** the runtime cannot demonstrate that only the exact declared Ollama endpoint is reachable and production networks remain inaccessible
 - **THEN** the result is `BLOCKED` and the driver does not create an external route
 
+### Requirement: Production admission accepts only authenticated, source-bound observations
+The production `airesource` integration SHALL read a bounded signed observation snapshot from a configured local path and verify its Ed25519 signature before using any facts. It SHALL bind the snapshot to the configured capacity domain and exact collector, host, provider-residency, and critical-service source identities. It SHALL require explicit RAM, swap, and CPU values with independent timestamps, plus provider and critical-service timestamps. The existing #265 evaluator SHALL enforce freshness and policy for both `MODEL_LOAD` and `INFERENCE`; no second admission policy is permitted. A source read, signature, identity, or validation failure SHALL clear cached trusted evidence and return no lease. In trusted-source mode, unsigned in-memory publication SHALL be rejected. The backend SHALL hold only the public verification key; the signing key remains outside the application.
+
+#### Scenario: Signed, fresh observation reaches canonical admission
+- **WHEN** the configured snapshot has a valid signature, exact configured source identities and capacity domain, valid RAM/swap/CPU values, and all timestamps satisfy policy freshness
+- **THEN** `airesource` evaluates it through the existing #265 policy and lease lifecycle
+- **AND** the snapshot reader performs no provider request or state change
+
+#### Scenario: Evidence is stale, forged, unavailable, or bound to another source/domain
+- **WHEN** any required file, signature, identity, capacity domain, value, or timestamp is invalid or unavailable for a new admission attempt
+- **THEN** the trusted service clears its cached sample and returns `UNAVAILABLE` without creating a lease
+- **AND** an older cache entry or unsigned `PublishObservation` cannot replace the failed source
+- **AND** an already persisted active request keeps #265's existing idempotent lease reattachment semantics
+
+#### Scenario: Pressure thresholds are missing or exceeded
+- **WHEN** a signed source provides valid and fresh CPU/swap measurements but either trusted pressure threshold is not configured
+- **THEN** canonical admission returns `UNAVAILABLE` without granting a lease
+- **WHEN** both thresholds are configured and a signed CPU or swap measurement exceeds its threshold
+- **THEN** canonical admission returns `WAITING` without granting a lease
+- **AND** an unsigned or mock observation cannot satisfy these conditions
+
+#### Scenario: Signed CPU or swap evidence is stale
+- **WHEN** the RAM, provider, and guard timestamps are current but signed CPU or swap evidence is stale
+- **THEN** `ObservationFresh` returns false and the corresponding pressure field in `ObservationStatus` reports `stale`
+- **AND** Resource Admission returns `UNAVAILABLE` without granting a new lease
+
+#### Scenario: A signed source is present but execution gates are missing
+- **WHEN** telemetry is signed and fresh but provider endpoint identity, exact-endpoint egress enforcement, sandbox image/SHA binding, or moment-of-run authorization is unverified
+- **THEN** `real-preflight` remains `BLOCKED` and no warmup or inference is exposed
+
 ### Requirement: Synthetic subtitle and review boundaries remain isolated
 
 Any future qualification enabled by this capability SHALL use only bounded synthetic SRT/ASS or generated bitmap fixtures, exact source identity, temporary SQLite and sandbox-owned sidecars. Translation SHALL preserve cue identity, timing, order, and protected ASS structure. OCR suggestions SHALL remain subject to the existing human review flow, and publication SHALL remain inside the temporary sandbox. The qualification tool SHALL NOT change production Settings, models, resident-model state, provider configuration, or files.
