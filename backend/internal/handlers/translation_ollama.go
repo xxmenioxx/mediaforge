@@ -16,6 +16,7 @@ import (
 
 const (
 	ollamaTranslationHTTPTimeout     = 60 * time.Second
+	ollamaTranslationRequestTimeout  = 5 * time.Minute
 	ollamaModelKeepAlive             = "30m"
 	ollamaTranslationMaxRequestBody  = 2 * 1024 * 1024
 	ollamaTranslationMaxResponseBody = 2 * 1024 * 1024
@@ -64,7 +65,7 @@ func (err *ollamaResponseBodyLimitError) Error() string {
 }
 
 func newOllamaTranslationProvider(settings translationSettings) (*ollamaTranslationProvider, error) {
-	return newOllamaTranslationProviderWithClient(settings, &http.Client{Timeout: ollamaTranslationHTTPTimeout})
+	return newOllamaTranslationProviderWithClient(settings, &http.Client{Timeout: ollamaTranslationRequestTimeout})
 }
 
 func newOllamaTranslationProviderWithClient(settings translationSettings, client *http.Client) (*ollamaTranslationProvider, error) {
@@ -86,7 +87,7 @@ func newOllamaTranslationProviderWithClient(settings translationSettings, client
 		return nil, err
 	}
 	if client == nil {
-		client = &http.Client{Timeout: ollamaTranslationHTTPTimeout}
+		client = &http.Client{Timeout: ollamaTranslationRequestTimeout}
 	}
 	return &ollamaTranslationProvider{
 		chatURL:           chatURL,
@@ -262,32 +263,34 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.chatURL.String(), bytes.NewReader(encodedRequest))
+	requestCtx, cancelRequest := context.WithTimeout(ctx, ollamaTranslationRequestTimeout)
+	defer cancelRequest()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, provider.chatURL.String(), bytes.NewReader(encodedRequest))
 	if err != nil {
 		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorConfiguration, Err: fmt.Errorf("create Ollama request: %w", err)}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	response, err := provider.client.Do(req)
 	if err != nil {
-		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(requestCtx, err)
 	}
 	defer response.Body.Close()
-	if err := ctx.Err(); err != nil {
-		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
+	if err := requestCtx.Err(); err != nil {
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(requestCtx, err)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return TranslationBatchResult{}, &TranslationProviderError{Class: translationProviderErrorUnavailable, Err: &translationResponseDiagnosticError{Category: translationResponseDiagnosticHTTPStatus, HTTPStatus: response.StatusCode}}
 	}
-	encodedResponse, err := readBoundedOllamaResponse(ctx, response.Body)
+	encodedResponse, err := readBoundedOllamaResponse(requestCtx, response.Body)
 	if err != nil {
 		var limitErr *ollamaResponseBodyLimitError
 		if errors.As(err, &limitErr) {
 			return TranslationBatchResult{}, malformedTranslationResponseError(translationResponseDiagnosticResponseTooLarge, translationCueCountPointer(len(batch.Cues)), nil)
 		}
-		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(requestCtx, err)
 	}
-	if err := ctx.Err(); err != nil {
-		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
+	if err := requestCtx.Err(); err != nil {
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(requestCtx, err)
 	}
 	var outer ollamaChatResponse
 	if err := json.Unmarshal(encodedResponse, &outer); err != nil {
@@ -307,8 +310,8 @@ func (provider *ollamaTranslationProvider) Translate(ctx context.Context, batch 
 	if err != nil {
 		return TranslationBatchResult{}, err
 	}
-	if err := ctx.Err(); err != nil {
-		return TranslationBatchResult{}, ollamaProviderErrorForRequest(ctx, err)
+	if err := requestCtx.Err(); err != nil {
+		return TranslationBatchResult{}, ollamaProviderErrorForRequest(requestCtx, err)
 	}
 	result.Metrics = TranslationProviderMetrics{
 		Provider:      translationProviderOllama,

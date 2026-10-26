@@ -35,6 +35,13 @@ this change.
 - Keep timeout, cancellation, provider unavailability, source revision fencing,
   staging cleanup, retry identity, and the all-output publication barrier
   unchanged. A failure in any batch returns no translated output.
+- Bound each `/api/chat` request by five minutes. Derive the request context
+  from the caller's context so the earlier operation deadline or cancellation
+  always takes effect; a longer HTTP client timeout cannot extend that bound.
+- Exercise synthetic English-to-`es-419` batches containing 4, 8, 16, and 32
+  cues through an HTTP stub. Measure adapter latency and allocations locally;
+  these measurements characterize request construction, loopback HTTP, and
+  strict response decoding, not model inference or translation quality.
 - Use synthetic ASS fixtures and a stub Ollama HTTP server. A test request using
   the string `translategemma:12b` verifies adapter behavior only; no claim of
   compatibility or translation quality for the real model is made.
@@ -45,7 +52,9 @@ JSON Schema structured output support depends on the configured Ollama server
 and model implementation. Unsupported schema requests fail as provider errors;
 there is no implicit retry with JSON mode or another model. Even schema-shaped
 output can be semantically wrong, so identity, ordering, nonempty-text, and ASS
-validation remain mandatory.
+validation remain mandatory. The five-minute HTTP request cap is a transport
+bound, not a model service-level guarantee; the enclosing operation deadline
+can end a request sooner.
 
 ## Migration Plan
 

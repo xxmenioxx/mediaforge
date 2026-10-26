@@ -15,8 +15,12 @@ failure diagnostics without weakening canonical validation.
 - Keep the existing decoder, exact cue ID/count/order checks, ASS protected
   structure checks, revision fence, cancellation, and atomic publication as
   authoritative.
+- Bound each Ollama chat request to five minutes or the earlier enclosing
+  operation deadline, without extending the operation deadline.
 - Add allowlisted provider response diagnostic categories and one-based batch
   context with safe expected/actual cue counts where available.
+- Exercise synthetic 4, 8, 16, and 32-cue batches against an HTTP stub and record
+  local adapter benchmark results without contacting Ollama.
 - Reject incomplete, malformed, reordered, invented, or structurally unsafe
   output without exposing provider bodies or subtitle content and without
   producing partial output.

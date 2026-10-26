@@ -294,6 +294,9 @@ func TestSubtitleTranslationOperationFailureViewIsTypedAndSecretSafe(t *testing.
 			if test.wantPhase != "" && operation.Phase != test.wantPhase {
 				t.Fatalf("terminal phase=%q, want %q", operation.Phase, test.wantPhase)
 			}
+			if test.name == "malformed" && (operation.Progress != 40 || operation.Processed != 0 || operation.Total != 0) {
+				t.Fatalf("malformed failure reported phase progress as cue completion: progress=%v processed=%d total=%d", operation.Progress, operation.Processed, operation.Total)
+			}
 			encoded, err := json.Marshal(operation)
 			if err != nil {
 				t.Fatal(err)
