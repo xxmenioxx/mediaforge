@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import socket
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -10,7 +14,9 @@ from ollama_validation_sandbox import (
     HarnessError,
     validate_compose_config,
     validate_effective_container,
+    build_parser,
     validate_real_plan,
+    validate_real_preflight,
 )
 
 
@@ -279,16 +285,77 @@ class IsolationConfigTests(unittest.TestCase):
             self.validate(config)
 
     def test_real_plan_is_non_executing_and_requires_exact_declarations(self) -> None:
-        plan = validate_real_plan("https://ollama.example.invalid:11434", "qwen2.5:7b")
-        self.assertEqual(plan["result"], "PASS")
+        plan = validate_real_plan(
+            "https://ollama.example.invalid:11434", "qwen2.5:7b", "translation-ass", SHA, RUN_ID,
+        )
+        self.assertEqual(plan["result"], "BLOCKED")
+        self.assertEqual(plan["mode"], "real-preflight")
         self.assertFalse(plan["executionAllowed"])
+        self.assertFalse(plan["providerContacted"])
+        self.assertFalse(plan["modelWarmupExecuted"])
         self.assertFalse(plan["realInferenceExecuted"])
-        self.assertFalse(plan["checks"]["simulatedAdmissionAuthorizesRealInference"])
-        for endpoint in ("http://user:secret@ollama.invalid:11434", "https://ollama.invalid/api/chat", "file:///tmp/model"):
+        self.assertFalse(plan["checks"]["previewOrCallerEvidenceAuthorizesExecution"])
+        self.assertEqual(plan["checks"]["decision"], "NO_GO_MISSING_TRUSTED_TELEMETRY_ADMISSION_AND_EGRESS")
+        self.assertEqual(plan["sourceSha"], SHA)
+        self.assertEqual(plan["runId"], RUN_ID)
+        for endpoint in (
+            "http://user:secret@ollama.invalid:11434",
+            "https://ollama.invalid/api/chat",
+            "https://ollama.invalid:11434?model=x",
+            "file:///tmp/model",
+            "http://ollama.invalid",
+        ):
             with self.subTest(endpoint=endpoint), self.assertRaises(HarnessError):
-                validate_real_plan(endpoint, "qwen2.5:7b")
+                validate_real_preflight(endpoint, "qwen2.5:7b", "translation-ass", SHA, RUN_ID)
         with self.assertRaises(HarnessError):
-            validate_real_plan("http://ollama.invalid:11434", " qwen2.5:7b ")
+            validate_real_preflight("http://ollama.invalid:11434", " qwen2.5:7b ", "translation-ass", SHA, RUN_ID)
+
+    def test_real_preflight_requires_exact_workflow_sha_and_run_identity(self) -> None:
+        valid = ("http://ollama.invalid:11434", "translategemma:12b", "translation-ass", SHA, RUN_ID)
+        invalid_targets = (
+            (*valid[:2], "translation", *valid[3:]),
+            (*valid[:3], "0cce40a", valid[4]),
+            (*valid[:4], "run-427"),
+            (*valid[:2], "publisher", *valid[3:]),
+        )
+        for target in invalid_targets:
+            with self.subTest(target=target), self.assertRaises(HarnessError):
+                validate_real_preflight(*target)
+
+    def test_real_preflight_lists_every_unavailable_authority_as_no_go(self) -> None:
+        plan = validate_real_preflight(
+            "http://ollama.invalid:11434", "fra-ocr:latest", "ocr-ai", SHA, RUN_ID,
+        )
+        checks = plan["checks"]
+        self.assertEqual(plan["result"], "BLOCKED")
+        self.assertEqual(checks["hostRamCpuSwapTelemetry"], "UNAVAILABLE")
+        self.assertEqual(checks["actualCapacityDomainBinding"], "UNVERIFIED")
+        self.assertEqual(checks["ollamaProviderIdentityAndResidency"], "UNAVAILABLE")
+        self.assertEqual(checks["criticalServiceActivity"], "UNAVAILABLE")
+        self.assertEqual(checks["modelLoadAdmissionLease"], "UNAVAILABLE")
+        self.assertEqual(checks["inferenceAdmissionLease"], "UNAVAILABLE")
+        self.assertEqual(checks["restrictedExactEndpointEgress"], "UNVERIFIED")
+        self.assertEqual(checks["momentOfRunAuthorization"], "UNAVAILABLE")
+        self.assertEqual(checks["sandboxImageSourceSha"], "UNVERIFIED")
+
+    def test_real_preflight_never_opens_a_provider_connection(self) -> None:
+        with patch("socket.create_connection") as create_connection, patch("socket.socket.connect") as connect:
+            report = validate_real_preflight(
+                "http://ollama.invalid:11434", "qwen2.5:7b", "translation-srt", SHA, RUN_ID,
+            )
+        create_connection.assert_not_called()
+        connect.assert_not_called()
+        self.assertFalse(report["providerContacted"])
+        self.assertEqual(report["result"], "BLOCKED")
+
+    def test_real_execution_mode_and_admission_overrides_are_not_exposed(self) -> None:
+        parser = build_parser()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["--mode", "run-real"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["--mode", "real-preflight", "--authorize-real"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["--mode", "real-preflight", "--admission-status", "ADMITTED"])
 
 
 if __name__ == "__main__":
