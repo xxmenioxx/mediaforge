@@ -21,7 +21,7 @@ python3 scripts/e2e/ollama_validation_sandbox.py --mode mock --context desktop-l
 
 The selected Docker context is used exactly as named. Remote contexts are rejected unless `--allow-remote-engine` is explicitly supplied; the sandbox data is still a Docker-managed volume created on that engine host. This command is for the mock stage only. Do not pass a production Compose project or endpoint.
 
-Before any service starts, the harness renders Compose, builds the exact-SHA backend image, creates containers without starting them, and verifies effective image IDs/labels, mounts, SQLite path, network membership, ports, capabilities, devices, rootfs mode, and resource limits. It then initializes the unique volume, starts the mock and backend, verifies the temporary SQLite file, and runs:
+Before any service starts, the harness renders Compose, builds the exact-SHA backend image, creates containers without starting them, and verifies effective image IDs/labels, mounts, SQLite path, network membership, ports, capabilities, devices, rootfs mode, and resource limits. It then initializes the unique volume and starts the mock and backend. Before executing tests, it creates the detached `docker compose run` one-off test-runner and sends that actual container through the same effective-container validator, including mount allowlist, private network, positive CPU/memory/PID limits, dropped capabilities, read-only rootfs, and `no-new-privileges`. Only after the runner passes inspection does it verify the temporary SQLite file and run:
 
 - Tagged integration tests over `http://ollama-mock:11434` for SRT/ASS translation, structured cue validation, later-batch failure, retry, cancellation, OCR cold-start/warmup/admission, explicit model selection, and unchanged canonical sidecar.
 - Existing focused OCR review/approval/invalidation/cancellation and Translation malformed-response/ASS/atomicity regressions.
@@ -29,7 +29,7 @@ Before any service starts, the harness renders Compose, builds the exact-SHA bac
 
 The test-only mock accepts only the two synthetic model IDs `ocr-sandbox:latest` and `translate-sandbox:latest`. Its counters retain model names and route/concurrency counts, never prompts or subtitle text. The mock is not an Ollama accuracy benchmark and makes no claims about model quality.
 
-Frontend is omitted. The backend review/correction regressions exercise human approval and preserve the existing approval boundary; no UI route is needed for qualification of the provider/lifecycle contract.
+The tagged integration tests call compiled production handler/provider code directly inside the test-runner. The isolated backend container is checked over HTTP at `/health`, but the tests do **not** exercise full HTTP route orchestration for OCR or Translation. Frontend is omitted; existing review/correction regressions cover approval and preserve the human-approval boundary, but do not turn this harness into a full API end-to-end test.
 
 ## Harness tests
 

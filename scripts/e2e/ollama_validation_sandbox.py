@@ -27,6 +27,9 @@ COMPOSE_FILE = Path(__file__).with_name("ollama_validation") / "compose.yaml"
 EXPECTED_SERVICES = {"sandbox-init", "backend", "ollama-mock", "test-runner"}
 EXPECTED_NETWORK = "private"
 EXPECTED_VOLUME = "sandbox-data"
+DATA_VOLUME_SERVICES = {"sandbox-init", "backend", "test-runner"}
+TMPFS_SERVICES = {"backend", "test-runner"}
+MAX_TMPFS_BYTES = 64 * 1024**2
 FORBIDDEN_PATHS = ("/volume1", "/volume2", "/mnt/nas", "/nas-media-stack", "/media/raw/movies")
 
 
@@ -299,79 +302,142 @@ def _expected_labels(run_id: str, source_sha: str, mode: str = "mock") -> dict[s
     }
 
 
+def _validate_tmpfs(host: dict[str, Any], service: str) -> None:
+    tmpfs = host.get("Tmpfs") or {}
+    expected_targets = {"/tmp"} if service in TMPFS_SERVICES else set()
+    if set(tmpfs) != expected_targets:
+        raise HarnessError(f"{service} has unexpected effective tmpfs mounts")
+    if not expected_targets:
+        return
+
+    options = str(tmpfs["/tmp"]).lower().split(",")
+    if not {"rw", "noexec", "nosuid", "nodev"}.issubset(options):
+        raise HarnessError(f"{service} /tmp tmpfs is missing required restrictions")
+    size = next((item.partition("=")[2] for item in options if item.startswith("size=")), "")
+    if not size:
+        raise HarnessError(f"{service} /tmp tmpfs size is not bounded")
+    try:
+        size_bytes = parse_bytes(size)
+    except HarnessError as error:
+        raise HarnessError(f"{service} /tmp tmpfs size is invalid") from error
+    if size_bytes <= 0 or size_bytes > MAX_TMPFS_BYTES:
+        raise HarnessError(f"{service} /tmp tmpfs size is missing or excessive")
+
+
+def validate_effective_container(
+    container: dict[str, Any], *, service: str, project: str, run_id: str,
+    source_sha: str, expected_image_id: str, image_labels: dict[str, Any],
+    network: dict[str, Any],
+) -> None:
+    expected = _expected_labels(run_id, source_sha)
+    config = container.get("Config") or {}
+    labels = config.get("Labels") or {}
+    if any(labels.get(key) != value for key, value in expected.items()):
+        raise HarnessError(f"{service} container ownership labels do not match this run")
+    if labels.get("com.docker.compose.service") != service:
+        raise HarnessError(f"container is not the expected Compose service {service}")
+    if container.get("Image") != expected_image_id:
+        raise HarnessError(f"{service} container image ID differs from its built image")
+    if any(image_labels.get(key) != value for key, value in expected.items()):
+        raise HarnessError(f"{service} image source/owner labels do not match this run")
+
+    expected_network = f"{project}-{EXPECTED_NETWORK}"
+    if network.get("Name") != expected_network or network.get("Internal") is not True:
+        raise HarnessError("effective network is not the run-scoped internal network")
+    if any((network.get("Labels") or {}).get(key) != value for key, value in expected.items() if key != "mvforge.sandbox.mode"):
+        raise HarnessError("effective network ownership labels do not match this run")
+
+    host = container.get("HostConfig") or {}
+    if host.get("Privileged") is not False or host.get("NetworkMode") != expected_network:
+        raise HarnessError(f"{service} effective Docker isolation is unsafe")
+    if host.get("ReadonlyRootfs") is not True or set(host.get("CapDrop") or []) != {"ALL"}:
+        raise HarnessError(f"{service} effective rootfs/capability restrictions differ")
+    if host.get("CapAdd") or host.get("Devices") or host.get("DeviceRequests") or host.get("PortBindings"):
+        raise HarnessError(f"{service} has added capabilities, devices, or a published port")
+    if not any("no-new-privileges:true" in str(value) for value in host.get("SecurityOpt") or []):
+        raise HarnessError(f"{service} lacks no-new-privileges")
+    if int(host.get("PidsLimit") or 0) <= 0 or int(host.get("PidsLimit") or 0) > 256:
+        raise HarnessError(f"{service} effective PID limit is missing or excessive")
+    if int(host.get("Memory") or 0) <= 0 or int(host.get("Memory") or 0) > 4 * 1024**3:
+        raise HarnessError(f"{service} effective memory limit is missing or excessive")
+    if int(host.get("NanoCpus") or 0) <= 0 or int(host.get("NanoCpus") or 0) > 2_000_000_000:
+        raise HarnessError(f"{service} effective CPU limit is missing or excessive")
+    _validate_tmpfs(host, service)
+
+    networks = (container.get("NetworkSettings") or {}).get("Networks") or {}
+    if set(networks) != {expected_network}:
+        raise HarnessError(f"{service} is connected to an unexpected network")
+
+    mounts = container.get("Mounts") or []
+    volume_mounts = [mount for mount in mounts if mount.get("Destination") == "/media"]
+    tmpfs_mounts = [mount for mount in mounts if mount.get("Destination") == "/tmp"]
+    unexpected_mounts = [mount for mount in mounts if mount.get("Destination") not in {"/media", "/tmp"}]
+    if unexpected_mounts:
+        raise HarnessError(f"{service} has an unexpected effective mount")
+    expected_volume = service in DATA_VOLUME_SERVICES
+    if expected_volume:
+        if len(volume_mounts) != 1:
+            raise HarnessError(f"{service} must have exactly one run-scoped data volume")
+        data_mount = volume_mounts[0]
+        if data_mount.get("Type") != "volume" or data_mount.get("Name") != f"{project}-data" or data_mount.get("RW") is not True:
+            raise HarnessError(f"{service} does not use only the writable run-scoped data volume")
+    elif volume_mounts:
+        raise HarnessError(f"{service} must not have persistent mounts")
+    binds = host.get("Binds") or []
+    if binds:
+        if not expected_volume or len(binds) != 1:
+            raise HarnessError(f"{service} has an unexpected effective bind mount")
+        source, separator, destination_and_options = str(binds[0]).partition(":")
+        destination, separator, options = destination_and_options.partition(":")
+        allowed_sources = {f"{project}-data", str(data_mount.get("Name") or ""), str(data_mount.get("Source") or "")}
+        if not separator or source not in allowed_sources or destination != "/media" or "ro" in options.split(","):
+            raise HarnessError(f"{service} has an unexpected effective bind mount")
+    if tmpfs_mounts and (len(tmpfs_mounts) != 1 or tmpfs_mounts[0].get("Type") != "tmpfs" or service not in TMPFS_SERVICES):
+        raise HarnessError(f"{service} has an unexpected effective tmpfs mount")
+
+    env = config.get("Env") or []
+    environment = dict(item.split("=", 1) for item in env if "=" in item)
+    for item in env:
+        if any(marker in item.lower() for marker in (*FORBIDDEN_PATHS, "/var/run/docker.sock", "host.docker.internal")):
+            raise HarnessError(f"{service} container environment references a forbidden endpoint/path")
+    if service == "backend" and environment.get("MVFORGE_DB_PATH") != "/media/config/mvforge.db":
+        raise HarnessError("effective backend SQLite path is not isolated")
+    if service == "test-runner" and environment.get("OLLAMA_SANDBOX_ENDPOINT") != "http://ollama-mock:11434":
+        raise HarnessError("effective test endpoint does not resolve to the mock")
+
+
 def inspect_effective_resources(
     docker: Docker, *, project: str, run_id: str, source_sha: str,
     image_names: dict[str, str], require_all_services: bool = True,
 ) -> dict[str, Any]:
     containers = _inspect_containers(docker, project)
     expected = _expected_labels(run_id, source_sha)
+    network = _inspect_named(docker, "network", f"{project}-{EXPECTED_NETWORK}")
     by_service: dict[str, dict[str, Any]] = {}
+    image_ids: dict[str, str] = {}
     for container in containers:
         config = container.get("Config") or {}
         labels = config.get("Labels") or {}
         if any(labels.get(key) != value for key, value in expected.items()):
             raise HarnessError("a Compose project container has unexpected ownership labels")
         service = labels.get("com.docker.compose.service")
-        if not service or service in by_service:
+        if service not in EXPECTED_SERVICES or service in by_service:
             raise HarnessError("unexpected or duplicate Compose service container")
         by_service[service] = container
-        if container.get("Image") != (docker.json(["image", "inspect", image_names[service]])[0].get("Id")):
-            raise HarnessError(f"{service} container image ID differs from its built image")
-        image_labels = docker.json(["image", "inspect", image_names[service]])[0].get("Config", {}).get("Labels") or {}
-        if any(image_labels.get(key) != value for key, value in expected.items()):
-            raise HarnessError(f"{service} image source/owner labels do not match this run")
-        host = container.get("HostConfig") or {}
-        if host.get("Privileged") or host.get("NetworkMode") != f"{project}-{EXPECTED_NETWORK}":
-            raise HarnessError(f"{service} effective Docker isolation is unsafe")
-        if host.get("ReadonlyRootfs") is not True or set(host.get("CapDrop") or []) != {"ALL"}:
-            raise HarnessError(f"{service} effective rootfs/capability restrictions differ")
-        if host.get("CapAdd"):
-            raise HarnessError(f"{service} has an effective added capability")
-        if host.get("Devices") or host.get("DeviceRequests") or host.get("PortBindings"):
-            raise HarnessError(f"{service} has device access or a published port")
-        if not any("no-new-privileges:true" in value for value in host.get("SecurityOpt") or []):
-            raise HarnessError(f"{service} lacks no-new-privileges")
-        if int(host.get("PidsLimit") or 0) <= 0 or int(host.get("PidsLimit") or 0) > 256:
-            raise HarnessError(f"{service} effective PID limit is missing or excessive")
-        if int(host.get("Memory") or 0) <= 0 or int(host.get("Memory") or 0) > 4 * 1024**3:
-            raise HarnessError(f"{service} effective memory limit is missing or excessive")
-        if int(host.get("NanoCpus") or 0) <= 0 or int(host.get("NanoCpus") or 0) > 2_000_000_000:
-            raise HarnessError(f"{service} effective CPU limit is missing or excessive")
-        networks = (container.get("NetworkSettings") or {}).get("Networks") or {}
-        if set(networks) != {f"{project}-{EXPECTED_NETWORK}"}:
-            raise HarnessError(f"{service} is connected to an unexpected network")
-        mounts = container.get("Mounts") or []
-        allowed_targets = {"/media"} if service in {"sandbox-init", "backend", "test-runner"} else set()
-        for mount in mounts:
-            destination = mount.get("Destination")
-            if destination == "/tmp" and mount.get("Type") == "tmpfs":
-                continue
-            if destination not in allowed_targets:
-                raise HarnessError(f"{service} has an unexpected effective mount")
-        if service in {"sandbox-init", "backend", "test-runner"}:
-            data_mounts = [mount for mount in mounts if mount.get("Destination") == "/media"]
-            if len(data_mounts) != 1 or data_mounts[0].get("Type") != "volume" or data_mounts[0].get("Name") != f"{project}-data" or data_mounts[0].get("RW") is not True:
-                raise HarnessError(f"{service} does not use only the run-scoped data volume")
-        elif mounts:
-            raise HarnessError("Ollama mock must have no persistent mounts")
-        env = config.get("Env") or []
-        environment = dict(item.split("=", 1) for item in env if "=" in item)
-        for item in env:
-            if any(marker in item.lower() for marker in (*FORBIDDEN_PATHS, "/var/run/docker.sock", "host.docker.internal")):
-                raise HarnessError(f"{service} container environment references a forbidden endpoint/path")
-        if service == "backend" and environment.get("MVFORGE_DB_PATH") != "/media/config/mvforge.db":
-            raise HarnessError("effective backend SQLite path is not isolated")
-        if service == "test-runner" and environment.get("OLLAMA_SANDBOX_ENDPOINT") != "http://ollama-mock:11434":
-            raise HarnessError("effective test endpoint does not resolve to the mock")
+        image_info = docker.json(["image", "inspect", image_names[service]])[0]
+        image_ids[service] = image_info.get("Id", "")
+        validate_effective_container(
+            container, service=service, project=project, run_id=run_id,
+            source_sha=source_sha, expected_image_id=image_ids[service],
+            image_labels=(image_info.get("Config") or {}).get("Labels") or {},
+            network=network,
+        )
     if require_all_services and set(by_service) != EXPECTED_SERVICES:
         raise HarnessError("created container set differs from the expected service set")
 
     volume = _inspect_named(docker, "volume", f"{project}-data")
     if any((volume.get("Labels") or {}).get(key) != value for key, value in expected.items() if key != "mvforge.sandbox.mode"):
         raise HarnessError("effective data volume ownership labels do not match")
-    network = _inspect_named(docker, "network", f"{project}-{EXPECTED_NETWORK}")
-    if network.get("Internal") is not True or any((network.get("Labels") or {}).get(key) != value for key, value in expected.items() if key != "mvforge.sandbox.mode"):
-        raise HarnessError("effective network is not the isolated run-scoped network")
     network_container_ids = set((network.get("Containers") or {}).keys())
     expected_container_ids = {container.get("Id") for container in containers}
     if not network_container_ids.issubset(expected_container_ids):
@@ -381,7 +447,7 @@ def inspect_effective_resources(
         raise HarnessError("a running Compose service is not attached to the isolated network")
     return {
         "containerIds": {name: container["Id"] for name, container in by_service.items()},
-        "imageIds": {name: docker.json(["image", "inspect", image_names[name]])[0]["Id"] for name in image_names},
+        "imageIds": image_ids,
         "networkId": network["Id"],
         "volumeName": volume["Name"],
     }
@@ -608,17 +674,21 @@ def run_mock(args: argparse.Namespace) -> dict[str, Any]:
         runner_id = oneoff_ids[0]
         runner_info = docker.json(["inspect", runner_id])[0]
         labels = runner_info.get("Config", {}).get("Labels") or {}
-        if any(labels.get(key) != value for key, value in _expected_labels(run_id, args.base_sha).items()):
-            raise HarnessError("one-off test runner has unexpected ownership labels")
-        # Reuse the same effective-resource assertions by temporarily treating this as the service runner.
-        runner_mounts = runner_info.get("Mounts") or []
-        if len([mount for mount in runner_mounts if mount.get("Destination") == "/media" and mount.get("Name") == f"{project}-data" and mount.get("RW")]) != 1:
-            raise HarnessError("one-off test runner does not use the isolated data volume")
-        host = runner_info.get("HostConfig") or {}
-        if host.get("Privileged") or host.get("NetworkMode") != f"{project}-{EXPECTED_NETWORK}" or host.get("ReadonlyRootfs") is not True or set(host.get("CapDrop") or []) != {"ALL"} or host.get("Devices") or host.get("DeviceRequests") or host.get("PortBindings"):
-            raise HarnessError("one-off test runner effective isolation failed")
-        if int(host.get("PidsLimit") or 0) > 256 or int(host.get("Memory") or 0) > 4 * 1024**3:
-            raise HarnessError("one-off test runner resource limit exceeded")
+        if labels.get("com.docker.compose.oneoff", "").lower() != "true":
+            raise HarnessError("identified test-runner container is not a Compose one-off")
+        runner_image = docker.json(["image", "inspect", image_names["test-runner"]])[0]
+        private_network = _inspect_named(docker, "network", f"{project}-{EXPECTED_NETWORK}")
+        validate_effective_container(
+            runner_info, service="test-runner", project=project, run_id=run_id,
+            source_sha=args.base_sha, expected_image_id=runner_image.get("Id", ""),
+            image_labels=(runner_image.get("Config") or {}).get("Labels") or {},
+            network=private_network,
+        )
+        project_containers = _inspect_containers(docker, project)
+        project_container_ids = {item.get("Id") for item in project_containers}
+        private_network_container_ids = set((private_network.get("Containers") or {}).keys())
+        if not private_network_container_ids.issubset(project_container_ids):
+            raise HarnessError("test-runner network contains a container outside this Compose project")
         report["checks"]["testRunnerEffectiveIsolation"] = "PASS"
 
         suites = [

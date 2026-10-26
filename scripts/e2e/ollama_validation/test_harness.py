@@ -6,7 +6,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ollama_validation_sandbox import HarnessError, validate_compose_config, validate_real_plan
+from ollama_validation_sandbox import (
+    HarnessError,
+    validate_compose_config,
+    validate_effective_container,
+    validate_real_plan,
+)
 
 
 RUN_ID = "012345abcdef"
@@ -80,6 +85,133 @@ def valid_config() -> dict:
         "networks": {"private": {"internal": True, "labels": dict(OWNER_LABELS)}},
         "volumes": {"sandbox-data": {"name": f"{PROJECT}-data", "labels": dict(OWNER_LABELS)}},
     }
+
+
+def effective_network() -> dict:
+    return {
+        "Name": f"{PROJECT}-private",
+        "Internal": True,
+        "Labels": dict(OWNER_LABELS),
+    }
+
+
+def effective_test_runner() -> dict:
+    return {
+        "Image": "sha256:expected-test-runner",
+        "Config": {
+            "Labels": {
+                **RUN_LABELS,
+                "com.docker.compose.service": "test-runner",
+                "com.docker.compose.oneoff": "True",
+            },
+            "Env": [
+                "OLLAMA_SANDBOX_ENDPOINT=http://ollama-mock:11434",
+                "MVFORGE_API_URL=http://backend:8080",
+            ],
+        },
+        "HostConfig": {
+            "Privileged": False,
+            "NetworkMode": f"{PROJECT}-private",
+            "ReadonlyRootfs": True,
+            "CapDrop": ["ALL"],
+            "CapAdd": [],
+            "Devices": [],
+            "DeviceRequests": [],
+            "PortBindings": None,
+            "Binds": None,
+            "SecurityOpt": ["no-new-privileges:true"],
+            "PidsLimit": 256,
+            "Memory": 4 * 1024**3,
+            "NanoCpus": 2_000_000_000,
+            "Tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=67108864,mode=1777"},
+        },
+        "NetworkSettings": {"Networks": {f"{PROJECT}-private": {}}},
+        "Mounts": [
+            {"Type": "volume", "Name": f"{PROJECT}-data", "Destination": "/media", "RW": True},
+            {"Type": "tmpfs", "Destination": "/tmp", "RW": True},
+        ],
+    }
+
+
+class EffectiveContainerTests(unittest.TestCase):
+    def validate(self, container=None, network=None) -> None:
+        validate_effective_container(
+            container or effective_test_runner(),
+            service="test-runner",
+            project=PROJECT,
+            run_id=RUN_ID,
+            source_sha=SHA,
+            expected_image_id="sha256:expected-test-runner",
+            image_labels=RUN_LABELS,
+            network=network or effective_network(),
+        )
+
+    def test_accepts_isolated_compose_oneoff_test_runner(self) -> None:
+        self.validate()
+
+    def test_rejects_extra_mounts_and_docker_socket(self) -> None:
+        mutations = (
+            lambda container: container["Mounts"].append({
+                "Type": "bind", "Source": "/tmp/host-secret", "Destination": "/host", "RW": True,
+            }),
+            lambda container: container["Mounts"].append({
+                "Type": "bind", "Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock", "RW": True,
+            }),
+            lambda container: container["HostConfig"].update({"Binds": ["/var/run/docker.sock:/var/run/docker.sock"]}),
+            lambda container: container["HostConfig"]["Tmpfs"].update({"/run/secrets": "rw,size=1m"}),
+            lambda container: container["Mounts"].append({
+                "Type": "tmpfs", "Destination": "/run/secrets", "RW": True,
+            }),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                container = effective_test_runner()
+                mutate(container)
+                with self.assertRaises(HarnessError):
+                    self.validate(container)
+
+    def test_rejects_missing_or_unlimited_effective_resource_limits(self) -> None:
+        for field in ("PidsLimit", "Memory", "NanoCpus"):
+            for value in (None, 0):
+                with self.subTest(field=field, value=value):
+                    container = effective_test_runner()
+                    container["HostConfig"][field] = value
+                    with self.assertRaises(HarnessError):
+                        self.validate(container)
+
+    def test_rejects_unexpected_capabilities_or_missing_no_new_privileges(self) -> None:
+        mutations = (
+            lambda host: host.update({"CapAdd": ["SYS_ADMIN"]}),
+            lambda host: host.update({"CapDrop": []}),
+            lambda host: host.update({"SecurityOpt": []}),
+            lambda host: host.update({"ReadonlyRootfs": False}),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                container = effective_test_runner()
+                mutate(container["HostConfig"])
+                with self.assertRaises(HarnessError):
+                    self.validate(container)
+
+    def test_rejects_missing_or_excessive_tmpfs_bound(self) -> None:
+        for options in ("rw,noexec,nosuid,nodev", "rw,noexec,nosuid,nodev,size=128m"):
+            with self.subTest(options=options):
+                container = effective_test_runner()
+                container["HostConfig"]["Tmpfs"]["/tmp"] = options
+                with self.assertRaises(HarnessError):
+                    self.validate(container)
+
+    def test_rejects_unexpected_or_external_networks(self) -> None:
+        container = effective_test_runner()
+        container["NetworkSettings"]["Networks"]["bridge"] = {}
+        with self.assertRaises(HarnessError):
+            self.validate(container)
+
+        container = effective_test_runner()
+        network = effective_network()
+        network["Internal"] = False
+        with self.assertRaises(HarnessError):
+            self.validate(container, network)
 
 
 class IsolationConfigTests(unittest.TestCase):

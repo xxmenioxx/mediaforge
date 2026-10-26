@@ -15,6 +15,10 @@ The harness MUST run the requested MVForge source snapshot with temporary SQLite
 - **WHEN** any container has a production path, Docker socket, host network, unexpected published port, privileged mode, device, unowned mount, or mismatched image/source label
 - **THEN** the harness stops before application startup or test execution and preserves resources it cannot prove it owns
 
+#### Scenario: Compose one-off test runner fails closed
+- **WHEN** the detached one-off test-runner has any additional mount, external network, missing/unbounded CPU, memory, or PID limit, unexpected capability, writable root filesystem, or lacks `no-new-privileges`
+- **THEN** the shared effective-container validator rejects it before any integration test process starts
+
 ### Requirement: Mock provider workflows preserve canonical contracts
 The mock-backed tests MUST exercise the production Translation provider and OCR AI lifecycle with bounded synthetic data. OCR suggestions MUST remain separate from canonical subtitle content until human approval; translation MUST reject malformed or incomplete batches without returning partial outputs.
 
