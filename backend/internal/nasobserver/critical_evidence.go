@@ -3,9 +3,9 @@ package nasobserver
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -34,9 +34,9 @@ type CriticalEvidence struct {
 
 type CriticalSourceIdentities struct {
 	Jellyfin string
-	FFmpeg  string
-	Worker  string
-	Storage string
+	FFmpeg   string
+	Worker   string
+	Storage  string
 }
 
 // GuardFromAttributedEvidence enforces identity and freshness before calling
