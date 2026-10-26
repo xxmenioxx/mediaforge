@@ -148,6 +148,8 @@ type AuthorityStatus struct {
 	HostMemory           string `json:"hostMemory"`
 	ProviderResidency    string `json:"providerResidency"`
 	CriticalServiceGuard string `json:"criticalServiceGuard"`
+	CPUUsage             string `json:"cpuUsage,omitempty"`
+	SwapPressure         string `json:"swapPressure,omitempty"`
 }
 
 type OutcomeReason struct {

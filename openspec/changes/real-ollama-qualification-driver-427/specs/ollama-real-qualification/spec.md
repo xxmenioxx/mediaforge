@@ -60,6 +60,18 @@ The production `airesource` integration SHALL read a bounded signed observation 
 - **AND** an older cache entry or unsigned `PublishObservation` cannot replace the failed source
 - **AND** an already persisted active request keeps #265's existing idempotent lease reattachment semantics
 
+#### Scenario: Pressure thresholds are missing or exceeded
+- **WHEN** a signed source provides valid and fresh CPU/swap measurements but either trusted pressure threshold is not configured
+- **THEN** canonical admission returns `UNAVAILABLE` without granting a lease
+- **WHEN** both thresholds are configured and a signed CPU or swap measurement exceeds its threshold
+- **THEN** canonical admission returns `WAITING` without granting a lease
+- **AND** an unsigned or mock observation cannot satisfy these conditions
+
+#### Scenario: Signed CPU or swap evidence is stale
+- **WHEN** the RAM, provider, and guard timestamps are current but signed CPU or swap evidence is stale
+- **THEN** `ObservationFresh` returns false and the corresponding pressure field in `ObservationStatus` reports `stale`
+- **AND** Resource Admission returns `UNAVAILABLE` without granting a new lease
+
 #### Scenario: A signed source is present but execution gates are missing
 - **WHEN** telemetry is signed and fresh but provider endpoint identity, exact-endpoint egress enforcement, sandbox image/SHA binding, or moment-of-run authorization is unverified
 - **THEN** `real-preflight` remains `BLOCKED` and no warmup or inference is exposed

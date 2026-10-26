@@ -40,6 +40,10 @@ No code path in the current sandbox can prove that the declared Ollama endpoint 
 
 6. **Use sanitized, stable blocker identifiers.** The report names each missing gate and avoids prompts, model output, credentials, host paths, or opaque lease tokens. Endpoint and model are exact requested target fields; they are validated syntactically but explicitly marked unverified and never contacted.
 
+### Signed pressure thresholds and status
+
+A trusted signature authenticates measurements, not an admission pressure policy. The existing #265 evaluator now fails closed with `trusted_pressure_threshold_missing` unless **both** `cpuUsagePercent` and `swapPressurePercent` have explicit validated `pressureThresholds` settings. No thresholds are inferred from the signature and no second admission policy is introduced. Above configured thresholds, the canonical evaluator returns `WAITING` without a lease. Signed CPU and swap samples have independent freshness exposed as `observations.cpuUsage` and `observations.swapPressure`; aggregate `ObservationFresh` requires both. This does not authorize real Ollama traffic or replace critical-service guards.
+
 ## Risks / Trade-offs
 
 - [A signed snapshot could be mistaken for a trustworthy measurement] → The signature proves integrity and signer identity only; require external review of key custody, host collection methods, provider/critical-service inputs, capacity-domain binding, and freshness.

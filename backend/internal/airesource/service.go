@@ -459,8 +459,9 @@ func (s *Service) Policy(ctx context.Context) (Settings, error) {
 	return loadSettings(s.db.WithContext(ctx))
 }
 
-// ObservationFresh reports only whether all three authorities supplied a
-// recent sample. It does not reveal or claim Ollama process configuration.
+// ObservationFresh requires recent host, provider, and critical-service samples
+// plus fresh individual CPU and swap metrics for an authenticated source.
+// It does not authorize inference or verify Ollama endpoint identity.
 func (s *Service) ObservationFresh(domain string, now time.Time) bool {
 	if s == nil {
 		return false
@@ -480,6 +481,9 @@ func (s *Service) ObservationFresh(domain string, now time.Time) bool {
 
 func (s *Service) ObservationStatus(domain string, now time.Time) AuthorityStatus {
 	status := AuthorityStatus{HostMemory: "unknown", ProviderResidency: "unknown", CriticalServiceGuard: "unknown"}
+	if s != nil && s.trustedSource != nil {
+		status.CPUUsage, status.SwapPressure = "unknown", "unknown"
+	}
 	if s == nil || s.db == nil || strings.TrimSpace(domain) == "" {
 		return status
 	}
@@ -495,6 +499,10 @@ func (s *Service) ObservationStatus(domain string, now time.Time) AuthorityStatu
 		return status
 	}
 	status.HostMemory = authorityFreshness(observation.Host.ObservedAt, now, maximumAge)
+	if s.trustedSource != nil {
+		status.CPUUsage = trustedPressureMetricStatus(observation.Host, "cpuUsagePercent", now, maximumAge)
+		status.SwapPressure = trustedPressureMetricStatus(observation.Host, "swapPressurePercent", now, maximumAge)
+	}
 	status.ProviderResidency = authorityFreshness(observation.Provider.ObservedAt, now, maximumAge)
 	status.CriticalServiceGuard = authorityFreshness(observation.Critical.ObservedAt, now, maximumAge)
 	if status.HostMemory == "fresh" && !observation.Host.AvailableMemoryKnown {

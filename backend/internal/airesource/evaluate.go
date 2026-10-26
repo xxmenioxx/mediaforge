@@ -202,6 +202,13 @@ func reservationDemand(settings Settings, observation Observation, reservation a
 func evaluateMetrics(settings Settings, host HostObservation, now time.Time, maxAge time.Duration, authenticatedSource bool) Decision {
 	requiredMetrics := settings.RequiredMetrics
 	if authenticatedSource {
+		// Authentication does not replace an explicit pressure policy.
+		// An absent threshold must never silently authorize real model work.
+		for _, metricName := range []string{"cpuUsagePercent", "swapPressurePercent"} {
+			if _, configured := settings.PressureThresholds[metricName]; !configured {
+				return Decision{Status: Unavailable, Reason: "trusted_pressure_threshold_missing"}
+			}
+		}
 		requiredMetrics = append(append([]string(nil), requiredMetrics...), "cpuUsagePercent", "swapPressurePercent")
 	}
 	for _, metricName := range requiredMetrics {

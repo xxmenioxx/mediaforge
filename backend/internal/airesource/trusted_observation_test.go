@@ -111,7 +111,7 @@ func TestTrustedAdmissionRejectsStaleOrForgedEvidenceAndUnsignedPublish(t *testi
 	}
 	for _, stale := range staleCases {
 		t.Run("stale "+stale.name, func(t *testing.T) {
-			db, _ := newServiceFixture(t, serviceSettings())
+			db, _ := newServiceFixture(t, trustedServiceSettings())
 			config, key := newSignedObservationFixture(t)
 			payload := signedObservationFixture(time.Now().UTC())
 			stale.mutate(&payload)
@@ -127,7 +127,7 @@ func TestTrustedAdmissionRejectsStaleOrForgedEvidenceAndUnsignedPublish(t *testi
 	}
 
 	t.Run("forged update clears previously trusted cache", func(t *testing.T) {
-		db, _ := newServiceFixture(t, serviceSettings())
+		db, _ := newServiceFixture(t, trustedServiceSettings())
 		config, key := newSignedObservationFixture(t)
 		payload := signedObservationFixture(time.Now().UTC())
 		writeSignedObservation(t, config.SnapshotPath, payload, key, false)
@@ -156,7 +156,7 @@ func TestTrustedAdmissionRejectsStaleOrForgedEvidenceAndUnsignedPublish(t *testi
 }
 
 func TestTrustedPreviewDoesNotProcessExistingWaiters(t *testing.T) {
-	db, _ := newServiceFixture(t, serviceSettings())
+	db, _ := newServiceFixture(t, trustedServiceSettings())
 	config, key := newSignedObservationFixture(t)
 	payload := signedObservationFixture(time.Now().UTC())
 	payload.Critical.Status = GuardPressure
@@ -238,5 +238,135 @@ func writeSignedObservation(t *testing.T, path string, payload signedObservation
 	}
 	if err := os.WriteFile(path, envelope, 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// trustedServiceSettings configures both pressure limits for signed samples.
+func trustedServiceSettings() Settings {
+	settings := serviceSettings()
+	settings.PressureThresholds = map[string]float64{
+		"cpuUsagePercent": 80,
+		"swapPressurePercent": 75,
+	}
+	return settings
+}
+
+func TestTrustedAdmissionRequiresPressureThresholds(t *testing.T) {
+	for _, missing := range []string{"cpuUsagePercent", "swapPressurePercent"} {
+		t.Run("missing "+missing, func(t *testing.T) {
+			settings := trustedServiceSettings()
+			delete(settings.PressureThresholds, missing)
+			db, _ := newServiceFixture(t, settings)
+			config, key := newSignedObservationFixture(t)
+			writeSignedObservation(t, config.SnapshotPath, signedObservationFixture(time.Now().UTC()), key, false)
+			service := NewServiceWithTrustedObservationSource(db, NewSignedObservationFileSource(config))
+			request := serviceRequest("missing-"+missing, PurposeInference, "model-a")
+			request.CapacityDomain = config.CapacityDomain
+			decision := service.Admit(context.Background(), request)
+			if decision.Status != Unavailable || decision.Lease != nil || decision.Reason != "trusted_pressure_threshold_missing" {
+				t.Fatalf("missing threshold decision = %#v", decision)
+			}
+		})
+	}
+}
+
+func TestTrustedAdmissionRejectsHighCPUOrSwapPressure(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mutate func(*signedObservationPayload)
+		reason string
+	}{
+		{name: "cpu", mutate: func(payload *signedObservationPayload) { payload.Host.CPUUsagePercent = 95 }, reason: "pressure_cpuUsagePercent"},
+		{name: "swap", mutate: func(payload *signedObservationPayload) { payload.Host.SwapAvailableBytes = payload.Host.SwapTotalBytes / 10 }, reason: "pressure_swapPressurePercent"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, _ := newServiceFixture(t, trustedServiceSettings())
+			config, key := newSignedObservationFixture(t)
+			payload := signedObservationFixture(time.Now().UTC())
+			test.mutate(&payload)
+			writeSignedObservation(t, config.SnapshotPath, payload, key, false)
+			service := NewServiceWithTrustedObservationSource(db, NewSignedObservationFileSource(config))
+			request := serviceRequest("pressure-"+test.name, PurposeInference, "model-a")
+			request.CapacityDomain = config.CapacityDomain
+			decision := service.Admit(context.Background(), request)
+			if decision.Status != Waiting || decision.Lease != nil || decision.Reason != test.reason {
+				t.Fatalf("high pressure decision = %#v, want WAITING %q", decision, test.reason)
+			}
+		})
+	}
+}
+
+func TestTrustedObservationStatusTracksIndependentPressureFreshness(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mutate func(*signedObservationPayload)
+		wantCPU string
+		wantSwap string
+	}{
+		{name: "stale cpu", mutate: func(p *signedObservationPayload) { p.Host.CPUObservedAt = time.Now().Add(-2 * time.Minute).UTC() }, wantCPU: "stale", wantSwap: "fresh"},
+		{name: "stale swap", mutate: func(p *signedObservationPayload) { p.Host.SwapObservedAt = time.Now().Add(-2 * time.Minute).UTC() }, wantCPU: "fresh", wantSwap: "stale"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, _ := newServiceFixture(t, trustedServiceSettings())
+			config, key := newSignedObservationFixture(t)
+			service := NewServiceWithTrustedObservationSource(db, NewSignedObservationFileSource(config))
+			unknown := service.ObservationStatus(config.CapacityDomain, time.Now().UTC())
+			if unknown.CPUUsage != "unknown" || unknown.SwapPressure != "unknown" {
+				t.Fatalf("unknown trusted status = %#v", unknown)
+			}
+			payload := signedObservationFixture(time.Now().UTC())
+			writeSignedObservation(t, config.SnapshotPath, payload, key, false)
+			request := serviceRequest("fresh-status", PurposeInference, "model-a")
+			request.CapacityDomain = config.CapacityDomain
+			if result := service.Preview(context.Background(), request); result.Status != Admitted {
+				t.Fatalf("valid signed preview = %#v", result)
+			}
+			if !service.ObservationFresh(config.CapacityDomain, time.Now().UTC()) {
+				t.Fatal("fresh trusted sample reported stale")
+			}
+			initial := service.ObservationStatus(config.CapacityDomain, time.Now().UTC())
+			if initial.CPUUsage != "fresh" || initial.SwapPressure != "fresh" {
+				t.Fatalf("fresh signed pressure status = %#v", initial)
+			}
+			test.mutate(&payload)
+			writeSignedObservation(t, config.SnapshotPath, payload, key, false)
+			if result := service.Preview(context.Background(), request); result.Status != Unavailable {
+				t.Fatalf("stale metric preview = %#v", result)
+			}
+			if service.ObservationFresh(config.CapacityDomain, time.Now().UTC()) {
+				t.Fatal("stale pressure sample reported globally fresh")
+			}
+			status := service.ObservationStatus(config.CapacityDomain, time.Now().UTC())
+			if status.HostMemory != "fresh" || status.CPUUsage != test.wantCPU || status.SwapPressure != test.wantSwap {
+				t.Fatalf("independent pressure freshness = %#v", status)
+			}
+		})
+	}
+}
+
+func TestTrustedAdmissionPreservesExistingLeaseOnSourceFailure(t *testing.T) {
+	db, _ := newServiceFixture(t, trustedServiceSettings())
+	config, key := newSignedObservationFixture(t)
+	payload := signedObservationFixture(time.Now().UTC())
+	writeSignedObservation(t, config.SnapshotPath, payload, key, false)
+	service := NewServiceWithTrustedObservationSource(db, NewSignedObservationFileSource(config))
+	request := serviceRequest("existing-lease", PurposeInference, "model-a")
+	request.CapacityDomain = config.CapacityDomain
+	first := service.Admit(context.Background(), request)
+	if first.Status != Admitted || first.Lease == nil {
+		t.Fatalf("initial lease = %#v", first)
+	}
+	writeSignedObservation(t, config.SnapshotPath, payload, key, true)
+	repeated := service.Admit(context.Background(), request)
+	if repeated.Status != Admitted || repeated.Lease == nil || repeated.Lease.id != first.Lease.id {
+		t.Fatalf("existing lease not reattached after source failure: %#v", repeated)
+	}
+	another := serviceRequest("new-after-forgery", PurposeInference, "model-a")
+	another.CapacityDomain = config.CapacityDomain
+	if decision := service.Admit(context.Background(), another); decision.Status != Unavailable || decision.Lease != nil {
+		t.Fatalf("new lease granted without trusted evidence: %#v", decision)
+	}
+	if err := service.Release(context.Background(), *first.Lease); err != nil {
+		t.Fatalf("release existing lease: %v", err)
 	}
 }
