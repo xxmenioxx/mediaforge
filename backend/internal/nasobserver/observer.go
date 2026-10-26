@@ -139,7 +139,7 @@ func parseMeminfo(content []byte) (map[string]int64, error) {
 				return nil, fmt.Errorf("invalid or duplicate proc metric %s", key)
 			}
 			kb, err := strconv.ParseInt(parts[1], 10, 64)
-			if err != nil || kb < 0 || kb > math.MaxInt64/1024 {
+			if err != nil || kb < 0 || kb > int64(^uint64(0)>>1)/1024 {
 				return nil, fmt.Errorf("invalid proc metric %s", key)
 			}
 			values[key] = kb * 1024
