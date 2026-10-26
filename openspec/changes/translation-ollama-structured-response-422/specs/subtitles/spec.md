@@ -18,6 +18,11 @@ provider responses, source paths, secrets, or credentials. Translation SHALL
 preserve its existing source revision fence, cancellation behavior, retry
 identity, staging cleanup, and atomic publication barrier.
 
+Each Ollama chat request SHALL have a five-minute maximum deadline derived from
+the enclosing operation context. The request deadline SHALL be the earlier of
+that maximum and the operation deadline, and SHALL preserve caller
+cancellation.
+
 #### Scenario: Ollama receives the current batch schema
 
 - **WHEN** the Ollama translation adapter sends a bounded batch
@@ -34,6 +39,13 @@ identity, staging cleanup, and atomic publication barrier.
 - **AND** it does not expose cue IDs, subtitle text, paths, secrets, or the raw
   provider body
 - **AND** it produces no partial translated output
+
+#### Scenario: Ollama request remains inside its operation deadline
+
+- **WHEN** the translation adapter sends an Ollama chat request
+- **THEN** the request is bounded by five minutes
+- **AND** an earlier operation deadline or cancellation takes effect first
+- **AND** the adapter does not extend the operation's deadline
 
 #### Scenario: Protected ASS structure remains under MVForge control
 

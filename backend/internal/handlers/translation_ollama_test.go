@@ -182,6 +182,196 @@ func TestOllamaTranslationProviderUsesConfiguredChatEndpointAndContract(t *testi
 	}
 }
 
+func TestOllamaTranslationProviderPreservesSyntheticBatchSizesAndOrder(t *testing.T) {
+	for _, cueCount := range []int{4, 8, 16, 32} {
+		t.Run(fmt.Sprintf("%d-cues", cueCount), func(t *testing.T) {
+			batch := ollamaSyntheticBatch(cueCount)
+			responseBody, err := ollamaSyntheticResponseForBatch(batch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				var request struct {
+					Format map[string]any `json:"format"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("decode synthetic request: %v", err)
+					return
+				}
+				properties, ok := request.Format["properties"].(map[string]any)
+				cuesSchema, cuesOK := properties["cues"].(map[string]any)
+				items, itemsOK := cuesSchema["items"].(map[string]any)
+				itemProperties, itemPropertiesOK := items["properties"].(map[string]any)
+				idSchema, idOK := itemProperties["id"].(map[string]any)
+				ids, idsOK := idSchema["enum"].([]any)
+				if !ok || !cuesOK || !itemsOK || !itemPropertiesOK || !idOK || !idsOK || cuesSchema["minItems"] != float64(cueCount) || cuesSchema["maxItems"] != float64(cueCount) || len(ids) != cueCount {
+					t.Errorf("schema did not bind the %d-cue batch: %#v", cueCount, request.Format)
+					return
+				}
+				for index, cue := range batch.Cues {
+					if ids[index] != cue.ID {
+						t.Errorf("schema cue ID at %d=%v, want current batch ID", index, ids[index])
+						return
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if _, err := w.Write(responseBody); err != nil {
+					t.Errorf("write synthetic response: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			provider, err := newOllamaTranslationProvider(ollamaTestSettings(server.URL, "qwen2.5:7b"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Translate(context.Background(), batch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			validated, err := validateTranslationBatchResult(batch, result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if requests != 1 || len(validated) != cueCount {
+				t.Fatalf("request count=%d result cue count=%d, want one request and %d cues", requests, len(validated), cueCount)
+			}
+			for index, cue := range batch.Cues {
+				if validated[index].ID != cue.ID || validated[index].Text != fmt.Sprintf("Hola, subtitulo sintetico %d.", index+1) {
+					t.Fatalf("cue %d changed identity/order or translation: got=%#v", index, validated[index])
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkOllamaTranslationProviderSyntheticBatchSizes(b *testing.B) {
+	for _, cueCount := range []int{4, 8, 16, 32} {
+		b.Run(fmt.Sprintf("%d-cues", cueCount), func(b *testing.B) {
+			batch := ollamaSyntheticBatch(cueCount)
+			responseBody, err := ollamaSyntheticResponseForBatch(batch)
+			if err != nil {
+				b.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if _, err := w.Write(responseBody); err != nil {
+					b.Errorf("write synthetic response: %v", err)
+				}
+			}))
+			defer server.Close()
+			provider, err := newOllamaTranslationProvider(ollamaTestSettings(server.URL, "qwen2.5:7b"))
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			b.ReportAllocs()
+			b.ReportMetric(float64(cueCount), "cues/op")
+			b.ResetTimer()
+			for index := 0; index < b.N; index++ {
+				result, err := provider.Translate(context.Background(), batch)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(result.Cues) != cueCount {
+					b.Fatalf("result cue count=%d, want %d", len(result.Cues), cueCount)
+				}
+			}
+		})
+	}
+}
+
+func TestOllamaTranslationRequestDeadlineUsesEarlierOperationDeadline(t *testing.T) {
+	batch := ollamaTestBatch()
+	responseBody, err := ollamaSyntheticResponseForBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name                   string
+		operationDeadlineAfter time.Duration
+	}{
+		{name: "request cap"},
+		{name: "earlier operation deadline", operationDeadlineAfter: 2 * time.Minute},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var wantOperationDeadline time.Time
+			ctx := context.Background()
+			if test.operationDeadlineAfter > 0 {
+				wantOperationDeadline = time.Now().Add(test.operationDeadlineAfter)
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, wantOperationDeadline)
+				defer cancel()
+			}
+			observedDeadline := make(chan time.Time, 1)
+			client := &http.Client{
+				Timeout: 10 * time.Minute,
+				Transport: ollamaTestRoundTripper(func(request *http.Request) (*http.Response, error) {
+					deadline, ok := request.Context().Deadline()
+					if !ok {
+						return nil, errors.New("translation request has no deadline")
+					}
+					observedDeadline <- deadline
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(bytes.NewReader(responseBody)),
+						Request:    request,
+					}, nil
+				}),
+			}
+			provider, err := newOllamaTranslationProviderWithClient(ollamaTestSettings("http://ollama.test", "qwen2.5:7b"), client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.Translate(ctx, batch); err != nil {
+				t.Fatal(err)
+			}
+			requestDeadline := <-observedDeadline
+			if !wantOperationDeadline.IsZero() {
+				if !requestDeadline.Equal(wantOperationDeadline) {
+					t.Fatalf("request deadline=%s, want operation deadline %s", requestDeadline, wantOperationDeadline)
+				}
+				return
+			}
+			remaining := time.Until(requestDeadline)
+			if remaining > ollamaTranslationRequestTimeout || remaining < ollamaTranslationRequestTimeout-time.Second {
+				t.Fatalf("request deadline remaining=%s, want a cap of %s", remaining, ollamaTranslationRequestTimeout)
+			}
+		})
+	}
+}
+
+func TestSharedOllamaHTTPClientAllowsBoundedTranslationRequest(t *testing.T) {
+	client := NewOllamaProviderHTTPClient()
+	if client.Timeout < ollamaTranslationRequestTimeout {
+		t.Fatalf("shared Ollama HTTP timeout=%s, shorter than translation request cap %s", client.Timeout, ollamaTranslationRequestTimeout)
+	}
+}
+
+func ollamaSyntheticBatch(cueCount int) TranslationBatch {
+	batch := TranslationBatch{ContractVersion: translationProviderContractVersion, SourceLanguage: "en", TargetLocale: "es-419"}
+	for index := 1; index <= cueCount; index++ {
+		batch.Cues = append(batch.Cues, TranslationCue{ID: fmt.Sprintf("synthetic-cue-%d", index), Text: fmt.Sprintf("Hello, this is synthetic subtitle cue %d.", index)})
+	}
+	return batch
+}
+
+func ollamaSyntheticResponseForBatch(batch TranslationBatch) ([]byte, error) {
+	result := TranslationBatchResult{ContractVersion: translationProviderContractVersion, Cues: make([]TranslatedCue, 0, len(batch.Cues))}
+	for index, cue := range batch.Cues {
+		result.Cues = append(result.Cues, TranslatedCue{ID: cue.ID, Text: fmt.Sprintf("Hola, subtitulo sintetico %d.", index+1)})
+	}
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"message": map[string]string{"role": "assistant", "content": string(content)}, "done": true})
+}
+
 func TestTranslateGemmaStructuredOutputSupportsSyntheticASSTranslation(t *testing.T) {
 	sourceContent := []byte("[Script Info]\nScriptType: v4.00+\n[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,{\\an8\\pos(10,20)\\i1}Hello world{\\i0}\nDialogue: 0,0:00:03.00,0:00:04.00,Default,Good morning\n")
 	requests := 0
