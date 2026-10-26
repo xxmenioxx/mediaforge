@@ -28,4 +28,4 @@
 - [x] 5.2 Decode pre-supplied Ollama `/api/ps` JSON without network contact, and return `unavailable` for unknown critical service evidence.
 - [x] 5.3 Serialize the #431 Ed25519 envelope using a supplied private key, without implementing key custody, file publication, or a daemon.
 - [x] 5.4 Document that no host attestation, production service probes, provisioned signer or real Ollama qualification is provided.
-- [ ] 5.5 Run focused Go tests, strict OpenSpec and canonical verifier, and confirm remote CI/Smoke PASS before considering integration.
+- [x] 5.5 Run focused Go tests, strict OpenSpec and canonical verifier, and confirm remote CI/Smoke PASS before considering integration.
