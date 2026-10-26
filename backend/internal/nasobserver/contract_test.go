@@ -67,8 +67,8 @@ func TestSignedSnapshotReaderRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	snapshotPath := filepath.Join(dir, "snapshot.json")
 	keyPath := filepath.Join(dir, "observer.pub")
-	if err := os.WriteFile(snapshotPath, signed, 0600); err != nil {
-		t.Fatal(err)
+	if err := PublishSignedSnapshotAtomically(t.Context(), snapshotPath, signed); err != nil {
+		t.Fatalf("atomic publisher rejected valid signed fixture: %v", err)
 	}
 	if err := os.WriteFile(keyPath, publicKey, 0600); err != nil {
 		t.Fatal(err)
@@ -114,5 +114,29 @@ func TestSignedSnapshotReaderRoundTrip(t *testing.T) {
 	}
 	if _, err := source.CurrentObservation(t.Context(), payload.CapacityDomain); err != airesource.ErrTrustedObservationUntrusted {
 		t.Fatalf("tampered signed evidence accepted or returned wrong error: %v", err)
+	}
+
+	// A shape-valid envelope with a changed signature may be written by a
+	// publisher that does not own the verification key, but the canonical
+	// reader must never turn it into trusted admission evidence.
+	var signatureTampered Envelope
+	if err := json.Unmarshal(signed, &signatureTampered); err != nil {
+		t.Fatal(err)
+	}
+	tamperedSignatureBytes, err := hex.DecodeString(signatureTampered.Signature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedSignatureBytes[0] ^= 0x01
+	signatureTampered.Signature = hex.EncodeToString(tamperedSignatureBytes)
+	tamperedSignature, err := json.Marshal(signatureTampered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PublishSignedSnapshotAtomically(t.Context(), snapshotPath, tamperedSignature); err != nil {
+		t.Fatalf("atomic publisher rejected shape-valid signature fixture: %v", err)
+	}
+	if _, err := source.CurrentObservation(t.Context(), payload.CapacityDomain); err != airesource.ErrTrustedObservationUntrusted {
+		t.Fatalf("tampered signature accepted or returned wrong error: %v", err)
 	}
 }

@@ -34,7 +34,7 @@ func PublishSignedSnapshotAtomically(ctx context.Context, destination string, si
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect snapshot destination: %w", err)
 	}
-	// Never publish plaintext or unverified envelopes. This checks only syntax;
+	// Never publish plaintext or structurally invalid envelopes. This checks only syntax;
 	// signature verification and source authority remain responsibilities of
 	// the canonical trusted reader and separately reviewed signer.
 	if err := validateSignedEnvelopeShape(signed); err != nil {
