@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -16,11 +16,18 @@ afterEach(() => {
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter><PublisherPage /></MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, queryClient };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
 }
 
 describe('PublisherPage persisted delivery controls', () => {
@@ -181,6 +188,108 @@ describe('PublisherPage persisted delivery controls', () => {
     await waitFor(() => expect(eligibility).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(/Manual Publish accepted\. Delivery is still in progress/)).toBeTruthy();
     expect(screen.queryByText('Job published.')).toBeNull();
+  });
+
+  it('records accepted feedback from the 202 response while Publisher refreshes reconcile in the background', async () => {
+    const candidate: PublisherEligibilityResponse['items'][number] = {
+      job: {
+        id: 1542,
+        executionNumber: 4,
+        mediaPath: '/raw/episode.mkv',
+        outputPath: '/staging/episode.mkv',
+        destinationPath: '/library/episode.mkv',
+        publishedPath: '',
+        validationStatus: 'failed',
+        validationScore: 82,
+        validationOutcome: 'REVIEW_REQUIRED',
+        validationRunId: 'validation-run:1542:4',
+      },
+      status: 'ALLOWED_BY_OVERRIDE',
+    };
+    const publishResponse = deferred<Awaited<ReturnType<typeof api.publishJob>>>();
+    const eligibilityRefresh = deferred<PublisherEligibilityResponse>();
+    const publicationsRefresh = deferred<Awaited<ReturnType<typeof api.publisherPublications>>>();
+    const eligibility = vi.spyOn(api, 'publisherEligibility')
+      .mockResolvedValueOnce({ items: [candidate], limit: 100 })
+      .mockReturnValueOnce(eligibilityRefresh.promise);
+    const publications = vi.spyOn(api, 'publisherPublications')
+      .mockResolvedValueOnce({ items: [], limit: 100 })
+      .mockReturnValueOnce(publicationsRefresh.promise);
+    const publish = vi.spyOn(api, 'publishJob').mockReturnValue(publishResponse.promise);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+
+    expect(await screen.findByText(/Eligibility: ALLOWED_BY_OVERRIDE/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+    await user.type(screen.getByRole('textbox', { name: 'Operator reason' }), 'Reviewed the findings for this Result');
+    await user.click(screen.getByRole('button', { name: 'Accept manual Publish' }));
+    await waitFor(() => expect(publish).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Submitting…' })).toBeTruthy();
+
+    // Deterministic synthetic timing: the request consumes 120 ms; the active
+    // eligibility refetch is then held for another 240 ms as a read-model delay.
+    let syntheticNowMs = 0;
+    const requestStartedAtMs = syntheticNowMs;
+    await act(async () => {
+      syntheticNowMs += 120;
+      publishResponse.resolve({
+        jobId: 1542,
+        requestId: 'manual-request-1542',
+        publicationId: 'publication-1542',
+        status: 'accepted',
+        message: 'Manual publication request was durably accepted; delivery has not completed.',
+      });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(eligibility).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(publications).toHaveBeenCalledTimes(2));
+    const responseAtMs = syntheticNowMs;
+    expect(await screen.findByText(/Manual Publish accepted\. Delivery is still in progress/)).toBeTruthy();
+    expect(screen.queryByText('Job published.')).toBeNull();
+    expect(queryClient.isFetching({ queryKey: ['publisherEligibility'] })).toBe(1);
+    expect(queryClient.isFetching({ queryKey: ['publisherPublications'] })).toBe(1);
+    const feedbackAtMs = syntheticNowMs;
+
+    await act(async () => {
+      syntheticNowMs += 240;
+      eligibilityRefresh.resolve({ items: [], limit: 100 });
+      publicationsRefresh.resolve({ items: [], limit: 100 });
+      await Promise.all([eligibilityRefresh.promise, publicationsRefresh.promise]);
+    });
+    await waitFor(() => {
+      expect(queryClient.getQueryData(['publisherEligibility'])).toEqual({ items: [], limit: 100 });
+      expect(queryClient.getQueryData(['publisherPublications'])).toEqual({ items: [], limit: 100 });
+    });
+    expect(responseAtMs - requestStartedAtMs).toBe(120);
+    expect(feedbackAtMs - responseAtMs).toBe(0);
+    expect(feedbackAtMs - requestStartedAtMs).toBe(120);
+    expect(screen.queryByText('Job published.')).toBeNull();
+  });
+
+  it('does not show accepted or published feedback when the Publisher request fails', async () => {
+    const candidate: PublisherEligibilityResponse['items'][number] = {
+      job: {
+        id: 1544, executionNumber: 4, mediaPath: '/raw/episode.mkv', outputPath: '/staging/episode.mkv',
+        destinationPath: '/library/episode.mkv', publishedPath: '', validationStatus: 'failed', validationScore: 82,
+        validationOutcome: 'REVIEW_REQUIRED', validationRunId: 'validation-run:1544:4',
+      },
+      status: 'ALLOWED_BY_OVERRIDE',
+    };
+    vi.spyOn(api, 'publisherEligibility').mockResolvedValue({ items: [candidate], limit: 100 });
+    vi.spyOn(api, 'publisherPublications').mockResolvedValue({ items: [], limit: 100 });
+    vi.spyOn(api, 'publishJob').mockRejectedValue(new Error('synthetic HTTP 500'));
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText(/Eligibility: ALLOWED_BY_OVERRIDE/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+    await user.type(screen.getByRole('textbox', { name: 'Operator reason' }), 'Reviewed synthetic evidence');
+    await user.click(screen.getByRole('button', { name: 'Accept manual Publish' }));
+
+    expect(await screen.findByText('synthetic HTTP 500')).toBeTruthy();
+    expect(screen.queryByText(/Manual Publish accepted\. Delivery is still in progress/)).toBeNull();
+    expect(screen.queryByText('Job published.')).toBeNull();
+    expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
   it('shows backend blocking reasons and disables publication for blocked candidates', async () => {

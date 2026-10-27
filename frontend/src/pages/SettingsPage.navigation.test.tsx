@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -56,6 +56,12 @@ function renderSettings(initialPath: string, includeRouteControls = false) {
     </MemoryRouter>,
   );
   return { ...view, queryClient };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
 }
 
 function sidebarDraftStatus(sectionTitle: string): boolean {
@@ -410,4 +416,144 @@ describe('Settings domain navigation and drafts', () => {
     expect(batch[0].value).toEqual(expect.objectContaining({ defaultDurationSeconds: 30 }));
     expect(api.updateSetting).not.toHaveBeenCalled();
   }, 15000);
+
+  it('records Settings feedback from the authoritative response while refetch reconciles in the background', async () => {
+    const user = userEvent.setup();
+    const settingsRefresh = deferred<Awaited<ReturnType<typeof api.settings>>>();
+    const saveResponse = deferred<Awaited<ReturnType<typeof api.updateSettingsBatch>>>();
+    let holdSettingsRefresh = false;
+    vi.mocked(api.settings).mockImplementation(() => holdSettingsRefresh
+      ? settingsRefresh.promise
+      : Promise.resolve([{ key: 'testEncodePolicy', value: { defaultDurationSeconds: 10 } }] as never));
+    vi.mocked(api.updateSettingsBatch).mockReturnValue(saveResponse.promise);
+    const { queryClient } = renderSettings('/settings?section=test-encode');
+
+    fireEvent.change(await screen.findByLabelText('Default duration (seconds)'), { target: { value: '30' } });
+    const settingsCallsBeforeSave = vi.mocked(api.settings).mock.calls.length;
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('status').textContent).toBe('Saving…');
+
+    // Deterministic synthetic timing: 120 ms for the write and 240 ms for the
+    // active settings read-model refresh. These are virtual fixture durations.
+    let syntheticNowMs = 0;
+    const requestStartedAtMs = syntheticNowMs;
+    holdSettingsRefresh = true;
+    await act(async () => {
+      syntheticNowMs += 120;
+      saveResponse.resolve([{ key: 'testEncodePolicy', value: { defaultDurationSeconds: 30 } }] as never);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(vi.mocked(api.settings).mock.calls.length).toBeGreaterThan(settingsCallsBeforeSave));
+    const responseAtMs = syntheticNowMs;
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Saved'));
+    expect(queryClient.isFetching({ queryKey: ['settings'] })).toBe(1);
+    const feedbackAtMs = syntheticNowMs;
+
+    await act(async () => {
+      syntheticNowMs += 240;
+      settingsRefresh.resolve([{ key: 'testEncodePolicy', value: { defaultDurationSeconds: 30 } }] as never);
+      await settingsRefresh.promise;
+    });
+    await waitFor(() => expect(queryClient.getQueryData(['settings'])).toEqual([{ key: 'testEncodePolicy', value: { defaultDurationSeconds: 30 } }]));
+    expect(responseAtMs - requestStartedAtMs).toBe(120);
+    expect(feedbackAtMs - responseAtMs).toBe(0);
+    expect(feedbackAtMs - requestStartedAtMs).toBe(120);
+    expect(screen.getByRole('status').textContent).toBe('Saved');
+  });
+
+  it('keeps concurrent section saves when authoritative responses arrive out of order', async () => {
+    const user = userEvent.setup();
+    const initialSettings = [
+      { key: 'workers', value: {
+        defaultWorkerName: 'local', autoWorkerEnabled: true, maxConcurrentJobs: 2, maxJobsPerBatch: 8,
+        delaySecondsBetweenJobs: 0, batchCooldownSeconds: 0, dryRunOnly: false,
+      } },
+      { key: 'mvforgePreferences', value: { qualityGoal: 'balanced_quality' } },
+      { key: 'analysisPolicy', value: { mode: 'balanced' } },
+      { key: 'profileSampleEstimatePolicy', value: { hardwareWindows: 3 } },
+    ];
+    const finalSettings = initialSettings.map((setting) => setting.key === 'mvforgePreferences'
+      ? { ...setting, value: { qualityGoal: 'maximum_quality' } }
+      : setting.key === 'analysisPolicy'
+        ? { ...setting, value: { mode: 'thorough' } }
+        : setting.key === 'profileSampleEstimatePolicy'
+          ? { ...setting, value: { hardwareWindows: 5 } }
+          : setting);
+    const generalResponse = deferred<Awaited<ReturnType<typeof api.updateSettingsBatch>>>();
+    const analysisResponse = deferred<Awaited<ReturnType<typeof api.updateSettingsBatch>>>();
+    const settingsRefresh = deferred<Awaited<ReturnType<typeof api.settings>>>();
+    let holdSettingsRefresh = false;
+    const settingsRead = vi.mocked(api.settings).mockImplementation(() => holdSettingsRefresh
+      ? settingsRefresh.promise
+      : Promise.resolve(initialSettings as never));
+    const saveSettings = vi.mocked(api.updateSettingsBatch)
+      .mockImplementationOnce(() => generalResponse.promise)
+      .mockImplementationOnce(() => analysisResponse.promise);
+    const { queryClient } = renderSettings('/settings?section=general', true);
+
+    await user.click(await screen.findByLabelText('Quality / storage preference'));
+    await user.click(await screen.findByRole('option', { name: 'Maximum quality' }));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole('button', { name: 'Analysis' }));
+    await user.click(await screen.findByLabelText('Analysis mode'));
+    await user.click(await screen.findByRole('option', { name: 'Thorough' }));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(2));
+
+    // Both writes remain in flight; resolve the later Analysis response first.
+    holdSettingsRefresh = true;
+    await act(async () => {
+      analysisResponse.resolve([
+        { key: 'analysisPolicy', value: { mode: 'thorough' } },
+        { key: 'profileSampleEstimatePolicy', value: { hardwareWindows: 5 } },
+      ] as never);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(settingsRead.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Saved'));
+    expect(queryClient.isFetching({ queryKey: ['settings'] })).toBe(1);
+    expect(queryClient.getQueryData(['settings'])).toEqual(expect.arrayContaining([
+      { key: 'analysisPolicy', value: { mode: 'thorough' } },
+      { key: 'profileSampleEstimatePolicy', value: { hardwareWindows: 5 } },
+      { key: 'mvforgePreferences', value: { qualityGoal: 'balanced_quality' } },
+    ]));
+
+    await act(async () => {
+      generalResponse.resolve([{ key: 'mvforgePreferences', value: { qualityGoal: 'maximum_quality' } }] as never);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(queryClient.getQueryData(['settings'])).toEqual(expect.arrayContaining([
+      { key: 'analysisPolicy', value: { mode: 'thorough' } },
+      { key: 'profileSampleEstimatePolicy', value: { hardwareWindows: 5 } },
+      { key: 'mvforgePreferences', value: { qualityGoal: 'maximum_quality' } },
+    ])));
+
+    await act(async () => {
+      settingsRefresh.resolve(finalSettings as never);
+      await settingsRefresh.promise;
+    });
+    await waitFor(() => expect(queryClient.getQueryData(['settings'])).toEqual(finalSettings));
+    expect(queryClient.isFetching({ queryKey: ['settings'] })).toBe(0);
+
+    await user.click(screen.getByRole('button', { name: 'Test route General' }));
+    expect((await screen.findByLabelText('Quality / storage preference')).textContent).toContain('Maximum quality');
+    await user.click(screen.getByRole('button', { name: 'Analysis' }));
+    expect((await screen.findByLabelText('Analysis mode')).textContent).toContain('Thorough');
+  }, 15000);
+
+  it('does not show Saved when the Settings write fails', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.updateSettingsBatch).mockRejectedValueOnce(new Error('synthetic HTTP failure'));
+    renderSettings('/settings?section=test-encode');
+
+    fireEvent.change(await screen.findByLabelText('Default duration (seconds)'), { target: { value: '30' } });
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect((await screen.findByRole('status')).textContent).toContain('Save failed');
+    expect((screen.getByLabelText('Default duration (seconds)') as HTMLInputElement).value).toBe('30');
+    expect(sidebarDraftStatus('Test Encode')).toBe(true);
+  });
 });

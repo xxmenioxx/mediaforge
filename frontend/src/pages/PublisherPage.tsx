@@ -67,10 +67,12 @@ export function PublisherPage() {
   const retryIdempotencyKeys = useRef(new Map<string, string>());
   const publishJob = useMutation({
     mutationFn: api.publishJob,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['publisherEligibility'] });
-      await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
-      await queryClient.invalidateQueries({ queryKey: ['publisherPublications'] });
+    onSuccess: () => {
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['publisherEligibility'] }),
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['publisherPublications'] }),
+      ]);
     },
   });
 

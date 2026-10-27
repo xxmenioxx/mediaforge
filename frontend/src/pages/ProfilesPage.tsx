@@ -228,13 +228,12 @@ export function ProfilesPage() {
 
   const createProfile = useMutation({
     mutationFn: api.createProfile,
-    onSuccess: async () => {
+    onSuccess: () => {
       setForm(initialProfile);
       setProfileJson(JSON.stringify(initialProfile, null, 2));
       setEditingProfileId(null);
       setShowForm(false);
-      await queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      await queryClient.invalidateQueries({ queryKey: ['profiles', 'admin'] });
+      void queryClient.invalidateQueries({ queryKey: ['profiles'] });
     },
   });
 
@@ -250,13 +249,12 @@ export function ProfilesPage() {
 
   const updateProfile = useMutation({
     mutationFn: api.updateProfile,
-    onSuccess: async () => {
+    onSuccess: () => {
       setForm(initialProfile);
       setProfileJson(JSON.stringify(initialProfile, null, 2));
       setEditingProfileId(null);
       setShowForm(false);
-      await queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      await queryClient.invalidateQueries({ queryKey: ['profiles', 'admin'] });
+      void queryClient.invalidateQueries({ queryKey: ['profiles'] });
     },
   });
 
