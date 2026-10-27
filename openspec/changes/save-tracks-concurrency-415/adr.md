@@ -16,7 +16,7 @@ The future coordinator key is the database namespace plus the stable `AssetRecor
 
 Legacy override backfill may bind a path entry to an `AssetRecord.ID` only when the current path-to-record mapping is unique and validated in the same transaction. Ambiguous/unindexed rows remain legacy and use exclusive fallback. Path owners that do not directly reference `assetMutationMu`—including `PublishAsIs`, `ApplyLibraryPathRename`, and `Rename`—must be audited for enclosing guards and explicitly included in the future coordinator; before future keyed coordination is enabled; that fallback is not implemented in current code.
 
-A source AST inventory now records 16 current direct `assetMutationMu` owners across Save Tracks, Queue, Preflight, scanner, maintenance, and path/lifecycle mutation. Its regression test protects the current shared mutex owner list only. It is not evidence that a future keyed coordinator has been implemented or that all runtime branches have been exercised. Gate 2.2 is complete only for this current-owner inventory; keyed-coordinator migration remains a later gate.
+A source AST inventory now records 16 current direct `assetMutationMu` owners across Save Tracks, Queue, Preflight, scanner, maintenance, and path/lifecycle mutation. Its regression test protects the current direct-owner list only. It is not evidence that a future keyed coordinator has been implemented or that all runtime branches have been exercised. Since `PublishAsIs`, `ApplyLibraryPathRename`, `MigratePath`, and `Rename` use other guards, task 2.2 remains open until all path-mutating routes and their enclosing guards are mapped to the future coordination boundary.
 
 ## Alternatives considered
 
