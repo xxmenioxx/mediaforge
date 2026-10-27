@@ -51,3 +51,34 @@ validation: `go test ./internal/nasobserver` (from `backend/`), strict
 OpenSpec, `./scripts/verify.sh --auto`, then CI / Pipeline Smoke.
 
 **Real preflight remains BLOCKED / NO-GO.** No `run-real` command is introduced.
+
+
+## Stage 6: attributed critical signals and atomic handoff (fixture-only)
+
+`GuardFromAttributedEvidence` requires a distinct exact expected source identity
+and a recent sample for each of Jellyfin playback, FFmpeg activity, MVForge worker
+activity and storage health. Unknown, stale or mismatched signals result in
+`unavailable`, not `allow`. Observed busy activity produces `pressure`
+only when all four source attributions pass validation. The source labels
+are NOT cryptographic attestations, and consumers MUST NOT populate them from
+untrusted caller input.
+
+`ParseJellyfinSessions` is pure parsing of a supplied bounded `/Sessions`
+response. It treats any `NowPlayingItem`, including paused, as busy. An empty
+array alone is NOT sufficient evidence of idle on a shared NAS: the eventual
+adapter must prove authentication, complete authorized session scope, fresh
+response, exact peer identity, and no unobserved sessions. No such live adapter
+or privilege is implemented here.
+
+`PublishSignedSnapshotAtomically` writes an already signed envelope to an
+existing directory, with a mode-0600 temp file, fsync, rename and parent sync.
+It rejects a symlink destination and malformed envelope shapes. It does NOT
+verify signature authenticity, secure parent-directory ownership, prevent
+replay or provide private-key custody. An independently reviewed host service
+must enforce those properties before this is allowed near production.
+
+No producer currently establishes real host/namespace identity, endpoint
+trust, Jellyfin session completeness, FFmpeg/worker authority, actual storage
+health, key custody, or snapshot delivery. The real Ollama preflight stays
+BLOCKED / NO-GO. No daemon, scheduled publisher, key file handling or network
+probes were added.

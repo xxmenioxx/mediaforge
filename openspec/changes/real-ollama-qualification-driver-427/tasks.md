@@ -29,3 +29,14 @@
 - [x] 5.3 Serialize the #431 Ed25519 envelope using a supplied private key, without implementing key custody, file publication, or a daemon.
 - [x] 5.4 Document that no host attestation, production service probes, provisioned signer or real Ollama qualification is provided.
 - [x] 5.5 Run focused Go tests, strict OpenSpec and canonical verifier, and confirm remote CI/Smoke PASS before considering integration.
+
+## 6. Attributed guard and atomic handoff (synthetic only)
+
+- [x] 6.1 Add independently attributed, freshness-checked critical-service evidence with fail-closed semantics.
+- [x] 6.2 Add conservative parsing of bounded Jellyfin session JSON supplied via fixture, with no network client or live attribution.
+- [x] 6.3 Add temporary-file + fsync + rename publication for already signed snapshots, without keys or provisioned service.
+- [x] 6.4 Add synthetic negative tests for unknown/stale identity, active playback, malformed Jellyfin JSON, and destination safety.
+- [x] 6.5 Document missing source authority, session coverage, secure directory/key custody, replay controls, and real-preflight NO-GO.
+- [x] 6.6 Complete focused Python/Go tests, strict OpenSpec, and `./scripts/verify.sh --auto` plus `--full`.
+- [x] 6.7 Run the isolated mock Docker sandbox against the final SHA on a configured local Docker Engine.
+- [x] 6.8 Confirm green CI and Pipeline Smoke over the final pushed SHA.
