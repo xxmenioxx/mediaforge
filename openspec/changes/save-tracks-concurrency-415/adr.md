@@ -10,6 +10,14 @@ Do not remove or narrow either production mutex as a Save Tracks-only change. Th
 
 The recommended prototype is a ref-counted keyed coordinator plus transactional normalized conversion-override rows. Queue freeze and lifecycle reservation stay within the same asset lock boundary as Save Tracks. Any global metadata setting lock remains separately ordered and may not acquire the coordinator from inside that lock or a DB transaction.
 
+## Proposed identity contract and current evidence
+
+The future coordinator key is the database namespace plus the stable `AssetRecord.ID`, bound to a unique current path/revision under the coordination boundary. The current `AssetRecord` model has a primary-key ID and unique path but no alias identity; Save Tracks accepts a cleaned path and does not resolve its ID before locking. Therefore unindexed files, unresolved aliases/symlinks, path transitions without verified ID continuity, and historical jobs without a current verified `SourceAssetRecordID` must use one exclusive process-wide fallback. Rename/move must retain the same record ID or stay under that fallback through filesystem and DB rebind. A filename, size, timestamp, or normalized path is not proof of identity. This is a proposed contract only; current request paths do not enforce it and no identity collision/fallback tests have been implemented, so gate 2.1 remains open.
+
+Legacy override backfill may bind a path entry to an `AssetRecord.ID` only when the current path-to-record mapping is unique and validated in the same transaction. Ambiguous/unindexed rows remain legacy and use exclusive fallback. Path owners that do not directly reference `assetMutationMu`—including `PublishAsIs`, `ApplyLibraryPathRename`, and `Rename`—must be audited for enclosing guards and explicitly included in the future coordinator; before future keyed coordination is enabled; that fallback is not implemented in current code.
+
+A source AST inventory now records 16 current direct `assetMutationMu` owners across Save Tracks, Queue, Preflight, scanner, maintenance, and path/lifecycle mutation. Its regression test protects the current direct-owner list only. It is not evidence that a future keyed coordinator has been implemented or that all runtime branches have been exercised. Since `PublishAsIs`, `ApplyLibraryPathRename`, `MigratePath`, and `Rename` use other guards, task 2.2 remains open until all path-mutating routes and their enclosing guards are mapped to the future coordination boundary.
+
 ## Alternatives considered
 
 1. **Delete `assetMutationMu` from Save Tracks only — rejected.** An open-job/maintenance check could race Queue freeze or a new maintenance reservation.
