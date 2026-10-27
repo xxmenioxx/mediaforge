@@ -268,6 +268,7 @@ type ResolvedSubtitleTrack struct {
 
 type ResolvedTrackSidecar struct {
 	StreamIndex           int                      `json:"streamIndex"`
+	SourceStreamSignature string                   `json:"sourceStreamSignature,omitempty"`
 	Codec                 string                   `json:"codec,omitempty"`
 	SourceType            string                   `json:"sourceType,omitempty"`
 	Language              string                   `json:"language,omitempty"`

@@ -143,7 +143,7 @@ func newPublisherDeliveryFixtureMode(t *testing.T, requiredSidecar bool, mode st
 		if err := os.WriteFile(sidecar, artifactContent, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		job.SubtitleArtifacts = subtitleArtifactsJSON([]SubtitleArtifact{{StreamIndex: 3, SourceCodec: "ass", Format: "ass", Mode: "original", Language: "eng", StagedPath: sidecar, Status: "ready"}})
+		job.SubtitleArtifacts = subtitleArtifactsJSON([]SubtitleArtifact{{ArtifactID: subtitleArtifactID(3, "original", "ass"), StreamIndex: 3, SourceCodec: "ass", Format: "ass", Mode: "original", Language: "eng", StagedPath: sidecar, Status: "ready"}})
 	}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)

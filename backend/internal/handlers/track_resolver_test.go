@@ -231,6 +231,54 @@ func TestResolveTrackPlanPreferredBitmapLanguageKeepsCanonicalOCRPath(t *testing
 	})
 }
 
+func TestResolveTrackPlanFreezesBitmapOutputModeFormatAndSource(t *testing.T) {
+	scan := models.ScanResult{SubtitleStreams: models.JSONList{
+		map[string]any{"index": 7, "codec": "hdmv_pgs_subtitle", "language": "jpn", "id": "0x7"},
+	}}
+	for _, test := range []struct {
+		name       string
+		requested  string
+		wantFormat []string
+		wantMode   string
+		wantOCR    bool
+	}{
+		{name: "converted srt", requested: "srt", wantFormat: []string{"srt"}, wantMode: "converted", wantOCR: true},
+		{name: "converted ass", requested: "ass", wantFormat: []string{"ass"}, wantMode: "converted", wantOCR: true},
+		{name: "logical both", requested: "both", wantFormat: []string{"srt", "ass"}, wantMode: "converted", wantOCR: true},
+		{name: "original sup", requested: "original", wantFormat: []string{"sup"}, wantMode: "original", wantOCR: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			profile := map[string]any{
+				"trackDispositionVersion": canonicalTrackDispositionVersion,
+				"subtitleDisposition":     "keep",
+				"subtitleSidecarFormats":  []string{test.requested},
+				"resolvedSubtitleSettingSources": map[string]any{
+					"subtitleSidecarFormats": "global_settings",
+				},
+				"resolvedTrackSettingsSource": "global_settings",
+				"preferredSubtitleRules":      []any{map[string]any{"language": "jpn", "action": "extract"}},
+				"attachmentPolicy":            "auto",
+				"chapterPolicy":               "keep",
+			}
+			plan, err := resolveTrackPlan(scan, profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.SidecarOutputs) != len(test.wantFormat) {
+				t.Fatalf("sidecar outputs=%#v want %d", plan.SidecarOutputs, len(test.wantFormat))
+			}
+			for index, sidecar := range plan.SidecarOutputs {
+				if sidecar.StreamIndex != 7 || sidecar.Format != test.wantFormat[index] || sidecar.Mode != test.wantMode || sidecar.OCRRequired != test.wantOCR {
+					t.Fatalf("sidecar[%d]=%#v want format=%s mode=%s ocr=%v", index, sidecar, test.wantFormat[index], test.wantMode, test.wantOCR)
+				}
+				if sidecar.SettingsSources["format"] != "global_settings" || sidecar.SourceStreamSignature == "" {
+					t.Fatalf("sidecar lost format provenance or source identity: %#v", sidecar)
+				}
+			}
+		})
+	}
+}
+
 func TestResolveTrackPlanSameLanguageOrderIsDeterministic(t *testing.T) {
 	scan := models.ScanResult{SubtitleStreams: models.JSONList{
 		map[string]any{"index": 8, "codec": "subrip", "language": "spa"},
