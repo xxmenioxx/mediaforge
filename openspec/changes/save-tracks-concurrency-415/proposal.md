@@ -5,7 +5,8 @@ Issue #415 reports Save Tracks latency dominated by the process-wide `assetMutat
 ## What Changes
 
 - Specify a safe concurrency architecture and deterministic verification plan for Save Tracks.
-- Characterize current lock ownership and the two global serialization domains.
+- Characterize current direct lock ownership, indirect path/lifecycle guard ownership, and the two global serialization domains.
+- Specify the proposed canonical `AssetRecord.ID` identity and exclusive fallback disposition for aliases, unindexed paths, and path transitions without claiming they are implemented.
 - Define a gated future design for per-asset lifecycle coordination plus transactional per-asset override persistence.
 - Record benchmark, race-toolchain, compatibility, migration, and GO/NO-GO criteria.
 - Keep this change at design stage; do not change production locking, persistence, or lifecycle behavior.
@@ -16,6 +17,6 @@ This is an architecture design with no intended observable behavior change, so i
 
 ## Impact
 
-- Adds an OpenSpec SDD, proposed ADR, and one same-asset concurrency characterization test.
+- Adds an OpenSpec SDD, proposed ADR, same-asset concurrency characterization, source-AST owner characterization, and synthetic SQLite/symlink identity characterization.
 - No production code, API, persisted model, media, Queue, or lifecycle behavior changes.
 - Synthetic tests use disposable SQLite and generated files. No NAS, production DB, or real media is used.
