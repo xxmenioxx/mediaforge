@@ -276,6 +276,14 @@ function subtitleCodecLabel(codec?: string) {
   return codec?.toUpperCase() || 'Codec unknown';
 }
 
+function subtitleFormatSourceLabel(source: string | undefined, policySource?: string) {
+  if (source === 'built_in') return 'Built-in default';
+  if (source === 'global_settings') return 'Global Asset Defaults';
+  if (source === 'asset_profile') return policySource || 'Asset/Profile policy';
+  if (source === 'operation_override') return 'Subtitle operation override';
+  return source?.replace(/_/g, ' ') || policySource || 'Resolved policy';
+}
+
 function subtitleActionSourceLabel(decision: QueueBatchPreflightSubtitleDecision, policySource?: string) {
   if (decision.actionSource === 'candidate_override') return 'Candidate-only override';
   if (decision.actionSource === 'explicit_asset_tracks') return 'Explicit Asset Tracks';
@@ -365,7 +373,15 @@ function SubtitleDecisionReview({
           ].filter(Boolean).join(' · ');
           const sidecarText = sidecars.length === 0
             ? 'No sidecar planned'
-            : sidecars.map((sidecar) => `${sidecar.format?.toUpperCase() || 'Original'}${sidecar.mode === 'converted' ? ' converted' : ''}${sidecar.ocrRequired ? ` · OCR ${sidecar.ocrLanguage || 'auto'} / ${sidecar.ocrMode || 'accurate'}` : ''}`).join(' · ');
+            : sidecars.map((sidecar) => {
+              const format = sidecar.format?.toUpperCase() || 'format unknown';
+              const extension = sidecar.extension || (sidecar.format ? `.${sidecar.format}` : '');
+              const output = sidecar.mode === 'original'
+                ? `Original (${extension.toUpperCase() || format})`
+                : sidecar.mode === 'converted' ? `Converted ${format}` : format;
+              const source = subtitleFormatSourceLabel(sidecar.settingsSources?.format, subtitlePlan.policySource);
+              return `${output} · format source: ${source}${sidecar.ocrRequired ? ` · OCR ${sidecar.ocrLanguage || 'auto'} / ${sidecar.ocrMode || 'accurate'}` : ''}`;
+            }).join(' · ');
           return <Box key={`${decision.streamIndex}-${decision.streamSignature}`} sx={{ p: 1, border: 1, borderColor: 'divider', borderRadius: 1 }} data-testid="subtitle-decision-row">
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ sm: 'flex-start' }}>
               <Stack spacing={0.25} sx={{ minWidth: 0, flex: 1 }}>

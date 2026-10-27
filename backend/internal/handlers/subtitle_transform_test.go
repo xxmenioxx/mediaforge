@@ -69,6 +69,10 @@ func TestGenerateResolvedConvertedTextSubtitleArtifactsProducesCues(t *testing.T
 }
 
 func TestGenerateResolvedBitmapOCRArtifactsForPGSAndVobSub(t *testing.T) {
+	ocrRoot := t.TempDir()
+	lifecycleRoot := filepath.Join(ocrRoot, "lifecycle")
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", lifecycleRoot)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", filepath.Join(ocrRoot, "persistent"))
 	for _, test := range []struct {
 		codec, format string
 	}{
@@ -92,21 +96,66 @@ func TestGenerateResolvedBitmapOCRArtifactsForPGSAndVobSub(t *testing.T) {
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			output := filepath.Join(t.TempDir(), "Episode.mkv")
+			trackPlan := ResolvedTrackPlan{
+				AttachmentPolicy: AttachmentPolicyAuto, ChapterPolicy: ChapterPolicyKeep,
+				FontAttachmentExportPolicy: FontAttachmentExportNone,
+				SubtitleStreams:            []ResolvedSubtitleTrack{{StreamIndex: 4, StreamSignature: "source-stream-4", Codec: test.codec, Action: SubtitleDispositionExtract}},
+				SidecarOutputs: []ResolvedTrackSidecar{{
+					StreamIndex: 4, SourceStreamSignature: "source-stream-4", Codec: test.codec, SourceType: "bitmap", Language: "spa", Format: test.format,
+					RequestedFormat: test.format, Mode: "converted", OCRRequired: true, OCRLanguage: "spa", OCRMode: "raw",
+				}},
+			}
 			plan := MediaJobPlan{
 				InputPath: "/raw/Episode.mkv", OutputPath: output,
-				Streams: MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: test.codec, Language: "spa"}}},
-				ResolvedTracks: &ResolvedTrackPlan{SidecarOutputs: []ResolvedTrackSidecar{{
-					StreamIndex: 4, Codec: test.codec, SourceType: "bitmap", Language: "spa", Format: test.format,
-					RequestedFormat: test.format, Mode: "converted", OCRRequired: true, OCRLanguage: "spa", OCRMode: "raw",
-				}}},
+				Streams:        MediaStreamInventory{Subtitle: []MediaStream{{Index: 4, Codec: test.codec, Language: "spa"}}},
+				ResolvedTracks: &trackPlan,
 			}
 			artifacts, err := generateResolvedSubtitleArtifacts(context.Background(), plan, nil)
 			if err != nil || len(artifacts) != 1 {
 				t.Fatalf("artifacts=%#v err=%v", artifacts, err)
 			}
+			if artifacts[0].Format != test.format || artifacts[0].Mode != "converted" || artifacts[0].ArtifactID != subtitleArtifactID(4, "converted", test.format) || artifacts[0].SourceStreamSignature != "source-stream-4" {
+				t.Fatalf("Worker artifact lost frozen output identity: %#v", artifacts[0])
+			}
 			content, err := os.ReadFile(artifacts[0].StagedPath)
 			if err != nil || !strings.Contains(string(content), "Hola OCR") {
 				t.Fatalf("OCR artifact content=%q err=%v", content, err)
+			}
+			if leaked, globErr := filepath.Glob(filepath.Join(filepath.Dir(artifacts[0].StagedPath), "*.sup")); globErr != nil || len(leaked) != 0 {
+				t.Fatalf("temporary OCR SUP escaped into the sidecar staging directory: files=%#v err=%v", leaked, globErr)
+			}
+			if workspaces, globErr := filepath.Glob(filepath.Join(lifecycleRoot, ".mvforge-ocr-flight-*")); globErr != nil || len(workspaces) != 0 {
+				t.Fatalf("operation-owned OCR workspace remained after completion: paths=%#v err=%v", workspaces, globErr)
+			}
+			trackSnapshot, snapshotErr := resolvedTrackPlanMap(trackPlan)
+			if snapshotErr != nil {
+				t.Fatal(snapshotErr)
+			}
+			staleSUP := SubtitleArtifact{
+				ArtifactID: subtitleArtifactID(4, "original", "sup"), Type: "subtitle_sidecar", StreamIndex: 4,
+				SourceStreamSignature: "source-stream-4", SourceCodec: test.codec, SourceType: "bitmap", Format: "sup", Mode: "original",
+				Language: "spa", StagedPath: filepath.Join(filepath.Dir(output), "stale.sup"), Status: "ready",
+			}
+			job := models.QueueJob{
+				MediaPath: "/raw/Episode.mkv", OutputPath: output,
+				TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: trackSnapshot},
+				SubtitleArtifacts:    subtitleArtifactsJSON(append(artifacts, staleSUP)),
+			}
+			if _, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); !ok {
+				t.Fatalf("generated Worker fixture does not contain a resolved track plan: %#v", job.TrackProfileSnapshot)
+			}
+			manifest, manifestErr := manifestEntries(buildPublicationManifestForJob(job, filepath.Join(t.TempDir(), "Library", "Episode.mkv"), false))
+			if manifestErr != nil {
+				t.Fatal(manifestErr)
+			}
+			publishedSidecars := []publicationManifestEntry{}
+			for _, entry := range manifest {
+				if entry.Kind == "subtitle" {
+					publishedSidecars = append(publishedSidecars, entry)
+				}
+			}
+			if len(publishedSidecars) != 1 || filepath.Clean(publishedSidecars[0].Source) != filepath.Clean(artifacts[0].StagedPath) || filepath.Ext(publishedSidecars[0].Final) != "."+test.format {
+				t.Fatalf("Worker artifact and Publisher manifest diverged from frozen converted format: entries=%#v artifact=%#v", publishedSidecars, artifacts[0])
 			}
 		})
 	}
@@ -172,6 +221,10 @@ func TestGenerateResolvedBitmapBothUsesOneOCRAndRendersBothArtifacts(t *testing.
 
 func TestGenerateResolvedBitmapOCRFailureDoesNotLeaveArtifact(t *testing.T) {
 	bin := t.TempDir()
+	ocrRoot := t.TempDir()
+	lifecycleRoot := filepath.Join(ocrRoot, "lifecycle")
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", lifecycleRoot)
+	t.Setenv("MVFORGE_OCR_PERSISTENT_ROOT", filepath.Join(ocrRoot, "persistent"))
 	if err := os.WriteFile(filepath.Join(bin, "ffprobe"), []byte("#!/bin/sh\nprintf '%s' '{\"streams\":[{\"index\":4,\"codec_type\":\"subtitle\",\"codec_name\":\"hdmv_pgs_subtitle\"}]}'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -203,6 +256,9 @@ func TestGenerateResolvedBitmapOCRFailureDoesNotLeaveArtifact(t *testing.T) {
 				t.Fatalf("failed OCR left misleading artifact %q: %v", artifact.StagedPath, statErr)
 			}
 		}
+	}
+	if workspaces, globErr := filepath.Glob(filepath.Join(lifecycleRoot, ".mvforge-ocr-flight-*")); globErr != nil || len(workspaces) != 0 {
+		t.Fatalf("failed OCR left its operation-owned workspace: paths=%#v err=%v", workspaces, globErr)
 	}
 }
 

@@ -237,7 +237,8 @@ func subtitleExtractionArtifact(plan subtitleExtractionPlan, path string) Subtit
 	decision := plan.Decision
 	return SubtitleArtifact{
 		ArtifactID: subtitleArtifactID(plan.StreamIndex, decision.Mode, decision.Format),
-		Type:       "subtitle_sidecar", StreamIndex: plan.StreamIndex, SourceCodec: decision.Codec,
+		Type:       "subtitle_sidecar", StreamIndex: plan.StreamIndex,
+		SourceStreamSignature: decision.SourceStreamSignature, SourceCodec: decision.Codec,
 		SourceType: decision.SourceType, Format: decision.Format, RequestedFormat: decision.RequestedFormat,
 		Mode: decision.Mode, Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced,
 		Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, RoleClassifierVersion: decision.RoleClassifierVersion, OCRRequired: decision.OCRRequired,

@@ -2224,6 +2224,7 @@ export type QueueBatchPreflightSubtitleSidecar = {
   ocrLanguage?: string;
   ocrMode?: string;
   extension?: string;
+  settingsSources?: Record<string, string>;
 };
 
 export type QueueBatchPreflightSubtitlePlan = {

@@ -405,9 +405,12 @@ func buildPublicationManifestForJob(job models.QueueJob, destination string, inc
 	entries := []publicationManifestEntry{{Kind: "primary", Source: job.OutputPath, Final: destination, Required: true, Promote: true}}
 	base := strings.TrimSuffix(destination, filepath.Ext(destination))
 	used := map[string]bool{filepath.Clean(destination): true}
-	trackPlan, hasTrackPlan := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
+	_, hasTrackPlan := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot)
 	for _, artifact := range subtitleArtifactsFromJSON(job.SubtitleArtifacts) {
 		if artifact.Status != "" && artifact.Status != "ready" {
+			continue
+		}
+		if !subtitleArtifactAuthorizedForPublication(job, artifact) {
 			continue
 		}
 		language := safeSubtitleFilenamePart(artifact.Language)
@@ -421,15 +424,7 @@ func buildPublicationManifestForJob(job models.QueueJob, destination string, inc
 			final = base + suffix
 		}
 		used[filepath.Clean(final)] = true
-		required := false
-		if hasTrackPlan {
-			for _, planned := range trackPlan.SidecarOutputs {
-				if planned.StreamIndex == artifact.StreamIndex && (planned.Format == "" || strings.EqualFold(planned.Format, artifact.Format)) {
-					required = true
-					break
-				}
-			}
-		}
+		required := hasTrackPlan
 		entries = append(entries, publicationManifestEntry{Kind: "subtitle", Source: artifact.StagedPath, Final: final, Required: required, Promote: true})
 	}
 	for _, font := range fontAttachmentArtifactsFromJSON(job.SubtitleArtifacts) {
@@ -459,6 +454,33 @@ func buildPublicationManifestForJob(job models.QueueJob, destination string, inc
 	var manifest models.JSONList
 	_ = json.Unmarshal(encoded, &manifest)
 	return manifest
+}
+
+func publicationSubtitleManifestAuthorized(job models.QueueJob, destination string, manifest models.JSONList) bool {
+	expected, err := manifestEntries(publicationManifestForJob(job, destination))
+	if err != nil {
+		return false
+	}
+	allowed := make(map[string]bool, len(expected))
+	for _, entry := range expected {
+		if entry.Kind == "subtitle" || entry.Kind == "external_subtitle" {
+			allowed[entry.Kind+"\x00"+filepath.Clean(entry.Source)+"\x00"+filepath.Clean(entry.Final)] = true
+		}
+	}
+	entries, err := manifestEntries(manifest)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Kind != "subtitle" && entry.Kind != "external_subtitle" {
+			continue
+		}
+		key := entry.Kind + "\x00" + filepath.Clean(entry.Source) + "\x00" + filepath.Clean(entry.Final)
+		if entry.Promote && !allowed[key] {
+			return false
+		}
+	}
+	return true
 }
 
 func (h PublisherHandler) persistPublicationIdentity(candidate models.PublisherPublication, _ resultArtifactIdentity) (models.PublisherPublication, error) {
@@ -1558,6 +1580,9 @@ func (h PublisherHandler) runPublicationAttempt(job models.QueueJob, publication
 func (h PublisherHandler) verifyBoundDelivery(job models.QueueJob, publication models.PublisherPublication, automatic bool) error {
 	if job.ID != publication.QueueJobID || job.Status != JobStatusCompleted || job.ExecutionNumber == nil || *job.ExecutionNumber != publication.ExecutionNumber || job.ActiveExecutionPlanID == nil || *job.ActiveExecutionPlanID != publication.ExecutionPlanID || job.LibraryID != publication.LibraryID || job.PublishMode != publication.PublishMode || filepath.Clean(job.PlannedLibraryRoot) != filepath.Clean(publication.DestinationRoot) {
 		return errors.New("Queue execution or frozen destination binding changed after publication identity was created")
+	}
+	if !publicationSubtitleManifestAuthorized(job, publication.DestinationPath, publication.Manifest) {
+		return errors.New("persisted delivery manifest promotes a subtitle artifact outside the frozen output decisions")
 	}
 	destination := job.PlannedPublishedPath
 	if job.PublishMode == PublishModeReplaceLibrary {

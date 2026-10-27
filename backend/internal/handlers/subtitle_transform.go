@@ -18,6 +18,7 @@ type SubtitleArtifact struct {
 	ArtifactID              string                       `json:"artifactId"`
 	Type                    string                       `json:"type"`
 	StreamIndex             int                          `json:"streamIndex"`
+	SourceStreamSignature   string                       `json:"sourceStreamSignature,omitempty"`
 	SourceCodec             string                       `json:"sourceCodec"`
 	SourceType              string                       `json:"sourceType,omitempty"`
 	Format                  string                       `json:"format"`
@@ -165,7 +166,8 @@ func plannedSubtitleArtifacts(job models.QueueJob) []SubtitleArtifact {
 	for _, decision := range resolvedSubtitleSidecarsForPlan(MediaJobPlan{ResolvedTracks: plan}) {
 		artifact := SubtitleArtifact{
 			ArtifactID: subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format), Type: "subtitle_sidecar",
-			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, SourceType: decision.SourceType, Format: decision.Format, RequestedFormat: decision.RequestedFormat, Mode: decision.Mode, OCRRequired: decision.OCRRequired,
+			StreamIndex: decision.StreamIndex, SourceStreamSignature: decision.SourceStreamSignature,
+			SourceCodec: decision.Codec, SourceType: decision.SourceType, Format: decision.Format, RequestedFormat: decision.RequestedFormat, Mode: decision.Mode, OCRRequired: decision.OCRRequired,
 			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, RoleClassifierVersion: decision.RoleClassifierVersion, Title: decision.Title, Status: "planned",
 			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
 		}
@@ -215,6 +217,68 @@ func subtitleArtifactAllowedForQueueJob(job models.QueueJob, artifact SubtitleAr
 		}
 	}
 	return true
+}
+
+func subtitleArtifactStagedForJob(job models.QueueJob, artifact SubtitleArtifact) bool {
+	outputPath := filepath.Clean(strings.TrimSpace(job.OutputPath))
+	stagedPath := filepath.Clean(strings.TrimSpace(artifact.StagedPath))
+	if outputPath == "." || stagedPath == "." || !filepath.IsAbs(outputPath) || !filepath.IsAbs(stagedPath) {
+		return false
+	}
+	stagingRoot := filepath.Dir(outputPath)
+	return stagedPath != stagingRoot && pathIsInside(stagedPath, stagingRoot)
+}
+
+func subtitleArtifactMatchesFrozenPlan(plan ResolvedTrackPlan, artifact SubtitleArtifact) bool {
+	if artifact.Type != "" && artifact.Type != "subtitle_sidecar" {
+		return false
+	}
+	for _, decision := range resolvedSubtitleSidecarsForPlan(MediaJobPlan{ResolvedTracks: &plan}) {
+		if decision.StreamIndex != artifact.StreamIndex || decision.Format == "" ||
+			!strings.EqualFold(decision.Format, artifact.Format) || decision.Mode == "" ||
+			!strings.EqualFold(decision.Mode, artifact.Mode) ||
+			artifact.ArtifactID != subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format) {
+			continue
+		}
+		if decision.Codec != "" && artifact.SourceCodec != "" && !strings.EqualFold(decision.Codec, artifact.SourceCodec) {
+			continue
+		}
+		expectedSignature := decision.SourceStreamSignature
+		for _, stream := range plan.SubtitleStreams {
+			if stream.StreamIndex == decision.StreamIndex {
+				if expectedSignature == "" {
+					expectedSignature = stream.StreamSignature
+				}
+				break
+			}
+		}
+		if artifact.SourceStreamSignature != "" && expectedSignature != "" && artifact.SourceStreamSignature != expectedSignature {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func subtitleArtifactAuthorizedForPublication(job models.QueueJob, artifact SubtitleArtifact) bool {
+	if artifact.Type != "" && artifact.Type != "subtitle_sidecar" {
+		return false
+	}
+	if !subtitleArtifactAllowedForQueueJob(job, artifact) {
+		return false
+	}
+	if plan, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); ok {
+		return subtitleArtifactStagedForJob(job, artifact) && subtitleArtifactMatchesFrozenPlan(*plan, artifact)
+	}
+	if !strings.EqualFold(strings.TrimSpace(artifact.Format), "sup") {
+		return true
+	}
+	codec := strings.ToLower(strings.TrimSpace(artifact.SourceCodec))
+	return subtitleArtifactStagedForJob(job, artifact) &&
+		strings.EqualFold(strings.TrimSpace(artifact.Mode), "original") &&
+		artifact.ArtifactID == subtitleArtifactID(artifact.StreamIndex, artifact.Mode, artifact.Format) &&
+		isBitmapSubtitleCodecName(codec) &&
+		(strings.TrimSpace(artifact.SourceType) == "" || strings.EqualFold(strings.TrimSpace(artifact.SourceType), "bitmap"))
 }
 
 func authorizedSubtitleArtifactsForQueueJob(job models.QueueJob, artifacts []SubtitleArtifact) []SubtitleArtifact {
@@ -446,7 +510,8 @@ func generateResolvedSubtitleArtifacts(ctx context.Context, plan MediaJobPlan, p
 		artifact := SubtitleArtifact{
 			ArtifactID:  subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format),
 			Type:        "subtitle_sidecar",
-			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: decision.Format,
+			StreamIndex: decision.StreamIndex, SourceStreamSignature: decision.SourceStreamSignature,
+			SourceCodec: decision.Codec, Format: decision.Format,
 			SourceType: decision.SourceType, RequestedFormat: decision.RequestedFormat, OCRRequired: decision.OCRRequired,
 			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, RoleClassifierVersion: decision.RoleClassifierVersion, Title: decision.Title, Mode: decision.Mode,
 			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), Extension: decision.Extension, NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,
@@ -612,7 +677,8 @@ func generateSharedConvertedSubtitleArtifacts(ctx context.Context, plan MediaJob
 	for _, decision := range decisions {
 		artifact := SubtitleArtifact{
 			ArtifactID: subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format), Type: "subtitle_sidecar",
-			StreamIndex: decision.StreamIndex, SourceCodec: decision.Codec, Format: strings.ToLower(strings.TrimSpace(decision.Format)),
+			StreamIndex: decision.StreamIndex, SourceStreamSignature: decision.SourceStreamSignature,
+			SourceCodec: decision.Codec, Format: strings.ToLower(strings.TrimSpace(decision.Format)),
 			SourceType: decision.SourceType, RequestedFormat: decision.RequestedFormat, OCRRequired: decision.OCRRequired,
 			Language: decision.Language, Default: decision.Default, Forced: decision.Forced, SourceForced: decision.SourceForced, Role: decision.Role, RoleProvenance: decision.RoleProvenance, RoleConfidence: decision.RoleConfidence, RoleClassifierVersion: decision.RoleClassifierVersion, Title: decision.Title, Mode: decision.Mode,
 			OCRLanguage: decision.OCRLanguage, OCRMode: decision.OCRMode, Stages: append([]string(nil), decision.Stages...), NamingKey: decision.NamingKey, LogicalTransformKey: decision.LogicalTransformKey,

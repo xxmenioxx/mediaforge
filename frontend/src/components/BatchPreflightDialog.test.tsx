@@ -136,11 +136,11 @@ function candidateWithSubtitlePlan(fallback: 'extract' | 'remove' = 'extract', r
     explicitAssetSelection: false,
     decisions,
     sidecars: [
-      { streamIndex: 2, codec: 'subrip', language: 'spa', format: 'srt', requestedFormat: 'both', mode: 'original', ocrRequired: false },
-      { streamIndex: 2, codec: 'subrip', language: 'spa', format: 'original', requestedFormat: 'both', mode: 'original', ocrRequired: false },
-      { streamIndex: 3, codec: 'subrip', language: 'eng', format: 'srt', requestedFormat: 'both', mode: 'original', ocrRequired: false },
-      { streamIndex: 4, codec: 'ass', language: 'jpn', format: 'ass', requestedFormat: 'both', mode: 'original', ocrRequired: false },
-      ...(fallback === 'extract' ? [{ streamIndex: 5, codec: 'hdmv_pgs_subtitle', language: 'fra', format: 'srt', requestedFormat: 'both', mode: 'converted', ocrRequired: true, ocrLanguage: 'fra', ocrMode: 'accurate' }] : []),
+      { streamIndex: 2, codec: 'subrip', language: 'spa', format: 'srt', requestedFormat: 'both', mode: 'converted', ocrRequired: false, extension: '.srt', settingsSources: { format: 'global_settings' } },
+      { streamIndex: 2, codec: 'subrip', language: 'spa', format: 'ass', requestedFormat: 'both', mode: 'converted', ocrRequired: false, extension: '.ass', settingsSources: { format: 'global_settings' } },
+      { streamIndex: 3, codec: 'subrip', language: 'eng', format: 'srt', requestedFormat: 'original', mode: 'original', ocrRequired: false, extension: '.srt', settingsSources: { format: 'built_in' } },
+      { streamIndex: 4, codec: 'ass', language: 'jpn', format: 'ass', requestedFormat: 'original', mode: 'original', ocrRequired: false, extension: '.ass', settingsSources: { format: 'asset_profile' } },
+      ...(fallback === 'extract' ? [{ streamIndex: 5, codec: 'hdmv_pgs_subtitle', language: 'fra', format: 'srt', requestedFormat: 'srt', mode: 'converted', ocrRequired: true, ocrLanguage: 'fra', ocrMode: 'accurate', extension: '.srt', settingsSources: { format: 'global_settings' } }] : []),
     ],
     defaultSubtitle: { requestedLanguage: 'spa', status: 'not_selected' },
     warnings: fallback === 'extract' ? ['1 additional language will also be extracted because Subtitle action = Extract.'] : [],
@@ -217,7 +217,8 @@ describe('BatchPreflightDialog', () => {
     expect(screen.getByText(/Stream 2 · Spanish \(spa\) · SRT · Spanish · Source default/)).toBeTruthy();
     expect(screen.getByText(/Stream 4 · Japanese \(jpn\) · ASS · Signs and songs/)).toBeTruthy();
     expect(screen.getAllByText(/Requested outputs have not been generated/).length).toBe(4);
-    expect(screen.getByText(/SRT.*ORIGINAL/)).toBeTruthy();
+    expect(screen.getAllByText(/Converted SRT/).length).toBe(2);
+    expect(screen.getByText(/Original \(\.SRT\)/)).toBeTruthy();
     expect(screen.getByText(/OCR fra \/ accurate/)).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Customize for this Queue' }));
@@ -239,6 +240,27 @@ describe('BatchPreflightDialog', () => {
     })));
     expect(screen.getByText('Candidate-only override')).toBeTruthy();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes original SUP from converted SRT and shows each format source', async () => {
+    const user = userEvent.setup();
+    const initial = candidateWithSubtitlePlan('extract');
+    const subtitlePlan = initial.assets[0]?.plan?.subtitlePlan;
+    if (!subtitlePlan) throw new Error('test candidate is missing its subtitle plan');
+    subtitlePlan.policySource = 'Track Profile';
+    subtitlePlan.sidecars = [
+      { streamIndex: 2, codec: 'subrip', language: 'spa', format: 'srt', mode: 'converted', ocrRequired: false, extension: '.srt', settingsSources: { format: 'global_settings' } },
+      { streamIndex: 5, codec: 'hdmv_pgs_subtitle', sourceType: 'bitmap', language: 'fra', format: 'sup', mode: 'original', ocrRequired: false, extension: '.sup', settingsSources: { format: 'asset_profile' } },
+    ];
+    render(<BatchPreflightDialog candidate={initial} onClose={vi.fn()} onAccepted={vi.fn()} onDiscarded={vi.fn()} />);
+
+    await user.click(screen.getByText(/View all subtitle decisions/));
+    const spanish = screen.getByText(/Stream 2 · Spanish/).closest('[data-testid="subtitle-decision-row"]');
+    const french = screen.getByText(/Stream 5 · French/).closest('[data-testid="subtitle-decision-row"]');
+    expect(spanish?.textContent).toContain('Converted SRT');
+    expect(spanish?.textContent).toContain('format source: Global Asset Defaults');
+    expect(french?.textContent).toContain('Original (.SUP)');
+    expect(french?.textContent).toContain('format source: Track Profile');
   });
 
   it('shows unmatched languages as Remove when the frozen global fallback is Remove', async () => {

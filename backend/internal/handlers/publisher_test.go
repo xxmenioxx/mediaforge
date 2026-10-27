@@ -353,6 +353,121 @@ func TestPublisherBlocksMissingRequiredSidecarBeforeOriginalArchive(t *testing.T
 	}
 }
 
+func TestPublicationManifestPromotesOnlyFrozenSubtitleArtifacts(t *testing.T) {
+	root := t.TempDir()
+	stagingRoot := filepath.Join(root, "staging", "job-1")
+	outputPath := filepath.Join(stagingRoot, "Movie.mkv")
+	destination := filepath.Join(root, "library", "Movie.mkv")
+	codec := "hdmv_pgs_subtitle"
+	streamSignatures := map[int]string{3: "pgs-stream-three", 5: "pgs-stream-five", 8: "pgs-stream-eight"}
+	streams := make([]ResolvedSubtitleTrack, 0, len(streamSignatures))
+	for index, signature := range streamSignatures {
+		streams = append(streams, ResolvedSubtitleTrack{
+			StreamIndex: index, StreamSignature: signature, Codec: codec, Language: "eng", Action: SubtitleDispositionExtract,
+		})
+	}
+	decisions := []ResolvedTrackSidecar{
+		{StreamIndex: 3, SourceStreamSignature: streamSignatures[3], Codec: codec, SourceType: "bitmap", Language: "eng", Format: "srt", Mode: "converted"},
+		{StreamIndex: 5, SourceStreamSignature: streamSignatures[5], Codec: codec, SourceType: "bitmap", Language: "eng", Format: "sup", Mode: "original"},
+		{StreamIndex: 8, SourceStreamSignature: streamSignatures[8], Codec: codec, SourceType: "bitmap", Language: "eng", Format: "srt", RequestedFormat: "both", Mode: "converted"},
+		{StreamIndex: 8, SourceStreamSignature: streamSignatures[8], Codec: codec, SourceType: "bitmap", Language: "eng", Format: "ass", RequestedFormat: "both", Mode: "converted"},
+	}
+	plan, err := resolvedTrackPlanMap(ResolvedTrackPlan{
+		AttachmentPolicy: AttachmentPolicyAuto, ChapterPolicy: ChapterPolicyKeep,
+		FontAttachmentExportPolicy: FontAttachmentExportNone,
+		SubtitleStreams:            streams, SidecarOutputs: decisions,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeArtifact := func(index int, mode, format, signature string) SubtitleArtifact {
+		return SubtitleArtifact{
+			ArtifactID: subtitleArtifactID(index, mode, format), Type: "subtitle_sidecar", StreamIndex: index,
+			SourceStreamSignature: signature, SourceCodec: codec, SourceType: "bitmap", Format: format, Mode: mode,
+			Language: "eng", StagedPath: filepath.Join(stagingRoot, fmt.Sprintf("stream-%d.%s", index, format)), Status: "ready",
+		}
+	}
+	approved := []SubtitleArtifact{
+		makeArtifact(3, "converted", "srt", streamSignatures[3]),
+		makeArtifact(5, "original", "sup", streamSignatures[5]),
+		makeArtifact(8, "converted", "srt", streamSignatures[8]),
+		makeArtifact(8, "converted", "ass", streamSignatures[8]),
+	}
+	extra := []SubtitleArtifact{
+		makeArtifact(3, "original", "sup", streamSignatures[3]),
+		makeArtifact(5, "converted", "srt", streamSignatures[5]),
+		makeArtifact(8, "original", "ass", streamSignatures[8]),
+		makeArtifact(3, "converted", "srt", "stale-stream-identity"),
+		makeArtifact(11, "converted", "srt", "same-language-other-index"),
+	}
+	allArtifacts := append(append([]SubtitleArtifact(nil), approved...), extra...)
+	job := models.QueueJob{
+		MediaPath: "/raw/Movie.mkv", OutputPath: outputPath,
+		TrackProfileSnapshot: models.JSONMap{resolvedTrackPlanSnapshotKey: plan},
+		SubtitleArtifacts:    subtitleArtifactsJSON(allArtifacts),
+	}
+	if _, ok := ResolvedTrackPlanFromSnapshot(job.TrackProfileSnapshot); !ok {
+		t.Fatalf("test fixture does not contain a resolved track plan: %#v", job.TrackProfileSnapshot)
+	}
+	manifest := buildPublicationManifestForJob(job, destination, false)
+	entries, err := manifestEntries(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, entry := range entries {
+		if entry.Kind != "subtitle" {
+			continue
+		}
+		if !entry.Promote || !entry.Required {
+			t.Fatalf("authorized frozen subtitle did not retain required promotion: %#v", entry)
+		}
+		got[filepath.Clean(entry.Source)] = true
+	}
+	if len(got) != len(approved) {
+		t.Fatalf("subtitle manifest sources=%#v want %d approved artifacts", got, len(approved))
+	}
+	for _, artifact := range approved {
+		if !got[filepath.Clean(artifact.StagedPath)] {
+			t.Fatalf("approved artifact was not promoted: %#v; entries=%#v", artifact, entries)
+		}
+	}
+	if !publicationSubtitleManifestAuthorized(job, destination, manifest) {
+		t.Fatal("the frozen manifest was rejected as unauthorized")
+	}
+	stalePersisted := append(append([]publicationManifestEntry(nil), entries...), publicationManifestEntry{
+		Kind: "subtitle", Source: extra[0].StagedPath, Final: filepath.Join(root, "library", "Movie.eng.sup"), Promote: true,
+	})
+	if publicationSubtitleManifestAuthorized(job, destination, manifestValue(stalePersisted)) {
+		t.Fatal("a persisted manifest with an extra ready SUP artifact passed authorization")
+	}
+
+	emptyPlan, err := resolvedTrackPlanMap(ResolvedTrackPlan{
+		AttachmentPolicy: AttachmentPolicyAuto, ChapterPolicy: ChapterPolicyKeep,
+		FontAttachmentExportPolicy: FontAttachmentExportNone,
+		SubtitleStreams:            streams,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.TrackProfileSnapshot = models.JSONMap{resolvedTrackPlanSnapshotKey: emptyPlan}
+	emptyEntries, err := manifestEntries(buildPublicationManifestForJob(job, destination, false))
+	if err != nil || len(emptyEntries) != 1 || emptyEntries[0].Kind != "primary" {
+		t.Fatalf("empty sidecar plan promoted subtitle artifacts: entries=%#v err=%v", emptyEntries, err)
+	}
+
+	legacy := models.QueueJob{
+		MediaPath: "/raw/Legacy.mkv", OutputPath: outputPath,
+		SubtitleArtifacts: subtitleArtifactsJSON([]SubtitleArtifact{
+			makeArtifact(5, "original", "sup", streamSignatures[5]),
+		}),
+	}
+	legacyEntries, err := manifestEntries(buildPublicationManifestForJob(legacy, destination, false))
+	if err != nil || len(legacyEntries) != 2 || legacyEntries[1].Kind != "subtitle" || !legacyEntries[1].Promote {
+		t.Fatalf("explicit original operation artifact was not retained for a legacy plan: entries=%#v err=%v", legacyEntries, err)
+	}
+}
+
 func TestCopyExternalSubtitleSidecarsToPublishedAsset(t *testing.T) {
 	root := t.TempDir()
 	rawMedia := filepath.Join(root, "raw", "Movies", "Original Name.mkv")
@@ -439,6 +554,10 @@ func TestCopyExternalSubtitleSidecarsForJobHonorsCanonicalPlan(t *testing.T) {
 	if err := os.WriteFile(rawSidecar, []byte("english"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	rawSUP := strings.TrimSuffix(rawMedia, filepath.Ext(rawMedia)) + ".eng.sup"
+	if err := os.WriteFile(rawSUP, []byte("unrelated bitmap sidecar"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	canonical := models.QueueJob{
 		MediaPath: rawMedia,
@@ -466,8 +585,12 @@ func TestCopyExternalSubtitleSidecarsForJobHonorsCanonicalPlan(t *testing.T) {
 		t.Fatalf("canonical plan copied unrelated source sidecars: %#v", copied)
 	}
 	librarySidecar := strings.TrimSuffix(libraryMedia, filepath.Ext(libraryMedia)) + ".eng.srt"
+	librarySUP := strings.TrimSuffix(libraryMedia, filepath.Ext(libraryMedia)) + ".eng.sup"
 	if _, err := os.Stat(librarySidecar); !os.IsNotExist(err) {
 		t.Fatalf("canonical plan published unrelated source sidecar: %v", err)
+	}
+	if _, err := os.Stat(librarySUP); !os.IsNotExist(err) {
+		t.Fatalf("canonical plan published unrelated SUP sidecar: %v", err)
 	}
 
 	legacy := models.QueueJob{MediaPath: rawMedia}
@@ -477,6 +600,9 @@ func TestCopyExternalSubtitleSidecarsForJobHonorsCanonicalPlan(t *testing.T) {
 	}
 	if len(copied) != 1 || copied[0] != librarySidecar {
 		t.Fatalf("legacy sidecar behavior changed: %#v", copied)
+	}
+	if _, err := os.Stat(librarySUP); !os.IsNotExist(err) {
+		t.Fatalf("legacy external subtitle copy included an unrelated SUP: %v", err)
 	}
 }
 

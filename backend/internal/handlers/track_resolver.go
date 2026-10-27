@@ -294,7 +294,8 @@ func resolveTrackPlanWithSubtitleOverrides(scan models.ScanResult, profile map[s
 						stylingPolicy = &settings
 					}
 					sidecars = append(sidecars, ResolvedTrackSidecar{
-						StreamIndex: index, Codec: codec, SourceType: sourceType, Language: sidecarLanguageForTrack(workerStringValue(stream["language"]), language), Format: format, RequestedFormat: requested, Mode: mode,
+						StreamIndex: index, SourceStreamSignature: resolved.StreamSignature,
+						Codec: codec, SourceType: sourceType, Language: sidecarLanguageForTrack(workerStringValue(stream["language"]), language), Format: format, RequestedFormat: requested, Mode: mode,
 						OCRRequired: mode == "converted" && sourceType == "bitmap", Stages: stages, Extension: "." + format,
 						NamingKey: fmt.Sprintf("subtitle:%d:%s:%s", index, mode, format), LogicalTransformKey: fmt.Sprintf("subtitle:%d:%s:%s", index, mode, requested),
 						Title: workerStringValue(stream["title"]), Default: boolValue(stream["default"], false), Forced: effectiveForced, SourceForced: sourceForced,
