@@ -252,7 +252,7 @@ func subtitleArtifactMatchesFrozenPlan(plan ResolvedTrackPlan, artifact Subtitle
 				break
 			}
 		}
-		if artifact.SourceStreamSignature != "" && expectedSignature != "" && artifact.SourceStreamSignature != expectedSignature {
+		if expectedSignature != "" && artifact.SourceStreamSignature != expectedSignature {
 			continue
 		}
 		return true
@@ -1126,7 +1126,7 @@ func subtitleArtifactsJSON(values []SubtitleArtifact) models.JSONList {
 	for _, value := range values {
 		encoded := map[string]interface{}{
 			"artifactId": value.ArtifactID,
-			"type":       value.Type, "streamIndex": value.StreamIndex, "sourceCodec": value.SourceCodec, "sourceType": value.SourceType, "format": value.Format, "requestedFormat": value.RequestedFormat, "mode": value.Mode, "ocrRequired": value.OCRRequired,
+			"type":       value.Type, "streamIndex": value.StreamIndex, "sourceStreamSignature": value.SourceStreamSignature, "sourceCodec": value.SourceCodec, "sourceType": value.SourceType, "format": value.Format, "requestedFormat": value.RequestedFormat, "mode": value.Mode, "ocrRequired": value.OCRRequired,
 			"language": value.Language, "default": value.Default, "forced": value.Forced, "sourceForced": value.SourceForced, "role": string(value.Role), "roleProvenance": value.RoleProvenance, "roleConfidence": value.RoleConfidence, "roleClassifierVersion": value.RoleClassifierVersion, "title": value.Title,
 			"ocrLanguage": value.OCRLanguage, "effectiveOcrLanguage": value.EffectiveOCRLanguage, "ocrMode": value.OCRMode, "stages": value.Stages, "extension": value.Extension, "namingKey": value.NamingKey, "logicalTransformKey": value.LogicalTransformKey,
 			"stagedPath": value.StagedPath, "publishedPath": value.PublishedPath, "sizeBytes": value.SizeBytes,
@@ -1182,6 +1182,7 @@ func subtitleArtifactsFromJSON(values models.JSONList) []SubtitleArtifact {
 			ArtifactID:              stringFromUnknown(value["artifactId"]),
 			Type:                    fallback(stringFromUnknown(value["type"]), "subtitle_sidecar"),
 			StreamIndex:             intValueSetting(value["streamIndex"], -1),
+			SourceStreamSignature:   stringFromUnknown(value["sourceStreamSignature"]),
 			SourceCodec:             stringFromUnknown(value["sourceCodec"]),
 			SourceType:              stringFromUnknown(value["sourceType"]),
 			Format:                  stringFromUnknown(value["format"]),

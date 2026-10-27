@@ -398,6 +398,7 @@ func TestPublicationManifestPromotesOnlyFrozenSubtitleArtifacts(t *testing.T) {
 		makeArtifact(5, "converted", "srt", streamSignatures[5]),
 		makeArtifact(8, "original", "ass", streamSignatures[8]),
 		makeArtifact(3, "converted", "srt", "stale-stream-identity"),
+		makeArtifact(3, "converted", "srt", ""),
 		makeArtifact(11, "converted", "srt", "same-language-other-index"),
 	}
 	allArtifacts := append(append([]SubtitleArtifact(nil), approved...), extra...)
