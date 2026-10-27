@@ -39,4 +39,4 @@
 - [x] 6.5 Document missing source authority, session coverage, secure directory/key custody, replay controls, and real-preflight NO-GO.
 - [x] 6.6 Complete focused Python/Go tests, strict OpenSpec, and `./scripts/verify.sh --auto` plus `--full`.
 - [ ] 6.7 Run the isolated mock Docker sandbox against the final SHA on a configured local Docker Engine.
-- [ ] 6.8 Confirm green CI and Pipeline Smoke over the final pushed SHA.
+- [x] 6.8 Confirm green CI and Pipeline Smoke over the final pushed SHA.
