@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -466,6 +467,121 @@ func TestPublicationManifestPromotesOnlyFrozenSubtitleArtifacts(t *testing.T) {
 	legacyEntries, err := manifestEntries(buildPublicationManifestForJob(legacy, destination, false))
 	if err != nil || len(legacyEntries) != 2 || legacyEntries[1].Kind != "subtitle" || !legacyEntries[1].Promote {
 		t.Fatalf("explicit original operation artifact was not retained for a legacy plan: entries=%#v err=%v", legacyEntries, err)
+	}
+}
+
+func TestHistoricalSubtitleArtifactJSONMatchesFrozenPlanWithoutSidecarSignature(t *testing.T) {
+	const streamIndex = 8
+	const streamSignature = "historical-stream-eight"
+	plan, err := resolvedTrackPlanMap(ResolvedTrackPlan{
+		AttachmentPolicy: AttachmentPolicyAuto, ChapterPolicy: ChapterPolicyKeep,
+		FontAttachmentExportPolicy: FontAttachmentExportNone,
+		SubtitleStreams: []ResolvedSubtitleTrack{{
+			StreamIndex: streamIndex, StreamSignature: streamSignature, Codec: "hdmv_pgs_subtitle",
+			Language: "eng", Action: SubtitleDispositionExtract,
+		}},
+		SidecarOutputs: []ResolvedTrackSidecar{{
+			StreamIndex: streamIndex, SourceStreamSignature: streamSignature,
+			Codec: "hdmv_pgs_subtitle", SourceType: "bitmap", Language: "eng",
+			Format: "srt", Mode: "converted",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var historicalPlan map[string]any
+	if err := json.Unmarshal(planJSON, &historicalPlan); err != nil {
+		t.Fatal(err)
+	}
+	sidecars, ok := historicalPlan["sidecarOutputs"].([]any)
+	if !ok || len(sidecars) != 1 {
+		t.Fatalf("unexpected serialized sidecars shape: %#v", historicalPlan["sidecarOutputs"])
+	}
+	delete(sidecars[0].(map[string]any), "sourceStreamSignature")
+	snapshot := models.JSONMap{resolvedTrackPlanSnapshotKey: historicalPlan}
+	if decodedPlan, ok := ResolvedTrackPlanFromSnapshot(snapshot); !ok || len(decodedPlan.SubtitleStreams) != 1 ||
+		decodedPlan.SubtitleStreams[0].StreamSignature != streamSignature || decodedPlan.SidecarOutputs[0].SourceStreamSignature != "" {
+		t.Fatalf("fixture does not match the historical frozen JSON shape: plan=%#v ok=%v", decodedPlan, ok)
+	}
+
+	baseArtifact := SubtitleArtifact{
+		ArtifactID: subtitleArtifactID(streamIndex, "converted", "srt"), Type: "subtitle_sidecar",
+		StreamIndex: streamIndex, SourceCodec: "hdmv_pgs_subtitle", SourceType: "bitmap",
+		Format: "srt", Mode: "converted", Language: "eng", Status: "ready",
+	}
+	tests := []struct {
+		name         string
+		legacyPlan   bool
+		mutate       func(map[string]any)
+		wantPromoted bool
+	}{
+		{name: "legacy decision and artifact omit signature", legacyPlan: true, wantPromoted: true},
+		{name: "stable artifact ID must match", legacyPlan: true, mutate: func(value map[string]any) { value["artifactId"] = "subtitle:8:converted:ass" }},
+		{name: "stream index must match", legacyPlan: true, mutate: func(value map[string]any) {
+			value["streamIndex"] = 9
+			value["artifactId"] = subtitleArtifactID(9, "converted", "srt")
+		}},
+		{name: "format must match exactly", legacyPlan: true, mutate: func(value map[string]any) {
+			value["format"] = "SRT"
+		}},
+		{name: "mode must match exactly", legacyPlan: true, mutate: func(value map[string]any) {
+			value["mode"] = "Converted"
+		}},
+		{name: "present signature cannot contradict signed stream identity", legacyPlan: true, mutate: func(value map[string]any) {
+			value["sourceStreamSignature"] = "stale-stream-eight"
+		}},
+		{name: "modern explicit signature requires artifact signature", mutate: func(map[string]any) {}},
+		{name: "modern explicit signature rejects mismatched artifact signature", mutate: func(value map[string]any) {
+			value["sourceStreamSignature"] = "stale-stream-eight"
+		}},
+		{name: "modern explicit signature accepts matching artifact signature", mutate: func(value map[string]any) {
+			value["sourceStreamSignature"] = streamSignature
+		}, wantPromoted: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			artifact := baseArtifact
+			artifact.StagedPath = filepath.Join(root, "staging", "job-1", "stream-8.srt")
+			artifactJSON, err := json.Marshal(subtitleArtifactsJSON([]SubtitleArtifact{artifact}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var persistedArtifacts []any
+			if err := json.Unmarshal(artifactJSON, &persistedArtifacts); err != nil || len(persistedArtifacts) != 1 {
+				t.Fatalf("unexpected serialized artifact shape: artifacts=%#v err=%v", persistedArtifacts, err)
+			}
+			persistedArtifact := persistedArtifacts[0].(map[string]any)
+			delete(persistedArtifact, "sourceStreamSignature")
+			if tc.mutate != nil {
+				tc.mutate(persistedArtifact)
+			}
+			trackSnapshot := snapshot
+			if !tc.legacyPlan {
+				trackSnapshot = models.JSONMap{resolvedTrackPlanSnapshotKey: plan}
+			}
+			job := models.QueueJob{
+				MediaPath: "/raw/Historical.mkv", OutputPath: filepath.Join(root, "staging", "job-1", "Historical.mkv"),
+				TrackProfileSnapshot: trackSnapshot, SubtitleArtifacts: models.JSONList{persistedArtifact},
+			}
+			entries, err := manifestEntries(buildPublicationManifestForJob(job, filepath.Join(root, "library", "Historical.mkv"), false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			promoted := false
+			for _, entry := range entries {
+				if entry.Kind == "subtitle" && entry.Promote {
+					promoted = true
+				}
+			}
+			if promoted != tc.wantPromoted {
+				t.Fatalf("subtitle promotion=%v want %v; entries=%#v", promoted, tc.wantPromoted, entries)
+			}
+		})
 	}
 }
 

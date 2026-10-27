@@ -235,24 +235,28 @@ func subtitleArtifactMatchesFrozenPlan(plan ResolvedTrackPlan, artifact Subtitle
 	}
 	for _, decision := range resolvedSubtitleSidecarsForPlan(MediaJobPlan{ResolvedTracks: &plan}) {
 		if decision.StreamIndex != artifact.StreamIndex || decision.Format == "" ||
-			!strings.EqualFold(decision.Format, artifact.Format) || decision.Mode == "" ||
-			!strings.EqualFold(decision.Mode, artifact.Mode) ||
+			decision.Format != artifact.Format || decision.Mode == "" || decision.Mode != artifact.Mode ||
 			artifact.ArtifactID != subtitleArtifactID(decision.StreamIndex, decision.Mode, decision.Format) {
 			continue
 		}
 		if decision.Codec != "" && artifact.SourceCodec != "" && !strings.EqualFold(decision.Codec, artifact.SourceCodec) {
 			continue
 		}
-		expectedSignature := decision.SourceStreamSignature
+		streamSignature := ""
 		for _, stream := range plan.SubtitleStreams {
 			if stream.StreamIndex == decision.StreamIndex {
-				if expectedSignature == "" {
-					expectedSignature = stream.StreamSignature
-				}
+				streamSignature = stream.StreamSignature
 				break
 			}
 		}
-		if expectedSignature != "" && artifact.SourceStreamSignature != expectedSignature {
+		if decision.SourceStreamSignature != "" {
+			if artifact.SourceStreamSignature != decision.SourceStreamSignature {
+				continue
+			}
+		} else if artifact.SourceStreamSignature != "" && streamSignature != "" && artifact.SourceStreamSignature != streamSignature {
+			// Historical frozen sidecar decisions and artifacts predate this field.
+			// A stream-level signature can still reject a stale signature when one
+			// is present, but it must not make the optional artifact field required.
 			continue
 		}
 		return true
