@@ -6,7 +6,7 @@
 ## 2. Future implementation gates — not started
 
 - [ ] 2.1 Resolve and document one canonical asset-lock identity for indexed assets, path aliases, unindexed files, renames, and migrations; verify identity collision and fallback tests.
-- [ ] 2.2 Build a lock-owner inventory test covering Save Tracks, Queue create/selected commit, every Batch Preflight mutation, scanner admission, maintenance admission, and path/lifecycle mutations; verify all paths use one coordinator gate.
+- [x] 2.2 Add a source AST inventory test for every current direct `assetMutationMu` owner across Save Tracks, Queue, Batch Preflight, scanner, maintenance, and path/lifecycle mutation. This verifies the current shared process-global gate only; every owner still requires explicit migration before any future keyed coordinator is enabled.
 - [ ] 2.3 Prototype sorted, ref-counted per-asset coordination plus a global exclusive fallback; verify same-asset serialization, different-asset overlap, Queue/scan/maintenance ordering, cancellation, cleanup, and reversed multi-asset order with deterministic barriers and `go test -race`.
 - [ ] 2.4 Prototype transactional per-asset conversion-override storage with idempotent backfill and old-settings compatibility; verify failure rollback, cross-asset no-lost-update behavior, Asset Edit atomicity, and path move/rename reconciliation on disposable SQLite.
 - [ ] 2.5 Run the matched 4,096-entry / ~960 KiB / 16-asset / 178-in-flight benchmark for at least five samples per revision; report p50/p95/p99, lock waits, DB transaction durations, allocations, throughput, errors, and environment.

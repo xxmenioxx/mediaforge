@@ -19,11 +19,43 @@ Queue `Create` and selected-asset commit hold `assetMutationMu` around validatio
 
 The process-wide locks are in-memory and protect one MVForge process. SQLite transaction behavior alone does not make a read/modify/write of a JSON blob safe across multiple app processes.
 
+### Current direct owner inventory
+
+The source-level inventory reviewed for gates 2.1/2.2 is:
+
+- Save Tracks: `asset_tracks.go:UpdateTracks`.
+- Queue: `queue.go:Create`, `queue.go:queueSelectedAssets`.
+- Batch Preflight: `queue_preflight.go:CreateBatchPreflight`, `PreflightSelectedAssets`, `EditBatchPreflight`, `UpdateBatchPreflight`, `RemoveBatchPreflightAsset`, `DiscardBatchPreflight`, `AcceptBatchPreflight`.
+- Scanner: `scanner.go:Scan`, `StartSnapshotOperation`.
+- Track maintenance: `track_maintenance.go:StartTrackRemoval`, `StartTrackEdit`, `StartAddAACTrack`.
+- Path/lifecycle mutation: `assets.go:ReturnPublishedAsIs`.
+
+These are 16 direct functions and all acquire the current `assetMutationMu` variable. `asset_mutation_lock_owners_test.go` parses production Go source and asserts this exact set, so a new or removed direct owner requires review. This is a migration tripwire for the current process-global mutex only; it does not prove a future keyed coordinator exists, and it cannot establish runtime branch coverage by static inspection. Every owner must be explicitly migrated to one replacement boundary before keyed concurrency can be considered.
+
+The direct-reference inventory does not claim every path-mutating route already uses this mutex. `assets.go:PublishAsIs`, `ApplyLibraryPathRename`, and `Rename` (and their directory/path reconciliation helpers) do not appear among the direct `assetMutationMu` owners. Their enclosing-call guard and conflict behavior must be explicitly mapped before they are assigned a future identity key; absent that proof, a future coordinator must route the transition through its exclusive fallback. That fallback is not implemented in current code. The inventory test intentionally reports current direct owners rather than masking these future migration requirements.
+
 ## Goals / Non-Goals
 
 **Goals:** reduce unrelated-asset serialization only after every lifecycle owner shares the replacement coordinator; preserve per-asset Queue and maintenance guards, atomic snapshots, and cross-asset update isolation; make results reproducible and race-checkable.
 
 **Non-Goals:** implement lock changes in this design lane; weaken Queue or maintenance checks; change Queue freeze semantics; optimize for NAS/network latency; modify media, APIs, or production DB; claim the issue's benchmark figures were reproduced here.
+
+## Gate 2.1 — identity disposition (design only; gate remains open)
+
+`AssetRecord` provides a `uint` primary key and a unique `Path`; it has no separate lock-identity or alias table. `UpdateTracks` currently resolves an input path with `filepath.Clean` and checks configured-root membership lexically before its file stat and override transaction. That flow does not resolve a request to an `AssetRecord.ID` before locking, and lexical path normalization does not prove physical-file identity. `QueueJob` can retain an optional `SourceAssetRecordID`, but historical jobs may lack it or refer to a record that no longer represents the current path. Therefore the following is the proposed identity contract, not behavior enforced by current code:
+
+| Case | Proposed identity / disposition | Evidence boundary |
+|---|---|---|
+| Indexed asset | Stable key is the MVForge database namespace plus `AssetRecord.ID`. Bind the requested path to exactly one current record and revalidate that row/path/revision inside the coordinator boundary before using the key. Do not key by mutable `Path`. | Model has primary-key `ID` and unique `Path`; current Save Tracks does not resolve the ID before locking. |
+| Unindexed file | Take one exclusive process-wide fallback. Do not create a path-key from `Abs`/`Clean`; no indexed identity exists to prove aliases or concurrent indexing are coordinated. | Existing `AssetRecord` lookup is not part of `UpdateTracks` admission. |
+| Path aliases / symlinks | Share an indexed key only when an authoritative path-to-record resolver proves both names bind to the same current record and revision. Otherwise use the exclusive fallback or reject according to existing path authorization. The fallback grants no filesystem authorization. | Current path checks establish configured-root membership lexically; no alias-to-record resolver was found. |
+| Rename / move | Preserve the same `AssetRecord.ID` as the logical identity. Hold the exclusive fallback across the old path, new path, filesystem transition, and DB rebind; release only after the committed row still has that ID and new path. If an existing path owner cannot retain/revalidate the ID, keep it on exclusive fallback until reindex/reconciliation proves the new binding. | Current path/lifecycle owners are inventoried below, but continuity of ID is not an existing coordination contract. |
+| Historical asset/job | Use `SourceAssetRecordID` only after validating that the current row and frozen provenance still identify the same source. Missing, deleted, stale, or unverified IDs use the exclusive fallback; never infer identity from filename, size, timestamp, or path text alone. | `QueueJob.SourceAssetRecordID` is optional; historical identity may be absent. |
+| Identity/schema migration | Keep the database namespace and `AssetRecord.ID` as the canonical key. Backfill legacy path-keyed override entries to an ID only when one exact current record binding is proven in the transaction; ambiguous or unindexed entries remain on the legacy representation and use the exclusive fallback. Switch lock domains only when all old owners and path-transition call paths share one bridge/fallback boundary; no mixed keyed/global admission. | Existing override storage is a path-keyed JSON setting; no identity migration or bridge exists today. |
+
+A collision or conflicting mapping (one path resolving to multiple record IDs, or aliases resolving to different IDs without a proven distinction) is unresolved identity: do not enter a keyed section; serialize through the exclusive fallback and fail the operation if canonical binding still cannot be established. Identity keys must be scoped to the same database namespace; numeric IDs from separate databases are not interchangeable. Current mutexes are process-local, so this contract alone would not coordinate multiple MVForge processes.
+
+No executable identity resolver, alias collision test, or fallback test exists in this lane. Task 2.1 remains **incomplete**; the table narrows the future design but does not establish runtime behavior.
 
 ## Decisions
 
