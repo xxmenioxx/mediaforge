@@ -347,6 +347,70 @@ func TestSubtitleTranslationOperationIncludesSanitizedBatchDiagnostics(t *testin
 	}
 }
 
+func TestOllamaMalformedInnerJSONReportsOriginalTranslationFailureState(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MVFORGE_OCR_LIFECYCLE_ROOT", filepath.Join(root, "ocr-cache"))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeOllamaTestResponse(t, w, "MODEL_RESPONSE_SENTINEL", 0, 0, 0)
+	}))
+	defer server.Close()
+	provider, err := newOllamaTranslationProvider(ollamaTestSettings(server.URL, "translategemma:12b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sourceContent := []byte("[Script Info]\nScriptType: v4.00+\n[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,{\\an8\\pos(10,20)\\i1}ASS_CUE_SENTINEL{\\i0}\n")
+	originalSource := append([]byte(nil), sourceContent...)
+	request := testSubtitleTranslationOperationRequest(filepath.Join(root, "source.mkv"))
+	request.StreamIndex = -1
+	request.Format = "ass"
+	request.SourceIdentity = "synthetic-ass-source"
+	request.SourceReference = "external:synthetic-ass"
+	request.RequestedRepresentation = "ass"
+	request.Provider = translationProviderOllama
+	request.ProviderModel = "translategemma:12b"
+	request.ContextMode = "none"
+	request.ContextSource = "none"
+
+	source := subtitleTranslationSourceResponse{Representation: "ass", Language: "en"}
+	execution := subtitleTranslationExecutionResult{}
+	operationID, err := startSubtitleTranslationOperation(request, func(ctx context.Context, operationID, _ string, operationRequest subtitleTranslationOperationRequest) error {
+		updateSubtitleTranslationProgress(operationID, "translating", 0, 0, "Translating subtitle cues")
+		var executeErr error
+		execution, executeErr = executeTextTranslation(ctx, source, sourceContent, operationRequest, provider, defaultTranslationSettings(), nil, nil)
+		return executeErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteSubtitleTranslationOperation(operationID)
+
+	operation := waitForSubtitleTranslationOperation(t, operationID, "error")
+	if operation.Status != "error" || operation.Phase != "translating" || operation.Progress != 40 || operation.Processed != 0 || operation.Total != 0 || operation.StreamIndex != -1 || operation.Format != "ass" || operation.Kind != subtitleTranslationOperationKind {
+		t.Fatalf("unexpected malformed-provider terminal state: %#v", operation)
+	}
+	if operation.Translation == nil || operation.Translation.Provider != translationProviderOllama || operation.Translation.Model != "translategemma:12b" || operation.Translation.RequestedSourceLanguage != "en" || operation.Translation.TargetLocale != "es-419" || operation.Translation.OutputRepresentation != "ass" || operation.Translation.FailureClass != string(subtitleTranslationFailureMalformedResponse) || operation.Translation.Diagnostic != "Translation provider returned a malformed response." || !operation.Translation.Retryable || operation.Translation.Cancellable {
+		t.Fatalf("unexpected malformed-provider translation view: %#v", operation.Translation)
+	}
+	diagnostics := operation.Translation.ProviderDiagnostics
+	if diagnostics == nil || diagnostics.Category != translationResponseDiagnosticInnerJSONInvalid || diagnostics.BatchIndex != 1 || diagnostics.BatchCount != 1 || diagnostics.ExpectedCueCount == nil || *diagnostics.ExpectedCueCount != 1 || diagnostics.ActualCueCount != nil {
+		t.Fatalf("malformed response subreason=%#v, want inner JSON failure for batch 1 of 1", diagnostics)
+	}
+	if len(execution.Outputs) != 0 || string(sourceContent) != string(originalSource) {
+		t.Fatalf("malformed response produced output or modified source: outputs=%d sourceChanged=%v", len(execution.Outputs), string(sourceContent) != string(originalSource))
+	}
+	encodedDiagnostics, err := json.Marshal(operation.Translation.ProviderDiagnostics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sentinel := range []string{"MODEL_RESPONSE_SENTINEL", "ASS_CUE_SENTINEL", "synthetic-ass-source", request.AssetPath} {
+		if strings.Contains(string(encodedDiagnostics), sentinel) || strings.Contains(operation.Error, sentinel) || strings.Contains(operation.Translation.Diagnostic, sentinel) {
+			t.Fatalf("malformed response diagnostics exposed %q", sentinel)
+		}
+	}
+}
+
 func TestSubtitleTranslationFailureClassDoesNotTreatPlainDeadlineAsProviderTimeout(t *testing.T) {
 	if got := subtitleTranslationFailureClassOf(context.DeadlineExceeded); got != subtitleTranslationFailureTranslationFailed {
 		t.Fatalf("plain deadline class=%q, want %q", got, subtitleTranslationFailureTranslationFailed)
