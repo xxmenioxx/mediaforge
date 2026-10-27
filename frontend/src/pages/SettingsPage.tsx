@@ -93,6 +93,19 @@ import {
   workerSettingsPayload,
 } from '../utils/settingsPageHelpers';
 
+function mergeSavedSettings(current: AppSetting[] | undefined, savedSettings: AppSetting[]): AppSetting[] | undefined {
+  if (!current) return current;
+  const savedByKey = new Map(savedSettings.map((setting) => [setting.key, setting]));
+  const merged = current.map((setting) => {
+    const saved = savedByKey.get(setting.key);
+    if (saved) savedByKey.delete(setting.key);
+    return saved ?? setting;
+  });
+  return [...merged, ...savedByKey.values()];
+}
+
+const assetCatalogSettingKeys = new Set(['assetTypes', 'assetCategories', 'assetInventory', 'paths', 'storageRoles', 'workspace']);
+
 export type LibraryType = {
   key: string;
   label: string;
@@ -263,27 +276,39 @@ export function SettingsPage() {
 
   const updateSetting = useMutation({
     mutationFn: api.updateSetting,
-    onSuccess: async (savedSetting) => {
+    onSuccess: (savedSetting) => {
       if (savedSetting.key === 'housekeeping') {
         previewHousekeeping.reset();
         runHousekeeping.reset();
       }
-      queryClient.setQueryData<AppSetting[]>(['settings'], (current) => current?.map((setting) => (
-        setting.key === savedSetting.key ? savedSetting : setting
-      )));
-      await queryClient.invalidateQueries({ queryKey: ['settings'] });
-      await queryClient.invalidateQueries({ queryKey: ['libraries'] });
-      await queryClient.invalidateQueries({ queryKey: ['runtime-profiles'] });
-      await queryClient.invalidateQueries({ queryKey: ['runtime-state'] });
+      queryClient.setQueryData<AppSetting[]>(['settings'], (current) => mergeSavedSettings(current, [savedSetting]));
+      void queryClient.invalidateQueries({ queryKey: ['settings'] });
+      if (assetCatalogSettingKeys.has(savedSetting.key)) {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['libraries'] }),
+          queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        ]);
+      }
+      if (savedSetting.key === 'remoteExecutors') {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['runtime-profiles'] }),
+          queryClient.invalidateQueries({ queryKey: ['runtime-state'] }),
+        ]);
+      }
     },
   });
 
   const updateSettingsBatch = useMutation({
     mutationFn: api.updateSettingsBatch,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['settings'] });
-      await queryClient.invalidateQueries({ queryKey: ['libraries'] });
-      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    onSuccess: (savedSettings, variables) => {
+      queryClient.setQueryData<AppSetting[]>(['settings'], (current) => mergeSavedSettings(current, savedSettings));
+      void queryClient.invalidateQueries({ queryKey: ['settings'] });
+      if (variables.settings.some(({ key }) => assetCatalogSettingKeys.has(key))) {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['libraries'] }),
+          queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        ]);
+      }
     },
   });
 
@@ -398,10 +423,15 @@ export function SettingsPage() {
 
       return api.updateSettingsBatch({ settings: batch });
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['settings'] });
-      await queryClient.invalidateQueries({ queryKey: ['libraries'] });
-      await queryClient.invalidateQueries({ queryKey: ['assets'] });
+    onSuccess: (savedSettings, variables) => {
+      queryClient.setQueryData<AppSetting[]>(['settings'], (current) => mergeSavedSettings(current, savedSettings));
+      void queryClient.invalidateQueries({ queryKey: ['settings'] });
+      if (['assets', 'archive', 'advanced'].includes(variables.section)) {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['libraries'] }),
+          queryClient.invalidateQueries({ queryKey: ['assets'] }),
+        ]);
+      }
     },
   });
 
