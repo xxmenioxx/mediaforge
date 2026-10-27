@@ -125,6 +125,49 @@ func TestAssetTracksPatchConcurrentDifferentAssetsPreservesEntries(t *testing.T)
 	}
 }
 
+func TestAssetTracksPatchConcurrentSameAssetPreservesPartialUpdates(t *testing.T) {
+	db, router, root := newAssetTracksTestServer(t)
+	path := filepath.Join(root, "same.mkv")
+	writeTestFile(t, path, "media")
+	cleanPath := filepath.Clean(path)
+	if err := saveAssetConversionOverrides(db, map[string]AssetConversionOverrideState{
+		cleanPath: {VideoCodec: "x265", QualityValue: 18},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	inputs := []string{
+		`{"keepAudioStreams":[1]}`,
+		`{"keepSubtitleStreams":[2]}`,
+	}
+	responses := make([]*httptest.ResponseRecorder, len(inputs))
+	var wait sync.WaitGroup
+	for index, body := range inputs {
+		wait.Add(1)
+		go func(index int, body string) {
+			defer wait.Done()
+			<-start
+			responses[index] = assetTracksPatchRequest(t, router, path, body)
+		}(index, body)
+	}
+	close(start)
+	wait.Wait()
+	for index, response := range responses {
+		if response.Code != http.StatusOK {
+			t.Fatalf("request %d status=%d body=%s", index, response.Code, response.Body.String())
+		}
+	}
+
+	got := assetConversionOverrides(db)[cleanPath]
+	if !reflect.DeepEqual(got.KeepAudioStreams, []int{1}) || !reflect.DeepEqual(got.KeepSubtitleStreams, []int{2}) {
+		t.Fatalf("same-asset partial updates were lost: %#v", got)
+	}
+	if got.VideoCodec != "x265" || got.QualityValue != 18 {
+		t.Fatalf("same-asset patch changed unrelated fields: %#v", got)
+	}
+}
+
 func TestAssetConversionOverridesBulkDecodeSkipsMalformedEntries(t *testing.T) {
 	db, _, _ := newAssetEditTestServer(t)
 	validA := filepath.Clean("/media/a.mkv")
