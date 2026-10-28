@@ -29,7 +29,25 @@ Before any service starts, the harness renders Compose, builds the exact-SHA bac
 
 The test-only mock accepts only the two synthetic model IDs `ocr-sandbox:latest` and `translate-sandbox:latest`. Its counters retain model names and route/concurrency counts, never prompts or subtitle text. The mock is not an Ollama accuracy benchmark and makes no claims about model quality.
 
-The tagged integration tests call compiled production handler/provider code directly inside the test-runner. The isolated backend container is checked over HTTP at `/health`, but the tests do **not** exercise full HTTP route orchestration for OCR or Translation. Frontend is omitted; existing review/correction regressions cover approval and preserve the human-approval boundary, but do not turn this harness into a full API end-to-end test.
+The tagged integration tests call compiled production handler/provider code directly inside the test-runner. The isolated backend container is checked over HTTP at `/health`, but the tests do **not** exercise full HTTP route orchestration for OCR or Translation. This sandbox omits the frontend; the separate #287 workflow below covers browser journeys against a synthetic API fixture, not the Go API. Existing review/correction regressions cover approval and preserve the human-approval boundary.
+
+## Issue #287 extended OCR/Translation/UI suite
+
+`.github/workflows/extended-e2e.yml` is non-PR-gating and runs nightly at
+04:35 UTC, on manual dispatch, and on pushes to `main`.
+
+The OCR and Translation job runs the synthetic Ollama sandbox. Its tagged
+integration tests execute MVForge Go handlers and provider code with a local
+mock provider and synthetic subtitle cues. The Playwright job covers three
+browser journeys: Assets to Queue/job status/Validation, Queue to Validation
+Review, and Validation PASS to Publisher.
+
+The browser journeys use `scripts/e2e/ui_fixture_backend.py`, a read-only
+synthetic HTTP fixture. They verify frontend routing, rendering, and requests
+against fixture responses; they do not run the Go API, SQLite, Queue workers,
+or Publisher. OCR and Translation tests exercise handler/provider code but do
+not exercise their full HTTP route orchestration. Real Ollama inference and
+production data are excluded.
 
 ## Harness tests
 
