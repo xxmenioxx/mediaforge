@@ -414,16 +414,18 @@ func (h AssetHandler) UpdateOCRCorrectionMemory(c *gin.Context) {
 			entry.OriginalText, entry.CorrectedText = original, corrected
 			entry.ApprovalValid, entry.Enabled, entry.InvalidatedAt = false, false, &now
 		}
-		if scopeChanged && !textChanged {
+		if textChanged || scopeChanged {
 			fingerprint := ocrCorrectionMemoryEntryFingerprint(entry.SourceLanguage, original, corrected, entry.ContextFingerprint, scopeType, scopeID)
-			var duplicateCount int64
-			if err := tx.Model(&models.OCRCorrectionMemoryEntry{}).Where("id <> ? AND fingerprint = ?", entry.ID, fingerprint).Count(&duplicateCount).Error; err != nil {
-				return err
+			if fingerprint != entry.Fingerprint {
+				var duplicateCount int64
+				if err := tx.Model(&models.OCRCorrectionMemoryEntry{}).Where("id <> ? AND fingerprint = ?", entry.ID, fingerprint).Count(&duplicateCount).Error; err != nil {
+					return err
+				}
+				if duplicateCount != 0 {
+					return errOCRCorrectionMemoryDuplicate
+				}
+				entry.Fingerprint = fingerprint
 			}
-			if duplicateCount != 0 {
-				return errOCRCorrectionMemoryDuplicate
-			}
-			entry.Fingerprint = fingerprint
 		}
 		entry.ScopeType, entry.ScopeID = scopeType, scopeID
 		return tx.Save(&entry).Error

@@ -339,13 +339,41 @@ func TestOCRCorrectionMemoryAPIListsEditsRevokesExportsAndDeletes(t *testing.T) 
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("accepted feedback status=%d body=%s", accepted.Code, accepted.Body.String())
 	}
-	update := request(http.MethodPost, "/memory/"+fmt.Sprint(entry.ID), `{"originalText":"The h0use.","correctedText":"The home.","scopeType":"asset","scopeId":"asset:`+identity.key()+`"}`)
+	updateBody := `{"originalText":"The h0use.","correctedText":"The home.","scopeType":"asset","scopeId":"asset:` + identity.key() + `"}`
+	collision := models.OCRCorrectionMemoryEntry{
+		SourceLanguage: entry.SourceLanguage, OriginalText: "The h0use.", CorrectedText: "The home.",
+		ContextFingerprint: entry.ContextFingerprint, ScopeType: "asset", ScopeID: "asset:" + identity.key(),
+		Enabled: true, ApprovalValid: true, OccurrenceCount: 1, ApprovedAt: entry.ApprovedAt, ExpiresAt: entry.ExpiresAt,
+	}
+	collision.Fingerprint = ocrCorrectionMemoryEntryFingerprint(collision.SourceLanguage, collision.OriginalText, collision.CorrectedText, collision.ContextFingerprint, collision.ScopeType, collision.ScopeID)
+	if err := db.Create(&collision).Error; err != nil {
+		t.Fatal(err)
+	}
+	conflict := request(http.MethodPost, "/memory/"+fmt.Sprint(entry.ID), updateBody)
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("duplicate update status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	var unchanged models.OCRCorrectionMemoryEntry
+	if err := db.First(&unchanged, entry.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.Fingerprint != entry.Fingerprint || unchanged.CorrectedText != entry.CorrectedText || !unchanged.ApprovalValid || !unchanged.Enabled {
+		t.Fatalf("rejected duplicate edit changed the approved entry: %#v", unchanged)
+	}
+	if err := db.Delete(&collision).Error; err != nil {
+		t.Fatal(err)
+	}
+	update := request(http.MethodPost, "/memory/"+fmt.Sprint(entry.ID), updateBody)
 	if update.Code != http.StatusOK {
 		t.Fatalf("update status=%d body=%s", update.Code, update.Body.String())
 	}
 	var saved models.OCRCorrectionMemoryEntry
 	if err := db.First(&saved, entry.ID).Error; err != nil {
 		t.Fatal(err)
+	}
+	expectedFingerprint := ocrCorrectionMemoryEntryFingerprint(saved.SourceLanguage, saved.OriginalText, saved.CorrectedText, saved.ContextFingerprint, saved.ScopeType, saved.ScopeID)
+	if saved.Fingerprint != expectedFingerprint {
+		t.Fatalf("edited entry fingerprint is stale: got %q want %q", saved.Fingerprint, expectedFingerprint)
 	}
 	if saved.ApprovalValid || saved.Enabled || saved.CorrectedText != "The home." || saved.AcceptedSuggestions != 1 {
 		t.Fatalf("edited entry did not invalidate approval: %#v", saved)
