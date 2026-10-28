@@ -763,7 +763,7 @@ func runSeConvWithProgress(
 	onProgress OCRProgressFunc,
 ) (string, error) {
 	cmd := exec.Command("seconv", args...)
-	configureSubtitleProcessGroup(cmd)
+	configureManagedProcessGroup(cmd)
 
 	var output bytes.Buffer
 	var outputMu sync.Mutex

@@ -67,9 +67,22 @@ type QueueJob struct {
 	PublicationSummary          string     `json:"publicationSummary,omitempty"`
 	StartedAt                   *time.Time `json:"startedAt"`
 	FinishedAt                  *time.Time `json:"finishedAt"`
-	DismissedAt                 *time.Time `json:"dismissedAt" gorm:"index"`
-	CreatedAt                   time.Time  `json:"createdAt"`
-	UpdatedAt                   time.Time  `json:"updatedAt"`
+	CancellationRequestedAt     *time.Time `json:"cancellationRequestedAt,omitempty" gorm:"index"`
+	ProcessTreeExitVerifiedAt   *time.Time `json:"-" gorm:"index"`
+	CleanupStatus               string     `json:"cleanupStatus,omitempty" gorm:"not null;default:'';index"`
+	CleanupError                string     `json:"cleanupError,omitempty"`
+	CleanupOperationID          string     `json:"-" gorm:"not null;default:'';index"`
+	CleanupTargetPath           string     `json:"-" gorm:"not null;default:''"`
+	CleanupOwnerRevision        string     `json:"-" gorm:"not null;default:''"`
+	CleanupLeaseToken           string     `json:"-" gorm:"not null;default:''"`
+	CleanupLeaseExpiresAt       *time.Time `json:"-" gorm:"index"`
+	// CleanupAttemptCount tracks the bounded failure retry budget. Ownership deferrals do not consume it.
+	CleanupAttemptCount  int        `json:"-" gorm:"not null;default:0"`
+	CleanupDeferralCount int        `json:"-" gorm:"not null;default:0"`
+	CleanupNextAttemptAt *time.Time `json:"-" gorm:"index"`
+	DismissedAt          *time.Time `json:"dismissedAt" gorm:"index"`
+	CreatedAt            time.Time  `json:"createdAt"`
+	UpdatedAt            time.Time  `json:"updatedAt"`
 }
 
 func (job *QueueJob) BeforeSave(_ *gorm.DB) error {

@@ -719,7 +719,7 @@ func (h *AssetHandler) CancelSubtitleExtractionOperation(c *gin.Context) {
 
 func runSubtitleCommand(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
 	cmd := exec.Command(name, args...)
-	configureSubtitleProcessGroup(cmd)
+	configureManagedProcessGroup(cmd)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
@@ -744,7 +744,7 @@ func waitSubtitleProcess(ctx context.Context, cmd *exec.Cmd, waitDone <-chan err
 	}
 }
 
-func configureSubtitleProcessGroup(cmd *exec.Cmd) {
+func configureManagedProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 

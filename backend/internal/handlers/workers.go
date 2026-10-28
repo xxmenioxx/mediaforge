@@ -730,12 +730,17 @@ func queueJobUsesAssignmentBackedIntent(job models.QueueJob) bool {
 }
 
 func (h WorkerHandler) returnPreparedJobToQueue(jobID uint) error {
-	return h.db.Transaction(func(tx *gorm.DB) error {
+	cancellationPending := false
+	err := h.db.Transaction(func(tx *gorm.DB) error {
 		var job models.QueueJob
 		if err := tx.First(&job, jobID).Error; err != nil {
 			return err
 		}
 		if job.Status != JobStatusRunning {
+			return nil
+		}
+		if job.CancellationRequestedAt != nil {
+			cancellationPending = true
 			return nil
 		}
 		job.Status = JobStatusQueued
@@ -757,6 +762,13 @@ func (h WorkerHandler) returnPreparedJobToQueue(jobID uint) error {
 		}
 		return scheduler.DeactivateReservationResources(tx, job.ID)
 	})
+	if err != nil {
+		return err
+	}
+	if cancellationPending {
+		_, _, err = finalizeQueueJobCancellation(h.db, jobID)
+	}
+	return err
 }
 
 func assignExecutionNumber(tx *gorm.DB, job *models.QueueJob) error {
@@ -792,55 +804,87 @@ func (h WorkerHandler) UpdateJobStatus(c *gin.Context) {
 	}
 
 	var job models.QueueJob
-	if err := h.db.First(&job, uint(id)).Error; err != nil {
+	canceled := false
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&job, uint(id)).Error; err != nil {
+			return err
+		}
+		if job.Status == JobStatusCanceled {
+			canceled = true
+			return nil
+		}
+		previousStatus := job.Status
+		now := time.Now().UTC()
+		if job.CancellationRequestedAt != nil && terminalJobStatus(input.Status) {
+			job.Status = JobStatusCanceled
+			job.FinishedAt = &now
+			if input.OutputPath != "" {
+				job.OutputPath = input.OutputPath
+			}
+			if input.ErrorMessage != "" {
+				job.ErrorMessage = input.ErrorMessage
+			}
+			job.Progress = normalizedProgress(JobStatusCanceled, input.Progress)
+			if err := tx.Save(&job).Error; err != nil {
+				return err
+			}
+			if err := transitionJobStage(tx, &job, JobStageCanceled); err != nil {
+				return err
+			}
+			if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
+				return err
+			}
+			if err := persistCanceledJobCleanupIntent(tx, &job); err != nil {
+				return err
+			}
+			canceled = true
+			return nil
+		}
+		if job.CancellationRequestedAt != nil {
+			// Keep ownership and the running lifecycle visible until a terminal worker
+			// callback acknowledges that the active operation has stopped.
+			canceled = false
+			return nil
+		}
+		job.Status = input.Status
+		job.Progress = normalizedProgress(input.Status, input.Progress)
+		if input.OutputPath != "" {
+			job.OutputPath = input.OutputPath
+		}
+		if input.ErrorMessage != "" {
+			job.ErrorMessage = input.ErrorMessage
+		}
+		if job.Status == JobStatusRunning && job.StartedAt == nil {
+			job.StartedAt = &now
+		}
+		if terminalJobStatus(job.Status) {
+			job.FinishedAt = &now
+		}
+		if err := tx.Save(&job).Error; err != nil {
+			return err
+		}
+		if err := transitionJobStage(tx, &job, stageForStatusUpdate(job, previousStatus)); err != nil {
+			return err
+		}
+		if job.Status == JobStatusCanceled {
+			if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
+				return err
+			}
+			if err := persistCanceledJobCleanupIntent(tx, &job); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
 			return
 		}
-
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	previousStatus := job.Status
-	now := time.Now()
-	job.Status = input.Status
-	job.Progress = normalizedProgress(input.Status, input.Progress)
-	if input.OutputPath != "" {
-		job.OutputPath = input.OutputPath
-	}
-	if input.ErrorMessage != "" {
-		job.ErrorMessage = input.ErrorMessage
-	}
-
-	canceledRunningProcess := false
-	if job.Status == JobStatusCanceled {
-		canceledRunningProcess = cancelRunningJobProcess(job.ID)
-	}
-
-	if job.Status == JobStatusRunning && job.StartedAt == nil {
-		job.StartedAt = &now
-	}
-
-	if terminalJobStatus(job.Status) {
-		job.FinishedAt = &now
-	}
-
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(&job).Error; err != nil {
-			return err
-		}
-		return transitionJobStage(tx, &job, stageForStatusUpdate(job, previousStatus))
-	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if job.Status == JobStatusCanceled {
-		_ = scheduler.ReleaseReservation(h.db, job.ID)
-		if !canceledRunningProcess {
-			_ = cleanupCanceledJob(h.db, job)
-		}
-	} else if terminalJobStatus(job.Status) {
+	if !canceled && terminalJobStatus(job.Status) {
 		_ = scheduler.DeactivateReservationResources(h.db, job.ID)
 	}
 
@@ -1002,6 +1046,10 @@ func (h WorkerHandler) failClaimedJobExecution(jobID uint, executionErr error) {
 	}
 	var job models.QueueJob
 	if err := h.db.First(&job, jobID).Error; err != nil || job.Status != JobStatusRunning {
+		return
+	}
+	if job.CancellationRequestedAt != nil {
+		_, _, _ = finalizeQueueJobCancellation(h.db, job.ID)
 		return
 	}
 	now := time.Now()
@@ -1265,6 +1313,13 @@ func (h WorkerHandler) executeQueueJob(job models.QueueJob, overwrite bool) (mod
 	}
 
 	if err := h.startFFmpegJob(job.ID, args, plan.Streams.Duration); err != nil {
+		if errors.Is(err, errQueueJobCancellationRequested) {
+			canceledJob, _, finalizeErr := finalizeQueueJobCancellation(h.db, job.ID)
+			if finalizeErr != nil {
+				return job, http.StatusInternalServerError, finalizeErr
+			}
+			return canceledJob, http.StatusAccepted, nil
+		}
 		job.Status = JobStatusFailed
 		job.Progress = 0
 		job.ErrorMessage = err.Error()
