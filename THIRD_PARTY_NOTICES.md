@@ -6,7 +6,7 @@ Apache License 2.0; see [LICENSE](LICENSE).
 
 ## Runtime/frontend dependencies
 
-The 23 direct dependencies in `frontend/package.json` below were checked
+The 24 direct dependencies in `frontend/package.json` below were checked
 against installed package metadata and `frontend/package-lock.json` after
 `npm ci`. Source links point to the packages' upstream projects. MIT and
 Apache-2.0 are treated here as permissive licenses with notice-preservation
@@ -18,6 +18,7 @@ requirements when redistributed.
 | `@emotion/styled` | `11.14.1` → `11.14.1` | MIT | [Emotion](https://github.com/emotion-js/emotion) | Runtime |
 | `@mui/icons-material` | `7.3.6` → `7.3.6` | MIT | [MUI](https://github.com/mui/material-ui) | Runtime |
 | `@mui/material` | `7.3.6` → `7.3.6` | MIT | [MUI](https://github.com/mui/material-ui) | Runtime |
+| `@playwright/test` | `1.64.1` → `1.64.1` | Apache-2.0 | [Playwright](https://github.com/microsoft/playwright) | Development tooling |
 | `@tanstack/react-query` | `5.90.12` → `5.90.12` | MIT | [TanStack Query](https://github.com/TanStack/query) | Runtime |
 | `react` | `18.3.1` → `18.3.1` | MIT | [React](https://github.com/facebook/react) | Runtime |
 | `react-dom` | `18.3.1` → `18.3.1` | MIT | [React](https://github.com/facebook/react) | Runtime |
@@ -38,8 +39,8 @@ requirements when redistributed.
 | `vite` | `7.3.6` → `7.3.6` | MIT | [Vite](https://github.com/vitejs/vite) | Development tooling |
 | `vitest` | `^4.1.11` → `4.1.11` | MIT | [Vitest](https://github.com/vitest-dev/vitest) | Development tooling |
 
-Classification: **A, permissive/open-source:** 23 direct packages (22 MIT, one
-Apache-2.0). **B, attribution/notice:** all 23 require applicable notices to be
+Classification: **A, permissive/open-source:** 24 direct packages (22 MIT, two
+Apache-2.0). **B, attribution/notice:** all 24 require applicable notices to be
 preserved when redistributed. **C, commercial/restricted:** zero found.
 **D, unclear/manual review:** zero found. The generated
 [`frontend/licenses/npm/THIRD_PARTY_NOTICES.txt`](frontend/licenses/npm/THIRD_PARTY_NOTICES.txt)

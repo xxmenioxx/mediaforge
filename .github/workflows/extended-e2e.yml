@@ -1,0 +1,92 @@
+name: Extended E2E Nightly
+
+on:
+  schedule:
+    - cron: '35 4 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extended-e2e-${{ github.event_name == 'push' && github.sha || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  ocr-translation:
+    name: OCR and Translation mock journeys
+    runs-on: ubuntu-24.04
+    env:
+      GOCACHE: ${{ runner.temp }}/mvforge-extended-${{ github.run_id }}-${{ github.run_attempt }}/go-cache
+      GOTMPDIR: ${{ runner.temp }}/mvforge-extended-${{ github.run_id }}-${{ github.run_attempt }}/go-tmp
+      MVFORGE_GOTMPDIR: ${{ runner.temp }}/mvforge-extended-${{ github.run_id }}-${{ github.run_attempt }}/mvforge-go-tmp
+      MVFORGE_OCR_LIFECYCLE_ROOT: ${{ runner.temp }}/mvforge-extended-${{ github.run_id }}-${{ github.run_attempt }}/ocr-work
+      MVFORGE_OCR_PERSISTENT_ROOT: ${{ runner.temp }}/mvforge-extended-${{ github.run_id }}-${{ github.run_attempt }}/ocr-state
+      TMPDIR: ${{ runner.temp }}/mvforge-extended-${{ github.run_id }}-${{ github.run_attempt }}/tmp
+      MVFORGE_DUPLA_ROOT: ${{ runner.temp }}/mvforge-extended-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Create isolated temporary roots
+        run: mkdir -p "$GOCACHE" "$GOTMPDIR" "$MVFORGE_GOTMPDIR" "$MVFORGE_OCR_LIFECYCLE_ROOT" "$MVFORGE_OCR_PERSISTENT_ROOT" "$TMPDIR" "$MVFORGE_DUPLA_ROOT"
+      - name: Run deterministic OCR and Translation suites
+        run: |
+          set -eo pipefail
+          {
+            python3 -m unittest discover -s scripts/e2e/ollama_validation -p 'test_*.py'
+            python3 scripts/e2e/ollama_validation_sandbox.py --mode mock --context default --base-sha "$GITHUB_SHA"
+          } 2>&1 | tee "$RUNNER_TEMP/mvforge-extended-ocr-translation-full.log" | tail -n 250
+      - name: Bound OCR and Translation diagnostics
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/mvforge-extended-ocr-translation-full.log" ]]; then
+            tail -c 524288 "$RUNNER_TEMP/mvforge-extended-ocr-translation-full.log" > "$RUNNER_TEMP/mvforge-extended-ocr-translation.log"
+          fi
+      - name: Upload OCR and Translation failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: extended-e2e-ocr-translation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mvforge-extended-ocr-translation.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  ui-journeys:
+    name: Playwright UI journeys
+    runs-on: ubuntu-24.04
+    env:
+      TMPDIR: ${{ runner.temp }}/mvforge-ui-${{ github.run_id }}-${{ github.run_attempt }}/tmp
+      npm_config_cache: ${{ runner.temp }}/mvforge-ui-${{ github.run_id }}-${{ github.run_attempt }}/npm-cache
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/mvforge-ui-${{ github.run_id }}-${{ github.run_attempt }}/playwright-browsers
+      MVFORGE_DUPLA_ROOT: ${{ runner.temp }}/mvforge-ui-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Create isolated temporary roots
+        run: mkdir -p "$TMPDIR" "$npm_config_cache" "$PLAYWRIGHT_BROWSERS_PATH" "$MVFORGE_DUPLA_ROOT"
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Install Chromium and system dependencies
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run the three synthetic browser journeys
+        working-directory: frontend
+        run: npm run test:e2e
+      - name: Upload bounded browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: extended-e2e-ui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mvforge-ui-${{ github.run_id }}-${{ github.run_attempt }}/playwright/report
+            ${{ runner.temp }}/mvforge-ui-${{ github.run_id }}-${{ github.run_attempt }}/playwright/results
+          if-no-files-found: warn
+          retention-days: 7
