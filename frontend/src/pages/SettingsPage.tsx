@@ -34,6 +34,7 @@ import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import { ValidationPolicySettingsCard } from '../components/ValidationPolicySettingsCard';
 import { OCRDictionaryManager } from '../components/OCRDictionaryManager';
+import { OCRCorrectionMemorySettings, ocrCorrectionMemorySettingsValue } from '../components/OCRCorrectionMemorySettings';
 import { TestEncodeSettingsDomain } from './TestEncodeSettingsDomain';
 import { AdvancedSettings } from './settings/AdvancedSettings';
 import { GeneralSettingsDomain } from './settings/GeneralSettings';
@@ -277,6 +278,10 @@ export function SettingsPage() {
       ? form.analysisPolicy.mode !== 'custom' || (form.analysisPolicy.maximumWindows >= form.analysisPolicy.initialWindows && form.analysisPolicy.positions.length >= form.analysisPolicy.maximumWindows)
       : activeDraftSection === 'runtime'
         ? !workerProgressPercentError(form.workers.startNextJobAtProgressPercent)
+        : activeDraftSection === 'subtitles'
+          ? Number.isInteger(form.ordinarySettings.ocrCorrectionMemorySettings?.retentionDays)
+            && Number(form.ordinarySettings.ocrCorrectionMemorySettings.retentionDays) >= 30
+            && Number(form.ordinarySettings.ocrCorrectionMemorySettings.retentionDays) <= 3650
         : true;
   const changeSection = (next: SettingsSection) => {
     navigate({ pathname: location.pathname, search: `?section=${next}`, hash: '' });
@@ -431,6 +436,9 @@ export function SettingsPage() {
         }
         if (!equalSettingsDrafts(nextForm.ordinarySettings.ocrAISettings, baseline.ordinarySettings.ocrAISettings)) {
           batch.push({ key: 'ocrAISettings', value: nextForm.ordinarySettings.ocrAISettings });
+        }
+        if (!equalSettingsDrafts(nextForm.ordinarySettings.ocrCorrectionMemorySettings, baseline.ordinarySettings.ocrCorrectionMemorySettings)) {
+          batch.push({ key: 'ocrCorrectionMemorySettings', value: nextForm.ordinarySettings.ocrCorrectionMemorySettings });
         }
       }
       if (draftSection === 'test-encode') {
@@ -868,7 +876,7 @@ export function SettingsPage() {
     'ai-copilot': ['aiCopilotSettings'],
     archive: ['originalRetentionPolicy', 'storageRoles'],
     operations: ['housekeeping', 'cancellationPolicy'],
-    subtitles: ['subtitleSettings', 'subtitleTranslationSettings', 'ocrAISettings'],
+    subtitles: ['subtitleSettings', 'subtitleTranslationSettings', 'ocrAISettings', 'ocrCorrectionMemorySettings'],
     'test-encode': ['testEncodePolicy'],
   };
   const currentSectionKeys = settingKeysBySection[section] ?? [];
@@ -1153,6 +1161,13 @@ export function SettingsPage() {
                 providerConfigured={ollamaProviderConfigured}
                 providerConfigurationRevision={ollamaProviderConfigurationRevision}
                 onDraftChange={(value) => updateOrdinarySettingDraft('ocrAISettings', value)}
+              />
+            ) : null}
+
+            {section === 'subtitles' ? (
+              <OCRCorrectionMemorySettings
+                value={ocrCorrectionMemorySettingsValue(form.ordinarySettings.ocrCorrectionMemorySettings)}
+                onDraftChange={(value) => updateOrdinarySettingDraft('ocrCorrectionMemorySettings', value)}
               />
             ) : null}
 

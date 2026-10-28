@@ -3713,6 +3713,7 @@ export type SubtitleOCRQualityFinding = {
   status: 'clean' | 'suspicious' | 'review' | string;
   reasons?: string[];
   evidence?: string[];
+  memorySuggestions?: OCRCorrectionMemorySuggestion[];
   candidateSource?: string;
   dictionaryRuleIds?: string[];
   dictionaryRuleVersions?: number[];
@@ -3729,6 +3730,73 @@ export type SubtitleOCRQualityFinding = {
     bitmapWidth: number;
     bitmapHeight: number;
   };
+};
+
+export type OCRCorrectionMemoryScopeType = 'global' | 'library' | 'series' | 'title' | 'asset';
+
+export type OCRCorrectionMemoryProvenance = {
+  sourceRevision: string;
+  artifactRevision: string;
+  sourceHash: string;
+  cueId: number;
+  approvalAction: string;
+  dictionaryRuleId?: string;
+  dictionaryRuleVersion?: number;
+  modelIdentifier?: string;
+  approvedAt: string;
+};
+
+export type OCRCorrectionMemoryEntry = {
+  id: number;
+  sourceLanguage: string;
+  originalText: string;
+  correctedText: string;
+  contextFingerprint: string;
+  scopeType: OCRCorrectionMemoryScopeType;
+  scopeId: string;
+  acceptedSuggestions: number;
+  rejectedSuggestions: number;
+  occurrenceCount: number;
+  supersededById?: number;
+  approvedAt: string;
+  expiresAt: string;
+  enabled: boolean;
+  approvalValid: boolean;
+  invalidatedAt?: string;
+  provenance: OCRCorrectionMemoryProvenance[];
+};
+
+export type OCRCorrectionMemorySuggestion = {
+  entryId: number;
+  correctedText: string;
+  matchType: 'exact_context' | 'exact_text' | 'similar';
+  scopeType: string;
+  sourceLanguage: string;
+  acceptedSuggestions: number;
+  rejectedSuggestions: number;
+  provenanceCount: number;
+  sourceRevision: string;
+  artifactRevision: string;
+};
+
+export type OCRCorrectionMemorySearchInput = {
+  search?: string;
+  language?: string;
+  scopeType?: OCRCorrectionMemoryScopeType;
+  page?: number;
+  pageSize?: number;
+};
+
+export type OCRCorrectionMemorySearchResponse = {
+  entries: OCRCorrectionMemoryEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
+};
+
+export type OCRCorrectionMemoryExportResponse = {
+  exportedAt: string;
+  entries: OCRCorrectionMemoryEntry[];
 };
 
 export type PublishedSubtitleRevision = {

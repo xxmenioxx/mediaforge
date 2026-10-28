@@ -67,6 +67,8 @@ func Migrate(db *gorm.DB) error {
 		&models.TaskReservation{},
 		&models.AppSetting{},
 		&models.OCRDictionaryEntry{},
+		&models.OCRCorrectionMemoryEntry{},
+		&models.OCRCorrectionMemoryEvidence{},
 		&models.ProtectedCredential{},
 		&models.CompatiblePreviewRequestRecord{},
 		&models.CompatiblePreviewArtifactRecord{},

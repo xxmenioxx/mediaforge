@@ -14,10 +14,16 @@ import {
   Typography,
 } from '@mui/material';
 import { api } from '../api/client';
-import type { CanonicalOCRReviewTarget, SubtitleOCRQualityFinding, SubtitleOCRQualityReport } from '../api/types';
+import type { CanonicalOCRReviewTarget, OCRCorrectionMemorySuggestion, SubtitleOCRQualityFinding, SubtitleOCRQualityReport } from '../api/types';
 
 type ReviewDecision = 'correct' | 'approve';
 type ReviewStatus = 'idle' | 'loading' | 'completed' | 'cancelled' | 'error' | 'stale';
+type StagedMemorySuggestion = {
+  entryId: number;
+  correctedText: string;
+  previousDraft: string;
+  previousDecision?: ReviewDecision;
+};
 
 function delay(ms: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
@@ -58,6 +64,9 @@ export function SubtitleOCRReviewDialog({
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [decisions, setDecisions] = useState<Record<number, ReviewDecision>>({});
   const [dismissedAISuggestions, setDismissedAISuggestions] = useState<Record<number, boolean>>({});
+  const [stagedMemorySuggestions, setStagedMemorySuggestions] = useState<Record<number, StagedMemorySuggestion>>({});
+  const [memoryFeedbackDone, setMemoryFeedbackDone] = useState<Record<string, 'accepted' | 'rejected'>>({});
+  const [memoryFeedbackPending, setMemoryFeedbackPending] = useState<Record<string, boolean>>({});
   const [previewOpen, setPreviewOpen] = useState(false);
   const [selectionMessage, setSelectionMessage] = useState('');
   const [saving, setSaving] = useState(false);
@@ -75,6 +84,9 @@ export function SubtitleOCRReviewDialog({
     setDecisions({});
     setDrafts({});
     setDismissedAISuggestions({});
+    setStagedMemorySuggestions({});
+    setMemoryFeedbackDone({});
+    setMemoryFeedbackPending({});
     setPreviewOpen(false);
     setSelectionMessage('');
     setAnalysisOperationId('');
@@ -178,6 +190,58 @@ export function SubtitleOCRReviewDialog({
     setSelectionMessage(`AI suggestion for cue ${finding.cueId} was rejected and will not be saved.`);
   }
 
+  function stageMemorySuggestion(finding: SubtitleOCRQualityFinding, suggestion: OCRCorrectionMemorySuggestion) {
+    const previousDraft = drafts[finding.cueId] ?? finding.suggestion ?? finding.originalText;
+    setDrafts((current) => ({ ...current, [finding.cueId]: suggestion.correctedText }));
+    setDecisions((current) => ({ ...current, [finding.cueId]: 'correct' }));
+    setStagedMemorySuggestions((current) => ({
+      ...current,
+      [finding.cueId]: {
+        entryId: suggestion.entryId,
+        correctedText: suggestion.correctedText,
+        previousDraft,
+        previousDecision: decisions[finding.cueId],
+      },
+    }));
+    setSelectionMessage(`Approved memory suggestion for cue ${finding.cueId} is staged. Review the text and confirm before saving.`);
+  }
+
+  async function rejectMemorySuggestion(finding: SubtitleOCRQualityFinding, suggestion: OCRCorrectionMemorySuggestion) {
+    const feedbackKey = `${finding.cueId}:${suggestion.entryId}`;
+    if (memoryFeedbackDone[feedbackKey] || memoryFeedbackPending[feedbackKey]) return;
+    const staged = stagedMemorySuggestions[finding.cueId];
+    if (staged?.entryId === suggestion.entryId) {
+      if ((drafts[finding.cueId] ?? '') === staged.correctedText) {
+        setDrafts((current) => ({ ...current, [finding.cueId]: staged.previousDraft }));
+        setDecisions((current) => {
+          const next = { ...current };
+          if (staged.previousDecision) next[finding.cueId] = staged.previousDecision;
+          else delete next[finding.cueId];
+          return next;
+        });
+      }
+      setStagedMemorySuggestions((current) => {
+        const next = { ...current };
+        delete next[finding.cueId];
+        return next;
+      });
+    }
+    setMemoryFeedbackPending((current) => ({ ...current, [feedbackKey]: true }));
+    try {
+      await api.recordOCRCorrectionMemoryFeedback(suggestion.entryId, 'rejected');
+      setMemoryFeedbackDone((current) => ({ ...current, [feedbackKey]: 'rejected' }));
+      setSelectionMessage(`Memory suggestion for cue ${finding.cueId} was rejected. Cue text remains unchanged.`);
+    } catch (error) {
+      setSelectionMessage(error instanceof Error ? error.message : 'Could not record memory suggestion feedback. Cue text remains unchanged.');
+    } finally {
+      setMemoryFeedbackPending((current) => {
+        const next = { ...current };
+        delete next[feedbackKey];
+        return next;
+      });
+    }
+  }
+
   async function cancelAnalysis() {
     if (!analysisOperationId || cancelPending) return;
     setCancelPending(true);
@@ -226,6 +290,23 @@ export function SubtitleOCRReviewDialog({
       }
       if (current.status !== 'completed') {
         throw new Error(current.error || current.message || (current.status === 'cancelled' ? 'OCR decision save was cancelled.' : 'OCR decision save failed.'));
+      }
+      const appliedMemorySuggestions = Object.entries(stagedMemorySuggestions).flatMap(([cueIdText, suggestion]) => {
+        const cueId = Number(cueIdText);
+        const correction = corrections.find((entry) => entry.cueId === cueId);
+        return correction?.action === 'edit' && correction.text === suggestion.correctedText
+          ? [{ cueId, entryId: suggestion.entryId }]
+          : [];
+      });
+      const feedbackResults = await Promise.allSettled(appliedMemorySuggestions.map(({ entryId }) => api.recordOCRCorrectionMemoryFeedback(entryId, 'accepted')));
+      feedbackResults.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          const suggestion = appliedMemorySuggestions[index];
+          if (suggestion) setMemoryFeedbackDone((current) => ({ ...current, [`${suggestion.cueId}:${suggestion.entryId}`]: 'accepted' }));
+        }
+      });
+      if (feedbackResults.some((result) => result.status === 'rejected')) {
+        setSaveError('Cue corrections were saved, but feedback could not be recorded for one or more memory suggestions.');
       }
       setPreviewOpen(false);
       onSaved();
@@ -306,6 +387,28 @@ export function SubtitleOCRReviewDialog({
                       <strong>{finding.candidateSource === 'contextual-ocr-dictionary' ? 'Dictionary suggestion:' : 'Deterministic suggestion:'}</strong> {finding.suggestion}
                     </Typography>
                   ) : null}
+                  {(finding.memorySuggestions ?? []).map((suggestion) => {
+                    const feedbackKey = `${finding.cueId}:${suggestion.entryId}`;
+                    return (
+                    <Alert severity="info" key={suggestion.entryId}>
+                      <Stack spacing={0.75}>
+                        <Typography variant="body2"><strong>Approved memory suggestion · {suggestion.matchType} · {suggestion.sourceLanguage.toUpperCase()} · {suggestion.scopeType}:</strong> {suggestion.correctedText}</Typography>
+                        <Typography variant="caption">
+                          {suggestion.acceptedSuggestions} accepted · {suggestion.rejectedSuggestions} rejected · {suggestion.provenanceCount} provenance record(s) · source {suggestion.sourceRevision} · artifact {suggestion.artifactRevision}
+                        </Typography>
+                        <Typography variant="caption">This is advisory. Use stages a correction for your review; it is saved only after you confirm the decision preview.</Typography>
+                        {memoryFeedbackDone[feedbackKey] === 'accepted' ? <Typography variant="caption">Accepted after the correction was saved.</Typography> : null}
+                        {memoryFeedbackDone[feedbackKey] === 'rejected' ? <Typography variant="caption">Rejected; cue text was left unchanged.</Typography> : null}
+                        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                          <Button size="small" variant="outlined" disabled={saving || memoryFeedbackDone[feedbackKey] !== undefined} onClick={() => stageMemorySuggestion(finding, suggestion)}>Use memory suggestion</Button>
+                          <Button size="small" color="warning" disabled={saving || memoryFeedbackDone[feedbackKey] !== undefined || memoryFeedbackPending[feedbackKey]} onClick={() => void rejectMemorySuggestion(finding, suggestion)}>
+                            {memoryFeedbackPending[feedbackKey] ? 'Recording rejection…' : 'Reject memory suggestion'}
+                          </Button>
+                        </Stack>
+                      </Stack>
+                    </Alert>
+                    );
+                  })}
                   {finding.aiSuggestion && !dismissedAISuggestions[finding.cueId] &&
                     finding.aiSuggestion.cueId === finding.cueId && finding.aiSuggestion.baselineRevision === report.baselineRevision ? (
                     <Alert severity="info">

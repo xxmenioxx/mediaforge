@@ -61,7 +61,7 @@ func buildSettingDefinitions() map[string]settingDefinition {
 		{"workers", "pipeline"}, {"pipelineAutomation", "pipeline"}, {"validation", "pipeline"},
 		{"cancellationPolicy", "operations"}, {"housekeeping", "operations"}, {testEncodePolicySettingKey, "test-encode"},
 		{"originalRetentionPolicy", "archive"},
-		{"subtitleSettings", "subtitles"}, {translationSettingsKey, "subtitles"}, {ocrAISettingsKey, "subtitles"},
+		{"subtitleSettings", "subtitles"}, {translationSettingsKey, "subtitles"}, {ocrAISettingsKey, "subtitles"}, {ocrCorrectionMemorySettingsKey, "subtitles"},
 		{aiCopilotSettingsKey, "ai-copilot"},
 		{jellyfinSettingsKey, "providers-integrations"}, {ollamaProviderSettingsKey, "providers-integrations"},
 		{"runtimePolicy", "runtime"}, {"remoteExecutors", "runtime"}, {airesource.SettingsKey, "runtime"},
@@ -110,6 +110,9 @@ func buildSettingDefinitions() map[string]settingDefinition {
 	})
 	definitions[ocrAISettingsKey] = withNormalizer(definitions[ocrAISettingsKey], func(_ settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
 		return normalizeOCRAISettingsValue(value)
+	})
+	definitions[ocrCorrectionMemorySettingsKey] = withNormalizer(definitions[ocrCorrectionMemorySettingsKey], func(_ settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
+		return normalizeOCRCorrectionMemorySettingsValue(value)
 	})
 	definitions[aiCopilotSettingsKey] = withNormalizer(definitions[aiCopilotSettingsKey], func(_ settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
 		return normalizeAICopilotSettingsValue(value)
