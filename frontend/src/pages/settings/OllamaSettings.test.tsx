@@ -8,6 +8,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../../api/client';
+import * as ollamaSettingsApi from '../../api/ollama-settings';
 import { AICopilotSettingsCard, AIModelRuntimeSettingsCard, OllamaProviderSettingsCard, aiCopilotSettingsValue } from './OllamaSettings';
 
 afterEach(() => {
@@ -22,9 +23,9 @@ function renderWithClient(node: ReactNode) {
 
 describe('Ollama provider settings', () => {
   beforeEach(() => {
-    vi.spyOn(api, 'testOllamaConnection').mockResolvedValue({ state: 'reachable', checkedAt: '', serverVersion: '0.1.0' });
+    vi.spyOn(ollamaSettingsApi, 'testOllamaConnection').mockResolvedValue({ state: 'reachable', checkedAt: '', serverVersion: '0.1.0' });
     vi.spyOn(api, 'listOllamaModels').mockResolvedValue({ state: 'available', installedModels: [{ id: 'shared-model', name: 'shared-model' }] });
-    vi.spyOn(api, 'ollamaRuntimeStatus').mockResolvedValue({
+    vi.spyOn(ollamaSettingsApi, 'ollamaRuntimeStatus').mockResolvedValue({
       state: 'available', models: [{ modelId: 'shared-model', installed: true, resident: true, state: 'resident', activeInferenceLeases: 1 }], activeOperations: [], failures: [],
     });
   });
@@ -44,7 +45,7 @@ describe('Ollama provider settings', () => {
 
     expect(await screen.findByText(/Resident models: 1/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Test connection' }));
-    await waitFor(() => expect(api.testOllamaConnection).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(ollamaSettingsApi.testOllamaConnection).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/Connection test: Connected/)).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Refresh models' }));
@@ -58,7 +59,7 @@ describe('Ollama provider settings', () => {
   it('reports an empty catalog and disconnected provider without clearing the saved endpoint', async () => {
     const user = userEvent.setup();
     vi.mocked(api.listOllamaModels).mockResolvedValue({ state: 'available', installedModels: [] });
-    vi.mocked(api.testOllamaConnection).mockRejectedValue(new Error('Connection refused'));
+    vi.mocked(ollamaSettingsApi.testOllamaConnection).mockRejectedValue(new Error('Connection refused'));
     renderWithClient(
       <OllamaProviderSettingsCard
         value={{ endpoint: 'http://offline.local:11434' }}
@@ -120,7 +121,7 @@ describe('AI Copilot and runtime settings', () => {
   it('shows resident model status and drafts protection controls', async () => {
     const user = userEvent.setup();
     const onDraftChange = vi.fn();
-    vi.spyOn(api, 'ollamaRuntimeStatus').mockResolvedValue({
+    vi.spyOn(ollamaSettingsApi, 'ollamaRuntimeStatus').mockResolvedValue({
       state: 'available', models: [{ modelId: 'shared-model', installed: true, resident: true, state: 'resident', activeInferenceLeases: 0 }], activeOperations: [], failures: [],
     });
     renderWithClient(

@@ -724,39 +724,6 @@ export type OllamaModelsResponse = {
   diagnostic?: string;
 };
 
-export type OllamaConnectionTestResponse = {
-  state: string;
-  checkedAt: string;
-  serverVersion?: string;
-  diagnostic?: string;
-};
-
-export type OllamaRuntimeModel = {
-  modelId: string;
-  installed: boolean;
-  resident: boolean;
-  state: string;
-  activeInferenceLeases: number;
-  expiresAt?: string;
-  failure?: string;
-};
-
-export type OllamaRuntimeOperation = {
-  operationId: string;
-  modelId: string;
-  phase: string;
-  reason?: string;
-};
-
-export type OllamaRuntimeStatus = {
-  state: string;
-  observedAt?: string;
-  diagnostic?: string;
-  models: OllamaRuntimeModel[];
-  activeOperations: OllamaRuntimeOperation[];
-  failures: OllamaRuntimeOperation[];
-};
-
 export type OllamaModelReadinessResponse = {
   state: string;
   modelId: string;

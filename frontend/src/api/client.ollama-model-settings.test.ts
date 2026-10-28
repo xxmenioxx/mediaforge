@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from './client';
+import { ollamaRuntimeStatus, testOllamaConnection } from './ollama-settings';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -24,10 +25,10 @@ describe('shared Ollama model settings API', () => {
       }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await api.testOllamaConnection();
+    await testOllamaConnection();
     await api.listOllamaModels();
     await api.testOllamaModelReadiness('same-model');
-    await api.ollamaRuntimeStatus();
+    await ollamaRuntimeStatus();
 
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/settings/ollama/test-connection');

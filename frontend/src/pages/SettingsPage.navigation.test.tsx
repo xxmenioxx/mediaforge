@@ -21,16 +21,20 @@ vi.mock('../api/client', async (importOriginal) => {
       schedulerRecovery: vi.fn(),
       updateSetting: vi.fn(),
       updateSettingsBatch: vi.fn(),
-      testOllamaConnection: vi.fn(),
       listOllamaModels: vi.fn(),
-      ollamaRuntimeStatus: vi.fn(),
       jellyfinIntegrationState: vi.fn(),
       jellyfinOutcomes: vi.fn(),
     },
   };
 });
 
+vi.mock('../api/ollama-settings', () => ({
+  testOllamaConnection: vi.fn(),
+  ollamaRuntimeStatus: vi.fn(),
+}));
+
 import { api } from '../api/client';
+import * as ollamaSettingsApi from '../api/ollama-settings';
 import { SettingsPage } from './SettingsPage';
 
 function CurrentSettingsSearch() {
@@ -87,8 +91,8 @@ describe('Settings domain navigation and drafts', () => {
     vi.mocked(api.updateSettingsBatch).mockClear();
     vi.mocked(api.updateSetting).mockClear();
     vi.mocked(api.listOllamaModels).mockClear();
-    vi.mocked(api.testOllamaConnection).mockClear();
-    vi.mocked(api.ollamaRuntimeStatus).mockClear();
+    vi.mocked(ollamaSettingsApi.testOllamaConnection).mockClear();
+    vi.mocked(ollamaSettingsApi.ollamaRuntimeStatus).mockClear();
     vi.mocked(api.jellyfinIntegrationState).mockClear();
     vi.mocked(api.jellyfinOutcomes).mockClear();
     vi.mocked(api.settings).mockResolvedValue([{ key: 'workers', value: {
@@ -138,7 +142,7 @@ describe('Settings domain navigation and drafts', () => {
       warnings: [],
     } as never);
     vi.mocked(api.updateSettingsBatch).mockResolvedValue([] as never);
-    vi.mocked(api.ollamaRuntimeStatus).mockResolvedValue({ state: 'available', models: [], activeOperations: [], failures: [] } as never);
+    vi.mocked(ollamaSettingsApi.ollamaRuntimeStatus).mockResolvedValue({ state: 'available', models: [], activeOperations: [], failures: [] } as never);
     vi.mocked(api.jellyfinIntegrationState).mockResolvedValue({ enabled: false, credentialConfigured: false, configurationValid: false, configurationNeedsRevalidation: false, lastConnectionSuccessful: false, liveReachability: 'unknown', librariesLoaded: false, libraries: [], mappings: [] } as never);
     vi.mocked(api.jellyfinOutcomes).mockResolvedValue([]);
   });
@@ -335,7 +339,7 @@ describe('Settings domain navigation and drafts', () => {
       { key: 'ollamaProviderSettings', value: { endpoint: 'http://new.local:11434' } },
     ]);
     expect(api.updateSetting).not.toHaveBeenCalled();
-    expect(api.testOllamaConnection).not.toHaveBeenCalled();
+    expect(ollamaSettingsApi.testOllamaConnection).not.toHaveBeenCalled();
     expect(api.listOllamaModels).not.toHaveBeenCalled();
   });
 

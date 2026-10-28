@@ -3,7 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Card, CardContent, FormControlLabel, Link, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material';
 import { Link as RouterLink } from 'react-router-dom';
 import { ApiRequestError, api } from '../../api/client';
-import type { OllamaModelReadinessResponse, OllamaRuntimeStatus, SubtitleTranslationSettingsValue } from '../../api/types';
+import { ollamaRuntimeStatus, testOllamaConnection } from '../../api/ollama-settings';
+import type { OllamaRuntimeStatus } from '../../api/ollama-settings';
+import type { OllamaModelReadinessResponse, SubtitleTranslationSettingsValue } from '../../api/types';
 import { booleanValue, numberValue, stringValue, subtitleTranslationSettingsDraftValue } from '../../utils/settingsPageHelpers';
 
 export const ollamaModelCatalogQueryKey = (revision: string) => ['ollama-models', revision] as const;
@@ -118,11 +120,11 @@ export function OllamaProviderSettingsCard({
   const models = useOllamaModelCatalog(providerConfigurationRevision);
   const runtime = useQuery({
     queryKey: ollamaRuntimeQueryKey(providerConfigurationRevision),
-    queryFn: api.ollamaRuntimeStatus,
+    queryFn: ollamaRuntimeStatus,
     enabled: configured,
     retry: false,
   });
-  const testConnection = useMutation({ mutationFn: api.testOllamaConnection });
+  const testConnection = useMutation({ mutationFn: testOllamaConnection });
   const endpoint = stringValue(value.endpoint, '');
   const savedEndpoint = stringValue(savedValue?.endpoint, '');
   const endpointDirty = endpoint !== savedEndpoint;
@@ -352,7 +354,7 @@ export function AIModelRuntimeSettingsCard({
 }) {
   const runtime = useQuery({
     queryKey: ollamaRuntimeQueryKey(providerConfigurationRevision),
-    queryFn: api.ollamaRuntimeStatus,
+    queryFn: ollamaRuntimeStatus,
     enabled: configured,
     retry: false,
     refetchInterval: configured ? 15_000 : false,
