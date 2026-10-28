@@ -11,7 +11,7 @@ export type StoredSettingsDraft = {
   section: SettingsSection;
 };
 
-const draftSections: SettingsDraftSection[] = ['general', 'pipeline', 'analysis', 'runtime', 'assets', 'asset-defaults', 'validation', 'archive', 'operations', 'subtitles', 'test-encode', 'advanced'];
+const draftSections: SettingsDraftSection[] = ['general', 'pipeline', 'analysis', 'runtime', 'assets', 'asset-defaults', 'validation', 'providers-integrations', 'ai-copilot', 'archive', 'operations', 'subtitles', 'test-encode', 'advanced'];
 
 type LegacySettingsForm = Omit<SettingsForm, 'mvforgePreferences' | 'analysisPolicy' | 'profileSampleEstimatePolicy' | 'ordinarySettings'>;
 
@@ -42,7 +42,12 @@ function isSettingsForm(value: unknown): value is SettingsForm {
 }
 
 function upgradeStoredForm(value: unknown): SettingsForm | undefined {
-  if (isSettingsForm(value)) return value;
+  if (isSettingsForm(value)) {
+    return {
+      ...value,
+      ordinarySettings: { ...initialSettings.ordinarySettings, ...value.ordinarySettings },
+    };
+  }
   if (!isLegacySettingsForm(value)) return undefined;
   const record = value as unknown as Record<string, unknown>;
   return {
@@ -50,7 +55,10 @@ function upgradeStoredForm(value: unknown): SettingsForm | undefined {
     mvforgePreferences: isRecord(record.mvforgePreferences) ? record.mvforgePreferences as SettingsForm['mvforgePreferences'] : initialSettings.mvforgePreferences,
     analysisPolicy: isRecord(record.analysisPolicy) ? record.analysisPolicy as SettingsForm['analysisPolicy'] : initialSettings.analysisPolicy,
     profileSampleEstimatePolicy: isRecord(record.profileSampleEstimatePolicy) ? record.profileSampleEstimatePolicy as SettingsForm['profileSampleEstimatePolicy'] : initialSettings.profileSampleEstimatePolicy,
-    ordinarySettings: isRecord(record.ordinarySettings) ? record.ordinarySettings as SettingsForm['ordinarySettings'] : initialSettings.ordinarySettings,
+    ordinarySettings: {
+      ...initialSettings.ordinarySettings,
+      ...(isRecord(record.ordinarySettings) ? record.ordinarySettings as SettingsForm['ordinarySettings'] : {}),
+    },
   };
 }
 
@@ -93,6 +101,7 @@ export function settingsDraftSnapshot(form: SettingsForm, section: SettingsDraft
         workers: form.workers,
         runtimePolicy: form.ordinarySettings.runtimePolicy,
         directPlay: form.ordinarySettings.directPlay,
+        aiResourceProtectionSettings: form.ordinarySettings.aiResourceProtectionSettings,
       };
     case 'assets': {
       return {
@@ -115,6 +124,10 @@ export function settingsDraftSnapshot(form: SettingsForm, section: SettingsDraft
       return form.ordinarySettings.assetDefaults;
     case 'validation':
       return form.ordinarySettings.validation;
+    case 'providers-integrations':
+      return form.ordinarySettings.ollamaProviderSettings;
+    case 'ai-copilot':
+      return form.ordinarySettings.aiCopilotSettings;
     case 'archive':
       return {
         originalsArchivePath: form.paths.originalsArchivePath,
@@ -123,7 +136,11 @@ export function settingsDraftSnapshot(form: SettingsForm, section: SettingsDraft
     case 'operations':
       return { cancellationPolicy: form.cancellationPolicy, housekeeping: form.ordinarySettings.housekeeping };
     case 'subtitles':
-      return form.ordinarySettings.ocrAISettings;
+      return {
+        subtitleSettings: form.ordinarySettings.subtitleSettings,
+        subtitleTranslationSettings: form.ordinarySettings.subtitleTranslationSettings,
+        ocrAISettings: form.ordinarySettings.ocrAISettings,
+      };
     case 'test-encode':
       return form.ordinarySettings.testEncodePolicy;
     case 'advanced':
@@ -166,6 +183,7 @@ export function mergeSettingsDraftSection(
           ...target.ordinarySettings,
           runtimePolicy: source.ordinarySettings.runtimePolicy,
           directPlay: source.ordinarySettings.directPlay,
+          aiResourceProtectionSettings: source.ordinarySettings.aiResourceProtectionSettings,
         },
       };
     case 'assets':
@@ -185,6 +203,10 @@ export function mergeSettingsDraftSection(
       return { ...target, ordinarySettings: { ...target.ordinarySettings, assetDefaults: source.ordinarySettings.assetDefaults } };
     case 'validation':
       return { ...target, ordinarySettings: { ...target.ordinarySettings, validation: source.ordinarySettings.validation } };
+    case 'providers-integrations':
+      return { ...target, ordinarySettings: { ...target.ordinarySettings, ollamaProviderSettings: source.ordinarySettings.ollamaProviderSettings } };
+    case 'ai-copilot':
+      return { ...target, ordinarySettings: { ...target.ordinarySettings, aiCopilotSettings: source.ordinarySettings.aiCopilotSettings } };
     case 'archive':
       return {
         ...target,
@@ -198,7 +220,12 @@ export function mergeSettingsDraftSection(
         ordinarySettings: { ...target.ordinarySettings, housekeeping: source.ordinarySettings.housekeeping },
       };
     case 'subtitles':
-      return { ...target, ordinarySettings: { ...target.ordinarySettings, ocrAISettings: source.ordinarySettings.ocrAISettings } };
+      return { ...target, ordinarySettings: {
+        ...target.ordinarySettings,
+        subtitleSettings: source.ordinarySettings.subtitleSettings,
+        subtitleTranslationSettings: source.ordinarySettings.subtitleTranslationSettings,
+        ocrAISettings: source.ordinarySettings.ocrAISettings,
+      } };
     case 'test-encode':
       return { ...target, ordinarySettings: { ...target.ordinarySettings, testEncodePolicy: source.ordinarySettings.testEncodePolicy } };
     case 'advanced':

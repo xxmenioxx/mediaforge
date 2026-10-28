@@ -21,7 +21,11 @@ vi.mock('../api/client', async (importOriginal) => {
       schedulerRecovery: vi.fn(),
       updateSetting: vi.fn(),
       updateSettingsBatch: vi.fn(),
+      testOllamaConnection: vi.fn(),
       listOllamaModels: vi.fn(),
+      ollamaRuntimeStatus: vi.fn(),
+      jellyfinIntegrationState: vi.fn(),
+      jellyfinOutcomes: vi.fn(),
     },
   };
 });
@@ -40,6 +44,7 @@ function SettingsRouteControls() {
     <>
       <button onClick={() => navigate('/settings?section=general')}>Test route General</button>
       <button onClick={() => navigate('/settings?section=subtitles')}>Test route Subtitles</button>
+      <button onClick={() => navigate('/settings?section=ai-copilot')}>Test route AI Copilot</button>
     </>
   );
 }
@@ -73,6 +78,7 @@ function sidebarDraftStatus(sectionTitle: string): boolean {
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
+  vi.restoreAllMocks();
 });
 
 describe('Settings domain navigation and drafts', () => {
@@ -80,6 +86,11 @@ describe('Settings domain navigation and drafts', () => {
     window.sessionStorage.clear();
     vi.mocked(api.updateSettingsBatch).mockClear();
     vi.mocked(api.updateSetting).mockClear();
+    vi.mocked(api.listOllamaModels).mockClear();
+    vi.mocked(api.testOllamaConnection).mockClear();
+    vi.mocked(api.ollamaRuntimeStatus).mockClear();
+    vi.mocked(api.jellyfinIntegrationState).mockClear();
+    vi.mocked(api.jellyfinOutcomes).mockClear();
     vi.mocked(api.settings).mockResolvedValue([{ key: 'workers', value: {
       defaultWorkerName: 'local',
       autoWorkerEnabled: true,
@@ -127,6 +138,9 @@ describe('Settings domain navigation and drafts', () => {
       warnings: [],
     } as never);
     vi.mocked(api.updateSettingsBatch).mockResolvedValue([] as never);
+    vi.mocked(api.ollamaRuntimeStatus).mockResolvedValue({ state: 'available', models: [], activeOperations: [], failures: [] } as never);
+    vi.mocked(api.jellyfinIntegrationState).mockResolvedValue({ enabled: false, credentialConfigured: false, configurationValid: false, configurationNeedsRevalidation: false, lastConnectionSuccessful: false, liveReachability: 'unknown', librariesLoaded: false, libraries: [], mappings: [] } as never);
+    vi.mocked(api.jellyfinOutcomes).mockResolvedValue([]);
   });
 
   it('keeps a runtime draft across section navigation and saves only that section atomically', async () => {
@@ -151,7 +165,7 @@ describe('Settings domain navigation and drafts', () => {
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
     const batch = vi.mocked(api.updateSettingsBatch).mock.calls[0][0];
-    expect(batch.settings.map((setting) => setting.key)).toEqual(['workers', 'runtimePolicy', 'directPlay']);
+    expect(batch.settings.map((setting) => setting.key)).toEqual(['workers', 'runtimePolicy', 'directPlay', 'aiResourceProtectionSettings']);
     expect(batch.settings[0].value).toEqual(expect.objectContaining({ maxConcurrentJobs: 3 }));
     expect(api.updateSetting).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Saved'));
@@ -185,7 +199,7 @@ describe('Settings domain navigation and drafts', () => {
     const modelSelect = await screen.findByRole('combobox', { name: 'OCR AI model' });
     expect(modelSelect.textContent).toContain('No model selected');
 
-    await user.click(screen.getByRole('button', { name: 'Load installed models' }));
+    await user.click(screen.getAllByRole('button', { name: 'Load installed models' })[1]!);
     await waitFor(() => expect(api.listOllamaModels).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole('combobox', { name: 'OCR AI model' }));
     await user.click(await screen.findByRole('option', { name: 'ocr-model:latest' }));
@@ -219,6 +233,111 @@ describe('Settings domain navigation and drafts', () => {
     expect(sidebarDraftStatus('Subtitles')).toBe(false);
     expect(api.updateSetting).not.toHaveBeenCalled();
   }, 15000);
+
+  it('navigates to URL-addressable AI Copilot settings and saves its independent model draft', async () => {
+    const user = userEvent.setup();
+    const initialSettings = [
+      { key: 'workers', value: { defaultWorkerName: 'local', autoWorkerEnabled: true, maxConcurrentJobs: 2, maxJobsPerBatch: 8, delaySecondsBetweenJobs: 0, batchCooldownSeconds: 0, dryRunOnly: false } },
+      { key: 'ollamaProviderSettings', value: { endpoint: 'http://ollama.local:11434', state: 'configured' }, updatedAt: 'provider-v1' },
+      { key: 'aiCopilotSettings', value: { enabled: false, model: '', preference: 'balanced' } },
+    ];
+    const savedSettings = initialSettings.map((setting) => setting.key === 'aiCopilotSettings'
+      ? { ...setting, value: { enabled: true, model: 'shared-model', preference: 'balanced' } }
+      : setting);
+    vi.mocked(api.settings).mockReset().mockResolvedValueOnce(initialSettings as never).mockResolvedValueOnce(initialSettings as never).mockResolvedValue(savedSettings as never);
+    vi.mocked(api.listOllamaModels).mockResolvedValue({ state: 'available', installedModels: [{ id: 'shared-model', name: 'shared-model' }] } as never);
+    vi.spyOn(api, 'testOllamaModelReadiness').mockResolvedValue({ state: 'available', modelId: 'shared-model', available: true, checkedAt: '', scope: 'metadata_check' });
+    vi.mocked(api.updateSettingsBatch).mockResolvedValue([savedSettings[2]] as never);
+
+    const page = renderSettings('/settings?section=ai-copilot');
+    expect(await screen.findAllByRole('heading', { name: 'AI Copilot' })).toHaveLength(2);
+    expect(screen.getByTestId('settings-search').textContent).toBe('?section=ai-copilot');
+    await user.click(screen.getByRole('button', { name: 'Load installed models' }));
+    await waitFor(() => expect(api.listOllamaModels).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('combobox', { name: 'AI Copilot model' }));
+    await user.click(await screen.findByRole('option', { name: 'shared-model' }));
+    await user.click(screen.getByRole('button', { name: 'Check selected model' }));
+    await waitFor(() => expect(api.testOllamaModelReadiness).toHaveBeenCalledWith('shared-model'));
+    await page.queryClient.invalidateQueries({ queryKey: ['settings'] });
+    expect(screen.getByRole('combobox', { name: 'AI Copilot model' }).textContent).toContain('shared-model');
+    await user.click(screen.getByRole('switch', { name: 'AI Copilot disabled' }));
+    expect(screen.getByRole('status').textContent).toBe('Unsaved changes');
+    expect(sidebarDraftStatus('AI Copilot')).toBe(true);
+
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateSettingsBatch).mock.calls[0]?.[0].settings).toEqual([
+      { key: 'aiCopilotSettings', value: { enabled: true, model: 'shared-model', preference: 'balanced' } },
+    ]);
+  });
+
+  it('saves the Translation model in Subtitles without persisting the legacy endpoint projection', async () => {
+    const user = userEvent.setup();
+    const initialSettings = [
+      { key: 'workers', value: { defaultWorkerName: 'local', autoWorkerEnabled: true, maxConcurrentJobs: 2, maxJobsPerBatch: 8, delaySecondsBetweenJobs: 0, batchCooldownSeconds: 0, dryRunOnly: false } },
+      { key: 'ollamaProviderSettings', value: { endpoint: 'http://ollama.local:11434', state: 'configured' }, updatedAt: 'provider-v1' },
+      { key: 'subtitleTranslationSettings', value: { provider: 'ollama', ollamaEndpoint: 'http://ollama.local:11434', ollamaModel: 'old-model', enabled: true, readiness: 'ready', qualityReviewerModel: 'review-model' } },
+      { key: 'ocrAISettings', value: { enabled: false, model: '' } },
+    ];
+    const savedTranslation = {
+      key: 'subtitleTranslationSettings',
+      value: { provider: 'ollama', ollamaEndpoint: 'http://ollama.local:11434', ollamaModel: 'shared-model', enabled: false, readiness: 'untested', qualityReviewerModel: 'review-model' },
+    };
+    vi.mocked(api.settings).mockReset().mockResolvedValue(initialSettings as never);
+    vi.mocked(api.listOllamaModels).mockResolvedValue({ state: 'available', installedModels: [{ id: 'shared-model', name: 'shared-model' }] } as never);
+    vi.mocked(api.updateSettingsBatch).mockResolvedValue([savedTranslation] as never);
+
+    renderSettings('/settings?section=subtitles');
+    expect(await screen.findByRole('heading', { name: 'AI Translation' })).toBeTruthy();
+    expect(screen.queryByRole('textbox', { name: 'Ollama endpoint' })).toBeNull();
+    const modelLoad = screen.getAllByRole('button', { name: 'Load installed models' })[0];
+    await user.click(modelLoad!);
+    await waitFor(() => expect(api.listOllamaModels).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('combobox', { name: 'AI Translation model' }));
+    await user.click(await screen.findByRole('option', { name: 'shared-model' }));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
+
+    expect(vi.mocked(api.updateSettingsBatch).mock.calls[0]?.[0].settings).toEqual([{
+      key: 'subtitleTranslationSettings',
+      value: expect.objectContaining({ provider: 'ollama', ollamaModel: 'shared-model', qualityReviewerModel: 'review-model' }),
+    }]);
+    const savedValue = vi.mocked(api.updateSettingsBatch).mock.calls[0]?.[0].settings[0]?.value;
+    expect(savedValue).not.toHaveProperty('ollamaEndpoint');
+    expect(savedValue).not.toHaveProperty('enabled');
+    expect(savedValue).not.toHaveProperty('readiness');
+  });
+
+  it('saves the one shared Ollama endpoint from Providers & Integrations', async () => {
+    const user = userEvent.setup();
+    const initialSettings = [
+      { key: 'workers', value: { defaultWorkerName: 'local', autoWorkerEnabled: true, maxConcurrentJobs: 2, maxJobsPerBatch: 8, delaySecondsBetweenJobs: 0, batchCooldownSeconds: 0, dryRunOnly: false } },
+      { key: 'ollamaProviderSettings', value: { endpoint: 'http://old.local:11434', state: 'configured' }, updatedAt: 'provider-v1' },
+      { key: 'jellyfin', value: { enabled: false, mappings: [] } },
+    ];
+    const savedProvider = { key: 'ollamaProviderSettings', value: { endpoint: 'http://new.local:11434', state: 'configured' }, updatedAt: 'provider-v2' };
+    vi.mocked(api.settings).mockReset().mockResolvedValueOnce(initialSettings as never).mockResolvedValue([ ...initialSettings.filter((setting) => setting.key !== 'ollamaProviderSettings'), savedProvider ] as never);
+    vi.mocked(api.updateSettingsBatch).mockResolvedValue([savedProvider] as never);
+
+    renderSettings('/settings?section=providers-integrations');
+    expect(await screen.findByRole('heading', { name: 'Ollama' })).toBeTruthy();
+    expect(screen.getAllByRole('textbox', { name: 'Ollama endpoint' })).toHaveLength(1);
+    const endpoint = screen.getByRole('textbox', { name: 'Ollama endpoint' });
+    await waitFor(() => expect(endpoint).toHaveProperty('value', 'http://old.local:11434'));
+    await user.clear(endpoint);
+    await waitFor(() => expect(endpoint).toHaveProperty('value', ''));
+    await user.type(endpoint, 'http://new.local:11434');
+    expect(sidebarDraftStatus('Providers & Integrations')).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateSettingsBatch).mock.calls[0]?.[0].settings).toEqual([
+      { key: 'ollamaProviderSettings', value: { endpoint: 'http://new.local:11434' } },
+    ]);
+    expect(api.updateSetting).not.toHaveBeenCalled();
+    expect(api.testOllamaConnection).not.toHaveBeenCalled();
+    expect(api.listOllamaModels).not.toHaveBeenCalled();
+  });
 
   it('uses the section save bar for General and atomic Analysis settings', async () => {
     const user = userEvent.setup();
@@ -305,7 +424,7 @@ describe('Settings domain navigation and drafts', () => {
 
     await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
     const batch = vi.mocked(api.updateSettingsBatch).mock.calls[0][0].settings;
-    expect(batch.map((setting) => setting.key)).toEqual(['workers', 'runtimePolicy', 'directPlay']);
+    expect(batch.map((setting) => setting.key)).toEqual(['workers', 'runtimePolicy', 'directPlay', 'aiResourceProtectionSettings']);
     expect(batch[1].value).toEqual(expect.objectContaining({ mode: 'manual', preferredProfile: 'desktop_safe' }));
     expect(batch[2].value).toEqual(expect.objectContaining({ minimumScore: 75 }));
     expect(api.updateSetting).not.toHaveBeenCalled();

@@ -23,6 +23,7 @@ export const settingsSections = [
   'asset-defaults',
   'validation',
   'providers-integrations',
+  'ai-copilot',
   'archive',
   'operations',
   'subtitles',
@@ -34,7 +35,7 @@ export type SettingsSection = (typeof settingsSections)[number];
 
 export type SettingsDraftSection = Extract<
   SettingsSection,
-  'general' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'validation' | 'archive' | 'operations' | 'subtitles' | 'test-encode' | 'advanced'
+  'general' | 'pipeline' | 'analysis' | 'runtime' | 'assets' | 'asset-defaults' | 'validation' | 'providers-integrations' | 'ai-copilot' | 'archive' | 'operations' | 'subtitles' | 'test-encode' | 'advanced'
 >;
 
 type SettingsSectionDefinition = {
@@ -90,8 +91,14 @@ export const settingsSectionDefinitions: SettingsSectionDefinition[] = [
   {
     key: 'providers-integrations',
     title: 'Providers & Integrations',
-    description: 'Connect media servers and provider services using protected credential settings.',
+    description: 'Configure the shared Ollama provider and connect media server integrations.',
     note: 'Connection tests and discovery run immediately; saving a connection does not edit frozen Queue executions.',
+  },
+  {
+    key: 'ai-copilot',
+    title: 'AI Copilot',
+    description: 'Choose the shared Ollama model and quality preference used by AI Copilot.',
+    note: 'Model selection and enablement apply only to AI Copilot; readiness checks do not infer or download models.',
   },
   {
     key: 'archive',
@@ -108,8 +115,8 @@ export const settingsSectionDefinitions: SettingsSectionDefinition[] = [
   {
     key: 'subtitles',
     title: 'Subtitles',
-    description: 'Configure subtitle styling and text compatibility behavior.',
-    note: 'Subtitle defaults affect future processing; existing frozen Queue jobs keep their captured subtitle plan.',
+    description: 'Configure subtitle compatibility, styling, Translation, OCR AI, and contextual dictionary rules.',
+    note: 'Feature model choices are independent and affect future operations; existing frozen Queue jobs keep their captured subtitle plan.',
   },
   {
     key: 'test-encode',

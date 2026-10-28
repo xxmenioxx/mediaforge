@@ -25,11 +25,37 @@ export const defaultAssetCategories = ['movie', 'anime', 'series', 'episode', 's
 const ordinarySettingsKeys = [
   'testEncodePolicy', 'assetDefaults', 'validation', 'runtimePolicy', 'directPlay',
   'workingHours', 'storageRoles', 'workspace', 'housekeeping', 'ocrAISettings',
+  'subtitleSettings', 'subtitleTranslationSettings', 'ollamaProviderSettings',
+  'aiCopilotSettings', 'aiResourceProtectionSettings',
 ] as const;
+
+function defaultOrdinarySettings(): Record<string, Record<string, unknown>> {
+  return {
+    testEncodePolicy: {}, assetDefaults: {}, validation: {}, runtimePolicy: {}, directPlay: {},
+    workingHours: {}, storageRoles: {}, workspace: {}, housekeeping: {},
+    ocrAISettings: { enabled: false, model: '' },
+    subtitleSettings: {},
+    subtitleTranslationSettings: {
+      provider: '', ollamaModel: '', qualityReviewerModel: '',
+      maxCuesPerRequest: 32, maxRequestBytes: 64 * 1024, maxContextCues: 8, maxContextChars: 4096,
+    },
+    ollamaProviderSettings: { endpoint: '' },
+    aiCopilotSettings: { enabled: false, model: '', preference: 'balanced' },
+    aiResourceProtectionSettings: {
+      enabled: true, maxResidentModels: 1, maxConcurrentInferences: 1, maxConcurrentModelLoads: 1,
+      minimumAvailableMemoryBytes: 6 * 1024 * 1024 * 1024, maximumAdmissionWaitSeconds: 300,
+      telemetryMaximumAgeSeconds: 60, leaseCleanupGraceSeconds: 30, pressureThresholds: {}, requiredMetrics: [], modelEstimates: [],
+    },
+  };
+}
 
 export function buildSettingsForm(base: Omit<SettingsForm, 'advancedJson'>): SettingsForm {
   return {
     ...base,
+    ordinarySettings: Object.fromEntries(ordinarySettingsKeys.map((key) => [
+      key,
+      { ...(defaultOrdinarySettings()[key] ?? {}), ...(base.ordinarySettings[key] ?? {}) },
+    ])),
     advancedJson: {
       paths: JSON.stringify(base.paths, null, 2),
       workers: JSON.stringify(base.workers, null, 2),
@@ -139,6 +165,31 @@ export function subtitleTranslationSettingsValue(value: Record<string, unknown> 
   };
 }
 
+const subtitleTranslationDraftProjectionFields = new Set([
+  'ollamaEndpoint', 'enabled', 'readiness', 'readinessConfigIdentity',
+  'readinessCheckedAt', 'readinessDiagnostic', 'ollamaProviderState',
+]);
+
+export function subtitleTranslationSettingsDraftValue(value: Record<string, unknown> | undefined): Record<string, unknown> {
+  const source = value ?? {};
+  const editable = Object.fromEntries(Object.entries(source).filter(([key]) => !subtitleTranslationDraftProjectionFields.has(key)));
+  const normalized = subtitleTranslationSettingsValue(source);
+  return {
+    ...editable,
+    provider: normalized.provider,
+    ollamaModel: normalized.ollamaModel,
+    qualityReviewerModel: normalized.qualityReviewerModel,
+    maxCuesPerRequest: normalized.maxCuesPerRequest,
+    maxRequestBytes: normalized.maxRequestBytes,
+    maxContextCues: normalized.maxContextCues,
+    maxContextChars: normalized.maxContextChars,
+  };
+}
+
+export function subtitleTranslationSettingsPayload(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !subtitleTranslationDraftProjectionFields.has(key)));
+}
+
 export function subtitleTranslationReadinessForSettings(value: SubtitleTranslationSettingsValue): SubtitleTranslationReadiness {
   return {
     configured: value.readiness !== 'not_configured',
@@ -226,7 +277,11 @@ export function settingsToForm(settings: Array<{ key: string; value: Record<stri
     },
     assetTypes: normalizeLibraryTypes(arrayValue(assetTypes.types, defaultLibraryTypes)),
     assetCategories: normalizeStringArray(arrayValue(assetCategories.categories, defaultAssetCategories), defaultAssetCategories),
-    ordinarySettings: Object.fromEntries(ordinarySettingsKeys.map((key) => [key, byKey[key] ?? {}])),
+    ordinarySettings: Object.fromEntries(ordinarySettingsKeys.map((key) => {
+      if (key === 'subtitleTranslationSettings') return [key, subtitleTranslationSettingsDraftValue(byKey[key])];
+      if (key === 'ollamaProviderSettings') return [key, { endpoint: stringValue(byKey[key]?.endpoint, '') }];
+      return [key, byKey[key] ?? {}];
+    })),
   });
 }
 
