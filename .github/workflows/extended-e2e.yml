@@ -1,0 +1,100 @@
+name: Extended E2E
+
+on:
+  schedule:
+    - cron: '35 4 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extended-e2e-${{ github.event_name == 'push' && github.sha || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  ocr-translation:
+    name: OCR and Translation mock journeys
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Create isolated temporary roots
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/mvforge-extended-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$root/go-cache" "$root/go-tmp" "$root/mvforge-go-tmp" "$root/ocr-work" "$root/ocr-state" "$root/tmp"
+          {
+            echo "GOCACHE=$root/go-cache"
+            echo "GOTMPDIR=$root/go-tmp"
+            echo "MVFORGE_GOTMPDIR=$root/mvforge-go-tmp"
+            echo "MVFORGE_OCR_LIFECYCLE_ROOT=$root/ocr-work"
+            echo "MVFORGE_OCR_PERSISTENT_ROOT=$root/ocr-state"
+            echo "TMPDIR=$root/tmp"
+            echo "MVFORGE_DUPLA_ROOT=$root"
+          } >> "$GITHUB_ENV"
+      - name: Run deterministic OCR and Translation suites
+        run: |
+          set -eo pipefail
+          {
+            python3 -m unittest discover -s scripts/e2e/ollama_validation -p 'test_*.py'
+            python3 scripts/e2e/ollama_validation_sandbox.py --mode mock --context default --base-sha "$GITHUB_SHA"
+          } 2>&1 | tee "$RUNNER_TEMP/mvforge-extended-ocr-translation-full.log" | tail -n 250
+      - name: Bound OCR and Translation diagnostics
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/mvforge-extended-ocr-translation-full.log" ]]; then
+            tail -c 524288 "$RUNNER_TEMP/mvforge-extended-ocr-translation-full.log" > "$RUNNER_TEMP/mvforge-extended-ocr-translation.log"
+          fi
+      - name: Upload OCR and Translation failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: extended-e2e-ocr-translation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mvforge-extended-ocr-translation.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  ui-journeys:
+    name: Playwright UI journeys
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Create isolated temporary roots
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/mvforge-ui-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$root/tmp" "$root/npm-cache" "$root/playwright-browsers"
+          {
+            echo "TMPDIR=$root/tmp"
+            echo "npm_config_cache=$root/npm-cache"
+            echo "PLAYWRIGHT_BROWSERS_PATH=$root/playwright-browsers"
+            echo "MVFORGE_DUPLA_ROOT=$root"
+          } >> "$GITHUB_ENV"
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Install Chromium and system dependencies
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Run the three synthetic browser journeys
+        working-directory: frontend
+        run: npm run test:e2e
+      - name: Upload bounded browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: extended-e2e-ui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mvforge-ui-${{ github.run_id }}-${{ github.run_attempt }}/playwright/report
+            ${{ runner.temp }}/mvforge-ui-${{ github.run_id }}-${{ github.run_attempt }}/playwright/results
+          if-no-files-found: warn
+          retention-days: 7
