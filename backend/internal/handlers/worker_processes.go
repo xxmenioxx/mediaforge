@@ -164,6 +164,7 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 		applog.Event("error", "ffmpeg", "process_group_exit_unverified", map[string]any{"jobId": jobID, "pid": cmd.Process.Pid}, waitErr)
 		return
 	}
+	processTreeExitVerifiedAt := time.Now().UTC()
 	unregisterRunningJobProcess(jobID)
 
 	var job models.QueueJob
@@ -173,7 +174,7 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 	defer func() { _ = scheduler.DeactivateReservationResources(h.db, jobID) }()
 
 	if job.Status == JobStatusCanceled || job.CancellationRequestedAt != nil {
-		canceledJob, finalized, finalizeErr := finalizeQueueJobCancellationAfterProcessTreeExit(h.db, jobID)
+		canceledJob, finalized, finalizeErr := finalizeQueueJobCancellationAfterProcessTreeExitAt(h.db, jobID, processTreeExitVerifiedAt)
 		if finalizeErr != nil {
 			applog.Event("error", "queue", "cancellation_acknowledgment_persist_failed", map[string]any{"jobId": jobID}, finalizeErr)
 			return
@@ -197,7 +198,7 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 		if errorMessage == "" {
 			errorMessage = fmt.Sprintf("ffmpeg exited with error: %v", err)
 		}
-		job, canceled, persistErr := h.persistFFmpegExit(jobID, JobStatusFailed, 0, errorMessage, finishedAt)
+		job, canceled, persistErr := h.persistFFmpegExit(jobID, JobStatusFailed, 0, errorMessage, processTreeExitVerifiedAt, finishedAt)
 		if persistErr != nil {
 			applog.Event("error", "queue", "conversion_failure_persist_failed", map[string]any{"jobId": jobID}, persistErr)
 			return
@@ -216,7 +217,7 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 		return
 	}
 
-	job, canceled, persistErr := h.persistFFmpegExit(jobID, JobStatusCompleted, 100, "", finishedAt)
+	job, canceled, persistErr := h.persistFFmpegExit(jobID, JobStatusCompleted, 100, "", processTreeExitVerifiedAt, finishedAt)
 	if persistErr != nil {
 		applog.Event("error", "queue", "conversion_completion_persist_failed", map[string]any{"jobId": jobID}, persistErr)
 		return
@@ -246,7 +247,10 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 	}
 }
 
-func (h WorkerHandler) persistFFmpegExit(jobID uint, status string, progress int, errorMessage string, finishedAt time.Time) (models.QueueJob, bool, error) {
+func (h WorkerHandler) persistFFmpegExit(jobID uint, status string, progress int, errorMessage string, processTreeExitVerifiedAt, finishedAt time.Time) (models.QueueJob, bool, error) {
+	if processTreeExitVerifiedAt.IsZero() {
+		return models.QueueJob{}, false, errors.New("verified process-tree exit time is required")
+	}
 	var job models.QueueJob
 	canceled := false
 	err := h.db.Transaction(func(tx *gorm.DB) error {
@@ -257,6 +261,10 @@ func (h WorkerHandler) persistFFmpegExit(jobID uint, status string, progress int
 			alreadyCanceled := job.Status == JobStatusCanceled
 			job.Status = JobStatusCanceled
 			job.FinishedAt = &finishedAt
+			if job.ProcessTreeExitVerifiedAt == nil {
+				verifiedAt := processTreeExitVerifiedAt.UTC()
+				job.ProcessTreeExitVerifiedAt = &verifiedAt
+			}
 			if err := tx.Save(&job).Error; err != nil {
 				return err
 			}

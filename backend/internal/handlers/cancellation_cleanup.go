@@ -20,6 +20,8 @@ const (
 	canceledCleanupStatusCompleted   = "completed"
 	canceledCleanupStatusFailed      = "failed"
 	canceledCleanupMaxAttempts       = 5
+	canceledCleanupDeferralBaseDelay = 15 * time.Second
+	canceledCleanupDeferralMaxDelay  = 5 * time.Minute
 )
 
 var (
@@ -111,6 +113,7 @@ func persistCanceledJobCleanupIntent(tx *gorm.DB, job *models.QueueJob) error {
 	job.CleanupLeaseToken = ""
 	job.CleanupLeaseExpiresAt = nil
 	job.CleanupAttemptCount = 0
+	job.CleanupDeferralCount = 0
 	job.CleanupNextAttemptAt = nil
 	updates := map[string]any{
 		"cleanup_operation_id":     operationID,
@@ -121,6 +124,7 @@ func persistCanceledJobCleanupIntent(tx *gorm.DB, job *models.QueueJob) error {
 		"cleanup_lease_token":      "",
 		"cleanup_lease_expires_at": nil,
 		"cleanup_attempt_count":    0,
+		"cleanup_deferral_count":   0,
 		"cleanup_next_attempt_at":  nil,
 	}
 	result := tx.Model(&models.QueueJob{}).
@@ -200,49 +204,57 @@ func claimNextCanceledJobCleanup(db *gorm.DB, now time.Time, leaseDuration time.
 	var claim canceledCleanupClaim
 	claimed := false
 	err := db.Transaction(func(tx *gorm.DB) error {
+		// Retire malformed leases and capped rows before selecting work. The
+		// bounded query below limits eligible operations, not earlier rows that
+		// are waiting, leased, malformed, or permanently capped.
+		if err := tx.Model(&models.QueueJob{}).
+			Where("status = ? AND cleanup_operation_id <> '' AND cleanup_status = ? AND (cleanup_lease_expires_at IS NULL OR cleanup_lease_token = '')", JobStatusCanceled, canceledCleanupStatusRunning).
+			Updates(map[string]any{
+				"cleanup_status":           canceledCleanupStatusFailed,
+				"cleanup_error":            "cleanup lease metadata is incomplete; operation left for review",
+				"cleanup_lease_token":      "",
+				"cleanup_lease_expires_at": nil,
+				"cleanup_next_attempt_at":  nil,
+				"cleanup_attempt_count":    canceledCleanupMaxAttempts,
+			}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.QueueJob{}).
+			Where("status = ? AND cleanup_operation_id <> '' AND cleanup_attempt_count >= ? AND cleanup_status = ?", JobStatusCanceled, canceledCleanupMaxAttempts, canceledCleanupStatusPending).
+			Updates(map[string]any{
+				"cleanup_status":          canceledCleanupStatusFailed,
+				"cleanup_error":           "cleanup retry limit exhausted",
+				"cleanup_next_attempt_at": nil,
+			}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.QueueJob{}).
+			Where("status = ? AND cleanup_operation_id <> '' AND cleanup_status = ? AND cleanup_lease_expires_at <= ? AND cleanup_attempt_count >= ?", JobStatusCanceled, canceledCleanupStatusRunning, now, canceledCleanupMaxAttempts-1).
+			Updates(map[string]any{
+				"cleanup_status":           canceledCleanupStatusFailed,
+				"cleanup_error":            "cleanup lease expired after the retry limit",
+				"cleanup_lease_token":      "",
+				"cleanup_lease_expires_at": nil,
+				"cleanup_next_attempt_at":  nil,
+				"cleanup_attempt_count":    canceledCleanupMaxAttempts,
+			}).Error; err != nil {
+			return err
+		}
+
 		var jobs []models.QueueJob
-		if err := tx.Where("status = ? AND cleanup_operation_id <> '' AND cleanup_status IN ?", JobStatusCanceled, []string{canceledCleanupStatusPending, canceledCleanupStatusRunning, canceledCleanupStatusFailed}).
+		if err := tx.Where(`status = ? AND cleanup_operation_id <> '' AND (
+			(cleanup_status = ? AND cleanup_attempt_count < ? AND (cleanup_next_attempt_at IS NULL OR cleanup_next_attempt_at <= ?)) OR
+			(cleanup_status = ? AND cleanup_attempt_count < ? AND (cleanup_next_attempt_at IS NULL OR cleanup_next_attempt_at <= ?)) OR
+			(cleanup_status = ? AND cleanup_lease_expires_at <= ? AND cleanup_attempt_count < ?)
+		)`,
+			JobStatusCanceled,
+			canceledCleanupStatusPending, canceledCleanupMaxAttempts, now,
+			canceledCleanupStatusFailed, canceledCleanupMaxAttempts, now,
+			canceledCleanupStatusRunning, now, canceledCleanupMaxAttempts-1).
 			Order("id ASC").Limit(64).Find(&jobs).Error; err != nil {
 			return err
 		}
 		for _, job := range jobs {
-			eligible := false
-			switch job.CleanupStatus {
-			case canceledCleanupStatusPending:
-				eligible = job.CleanupNextAttemptAt == nil || !job.CleanupNextAttemptAt.After(now)
-			case canceledCleanupStatusFailed:
-				eligible = job.CleanupAttemptCount < canceledCleanupMaxAttempts && (job.CleanupNextAttemptAt == nil || !job.CleanupNextAttemptAt.After(now))
-			case canceledCleanupStatusRunning:
-				if job.CleanupLeaseExpiresAt == nil || job.CleanupLeaseToken == "" {
-					where := tx.Model(&models.QueueJob{}).
-						Where("id = ? AND cleanup_operation_id = ? AND cleanup_status = ? AND cleanup_lease_token = ?", job.ID, job.CleanupOperationID, canceledCleanupStatusRunning, job.CleanupLeaseToken)
-					if job.CleanupLeaseExpiresAt == nil {
-						where = where.Where("cleanup_lease_expires_at IS NULL")
-					} else {
-						where = where.Where("cleanup_lease_expires_at = ?", *job.CleanupLeaseExpiresAt)
-					}
-					result := where.Updates(map[string]any{"cleanup_status": canceledCleanupStatusFailed, "cleanup_error": "cleanup lease metadata is incomplete; operation left for review", "cleanup_lease_token": "", "cleanup_lease_expires_at": nil, "cleanup_next_attempt_at": nil})
-					if result.Error != nil {
-						return result.Error
-					}
-					continue
-				}
-				eligible = job.CleanupLeaseExpiresAt != nil && !job.CleanupLeaseExpiresAt.After(now)
-			}
-			if !eligible {
-				continue
-			}
-			if job.CleanupAttemptCount >= canceledCleanupMaxAttempts {
-				if job.CleanupStatus == canceledCleanupStatusRunning {
-					result := tx.Model(&models.QueueJob{}).
-						Where("id = ? AND cleanup_operation_id = ? AND cleanup_status = ? AND cleanup_lease_token = ? AND cleanup_lease_expires_at <= ?", job.ID, job.CleanupOperationID, canceledCleanupStatusRunning, job.CleanupLeaseToken, now).
-						Updates(map[string]any{"cleanup_status": canceledCleanupStatusFailed, "cleanup_error": "cleanup lease expired after the retry limit", "cleanup_lease_token": "", "cleanup_lease_expires_at": nil, "cleanup_next_attempt_at": nil})
-					if result.Error != nil {
-						return result.Error
-					}
-				}
-				continue
-			}
 			token, err := newCanceledCleanupLeaseToken()
 			if err != nil {
 				return err
@@ -257,13 +269,18 @@ func claimNextCanceledJobCleanup(db *gorm.DB, now time.Time, leaseDuration time.
 				where = where.Where("cleanup_next_attempt_at <= ?", now)
 			}
 			expiresAt := now.Add(leaseDuration)
-			result := where.Updates(map[string]any{
+			updates := map[string]any{
 				"cleanup_status":           canceledCleanupStatusRunning,
 				"cleanup_lease_token":      token,
 				"cleanup_lease_expires_at": expiresAt,
-				"cleanup_attempt_count":    gorm.Expr("cleanup_attempt_count + 1"),
 				"cleanup_next_attempt_at":  nil,
-			})
+			}
+			if job.CleanupStatus == canceledCleanupStatusRunning {
+				// An expired lease is an interrupted execution. Deferrals below do
+				// not increment this failure budget.
+				updates["cleanup_attempt_count"] = gorm.Expr("cleanup_attempt_count + 1")
+			}
+			result := where.Updates(updates)
 			if result.Error != nil {
 				return result.Error
 			}
@@ -334,14 +351,19 @@ func finishCanceledJobCleanup(db *gorm.DB, claim canceledCleanupClaim, now time.
 			updates["cleanup_error"] = ""
 		} else if errors.Is(runErr, errCanceledCleanupDeferred) {
 			updates["cleanup_status"] = canceledCleanupStatusPending
-			updates["cleanup_error"] = boundedCanceledCleanupError(runErr)
-			next := now.Add(15 * time.Second)
+			deferralCount := current.CleanupDeferralCount + 1
+			delay := canceledCleanupDeferralDelay(deferralCount)
+			updates["cleanup_deferral_count"] = deferralCount
+			updates["cleanup_error"] = boundedCanceledCleanupError(fmt.Errorf("%v (ownership deferral %d; retry in %s)", runErr, deferralCount, delay))
+			next := now.Add(delay)
 			updates["cleanup_next_attempt_at"] = next
 		} else {
 			updates["cleanup_status"] = canceledCleanupStatusFailed
 			updates["cleanup_error"] = boundedCanceledCleanupError(runErr)
-			if !errors.Is(runErr, errCanceledCleanupBlocked) && current.CleanupAttemptCount < canceledCleanupMaxAttempts {
-				next := now.Add(canceledCleanupRetryDelay(current.CleanupAttemptCount))
+			failedAttemptCount := current.CleanupAttemptCount + 1
+			updates["cleanup_attempt_count"] = failedAttemptCount
+			if !errors.Is(runErr, errCanceledCleanupBlocked) && failedAttemptCount < canceledCleanupMaxAttempts {
+				next := now.Add(canceledCleanupRetryDelay(failedAttemptCount))
 				updates["cleanup_next_attempt_at"] = next
 			}
 		}
@@ -371,6 +393,17 @@ func canceledCleanupRetryDelay(attempt int) time.Duration {
 	default:
 		return 16 * time.Minute
 	}
+}
+
+func canceledCleanupDeferralDelay(deferralCount int) time.Duration {
+	delay := canceledCleanupDeferralBaseDelay
+	for remaining := deferralCount - 1; remaining > 0 && delay < canceledCleanupDeferralMaxDelay; remaining-- {
+		delay *= 2
+		if delay > canceledCleanupDeferralMaxDelay {
+			delay = canceledCleanupDeferralMaxDelay
+		}
+	}
+	return delay
 }
 
 func newCanceledCleanupLeaseToken() (string, error) {

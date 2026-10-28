@@ -91,10 +91,25 @@ func finalizeQueueJobCancellation(db *gorm.DB, jobID uint) (models.QueueJob, boo
 }
 
 func finalizeQueueJobCancellationAfterProcessTreeExit(db *gorm.DB, jobID uint) (models.QueueJob, bool, error) {
-	return finalizeQueueJobCancellationWithProcessTreeEvidence(db, jobID, true)
+	return finalizeQueueJobCancellationAfterProcessTreeExitAt(db, jobID, time.Now().UTC())
+}
+
+func finalizeQueueJobCancellationAfterProcessTreeExitAt(db *gorm.DB, jobID uint, verifiedAt time.Time) (models.QueueJob, bool, error) {
+	if verifiedAt.IsZero() {
+		return models.QueueJob{}, false, errors.New("verified process-tree exit time is required")
+	}
+	return finalizeQueueJobCancellationWithProcessTreeEvidenceAt(db, jobID, true, verifiedAt)
 }
 
 func finalizeQueueJobCancellationWithProcessTreeEvidence(db *gorm.DB, jobID uint, processTreeExitVerified bool) (models.QueueJob, bool, error) {
+	var verifiedAt time.Time
+	if processTreeExitVerified {
+		verifiedAt = time.Now().UTC()
+	}
+	return finalizeQueueJobCancellationWithProcessTreeEvidenceAt(db, jobID, processTreeExitVerified, verifiedAt)
+}
+
+func finalizeQueueJobCancellationWithProcessTreeEvidenceAt(db *gorm.DB, jobID uint, processTreeExitVerified bool, verifiedAt time.Time) (models.QueueJob, bool, error) {
 	var job models.QueueJob
 	finalized := false
 	err := db.Transaction(func(tx *gorm.DB) error {
@@ -111,7 +126,8 @@ func finalizeQueueJobCancellationWithProcessTreeEvidence(db *gorm.DB, jobID uint
 			job.FinishedAt = &now
 		}
 		if processTreeExitVerified && job.ProcessTreeExitVerifiedAt == nil {
-			job.ProcessTreeExitVerifiedAt = &now
+			verifiedAt = verifiedAt.UTC()
+			job.ProcessTreeExitVerifiedAt = &verifiedAt
 		}
 		if err := tx.Save(&job).Error; err != nil {
 			return err

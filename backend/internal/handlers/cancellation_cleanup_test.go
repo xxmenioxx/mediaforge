@@ -177,7 +177,7 @@ func TestCanceledJobCleanupIntentIsDurableAndHousekeepingReconcilesAfterRestart(
 	if err := db.First(&finished, job.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if finished.CleanupStatus != canceledCleanupStatusCompleted || finished.CleanupAttemptCount != 1 {
+	if finished.CleanupStatus != canceledCleanupStatusCompleted || finished.CleanupAttemptCount != 0 || finished.CleanupDeferralCount != 0 {
 		t.Fatalf("cleanup completion was not persisted: %#v", finished)
 	}
 	if _, err := os.Stat(output); !os.IsNotExist(err) {
@@ -311,7 +311,7 @@ func TestCanceledJobCleanupExpiredLeaseFencesStaleCallbacksAndRecovers(t *testin
 	if err != nil || !claimed {
 		t.Fatalf("recovery claim=%t err=%v", claimed, err)
 	}
-	if second.Job.CleanupOperationID != first.Job.CleanupOperationID || second.LeaseToken == first.LeaseToken || second.Job.CleanupAttemptCount != 2 {
+	if second.Job.CleanupOperationID != first.Job.CleanupOperationID || second.LeaseToken == first.LeaseToken || second.Job.CleanupAttemptCount != 1 {
 		t.Fatalf("recovery did not retain operation identity and fence the old attempt: first=%#v second=%#v", first, second)
 	}
 	if err := finishCanceledJobCleanup(db, first, expiredAt, nil); !errors.Is(err, errCanceledCleanupLeaseLost) {
@@ -381,11 +381,181 @@ func TestCanceledJobCleanupFailureRetriesSameDurableOperation(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("retry claim=%t err=%v", claimed, err)
 	}
-	if second.Job.CleanupOperationID != first.Job.CleanupOperationID || second.Job.CleanupAttemptCount != 2 || second.LeaseToken == first.LeaseToken {
+	if second.Job.CleanupOperationID != first.Job.CleanupOperationID || second.Job.CleanupAttemptCount != 1 || second.LeaseToken == first.LeaseToken {
 		t.Fatalf("retry changed durable operation identity or reused lease: first=%#v second=%#v", first, second)
 	}
 	if err := finishCanceledJobCleanup(db, second, startedAt.Add(2*time.Minute+time.Second), nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCanceledJobCleanupClaimsEligibleRowsBeyondIneligiblePrefix(t *testing.T) {
+	db, _ := newHousekeepingTestDB(t)
+	now := time.Now().UTC()
+	future := now.Add(time.Hour)
+	jobs := make([]models.QueueJob, 0, 104)
+	for id := uint(1); id <= 64; id++ {
+		job := models.QueueJob{
+			ID: id, MediaPath: fmt.Sprintf("/raw/ineligible-%d.mkv", id), Status: JobStatusCanceled,
+			CleanupOperationID: fmt.Sprintf("cleanup:%d", id),
+		}
+		switch id % 3 {
+		case 0:
+			job.CleanupStatus = canceledCleanupStatusFailed
+			job.CleanupAttemptCount = canceledCleanupMaxAttempts
+		case 1:
+			job.CleanupStatus = canceledCleanupStatusPending
+			job.CleanupNextAttemptAt = &future
+		case 2:
+			job.CleanupStatus = canceledCleanupStatusRunning
+			job.CleanupLeaseToken = fmt.Sprintf("lease:%d", id)
+			job.CleanupLeaseExpiresAt = &future
+		}
+		jobs = append(jobs, job)
+	}
+	for id := uint(65); id <= 104; id++ {
+		jobs = append(jobs, models.QueueJob{
+			ID: id, MediaPath: fmt.Sprintf("/raw/eligible-%d.mkv", id), Status: JobStatusCanceled,
+			CleanupOperationID: fmt.Sprintf("cleanup:%d", id), CleanupStatus: canceledCleanupStatusPending,
+		})
+	}
+	if err := db.Create(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	claim, claimed, err := claimNextCanceledJobCleanup(db, now, time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("eligible operation behind 64 ineligible rows was starved: claimed=%t err=%v", claimed, err)
+	}
+	if claim.Job.ID != 65 || claim.Job.CleanupStatus != canceledCleanupStatusRunning {
+		t.Fatalf("claim did not select first eligible operation after the ineligible prefix: %#v", claim.Job)
+	}
+}
+
+func TestCanceledJobCleanupOwnershipDeferralsDoNotExhaustFailureRetries(t *testing.T) {
+	db, _, job, _, _ := canceledCleanupFixture(t, false, true)
+	persistCleanupIntentForTest(t, db, job.ID)
+	now := time.Now().UTC()
+	deferrals := canceledCleanupMaxAttempts + 4
+	for i := 0; i < deferrals; i++ {
+		claim, claimed, err := claimNextCanceledJobCleanup(db, now, time.Minute)
+		if err != nil || !claimed {
+			t.Fatalf("deferral %d was not claimable: claimed=%t err=%v", i+1, claimed, err)
+		}
+		if err := finishCanceledJobCleanup(db, claim, now.Add(time.Second), errCanceledCleanupDeferred); err != nil {
+			t.Fatalf("deferral %d failed to persist: %v", i+1, err)
+		}
+		var deferred models.QueueJob
+		if err := db.First(&deferred, job.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if deferred.CleanupStatus != canceledCleanupStatusPending || deferred.CleanupAttemptCount != 0 || deferred.CleanupDeferralCount != i+1 || deferred.CleanupNextAttemptAt == nil {
+			t.Fatalf("deferral %d consumed failure budget or lost retry state: %#v", i+1, deferred)
+		}
+		if !strings.Contains(deferred.CleanupError, fmt.Sprintf("ownership deferral %d", i+1)) {
+			t.Fatalf("deferral count is not observable in bounded diagnostic: %q", deferred.CleanupError)
+		}
+		delay := deferred.CleanupNextAttemptAt.Sub(now.Add(time.Second))
+		if delay <= 0 || delay > canceledCleanupDeferralMaxDelay {
+			t.Fatalf("deferral retry delay was not positive and bounded: %s", delay)
+		}
+		now = *deferred.CleanupNextAttemptAt
+	}
+
+	claim, claimed, err := claimNextCanceledJobCleanup(db, now, time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("operation did not become executable after prolonged ownership deferrals: claimed=%t err=%v", claimed, err)
+	}
+	if err := executeClaimedCanceledJobCleanup(db, claim); err != nil {
+		t.Fatalf("cleanup execution after ownership release failed: %v", err)
+	}
+	if err := finishCanceledJobCleanup(db, claim, now.Add(time.Second), nil); err != nil {
+		t.Fatal(err)
+	}
+	var completed models.QueueJob
+	if err := db.First(&completed, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if completed.CleanupStatus != canceledCleanupStatusCompleted || completed.CleanupAttemptCount != 0 || completed.CleanupDeferralCount != deferrals {
+		t.Fatalf("deferred operation did not complete without consuming failure retries: %#v", completed)
+	}
+}
+
+func TestCanceledJobCleanupFailureRetryBudgetIsBounded(t *testing.T) {
+	db, _, job, _, _ := canceledCleanupFixture(t, false, true)
+	persistCleanupIntentForTest(t, db, job.ID)
+	now := time.Now().UTC()
+	for attempt := 1; attempt <= canceledCleanupMaxAttempts; attempt++ {
+		claim, claimed, err := claimNextCanceledJobCleanup(db, now, time.Minute)
+		if err != nil || !claimed {
+			t.Fatalf("failure attempt %d claim=%t err=%v", attempt, claimed, err)
+		}
+		if err := finishCanceledJobCleanup(db, claim, now.Add(time.Second), fmt.Errorf("synthetic cleanup failure %d", attempt)); err != nil {
+			t.Fatal(err)
+		}
+		var failed models.QueueJob
+		if err := db.First(&failed, job.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if failed.CleanupAttemptCount != attempt || failed.CleanupStatus != canceledCleanupStatusFailed {
+			t.Fatalf("failure attempt %d was not counted toward the retry cap: %#v", attempt, failed)
+		}
+		if attempt < canceledCleanupMaxAttempts {
+			if failed.CleanupNextAttemptAt == nil {
+				t.Fatalf("retryable failure %d has no backoff schedule", attempt)
+			}
+			now = *failed.CleanupNextAttemptAt
+		} else if failed.CleanupNextAttemptAt != nil {
+			t.Fatalf("failure budget scheduled a retry after attempt %d: %#v", attempt, failed)
+		}
+	}
+	if _, claimed, err := claimNextCanceledJobCleanup(db, now.Add(time.Hour), time.Minute); err != nil || claimed {
+		t.Fatalf("capped operation became executable again: claimed=%t err=%v", claimed, err)
+	}
+}
+
+func TestFFmpegLateCancellationPersistsVerifiedExitWithTerminalState(t *testing.T) {
+	db, _, job, _, output := canceledCleanupFixture(t, false, true)
+	startedAt := time.Now().UTC().Add(-time.Minute)
+	if err := db.Model(&models.QueueJob{}).Where("id = ?", job.ID).Updates(map[string]any{
+		"status": JobStatusRunning, "stage": JobStageConverting, "started_at": startedAt, "finished_at": nil,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.SchedulerReservation{JobID: job.ID, AssetKey: job.MediaPath, State: scheduler.ReservationStateActive}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// The monitor has verified group exit and observed no cancellation. A cancel
+	// request commits after that read but immediately before persistFFmpegExit.
+	var monitorObservation models.QueueJob
+	if err := db.First(&monitorObservation, job.ID).Error; err != nil || monitorObservation.CancellationRequestedAt != nil {
+		t.Fatalf("monitor did not observe the pre-cancellation state: %#v err=%v", monitorObservation, err)
+	}
+	verifiedAt := time.Now().UTC()
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/cancel", func(c *gin.Context) { NewQueueHandler(db).requestCancellation(c, job.ID) })
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/cancel", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("cancel status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	finishedAt := verifiedAt.Add(time.Millisecond)
+	persisted, canceled, err := (WorkerHandler{db: db}).persistFFmpegExit(job.ID, JobStatusCompleted, 100, "", verifiedAt, finishedAt)
+	if err != nil || !canceled {
+		t.Fatalf("late cancellation was not committed as terminal canceled: canceled=%t err=%v", canceled, err)
+	}
+	if persisted.Status != JobStatusCanceled || persisted.FinishedAt == nil || persisted.ProcessTreeExitVerifiedAt == nil || !persisted.ProcessTreeExitVerifiedAt.Equal(verifiedAt) || persisted.CleanupOperationID == "" || persisted.CleanupStatus != canceledCleanupStatusPending {
+		t.Fatalf("terminal cancellation did not atomically persist verified exit evidence and cleanup intent: %#v", persisted)
+	}
+	var reservations int64
+	if err := db.Model(&models.SchedulerReservation{}).Where("job_id = ?", job.ID).Count(&reservations).Error; err != nil || reservations != 0 {
+		t.Fatalf("terminal cancellation retained scheduler reservation: count=%d err=%v", reservations, err)
+	}
+	if _, err := os.Stat(output); err != nil {
+		t.Fatalf("late cancellation unexpectedly ran filesystem cleanup: %v", err)
 	}
 }
 

@@ -76,11 +76,13 @@ type QueueJob struct {
 	CleanupOwnerRevision        string     `json:"-" gorm:"not null;default:''"`
 	CleanupLeaseToken           string     `json:"-" gorm:"not null;default:''"`
 	CleanupLeaseExpiresAt       *time.Time `json:"-" gorm:"index"`
-	CleanupAttemptCount         int        `json:"-" gorm:"not null;default:0"`
-	CleanupNextAttemptAt        *time.Time `json:"-" gorm:"index"`
-	DismissedAt                 *time.Time `json:"dismissedAt" gorm:"index"`
-	CreatedAt                   time.Time  `json:"createdAt"`
-	UpdatedAt                   time.Time  `json:"updatedAt"`
+	// CleanupAttemptCount tracks the bounded failure retry budget. Ownership deferrals do not consume it.
+	CleanupAttemptCount  int        `json:"-" gorm:"not null;default:0"`
+	CleanupDeferralCount int        `json:"-" gorm:"not null;default:0"`
+	CleanupNextAttemptAt *time.Time `json:"-" gorm:"index"`
+	DismissedAt          *time.Time `json:"dismissedAt" gorm:"index"`
+	CreatedAt            time.Time  `json:"createdAt"`
+	UpdatedAt            time.Time  `json:"updatedAt"`
 }
 
 func (job *QueueJob) BeforeSave(_ *gorm.DB) error {

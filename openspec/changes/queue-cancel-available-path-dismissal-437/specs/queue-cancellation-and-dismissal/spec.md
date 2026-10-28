@@ -60,7 +60,7 @@ Queue SHALL preview and dismiss only eligible terminal canceled jobs whose exact
 
 Queue dismissal SHALL commit history visibility changes and reservation reconciliation without waiting for filesystem I/O. Existing guarded cancellation cleanup SHALL remain separate from dismissal, and any cleanup status or error exposed by Queue SHALL be truthful and independently observable.
 
-Cancellation cleanup SHALL be owned by the durable Housekeeping lifecycle. When current policy authorizes cleanup, the transaction that makes a job terminal SHALL persist a stable QueueJob-owned operation identity, frozen target, owner revision, and `pending` state before acknowledging cancellation. Housekeeping SHALL atomically claim an eligible operation with a lease token and expiry, then revalidate current job status, owner revision, target, policy, configured work root, filesystem identity, and active process/reservation/reference state before deleting. Every destructive boundary and completion update SHALL be fenced by the current unexpired lease token. Failed work SHALL retain bounded diagnostics and use bounded retries; interrupted or expired leases SHALL be recoverable after restart. Filesystem operations SHALL NOT run inside cancellation, dismissal, or lease-claim transactions. Ambiguous legacy rows with empty cleanup state SHALL remain untouched.
+Cancellation cleanup SHALL be owned by the durable Housekeeping lifecycle. When current policy authorizes cleanup, the transaction that makes a job terminal SHALL persist a stable QueueJob-owned operation identity, frozen target, owner revision, and `pending` state before acknowledging cancellation. Housekeeping SHALL atomically claim an eligible operation with a lease token and expiry, then revalidate current job status, owner revision, target, policy, configured work root, filesystem identity, and active process/reservation/reference state before deleting. The claim scan SHALL filter eligibility and due time before applying its bounded row limit, so ineligible earlier rows SHALL NOT starve later eligible operations. Every destructive boundary and completion update SHALL be fenced by the current unexpired lease token. Failed or interrupted executions SHALL retain bounded diagnostics and consume at most five failure retries. Ownership deferrals SHALL have a separate durable, observable counter and bounded retry schedule; they SHALL NOT consume the failure retry budget. Interrupted or expired leases SHALL be recoverable after restart. Filesystem operations SHALL NOT run inside cancellation, dismissal, or lease-claim transactions. Ambiguous legacy rows with empty cleanup state SHALL remain untouched.
 
 For started jobs on Darwin/Linux, direct FFmpeg execution SHALL use a dedicated process group. Cancellation SHALL terminate that group and retain the Queue reservation and active state until the process group is verified absent. The local monitor SHALL persist process-tree exit evidence with terminal cancellation; callbacks without that evidence SHALL NOT authorize cleanup of a started job. Unsupported platforms SHALL refuse FFmpeg launch and SHALL fail closed on cleanup of previously started jobs. An unverifiable process group SHALL NOT authorize cleanup or requeue. Execution paths with wrappers or descendants that escape the process group remain NO-GO. A queued job canceled before process start has no process-tree ownership to await.
 
@@ -86,6 +86,14 @@ For started jobs on Darwin/Linux, direct FFmpeg execution SHALL use a dedicated 
 - **WHEN** cleanup is claimed while a process, Queue reservation, Publisher lease, or other protected reference remains active
 - **THEN** cleanup is deferred and the workspace remains unchanged
 
+#### Scenario: Ownership deferrals do not exhaust cleanup retries
+- **WHEN** ownership remains active through more than five cleanup deferrals
+- **THEN** each deferral remains observable with a bounded next-retry delay and the operation remains eligible after ownership clears, subject to the separate failure retry limit
+
+#### Scenario: Ineligible cleanup rows do not starve eligible work
+- **WHEN** at least 64 earlier QueueJob cleanup rows are capped, leased, malformed, or not yet due and a later operation is eligible
+- **THEN** Housekeeping claims the later eligible operation without waiting for earlier rows to become eligible
+
 #### Scenario: Legacy cleanup authorization is ambiguous
 - **WHEN** a canceled legacy row has empty cleanup state and no persisted operation identity
 - **THEN** Housekeeping leaves it untouched rather than inferring historical authorization
@@ -93,6 +101,10 @@ For started jobs on Darwin/Linux, direct FFmpeg execution SHALL use a dedicated 
 #### Scenario: FFmpeg process group cannot be verified
 - **WHEN** a canceled FFmpeg process group remains present or cannot be inspected after the bounded wait
 - **THEN** the Queue job and reservation remain active and no cleanup operation is authorized
+
+#### Scenario: Cancellation arrives after process-group verification
+- **WHEN** the monitor verifies FFmpeg process-group exit and a cancellation request commits after its preliminary Queue read but before the exit transaction
+- **THEN** the same transaction persists terminal cancellation, verified process-tree evidence, reservation release, and durable cleanup intent
 
 #### Scenario: Existing batch removal
 - **WHEN** the operator removes a canceled batch
