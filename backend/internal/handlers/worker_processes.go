@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -27,6 +28,8 @@ var runningJobProcesses = struct {
 	commands: map[uint]*exec.Cmd{},
 }
 
+var errQueueJobCancellationRequested = errors.New("queue job cancellation was requested before FFmpeg started")
+
 func (h WorkerHandler) startFFmpegJob(jobID uint, args []string, durationSeconds float64) error {
 	if durationSeconds <= 0 {
 		durationSeconds = probeMediaDurationSeconds(h.db, jobID)
@@ -47,17 +50,50 @@ func (h WorkerHandler) startFFmpegJob(jobID uint, args []string, durationSeconds
 		applog.Event("warning", "ffmpeg", "job_log_unavailable", map[string]any{"jobId": jobID}, logErr)
 	}
 
+	runningJobProcesses.Lock()
+	if runningJobProcesses.commands[jobID] != nil {
+		runningJobProcesses.Unlock()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		if jobLog != nil {
+			_ = jobLog.Close()
+		}
+		return fmt.Errorf("queue job %d already has an active process", jobID)
+	}
+	var current models.QueueJob
+	if err := h.db.First(&current, jobID).Error; err != nil {
+		runningJobProcesses.Unlock()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		if jobLog != nil {
+			_ = jobLog.Close()
+		}
+		return err
+	}
+	if current.CancellationRequestedAt != nil || current.Status == JobStatusCanceled {
+		runningJobProcesses.Unlock()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		if jobLog != nil {
+			_ = jobLog.Close()
+		}
+		return errQueueJobCancellationRequested
+	}
 	if err := cmd.Start(); err != nil {
+		runningJobProcesses.Unlock()
+		_ = stdout.Close()
+		_ = stderr.Close()
 		if jobLog != nil {
 			_ = jobLog.Close()
 		}
 		applog.Event("error", "ffmpeg", "process_start_failed", map[string]any{"jobId": jobID}, err)
 		return err
 	}
+	runningJobProcesses.commands[jobID] = cmd
+	runningJobProcesses.Unlock()
 	applog.Event("info", "ffmpeg", "process_started", map[string]any{"jobId": jobID, "pid": cmd.Process.Pid}, nil)
 	h.startSleepInhibitor(cmd.Process.Pid)
 
-	registerRunningJobProcess(jobID, cmd)
 	go h.monitorFFmpegJob(jobID, cmd, stdout, stderr, durationSeconds, jobLog)
 
 	return nil
@@ -128,34 +164,40 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 	}
 	defer func() { _ = scheduler.DeactivateReservationResources(h.db, jobID) }()
 
-	if job.Status == JobStatusCanceled {
-		_ = transitionJobStage(h.db, &job, JobStageCanceled)
-		if job.FinishedAt == nil {
-			finishedAt := time.Now()
-			job.FinishedAt = &finishedAt
-			_ = h.db.Save(&job).Error
+	if job.Status == JobStatusCanceled || job.CancellationRequestedAt != nil {
+		canceledJob, finalized, finalizeErr := finalizeQueueJobCancellation(h.db, jobID)
+		if finalizeErr != nil {
+			applog.Event("error", "queue", "cancellation_acknowledgment_persist_failed", map[string]any{"jobId": jobID}, finalizeErr)
+			return
 		}
+		if !finalized {
+			return
+		}
+		job = canceledJob
 		_ = writeJobResultArtifact(h.db, job, map[string]any{
 			"status":   "canceled",
 			"timing":   jobExecutionTiming(job, durationSeconds),
 			"progress": job.Progress,
 		})
-		_ = cleanupCanceledJob(h.db, job)
 		return
 	}
 
 	finishedAt := time.Now()
-	job.FinishedAt = &finishedAt
 	timing := jobExecutionTiming(job, durationSeconds)
 	if err != nil {
-		job.Status = JobStatusFailed
-		job.Progress = 0
-		job.ErrorMessage = strings.TrimSpace(lastOutputLines(stderrBuffer.String(), 14))
-		_ = transitionJobStage(h.db, &job, JobStageFailed)
-		if job.ErrorMessage == "" {
-			job.ErrorMessage = fmt.Sprintf("ffmpeg exited with error: %v", err)
+		errorMessage := strings.TrimSpace(lastOutputLines(stderrBuffer.String(), 14))
+		if errorMessage == "" {
+			errorMessage = fmt.Sprintf("ffmpeg exited with error: %v", err)
 		}
-		_ = h.db.Save(&job).Error
+		job, canceled, persistErr := h.persistFFmpegExit(jobID, JobStatusFailed, 0, errorMessage, finishedAt)
+		if persistErr != nil {
+			applog.Event("error", "queue", "conversion_failure_persist_failed", map[string]any{"jobId": jobID}, persistErr)
+			return
+		}
+		if canceled {
+			_ = writeJobResultArtifact(h.db, job, map[string]any{"status": "canceled", "timing": timing, "progress": job.Progress})
+			return
+		}
 		applog.Event("error", "ffmpeg", "process_failed", map[string]any{"jobId": jobID, "pid": cmd.Process.Pid, "stderr": job.ErrorMessage}, err)
 		_ = writeJobResultArtifact(h.db, job, map[string]any{
 			"status":   "failed",
@@ -166,14 +208,16 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 		return
 	}
 
-	job.Status = JobStatusCompleted
-	job.Progress = 100
-	job.ErrorMessage = ""
-	applog.Event("info", "ffmpeg", "process_completed", map[string]any{"jobId": jobID, "pid": cmd.Process.Pid}, nil)
-	if err := h.db.Save(&job).Error; err != nil {
-		applog.Event("error", "queue", "conversion_completion_persist_failed", map[string]any{"jobId": jobID}, err)
+	job, canceled, persistErr := h.persistFFmpegExit(jobID, JobStatusCompleted, 100, "", finishedAt)
+	if persistErr != nil {
+		applog.Event("error", "queue", "conversion_completion_persist_failed", map[string]any{"jobId": jobID}, persistErr)
 		return
 	}
+	if canceled {
+		_ = writeJobResultArtifact(h.db, job, map[string]any{"status": "canceled", "timing": timing, "progress": job.Progress})
+		return
+	}
+	applog.Event("info", "ffmpeg", "process_completed", map[string]any{"jobId": jobID, "pid": cmd.Process.Pid}, nil)
 	if artifactErr := writeJobResultArtifact(h.db, job, map[string]any{
 		"status":   "completed",
 		"timing":   timing,
@@ -192,6 +236,47 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 	if _, pipelineErr := h.runAutomatedPipeline(job); pipelineErr != nil {
 		applog.Event("error", "pipeline", "automated_handoff_failed", map[string]any{"jobId": jobID}, pipelineErr)
 	}
+}
+
+func (h WorkerHandler) persistFFmpegExit(jobID uint, status string, progress int, errorMessage string, finishedAt time.Time) (models.QueueJob, bool, error) {
+	var job models.QueueJob
+	canceled := false
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&job, jobID).Error; err != nil {
+			return err
+		}
+		if job.Status == JobStatusCanceled || job.CancellationRequestedAt != nil {
+			job.Status = JobStatusCanceled
+			job.FinishedAt = &finishedAt
+			if err := tx.Save(&job).Error; err != nil {
+				return err
+			}
+			if err := transitionJobStage(tx, &job, JobStageCanceled); err != nil {
+				return err
+			}
+			if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
+				return err
+			}
+			canceled = true
+			return nil
+		}
+		previousStatus := job.Status
+		job.Status = status
+		job.Progress = progress
+		job.ErrorMessage = errorMessage
+		job.FinishedAt = &finishedAt
+		if err := tx.Save(&job).Error; err != nil {
+			return err
+		}
+		return transitionJobStage(tx, &job, stageForStatusUpdate(job, previousStatus))
+	})
+	if err != nil {
+		return job, false, err
+	}
+	if canceled {
+		scheduleCanceledJobCleanup(h.db, job)
+	}
+	return job, canceled, nil
 }
 
 func (h WorkerHandler) runAutomatedPipeline(job models.QueueJob) (map[string]any, error) {
@@ -386,12 +471,6 @@ func (h WorkerHandler) updateRunningJobProgress(jobID uint, progress int) error 
 	}
 
 	return nil
-}
-
-func registerRunningJobProcess(jobID uint, cmd *exec.Cmd) {
-	runningJobProcesses.Lock()
-	defer runningJobProcesses.Unlock()
-	runningJobProcesses.commands[jobID] = cmd
 }
 
 func unregisterRunningJobProcess(jobID uint) {

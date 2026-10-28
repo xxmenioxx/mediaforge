@@ -834,6 +834,16 @@ export const api = {
     request<{ batchId: string; dismissedJobs: number; cleanedExecutionPlans: number }>(`/api/queue/batches/${encodeURIComponent(batchId)}`, {
       method: 'DELETE',
     }),
+  previewCanceledPath: (input: { pathGroup: string }) =>
+    request<import('./types').QueueCanceledPathPreview>('/api/queue/canceled-path/preview', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  dismissCanceledPath: (input: { pathGroup: string; jobIds: number[] }) =>
+    request<import('./types').QueueCanceledPathDismissResult>('/api/queue/canceled-path/dismiss', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   jobArtifacts: (jobId: number) => request<JobArtifactsResponse>(`/api/queue/jobs/${jobId}/artifacts`),
   jobLog: (jobId: number, tail = 1000) => request<JobLogResponse>(`/api/queue/jobs/${jobId}/log?tail=${tail}`),
   executionPlans: (jobId: number) => request<ExecutionPlan[]>(`/api/queue/jobs/${jobId}/execution-plans`),

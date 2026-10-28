@@ -6,11 +6,13 @@ import {
   Card,
   CardContent,
   Chip,
+  Checkbox,
   Collapse,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   Grid,
   IconButton,
   LinearProgress,
@@ -563,7 +565,12 @@ function QueueFlatList({ jobs, selectedJobId, onEditJob }: {
   }, [jobs]);
   const updateJob = useMutation({
     mutationFn: api.updateQueueJob,
-    onSuccess: async () => queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+    onSuccess: async (_updatedJob, input) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+        ...(input.status === 'canceled' ? [queryClient.invalidateQueries({ queryKey: ['assets'] })] : []),
+      ]);
+    },
   });
   const dismissJob = useMutation({
     mutationFn: api.dismissQueueJob,
@@ -764,13 +771,15 @@ function FlatJobRow({
         </Stack>
         <Stack spacing={0.35} sx={{ minWidth: 0, gridColumn: { xs: '1 / -1', lg: 'auto' } }}>
           <CompactActionGroup aria-label={`Status for ${jobLabel}`}>
-            <Chip label={queueStatusLabel(job.status)} color={queueStatusColor(job.status)} size="small" aria-label={`Queue status: ${queueStatusLabel(job.status)}`} />
+            <Chip label={queueDisplayedStatusLabel(job)} color={queueDisplayedStatusColor(job)} size="small" aria-label={`Queue status: ${queueDisplayedStatusLabel(job)}`} />
             <Chip label={stage.label} color={stage.color} size="small" variant="outlined" aria-label={`Queue stage: ${stage.label}`} />
             {job.validationStatus === 'warning' ? <Chip label="Validation warning" color="warning" size="small" /> : null}
             {job.validationStatus === 'failed' ? <Chip label="Validation failed" color="error" size="small" /> : null}
           </CompactActionGroup>
           <CompactActionGroup aria-label={`Operational details for ${jobLabel}`}>
             {job.status === 'queued' ? <Typography variant="caption" color="text.secondary">Queue {job.queuePosition || 'pending'}</Typography> : null}
+            {job.status === 'running' && job.cancellationRequestedAt ? <Typography variant="caption" color="warning.main">Cancellation requested · {job.cancellationRequestedAt}</Typography> : null}
+            {job.cleanupStatus !== undefined ? <Typography variant="caption" color={job.cleanupStatus === 'failed' ? 'error.main' : 'text.secondary'}>Cleanup · {job.cleanupStatus || 'unknown / not scheduled'}</Typography> : null}
             <Typography variant="caption" color="text.secondary">Worker: {job.workerName || 'Unassigned'}</Typography>
             <Typography variant="caption" color="text.secondary">
               Library #{job.libraryId} · {job.processingMode === 'audio_only' ? 'Audio only' : `Video profile #${job.profileId}`}
@@ -805,6 +814,7 @@ function FlatJobRow({
         </CompactActionGroup>
       </Box>
       {job.errorMessage ? <Alert severity={job.status === 'failed' ? 'error' : 'warning'} sx={{ mt: 0.75 }}>{shortText(job.errorMessage, 180)}</Alert> : null}
+      {job.cleanupError ? <Alert severity="error" sx={{ mt: 0.75 }}>Cleanup failed: {shortText(job.cleanupError, 180)}</Alert> : null}
     </Box>
   );
 }
@@ -1021,8 +1031,11 @@ export function QueueGroupCard({
   const [visibleJobsCount, setVisibleJobsCount] = useState(25);
   const updateJob = useMutation({
     mutationFn: api.updateQueueJob,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['queueJobs'] });
+    onSuccess: async (_updatedJob, input) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+        ...(input.status === 'canceled' ? [queryClient.invalidateQueries({ queryKey: ['assets'] })] : []),
+      ]);
     },
   });
   const dismissJob = useMutation({
@@ -1070,6 +1083,20 @@ export function QueueGroupCard({
       ]);
     },
   });
+  const previewCanceledPath = useMutation({ mutationFn: api.previewCanceledPath });
+  const dismissCanceledPath = useMutation({
+    mutationFn: api.dismissCanceledPath,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['queueJobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['assets'] }),
+      ]);
+    },
+  });
+  const [pathPreviewGroup, setPathPreviewGroup] = useState<string | null>(null);
+  const [pathPreview, setPathPreview] = useState<Awaited<ReturnType<typeof api.previewCanceledPath>> | null>(null);
+  const [pathSelectedJobIds, setPathSelectedJobIds] = useState<number[]>([]);
+  const [pathDismissResult, setPathDismissResult] = useState<Awaited<ReturnType<typeof api.dismissCanceledPath>> | null>(null);
 
   function updatePriority(job: QueueJob, nextPriority: number) {
     updateJob.mutate({ jobId: job.id, priority: nextPriority });
@@ -1103,6 +1130,34 @@ export function QueueGroupCard({
     batchAction.mutate('remove');
   }
 
+  async function openPathDismissPreview(pathGroup: string) {
+    previewCanceledPath.reset();
+    dismissCanceledPath.reset();
+    setPathPreviewGroup(pathGroup);
+    setPathPreview(null);
+    setPathSelectedJobIds([]);
+    setPathDismissResult(null);
+    try {
+      const preview = await previewCanceledPath.mutateAsync({ pathGroup });
+      setPathPreview(preview);
+      setPathSelectedJobIds(preview.jobs.filter((job) => job.dismissible).map((job) => job.id));
+    } catch {
+      // The mutation error is rendered in the preview dialog.
+    }
+  }
+
+  async function dismissSelectedInPath() {
+    if (!pathPreviewGroup || !pathSelectedJobIds.length || !pathPreview) return;
+    const result = await dismissCanceledPath.mutateAsync({ pathGroup: pathPreviewGroup, jobIds: pathSelectedJobIds });
+    setPathDismissResult(result);
+  }
+
+  function closePathDismissPreview() {
+    if (dismissCanceledPath.isPending) return;
+    setPathPreviewGroup(null);
+    setPathDismissResult(null);
+  }
+
   function requeueBatch() {
     const count = group.jobs.filter((job) => job.status === 'failed' || job.status === 'canceled').length;
     if (!count || !window.confirm(`Requeue ${count} failed/canceled job${count === 1 ? '' : 's'} in “${group.name}” using their saved batch order and configuration?`)) return;
@@ -1110,6 +1165,10 @@ export function QueueGroupCard({
   }
 
   const visibleJobs = group.jobs.slice(0, visibleJobsCount);
+  const canceledPathGroups = [...new Set(group.jobs
+    .filter((job) => job.status === 'canceled')
+    .map((job) => queueGroupPathFromMediaPath(job.mediaPath)))]
+    .filter(Boolean);
 
   return (
     <Card sx={{ overflow: 'hidden' }}>
@@ -1159,6 +1218,20 @@ export function QueueGroupCard({
                   Remove Batch
                 </Button>
               ) : null}
+              {canceledPathGroups.map((pathGroup) => (
+                <Button
+                  key={pathGroup}
+                  startIcon={<RemoveCircleOutlineIcon />}
+                  color="error"
+                  variant="outlined"
+                  size="small"
+                  disabled={batchAction.isPending || updateJob.isPending || dismissJob.isPending || previewCanceledPath.isPending || dismissCanceledPath.isPending}
+                  onClick={() => void openPathDismissPreview(pathGroup)}
+                  aria-label={`Remove canceled in path ${pathGroup}`}
+                >
+                  Remove canceled in {compactPath(pathGroup)}
+                </Button>
+              ))}
               {group.jobs.some((job) => job.status === 'failed' || job.status === 'canceled') ? (
                 <Button
                   startIcon={<ReplayIcon />}
@@ -1212,6 +1285,77 @@ export function QueueGroupCard({
           </Collapse>
         </Stack>
       </CardContent>
+      <Dialog open={pathPreviewGroup !== null} onClose={closePathDismissPreview} fullWidth maxWidth="sm">
+        <DialogTitle>Remove canceled jobs in path</DialogTitle>
+        <DialogContent dividers>
+          {pathPreviewGroup ? <Typography variant="body2" color="text.secondary" sx={{ mb: 1, wordBreak: 'break-word' }}>{pathPreviewGroup}</Typography> : null}
+          {previewCanceledPath.isPending ? <LinearProgress aria-label="Loading path removal preview" /> : null}
+          {previewCanceledPath.isError ? <Alert severity="error">Could not load the canceled jobs for this path. Refresh Queue and try again.</Alert> : null}
+          {pathPreview ? (
+            <Stack spacing={1}>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Chip label={`Server selected ${pathPreview.selectedJobs}`} size="small" />
+                <Chip label={`${pathPreview.dismissibleJobs} dismissible`} color="success" size="small" />
+                <Chip label={`${pathPreview.skippedJobs} skipped`} color={pathPreview.skippedJobs ? 'warning' : 'default'} size="small" />
+                <Chip label={`${pathPreview.alreadyDismissedJobs} already dismissed`} size="small" />
+              </Stack>
+              {pathPreview.truncated ? <Alert severity="warning">Preview is truncated. Only the listed jobs can be selected in this request.</Alert> : null}
+              {pathPreview.skippedReasons.length ? (
+                <Alert severity="info">
+                  {pathPreview.skippedReasons.map(({ reason, count }) => `${reason} (${count})`).join(' · ')}
+                </Alert>
+              ) : null}
+              <Stack spacing={0.25} sx={{ maxHeight: 320, overflowY: 'auto' }}>
+                {pathPreview.jobs.map((candidate) => (
+                  <FormControlLabel
+                    key={candidate.id}
+                    control={(
+                      <Checkbox
+                        checked={pathSelectedJobIds.includes(candidate.id)}
+                        disabled={!candidate.dismissible || dismissCanceledPath.isPending || Boolean(pathDismissResult)}
+                        onChange={(event) => setPathSelectedJobIds((current) => event.target.checked
+                          ? [...current, candidate.id]
+                          : current.filter((id) => id !== candidate.id))}
+                        inputProps={{ 'aria-label': `Include job #${candidate.id}` }}
+                      />
+                    )}
+                    label={(
+                      <Box>
+                        <Typography variant="body2">Job #{candidate.id} · {candidate.status} · {candidate.batchId ? `Batch ${candidate.batchId}` : 'no batch'}</Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
+                          {candidate.mediaPath} · {candidate.dismissible ? 'Dismissible' : candidate.skipReason || (candidate.dismissedAt ? 'Already dismissed' : 'Not eligible for dismissal')}
+                        </Typography>
+                        {candidate.cleanupStatus !== undefined ? <Typography variant="caption" color={candidate.cleanupStatus === 'failed' ? 'error.main' : 'text.secondary'}>Cleanup · {candidate.cleanupStatus || 'unknown / not scheduled'}</Typography> : null}
+                        {candidate.cleanupError ? <Typography variant="caption" color="error.main">Cleanup failed: {shortText(candidate.cleanupError, 180)}</Typography> : null}
+                      </Box>
+                    )}
+                  />
+                ))}
+              </Stack>
+              {pathDismissResult ? (
+                <Alert severity={pathDismissResult.skippedJobs || pathDismissResult.conflictedJobs ? 'warning' : 'success'}>
+                  Selected {pathDismissResult.selectedJobs}; dismissed {pathDismissResult.dismissedJobs}; already dismissed {pathDismissResult.alreadyDismissedJobs}; skipped {pathDismissResult.skippedJobs}; conflicted {pathDismissResult.conflictedJobs}.
+                  {pathDismissResult.skippedReasons.length ? ` ${pathDismissResult.skippedReasons.map(({ reason, count }) => `${reason} (${count})`).join(' · ')}` : ''}
+                </Alert>
+              ) : null}
+              {dismissCanceledPath.isError ? <Alert severity="error">Could not remove the selected canceled jobs. Refresh the preview before retrying.</Alert> : null}
+            </Stack>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closePathDismissPreview} disabled={dismissCanceledPath.isPending}>Close</Button>
+          {pathPreview && !pathDismissResult ? (
+            <Button
+              color="error"
+              variant="contained"
+              disabled={!pathSelectedJobIds.length || dismissCanceledPath.isPending}
+              onClick={() => void dismissSelectedInPath()}
+            >
+              {dismissCanceledPath.isPending ? 'Removing…' : `Remove selected (${pathSelectedJobIds.length})`}
+            </Button>
+          ) : null}
+        </DialogActions>
+      </Dialog>
     </Card>
   );
 }
@@ -1339,8 +1483,10 @@ function JobRow({
           </Stack>
         </Stack>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Chip label={queueStatusLabel(job.status)} color={queueStatusColor(job.status)} size="small" />
+          <Chip label={queueDisplayedStatusLabel(job)} color={queueDisplayedStatusColor(job)} size="small" />
           <Chip label={stage.label} color={stage.color} size="small" variant="outlined" />
+          {job.status === 'running' && job.cancellationRequestedAt ? <Chip label={`Cancellation requested · ${job.cancellationRequestedAt}`} color="warning" size="small" variant="outlined" /> : null}
+          {job.cleanupStatus !== undefined ? <Chip label={`Cleanup · ${job.cleanupStatus || 'unknown / not scheduled'}`} color={job.cleanupStatus === 'failed' ? 'error' : 'default'} size="small" variant="outlined" /> : null}
           <Chip label={`Original archive · ${originalArchiveStatusLabel(job.originalArchiveStatus)}`} size="small" variant="outlined" color={job.originalArchiveStatus === 'failed' ? 'error' : 'default'} />
           <Typography color="text.secondary" variant="body2">
             {job.workerName || 'Unclaimed'}
@@ -1385,6 +1531,7 @@ function JobRow({
             {shortText(job.errorMessage, 240)}
           </Alert>
         ) : null}
+        {job.cleanupError ? <Alert severity="error">Cleanup failed: {shortText(job.cleanupError, 240)}</Alert> : null}
         {job.originalArchiveStatus === 'failed' && job.publicationSummary ? <Alert severity="error">{shortText(job.publicationSummary, 240)}</Alert> : null}
         {!job.errorMessage && job.notes ? (
           <Typography color="text.secondary" variant="body2" sx={{ wordBreak: 'break-word' }}>
@@ -1540,6 +1687,14 @@ function groupPathFromMediaPath(mediaPath: string) {
 }
 function queueGroupPathFromMediaPath(mediaPath: string) {
   return groupPathFromMediaPath(normalizePath(mediaPath));
+}
+
+function queueDisplayedStatusLabel(job: Pick<QueueJob, 'status' | 'cancellationRequestedAt'>) {
+  return job.status === 'running' && job.cancellationRequestedAt ? 'Stopping' : queueStatusLabel(job.status);
+}
+
+function queueDisplayedStatusColor(job: Pick<QueueJob, 'status' | 'cancellationRequestedAt'>) {
+  return job.status === 'running' && job.cancellationRequestedAt ? 'warning' : queueStatusColor(job.status);
 }
 
 function normalizePath(value: string) {

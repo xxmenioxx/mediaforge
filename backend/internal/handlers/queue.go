@@ -453,6 +453,14 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 	dismissedJobs := 0
 	cleanedExecutionPlans := 0
 	err := h.db.Transaction(func(tx *gorm.DB) error {
+		var currentJobs []models.QueueJob
+		if err := tx.Where("batch_id = ? AND dismissed_at IS NULL", batchID).Order("id asc").Find(&currentJobs).Error; err != nil {
+			return err
+		}
+		if !queueBatchCanBeDismissed(currentJobs) {
+			return queueValidationDismissalConflict("batch changed while it was being removed")
+		}
+		jobs = currentJobs
 		for index := range jobs {
 			job := &jobs[index]
 			if job.ExecutionNumber == nil && job.StartedAt == nil {
@@ -462,9 +470,14 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 				}
 				cleanedExecutionPlans += int(result.RowsAffected)
 			}
-			job.DismissedAt = &now
-			if err := tx.Save(job).Error; err != nil {
-				return err
+			result := tx.Model(&models.QueueJob{}).
+				Where("id = ? AND status = ? AND dismissed_at IS NULL AND updated_at = ?", job.ID, JobStatusCanceled, job.UpdatedAt).
+				Update("dismissed_at", now)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return queueValidationDismissalConflict("Queue job changed while its batch was being removed")
 			}
 			if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
 				return err
@@ -474,13 +487,12 @@ func (h QueueHandler) DismissBatch(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, errQueueValidationDismissalConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
-	}
-	for _, job := range jobs {
-		if job.Status == JobStatusCanceled {
-			_ = cleanupCanceledJob(h.db, job)
-		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"batchId":               batchID,
@@ -1880,6 +1892,22 @@ func (h QueueHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if input.Status != "" && !validJobStatus(input.Status) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid job status"})
+		return
+	}
+	if input.Status == JobStatusCanceled {
+		h.requestCancellation(c, uint(id))
+		return
+	}
+	if input.Status == JobStatusQueued && job.Status != JobStatusQueued && job.Status != JobStatusFailed && job.Status != JobStatusCanceled {
+		c.JSON(http.StatusConflict, gin.H{"error": "only failed or canceled jobs can be requeued"})
+		return
+	}
+	if input.Status != "" && input.Status != job.Status && input.Status != JobStatusQueued {
+		c.JSON(http.StatusConflict, gin.H{"error": "worker status transitions are not available through Queue controls"})
+		return
+	}
 
 	if input.Priority != nil {
 		job.Priority = clamp(*input.Priority, 1, 10)
@@ -1957,15 +1985,8 @@ func (h QueueHandler) Update(c *gin.Context) {
 		job.Notes = input.Notes
 	}
 
-	canceledRunningProcess := false
 	previousStatus := job.Status
 	if input.Status != "" {
-		if !validJobStatus(input.Status) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid job status"})
-			return
-		}
-
-		now := time.Now()
 		switch input.Status {
 		case JobStatusQueued:
 			job.Status = JobStatusQueued
@@ -1974,10 +1995,7 @@ func (h QueueHandler) Update(c *gin.Context) {
 			job.ErrorMessage = ""
 			job.StartedAt = nil
 			job.FinishedAt = nil
-		case JobStatusCanceled:
-			canceledRunningProcess = cancelRunningJobProcess(job.ID)
-			job.Status = JobStatusCanceled
-			job.FinishedAt = &now
+			job.CancellationRequestedAt = nil
 		default:
 			job.Status = input.Status
 		}
@@ -1985,6 +2003,15 @@ func (h QueueHandler) Update(c *gin.Context) {
 
 	refreshExecutionPlan := input.ProfileID != nil || input.Status == JobStatusQueued
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if input.Status == JobStatusQueued {
+			var current models.QueueJob
+			if err := tx.First(&current, job.ID).Error; err != nil {
+				return err
+			}
+			if current.Status != previousStatus || (current.Status != JobStatusQueued && current.Status != JobStatusFailed && current.Status != JobStatusCanceled) {
+				return queueValidationDismissalConflict("Queue job changed or is not eligible for requeue")
+			}
+		}
 		if input.Status == JobStatusQueued && previousStatus != JobStatusQueued {
 			var highest int64
 			if err := tx.Model(&models.QueueJob{}).Select("COALESCE(MAX(queue_position), 0)").Scan(&highest).Error; err != nil {
@@ -2016,6 +2043,10 @@ func (h QueueHandler) Update(c *gin.Context) {
 		}
 		return nil
 	}); err != nil {
+		if errors.Is(err, errQueueValidationDismissalConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		if errors.Is(err, scheduler.ErrAssetAlreadyReserved) {
 			c.JSON(http.StatusConflict, gin.H{"error": "asset already has an open queue job"})
 			return
@@ -2023,10 +2054,6 @@ func (h QueueHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if job.Status == JobStatusCanceled && !canceledRunningProcess {
-		_ = cleanupCanceledJob(h.db, job)
-	}
-
 	c.JSON(http.StatusOK, job)
 }
 

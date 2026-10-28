@@ -1681,10 +1681,50 @@ export type QueueJob = {
     relativePath?: string;
   }>;
   startedAt?: string;
+  cancellationRequestedAt?: string;
+  cleanupStatus?: 'not_required' | 'pending' | 'running' | 'completed' | 'failed' | '';
+  cleanupError?: string;
   finishedAt?: string;
   dismissedAt?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type QueueCanceledPathPreviewJob = {
+  id: number;
+  status: string;
+  batchId?: string;
+  mediaPath: string;
+  startedAt?: string;
+  validationRunId?: string;
+  publishedAt?: string;
+  cleanupStatus?: string;
+  cleanupError?: string;
+  dismissible: boolean;
+  skipReason?: string;
+  dismissedAt?: string;
+};
+
+export type QueueCanceledPathPreview = {
+  pathGroup: string;
+  selectedJobs: number;
+  dismissibleJobs: number;
+  skippedJobs: number;
+  alreadyDismissedJobs: number;
+  skippedReasons: Array<{ reason: string; count: number }>;
+  jobs: QueueCanceledPathPreviewJob[];
+  truncated: boolean;
+};
+
+export type QueueCanceledPathDismissResult = {
+  pathGroup: string;
+  selectedJobs: number;
+  dismissedJobs: number;
+  alreadyDismissedJobs: number;
+  skippedJobs: number;
+  conflictedJobs: number;
+  cleanedExecutionPlans: number;
+  skippedReasons: Array<{ reason: string; count: number }>;
 };
 
 export type WorkerNode = {

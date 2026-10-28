@@ -128,6 +128,75 @@ describe('Queue batch removal', () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['assets'] });
   });
 
+  it('previews a path across batches, lets the operator filter candidates, and dismisses selected stable IDs once', async () => {
+    const preview = vi.spyOn(api, 'previewCanceledPath').mockResolvedValue({
+      pathGroup: '/media/raw',
+      selectedJobs: 2,
+      dismissibleJobs: 2,
+      skippedJobs: 2,
+      alreadyDismissedJobs: 0,
+      skippedReasons: [{ reason: 'validation_owned', count: 1 }, { reason: 'active', count: 1 }],
+      jobs: [
+        { id: 1, status: 'canceled', batchId: 'batch-1', mediaPath: '/media/raw/one.mkv', dismissible: true },
+        { id: 2, status: 'canceled', batchId: 'batch-2', mediaPath: '/media/raw/two.mkv', dismissible: true },
+        { id: 3, status: 'running', batchId: 'batch-3', mediaPath: '/media/raw/three.mkv', dismissible: false, skipReason: 'active' },
+        { id: 4, status: 'canceled', batchId: 'batch-4', mediaPath: '/media/raw/four.mkv', validationRunId: 'validation-44', dismissible: false, skipReason: 'validation_owned' },
+      ],
+      truncated: false,
+    });
+    const dismiss = vi.spyOn(api, 'dismissCanceledPath').mockResolvedValue({
+      pathGroup: '/media/raw',
+      selectedJobs: 1,
+      dismissedJobs: 1,
+      alreadyDismissedJobs: 0,
+      skippedJobs: 0,
+      conflictedJobs: 0,
+      cleanedExecutionPlans: 1,
+      skippedReasons: [],
+    });
+    const { queryClient } = renderGroup([job(1, 'canceled'), job(2, 'canceled')]);
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: 'Remove canceled in path /media/raw' }));
+    await waitFor(() => expect(preview.mock.calls[0]?.[0]).toEqual({ pathGroup: '/media/raw' }));
+    expect(await screen.findByText('validation_owned (1) · active (1)')).toBeTruthy();
+    expect(screen.getByRole('checkbox', { name: 'Include job #3' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('checkbox', { name: 'Include job #4' })).toHaveProperty('disabled', true);
+    await user.click(screen.getByRole('checkbox', { name: 'Include job #2' }));
+    await user.click(screen.getByRole('button', { name: 'Remove selected (1)' }));
+
+    await waitFor(() => expect(dismiss.mock.calls[0]?.[0]).toEqual({ pathGroup: '/media/raw', jobIds: [1] }));
+    await waitFor(() => {
+      expect(invalidateQueries.mock.calls.filter(([options]) => options?.queryKey?.[0] === 'queueJobs')).toHaveLength(1);
+      expect(invalidateQueries.mock.calls.filter(([options]) => options?.queryKey?.[0] === 'assets')).toHaveLength(1);
+    });
+  });
+
+  it('refreshes Queue and Assets once when canceling a job and shows cancellation cleanup state', async () => {
+    const runningJob = job(9, 'running', {
+      cancellationRequestedAt: '2026-10-27T12:00:00Z',
+      cleanupStatus: 'failed',
+      cleanupError: 'workspace busy',
+    });
+    vi.spyOn(api, 'updateQueueJob').mockResolvedValue({ ...runningJob, status: 'canceled' });
+    const { queryClient } = renderGroup([runningJob]);
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: 'Expand queue group' }));
+    expect(screen.getByText('Stopping')).toBeTruthy();
+    expect(screen.getByText(/Cancellation requested · 2026-10-27T12:00:00Z/)).toBeTruthy();
+    expect(screen.getByText(/Cleanup · failed/)).toBeTruthy();
+    expect(screen.getByText(/Cleanup failed: workspace busy/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => {
+      expect(invalidateQueries.mock.calls.filter(([options]) => options?.queryKey?.[0] === 'queueJobs')).toHaveLength(1);
+      expect(invalidateQueries.mock.calls.filter(([options]) => options?.queryKey?.[0] === 'assets')).toHaveLength(1);
+    });
+  });
+
   it('exposes Dismiss for a completed unpublished Validation exception and invalidates preflight views', async () => {
     const candidate = job(7, 'completed', {
       executionNumber: 7,

@@ -67,6 +67,9 @@ type QueueJob struct {
 	PublicationSummary          string     `json:"publicationSummary,omitempty"`
 	StartedAt                   *time.Time `json:"startedAt"`
 	FinishedAt                  *time.Time `json:"finishedAt"`
+	CancellationRequestedAt     *time.Time `json:"cancellationRequestedAt,omitempty" gorm:"index"`
+	CleanupStatus               string     `json:"cleanupStatus,omitempty" gorm:"not null;default:'';index"`
+	CleanupError                string     `json:"cleanupError,omitempty"`
 	DismissedAt                 *time.Time `json:"dismissedAt" gorm:"index"`
 	CreatedAt                   time.Time  `json:"createdAt"`
 	UpdatedAt                   time.Time  `json:"updatedAt"`
