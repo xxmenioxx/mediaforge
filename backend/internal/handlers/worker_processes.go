@@ -37,6 +37,10 @@ func (h WorkerHandler) startFFmpegJob(jobID uint, args []string, durationSeconds
 	progressArgs := ffmpegArgsWithProgress(args)
 
 	cmd := exec.CommandContext(context.Background(), "ffmpeg", progressArgs...)
+	if !ffmpegProcessTreeContainmentSupported() {
+		return fmt.Errorf("ffmpeg process-tree containment is unsupported on this operating system")
+	}
+	configureManagedProcessGroup(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -156,6 +160,10 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 
 	err := cmd.Wait()
 	<-stderrDone
+	if waitErr := waitFFmpegProcessGroupExit(cmd.Process.Pid); waitErr != nil {
+		applog.Event("error", "ffmpeg", "process_group_exit_unverified", map[string]any{"jobId": jobID, "pid": cmd.Process.Pid}, waitErr)
+		return
+	}
 	unregisterRunningJobProcess(jobID)
 
 	var job models.QueueJob
@@ -165,7 +173,7 @@ func (h WorkerHandler) monitorFFmpegJob(jobID uint, cmd *exec.Cmd, stdout io.Rea
 	defer func() { _ = scheduler.DeactivateReservationResources(h.db, jobID) }()
 
 	if job.Status == JobStatusCanceled || job.CancellationRequestedAt != nil {
-		canceledJob, finalized, finalizeErr := finalizeQueueJobCancellation(h.db, jobID)
+		canceledJob, finalized, finalizeErr := finalizeQueueJobCancellationAfterProcessTreeExit(h.db, jobID)
 		if finalizeErr != nil {
 			applog.Event("error", "queue", "cancellation_acknowledgment_persist_failed", map[string]any{"jobId": jobID}, finalizeErr)
 			return
@@ -246,6 +254,7 @@ func (h WorkerHandler) persistFFmpegExit(jobID uint, status string, progress int
 			return err
 		}
 		if job.Status == JobStatusCanceled || job.CancellationRequestedAt != nil {
+			alreadyCanceled := job.Status == JobStatusCanceled
 			job.Status = JobStatusCanceled
 			job.FinishedAt = &finishedAt
 			if err := tx.Save(&job).Error; err != nil {
@@ -256,6 +265,11 @@ func (h WorkerHandler) persistFFmpegExit(jobID uint, status string, progress int
 			}
 			if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
 				return err
+			}
+			if !alreadyCanceled {
+				if err := persistCanceledJobCleanupIntent(tx, &job); err != nil {
+					return err
+				}
 			}
 			canceled = true
 			return nil
@@ -272,9 +286,6 @@ func (h WorkerHandler) persistFFmpegExit(jobID uint, status string, progress int
 	})
 	if err != nil {
 		return job, false, err
-	}
-	if canceled {
-		scheduleCanceledJobCleanup(h.db, job)
 	}
 	return job, canceled, nil
 }
@@ -494,8 +505,7 @@ func cancelRunningJobProcess(jobID uint) bool {
 		return false
 	}
 
-	_ = cmd.Process.Kill()
-	return true
+	return terminateFFmpegProcessGroup(cmd)
 }
 
 func ffmpegArgsWithProgress(args []string) []string {

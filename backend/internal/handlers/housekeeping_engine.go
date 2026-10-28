@@ -2081,16 +2081,21 @@ func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]strin
 			candidate.BlockedReason = "workspace size changed after preview"
 			return candidate, false, nil
 		}
-		finalIdentity, identityErr := directoryTreeIdentity(path)
-		if identityErr != nil || finalIdentity != bound.Identity {
+		removed, changed, removeErr := removeHousekeepingWorkspaceIfUnchanged(path, bound.Identity, nil)
+		if changed {
 			candidate.SafeToDelete = false
 			candidate.BlockedReason = "workspace contents changed immediately before cleanup"
 			return candidate, false, nil
 		}
-		if err := os.RemoveAll(path); err != nil {
-			return candidate, false, err
+		if removeErr != nil {
+			return candidate, false, removeErr
 		}
-		return candidate, true, nil
+		if !removed {
+			candidate.SafeToDelete = false
+			candidate.Outcome = "already_absent"
+			candidate.SizeBytes = 0
+		}
+		return candidate, removed, nil
 	case housekeepingKindJobLog:
 		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			candidate.SafeToDelete = false
@@ -2324,6 +2329,10 @@ func executeHousekeepingCandidateWithStaging(db *gorm.DB, roots map[string]strin
 }
 
 func removeHousekeepingFileIfUnchanged(path, identity string) (removed, changed bool, err error) {
+	return removeHousekeepingFileIfUnchangedWithGuard(path, identity, nil)
+}
+
+func removeHousekeepingFileIfUnchangedWithGuard(path, identity string, beforeRemoval func() error) (removed, changed bool, err error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, false, nil
@@ -2334,9 +2343,56 @@ func removeHousekeepingFileIfUnchanged(path, identity string) (removed, changed 
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || statIdentity(info, false) != identity {
 		return false, true, nil
 	}
+	if beforeRemoval != nil {
+		if err := beforeRemoval(); err != nil {
+			return false, false, err
+		}
+		info, err = os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, false, nil
+		}
+		if err != nil {
+			return false, false, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || statIdentity(info, false) != identity {
+			return false, true, nil
+		}
+	}
 	if err := os.Remove(path); errors.Is(err, os.ErrNotExist) {
 		return false, false, nil
 	} else if err != nil {
+		return false, false, err
+	}
+	return true, false, nil
+}
+
+func removeHousekeepingWorkspaceIfUnchanged(path, identity string, beforeRemoval func() error) (removed, changed bool, err error) {
+	current, err := directoryTreeIdentity(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, true, err
+	}
+	if current != identity {
+		return false, true, nil
+	}
+	if beforeRemoval != nil {
+		if err := beforeRemoval(); err != nil {
+			return false, false, err
+		}
+		current, err = directoryTreeIdentity(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, false, nil
+		}
+		if err != nil {
+			return false, true, err
+		}
+		if current != identity {
+			return false, true, nil
+		}
+	}
+	if err := os.RemoveAll(path); err != nil {
 		return false, false, err
 	}
 	return true, false, nil
@@ -2827,4 +2883,199 @@ func publisherArtifactStillOwned(db *gorm.DB, candidate HousekeepingCandidate, n
 		return false, nil
 	}
 	return publisherArtifactReferenceBlock(db, publication.PublicationID, candidate.Path) == "", nil
+}
+
+func processPendingCanceledJobCleanups(db *gorm.DB, limit int) (int, error) {
+	return processPendingCanceledJobCleanupsWith(db, limit, executeClaimedCanceledJobCleanup)
+}
+
+func processPendingCanceledJobCleanupsWith(db *gorm.DB, limit int, execute func(*gorm.DB, canceledCleanupClaim) error) (int, error) {
+	if db == nil || limit <= 0 {
+		return 0, nil
+	}
+	if execute == nil {
+		return 0, errors.New("Housekeeping cleanup executor is required")
+	}
+	if _, err := reconcileCanceledJobCleanupIntents(db, 100); err != nil {
+		return 0, err
+	}
+	processed := 0
+	for processed < limit {
+		claim, ok, err := claimNextCanceledJobCleanup(db, time.Now().UTC(), 2*time.Minute)
+		if err != nil {
+			return processed, err
+		}
+		if !ok {
+			return processed, nil
+		}
+		stopRenewal := make(chan struct{})
+		renewalDone := make(chan error, 1)
+		go renewCanceledCleanupLeaseWhileRunning(db, claim, stopRenewal, renewalDone)
+		runErr := execute(db, claim)
+		close(stopRenewal)
+		if renewalErr := <-renewalDone; renewalErr != nil && runErr == nil {
+			runErr = renewalErr
+		}
+		if err := finishCanceledJobCleanup(db, claim, time.Now().UTC(), runErr); err != nil {
+			if errors.Is(err, errCanceledCleanupLeaseLost) {
+				processed++
+				continue
+			}
+			return processed, err
+		}
+		processed++
+	}
+	return processed, nil
+}
+
+func renewCanceledCleanupLeaseWhileRunning(db *gorm.DB, claim canceledCleanupClaim, stop <-chan struct{}, done chan<- error) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := renewCanceledJobCleanupLease(db, claim, time.Now().UTC(), 2*time.Minute); err != nil {
+				done <- err
+				return
+			}
+		case <-stop:
+			done <- nil
+			return
+		}
+	}
+}
+
+func executeClaimedCanceledJobCleanup(db *gorm.DB, claim canceledCleanupClaim) error {
+	if err := assertCanceledJobCleanupLease(db, claim, time.Now().UTC()); err != nil {
+		return err
+	}
+	var job models.QueueJob
+	if err := db.First(&job, claim.Job.ID).Error; err != nil {
+		return err
+	}
+	if err := validateCanceledCleanupOwner(job, claim); err != nil {
+		return err
+	}
+	if job.StartedAt != nil && !ffmpegProcessTreeContainmentSupported() {
+		return fmt.Errorf("%w: process-tree containment is unavailable for a started job", errCanceledCleanupBlocked)
+	}
+	policy, err := loadCancellationPolicy(db)
+	if err != nil {
+		return err
+	}
+	if (!policy.DeleteGeneratedFiles && !policy.DeletePartialOutputFromStaging) || !pathInsideAnyRoot(claim.Job.CleanupTargetPath, policy.ControlledRoots) {
+		return fmt.Errorf("%w: cleanup policy no longer authorizes the persisted target", errCanceledCleanupBlocked)
+	}
+	roles, err := scheduler.LoadStorageRoles(db)
+	if err != nil {
+		return err
+	}
+	roots, err := housekeepingRoleRoots(roles)
+	if err != nil {
+		return fmt.Errorf("%w: configured storage roots are unsafe", errCanceledCleanupBlocked)
+	}
+	if unsafeOperationalRoleRoot(roots, "work") {
+		return fmt.Errorf("%w: configured work root overlaps protected storage", errCanceledCleanupBlocked)
+	}
+	target := claim.Job.CleanupTargetPath
+	if target == "" || filepath.Clean(target) != target || !filepath.IsAbs(target) || filepath.Clean(job.OutputPath) != target {
+		return fmt.Errorf("%w: QueueJob output path no longer matches the frozen cleanup target", errCanceledCleanupBlocked)
+	}
+
+	path := target
+	allowedRoles := []string{"work"}
+	isWorkspace := policy.DeleteGeneratedFiles
+	if isWorkspace {
+		path = filepath.Dir(target)
+		canonicalWorkspace := filepath.Join(roots["work"], fmt.Sprintf("job-%d", job.ID))
+		if filepath.Base(path) != fmt.Sprintf("job-%d", job.ID) || filepath.Clean(path) != filepath.Clean(canonicalWorkspace) {
+			return fmt.Errorf("%w: target does not belong to the canonical QueueJob workspace", errCanceledCleanupBlocked)
+		}
+	}
+	_, resolved, info, pathErr := resolveOwnedFilePath(roots, path, allowedRoles)
+	if pathErr != nil || resolved != path {
+		if pathErr == nil {
+			pathErr = errors.New("target resolved differently from its persisted path")
+		}
+		return fmt.Errorf("%w: %v", errCanceledCleanupBlocked, pathErr)
+	}
+	if info == nil {
+		return nil
+	}
+	if err := revalidateCanceledCleanupOwnership(db, claim, path); err != nil {
+		return err
+	}
+	if isWorkspace {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%w: QueueJob workspace is not a direct directory", errCanceledCleanupBlocked)
+		}
+		identity, err := directoryTreeIdentity(path)
+		if err != nil {
+			return fmt.Errorf("%w: workspace contains an unsafe or unreadable entry", errCanceledCleanupBlocked)
+		}
+		if _, err := directorySizeNoSymlinks(path); err != nil {
+			return fmt.Errorf("%w: workspace contains an unsafe or unreadable entry", errCanceledCleanupBlocked)
+		}
+		removed, changed, err := removeHousekeepingWorkspaceIfUnchanged(path, identity, func() error {
+			return revalidateCanceledCleanupOwnership(db, claim, path)
+		})
+		if err != nil {
+			return err
+		}
+		if changed {
+			return fmt.Errorf("%w: workspace identity changed before removal", errCanceledCleanupBlocked)
+		}
+		if !removed {
+			return nil
+		}
+		return nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: partial output is not a regular non-symlink file", errCanceledCleanupBlocked)
+	}
+	identity := statIdentity(info, false)
+	removed, changed, err := removeHousekeepingFileIfUnchangedWithGuard(path, identity, func() error {
+		return revalidateCanceledCleanupOwnership(db, claim, path)
+	})
+	if err != nil {
+		return err
+	}
+	if changed {
+		return fmt.Errorf("%w: partial output identity changed before removal", errCanceledCleanupBlocked)
+	}
+	if !removed {
+		return nil
+	}
+	return nil
+}
+
+func validateCanceledCleanupOwner(job models.QueueJob, claim canceledCleanupClaim) error {
+	if job.Status != JobStatusCanceled || job.CleanupOperationID != claim.Job.CleanupOperationID || job.CleanupTargetPath != claim.Job.CleanupTargetPath || job.CleanupOwnerRevision != claim.Job.CleanupOwnerRevision || job.CleanupOwnerRevision != canceledCleanupOwnerRevision(job) {
+		return fmt.Errorf("%w: QueueJob lifecycle or cleanup ownership changed", errCanceledCleanupBlocked)
+	}
+	if job.StartedAt != nil && job.FinishedAt == nil {
+		return errCanceledCleanupDeferred
+	}
+	if job.StartedAt != nil && job.ProcessTreeExitVerifiedAt == nil {
+		return fmt.Errorf("%w: a started job has no verified process-tree exit evidence", errCanceledCleanupBlocked)
+	}
+	return nil
+}
+
+func revalidateCanceledCleanupOwnership(db *gorm.DB, claim canceledCleanupClaim, workspace string) error {
+	now := time.Now().UTC()
+	if err := assertCanceledJobCleanupLease(db, claim, now); err != nil {
+		return err
+	}
+	var current models.QueueJob
+	if err := db.First(&current, claim.Job.ID).Error; err != nil {
+		return err
+	}
+	if err := validateCanceledCleanupOwner(current, claim); err != nil {
+		return err
+	}
+	if hasRunningJobProcess(current.ID) || jobHasActiveHousekeepingReferences(db, current.ID, workspace) {
+		return errCanceledCleanupDeferred
+	}
+	return nil
 }

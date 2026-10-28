@@ -60,6 +60,10 @@ Queue SHALL preview and dismiss only eligible terminal canceled jobs whose exact
 
 Queue dismissal SHALL commit history visibility changes and reservation reconciliation without waiting for filesystem I/O. Existing guarded cancellation cleanup SHALL remain separate from dismissal, and any cleanup status or error exposed by Queue SHALL be truthful and independently observable.
 
+Cancellation cleanup SHALL be owned by the durable Housekeeping lifecycle. When current policy authorizes cleanup, the transaction that makes a job terminal SHALL persist a stable QueueJob-owned operation identity, frozen target, owner revision, and `pending` state before acknowledging cancellation. Housekeeping SHALL atomically claim an eligible operation with a lease token and expiry, then revalidate current job status, owner revision, target, policy, configured work root, filesystem identity, and active process/reservation/reference state before deleting. Every destructive boundary and completion update SHALL be fenced by the current unexpired lease token. Failed work SHALL retain bounded diagnostics and use bounded retries; interrupted or expired leases SHALL be recoverable after restart. Filesystem operations SHALL NOT run inside cancellation, dismissal, or lease-claim transactions. Ambiguous legacy rows with empty cleanup state SHALL remain untouched.
+
+For started jobs on Darwin/Linux, direct FFmpeg execution SHALL use a dedicated process group. Cancellation SHALL terminate that group and retain the Queue reservation and active state until the process group is verified absent. The local monitor SHALL persist process-tree exit evidence with terminal cancellation; callbacks without that evidence SHALL NOT authorize cleanup of a started job. Unsupported platforms SHALL refuse FFmpeg launch and SHALL fail closed on cleanup of previously started jobs. An unverifiable process group SHALL NOT authorize cleanup or requeue. Execution paths with wrappers or descendants that escape the process group remain NO-GO. A queued job canceled before process start has no process-tree ownership to await.
+
 #### Scenario: Dismiss a large canceled selection
 - **WHEN** the operator dismisses eligible canceled jobs while a cleanup operation is slow
 - **THEN** the Queue response returns after its bounded database transaction without waiting for that filesystem operation
@@ -67,6 +71,28 @@ Queue dismissal SHALL commit history visibility changes and reservation reconcil
 #### Scenario: Cleanup fails
 - **WHEN** an authorized canceled-job cleanup operation fails
 - **THEN** its failure remains visible through the cleanup operation status and does not roll back or falsely report the Queue dismissal
+
+#### Scenario: Cleanup intent and Queue cancellation commit together
+- **WHEN** a new queued cancellation or acknowledged running cancellation is eligible for cleanup
+- **THEN** its durable Housekeeping operation identity and frozen target are committed with the terminal Queue transition before cancellation is acknowledged
+- **AND** the transaction performs no filesystem mutation
+
+#### Scenario: Housekeeping restarts before or after claim
+- **WHEN** Housekeeping restarts with a pending operation or an expired running lease
+- **THEN** it can resume the durable operation after revalidating ownership and policy
+- **AND** a stale lease token cannot execute or complete the reclaimed attempt
+
+#### Scenario: Active execution or reservation remains
+- **WHEN** cleanup is claimed while a process, Queue reservation, Publisher lease, or other protected reference remains active
+- **THEN** cleanup is deferred and the workspace remains unchanged
+
+#### Scenario: Legacy cleanup authorization is ambiguous
+- **WHEN** a canceled legacy row has empty cleanup state and no persisted operation identity
+- **THEN** Housekeeping leaves it untouched rather than inferring historical authorization
+
+#### Scenario: FFmpeg process group cannot be verified
+- **WHEN** a canceled FFmpeg process group remains present or cannot be inspected after the bounded wait
+- **THEN** the Queue job and reservation remain active and no cleanup operation is authorized
 
 #### Scenario: Existing batch removal
 - **WHEN** the operator removes a canceled batch

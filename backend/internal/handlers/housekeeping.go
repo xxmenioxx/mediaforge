@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anuelvs/mvforge/backend/internal/applog"
 	"github.com/anuelvs/mvforge/backend/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -298,7 +299,8 @@ func StartAutoHousekeeper(db *gorm.DB) *AutoHousekeeper {
 }
 func (w *AutoHousekeeper) Stop() { close(w.stop) }
 func (w *AutoHousekeeper) run() {
-	ticker := time.NewTicker(time.Hour)
+	w.tick()
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -314,6 +316,9 @@ func (w *AutoHousekeeper) tick() {
 		return
 	}
 	defer w.mu.Unlock()
+	if _, err := processPendingCanceledJobCleanups(w.db, 2); err != nil {
+		applog.Event("error", "housekeeping", "canceled_job_cleanup_cycle_failed", nil, err)
+	}
 	policy, err := loadHousekeepingPolicy(w.db)
 	if err != nil || !policy.AutoEnabled {
 		return

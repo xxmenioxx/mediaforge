@@ -411,60 +411,6 @@ func TestAssetLifecycleBecomesAvailableOnlyAfterCancellationAcknowledgment(t *te
 	}
 }
 
-func TestCanceledJobCleanupRunsOutsideSchedulingCallAndRecordsFailure(t *testing.T) {
-	db := queueCanceledPathTestDB(t)
-	job := models.QueueJob{MediaPath: "/raw/slow-cleanup.mkv", Status: JobStatusCanceled, Stage: JobStageCanceled}
-	if err := db.Create(&job).Error; err != nil {
-		t.Fatal(err)
-	}
-	started := make(chan struct{})
-	release := make(chan struct{})
-	finished := make(chan struct{})
-	returned := make(chan struct{})
-	go func() {
-		scheduleCanceledJobCleanupWith(db, job, func(_ *gorm.DB, _ models.QueueJob) error {
-			close(started)
-			<-release
-			close(finished)
-			return fmt.Errorf("synthetic slow filesystem failure")
-		})
-		close(returned)
-	}()
-	select {
-	case <-returned:
-	case <-time.After(time.Second):
-		close(release)
-		t.Fatal("cleanup scheduling waited for the simulated filesystem operation")
-	}
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		close(release)
-		t.Fatal("cleanup worker did not start")
-	}
-	close(release)
-	select {
-	case <-finished:
-	case <-time.After(time.Second):
-		t.Fatal("simulated cleanup did not finish")
-	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		var stored models.QueueJob
-		if err := db.First(&stored, job.ID).Error; err != nil {
-			t.Fatal(err)
-		}
-		if stored.CleanupStatus == "failed" {
-			if stored.CleanupError != "synthetic slow filesystem failure" {
-				t.Fatalf("cleanup failure was not observable: %#v", stored)
-			}
-			return
-		}
-		time.Sleep(time.Millisecond * 5)
-	}
-	t.Fatal("cleanup failure state was not persisted")
-}
-
 func TestCanceledJobCleanupErrorIsBounded(t *testing.T) {
 	message := strings.Repeat("é", 1500)
 	bounded := boundedCanceledCleanupError(fmt.Errorf("%s", message))
@@ -480,6 +426,8 @@ func TestBatchDismissReturnsWhileCanceledJobCleanupIsBlocked(t *testing.T) {
 	job := models.QueueJob{
 		BatchID: "slow-cleanup", MediaPath: "/raw/slow-cleanup.mkv", Status: JobStatusCanceled,
 		Stage: JobStageCanceled, StartedAt: &startedAt, ExecutionNumber: &executionNumber,
+		CleanupOperationID: "queue-canceled-job-slow-cleanup", CleanupStatus: canceledCleanupStatusPending,
+		CleanupTargetPath: "/tmp/work/job-slow-cleanup/output.mkv", CleanupOwnerRevision: "synthetic-revision",
 	}
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
@@ -487,12 +435,14 @@ func TestBatchDismissReturnsWhileCanceledJobCleanupIsBlocked(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	finished := make(chan struct{})
-	scheduleCanceledJobCleanupWith(db, job, func(_ *gorm.DB, _ models.QueueJob) error {
-		close(started)
-		<-release
-		close(finished)
-		return nil
-	})
+	go func() {
+		_, _ = processPendingCanceledJobCleanupsWith(db, 1, func(_ *gorm.DB, _ canceledCleanupClaim) error {
+			close(started)
+			<-release
+			close(finished)
+			return nil
+		})
+	}()
 	select {
 	case <-started:
 	case <-time.After(time.Second):

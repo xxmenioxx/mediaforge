@@ -1,7 +1,7 @@
 ## 1. Cancellation and cleanup lifecycle
 
 - [x] 1.1 Persist a running-job cancellation request and make queued cancellation terminal with atomic reservation release; verify queued/running and worker-callback race tests.
-- [ ] 1.2 Partially implemented: cleanup is policy-guarded, status-tracked, bounded, and outside request transactions; transfer execution and restart reconciliation to durable Housekeeping ownership and verify recovery before marking complete.
+- [x] 1.2 Persist stable QueueJob-owned cleanup intent with the terminal cancellation transaction; claim and execute only through Housekeeping with CAS leases, token-fenced retries, restart recovery, live ownership/path/policy revalidation, and bounded diagnostics. Verify queued/running intent timing, restart before/after claim, duplicate scheduling, stale/expired leases, retry idempotency, active worker/reservation deferral, dismissed history, legacy-state adoption, symlink/path boundaries, mixed-status dismissal, slow-filesystem HTTP independence, and FFmpeg process-group exit behavior. Focused backend/frontend tests, focused Go race tests, strict OpenSpec, and canonical verification passed (full scope, 6/6).
 - [x] 1.3 Preserve canceled history and lifecycle blockers through worker late callbacks; verify asset lifecycle projection and reservation regressions.
 
 ## 2. Exact path-group dismissal

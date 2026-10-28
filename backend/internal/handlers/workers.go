@@ -834,6 +834,9 @@ func (h WorkerHandler) UpdateJobStatus(c *gin.Context) {
 			if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
 				return err
 			}
+			if err := persistCanceledJobCleanupIntent(tx, &job); err != nil {
+				return err
+			}
 			canceled = true
 			return nil
 		}
@@ -867,6 +870,9 @@ func (h WorkerHandler) UpdateJobStatus(c *gin.Context) {
 			if err := scheduler.ReleaseReservation(tx, job.ID); err != nil {
 				return err
 			}
+			if err := persistCanceledJobCleanupIntent(tx, &job); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -878,11 +884,7 @@ func (h WorkerHandler) UpdateJobStatus(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if canceled {
-		if job.Status == JobStatusCanceled {
-			scheduleCanceledJobCleanup(h.db, job)
-		}
-	} else if terminalJobStatus(job.Status) {
+	if !canceled && terminalJobStatus(job.Status) {
 		_ = scheduler.DeactivateReservationResources(h.db, job.ID)
 	}
 
