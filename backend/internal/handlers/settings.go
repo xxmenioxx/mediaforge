@@ -127,6 +127,9 @@ func (h SettingsHandler) List(c *gin.Context) {
 		if err := migrateOCRAISettings(tx); err != nil {
 			return err
 		}
+		if err := migrateAICopilotSettings(tx); err != nil {
+			return err
+		}
 		if err := migrateLegacyJellyfinCredential(tx, secrets); err != nil {
 			return err
 		}
