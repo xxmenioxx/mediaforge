@@ -48,16 +48,17 @@ type subtitleProofreadingStartInput struct {
 }
 
 type subtitleProofreadingCue struct {
-	ID           string
-	Ordinal      int
-	Hash         string
-	SourceText   string
-	DisplayText  string
-	Start        float64
-	End          float64
-	TextSegments []subtitleProofreadingTextSegment
-	ASSDialogue  *assProtectedDialogue
-	Neighbors    []subtitleProofreadingNeighbor
+	ID                string
+	Ordinal           int
+	Hash              string
+	SourceText        string
+	DisplayText       string
+	Start             float64
+	End               float64
+	TextSegments      []subtitleProofreadingTextSegment
+	ASSDialogue       *assProtectedDialogue
+	Neighbors         []subtitleProofreadingNeighbor
+	MemorySuggestions []ocrCorrectionMemoryPromptSuggestion
 }
 
 type subtitleProofreadingTextSegment struct {

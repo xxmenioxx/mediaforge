@@ -140,6 +140,7 @@ export function settingsDraftSnapshot(form: SettingsForm, section: SettingsDraft
         subtitleSettings: form.ordinarySettings.subtitleSettings,
         subtitleTranslationSettings: form.ordinarySettings.subtitleTranslationSettings,
         ocrAISettings: form.ordinarySettings.ocrAISettings,
+        ocrCorrectionMemorySettings: form.ordinarySettings.ocrCorrectionMemorySettings,
       };
     case 'test-encode':
       return form.ordinarySettings.testEncodePolicy;
@@ -225,6 +226,7 @@ export function mergeSettingsDraftSection(
         subtitleSettings: source.ordinarySettings.subtitleSettings,
         subtitleTranslationSettings: source.ordinarySettings.subtitleTranslationSettings,
         ocrAISettings: source.ordinarySettings.ocrAISettings,
+        ocrCorrectionMemorySettings: source.ordinarySettings.ocrCorrectionMemorySettings,
       } };
     case 'test-encode':
       return { ...target, ordinarySettings: { ...target.ordinarySettings, testEncodePolicy: source.ordinarySettings.testEncodePolicy } };

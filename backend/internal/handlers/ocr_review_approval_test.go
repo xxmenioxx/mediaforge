@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/anuelvs/mvforge/backend/internal/models"
 )
 
 type canonicalOCRReviewFixture struct {
@@ -352,6 +354,10 @@ func TestCanonicalOCRReviewTargetGroupsOnlyEquivalentSRTASSMembers(t *testing.T)
 
 func TestCanonicalOCRCorrectDecisionPublishesTextAndKeepsCueStructure(t *testing.T) {
 	fixture := newCanonicalOCRReviewFixture(t, "The h0use", 2)
+	db := newOCRCorrectionMemoryTestDB(t)
+	if err := db.Create(&models.AppSetting{Key: ocrCorrectionMemorySettingsKey, Value: models.JSONMap{"enabled": true}}).Error; err != nil {
+		t.Fatal(err)
+	}
 	beforeRevision, _, err := publishedSubtitleRevisionFor(fixture.sidecar, fixture.target.LogicalTransformKey)
 	if err != nil {
 		t.Fatal(err)
@@ -362,7 +368,7 @@ func TestCanonicalOCRCorrectDecisionPublishesTextAndKeepsCueStructure(t *testing
 		BaselineRevision: fixture.target.BaselineRevision, Revisions: fixture.target.Revisions,
 		Corrections: []subtitleOCRCorrection{{CueID: 1, Action: "edit", Text: "The house"}}, ReviewTarget: fixture.target,
 	}
-	operationID, err := startSubtitleOCRCorrectionOperation(input)
+	operationID, err := startSubtitleOCRCorrectionOperation(input, db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,6 +397,46 @@ func TestCanonicalOCRCorrectDecisionPublishesTextAndKeepsCueStructure(t *testing
 	if !decision.HumanApproval || decision.BeforeTextHash != boundedTextHash("The h0use") || decision.AfterTextHash != boundedTextHash("The house") ||
 		decision.ApprovalArtifactRevision != afterRevision.key() {
 		t.Fatalf("corrected cue did not receive approval bound to its committed revision: %#v", decision)
+	}
+	var entries []models.OCRCorrectionMemoryEntry
+	if err := db.Find(&entries).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].OriginalText != "The h0use" || entries[0].CorrectedText != "The house" {
+		t.Fatalf("committed approved correction did not produce one memory entry: %#v", entries)
+	}
+	var evidence models.OCRCorrectionMemoryEvidence
+	if err := db.Where("entry_id = ?", entries[0].ID).First(&evidence).Error; err != nil {
+		t.Fatal(err)
+	}
+	if evidence.SourceRevision != fixture.target.Identity.key() || evidence.ArtifactRevision != afterRevision.key() || evidence.ApprovalAction != "edit" {
+		t.Fatalf("learned evidence is not bound to the committed revisions and action: %#v", evidence)
+	}
+}
+
+func TestCanonicalOCRCancelledCorrectionDoesNotCaptureMemory(t *testing.T) {
+	fixture := newCanonicalOCRReviewFixture(t, "The h0use", 2)
+	db := newOCRCorrectionMemoryTestDB(t)
+	if err := db.Create(&models.AppSetting{Key: ocrCorrectionMemorySettingsKey, Value: models.JSONMap{"enabled": true}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	input := subtitleOCRCorrectionInput{
+		MediaPath: fixture.mediaPath, SidecarPath: fixture.sidecar, SidecarPaths: fixture.target.SidecarPaths,
+		Format: "srt", LogicalTransformKey: fixture.target.LogicalTransformKey,
+		BaselineRevision: fixture.target.BaselineRevision, Revisions: fixture.target.Revisions,
+		Corrections: []subtitleOCRCorrection{{CueID: 1, Action: "edit", Text: "The house"}}, ReviewTarget: fixture.target,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	operationID := "subtitle-ocr-correction-cancelled-memory-test"
+	runSubtitleOCRCorrectionOperation(ctx, operationID, t.TempDir(), input, db)
+	content, err := os.ReadFile(fixture.sidecar)
+	if err != nil || !strings.Contains(string(content), "The h0use") || strings.Contains(string(content), "The house") {
+		t.Fatalf("cancelled correction changed the sidecar: %q (%v)", content, err)
+	}
+	var entries int64
+	if err := db.Model(&models.OCRCorrectionMemoryEntry{}).Count(&entries).Error; err != nil || entries != 0 {
+		t.Fatalf("cancelled correction captured %d entries: %v", entries, err)
 	}
 }
 

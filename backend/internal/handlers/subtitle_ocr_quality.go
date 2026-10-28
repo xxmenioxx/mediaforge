@@ -113,22 +113,23 @@ func appendedPublishedCanonicalOCRHistory(snapshot *publishedCanonicalOCRSnapsho
 }
 
 type subtitleOCRQualityFinding struct {
-	CueID                  int                         `json:"cueId"`
-	OriginalText           string                      `json:"originalText"`
-	Suggestion             string                      `json:"suggestion,omitempty"`
-	AISuggestion           *subtitleOCRAISuggestion    `json:"aiSuggestion,omitempty"`
-	Status                 string                      `json:"status"`
-	Reasons                []string                    `json:"reasons,omitempty"`
-	Evidence               []string                    `json:"evidence,omitempty"`
-	CandidateSource        string                      `json:"candidateSource,omitempty"`
-	DictionaryRuleIDs      []string                    `json:"dictionaryRuleIds,omitempty"`
-	DictionaryRuleVersions []int                       `json:"dictionaryRuleVersions,omitempty"`
-	Baseline               string                      `json:"baselineRevision"`
-	Start                  float64                     `json:"startSeconds"`
-	End                    float64                     `json:"endSeconds"`
-	TimingProvenance       string                      `json:"timingProvenance,omitempty"`
-	Role                   string                      `json:"role,omitempty"`
-	Geometry               *subtitleOCRFindingGeometry `json:"geometry,omitempty"`
+	CueID                  int                             `json:"cueId"`
+	OriginalText           string                          `json:"originalText"`
+	Suggestion             string                          `json:"suggestion,omitempty"`
+	AISuggestion           *subtitleOCRAISuggestion        `json:"aiSuggestion,omitempty"`
+	Status                 string                          `json:"status"`
+	Reasons                []string                        `json:"reasons,omitempty"`
+	Evidence               []string                        `json:"evidence,omitempty"`
+	CandidateSource        string                          `json:"candidateSource,omitempty"`
+	DictionaryRuleIDs      []string                        `json:"dictionaryRuleIds,omitempty"`
+	DictionaryRuleVersions []int                           `json:"dictionaryRuleVersions,omitempty"`
+	MemorySuggestions      []ocrCorrectionMemorySuggestion `json:"memorySuggestions,omitempty"`
+	Baseline               string                          `json:"baselineRevision"`
+	Start                  float64                         `json:"startSeconds"`
+	End                    float64                         `json:"endSeconds"`
+	TimingProvenance       string                          `json:"timingProvenance,omitempty"`
+	Role                   string                          `json:"role,omitempty"`
+	Geometry               *subtitleOCRFindingGeometry     `json:"geometry,omitempty"`
 }
 
 type subtitleOCRFindingGeometry struct {
@@ -1567,6 +1568,28 @@ func runSubtitleOCRCorrectionOperation(
 		}
 		return
 	}
+	artifactRevisions := make([]publishedSubtitleRevision, len(paths))
+	artifactRevisionAvailable := true
+	for index, path := range paths {
+		artifactRevisions[index], _, err = publishedSubtitleRevisionFor(path, snapshots[index].LogicalTransformKey)
+		if err != nil {
+			artifactRevisionAvailable = false
+			break
+		}
+	}
+	if artifactRevisionAvailable {
+		if captureErr := captureApprovedOCRCorrectionMemory(dictionaryDB, snapshots, subtitleRevisionSetKey(artifactRevisions), input.Corrections, decisionProvenance, beforeCues, cues); captureErr != nil {
+			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
+				operation.Status = "completed"
+				operation.Phase = "completed"
+				operation.Progress = 100
+				operation.Message = "OCR correction completed; local memory capture could not be saved"
+				operation.Error = ""
+			})
+			markSubtitlePublicationCommitted(operationID)
+			return
+		}
+	}
 	markSubtitlePublicationCommitted(operationID)
 	updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {
 		operation.Status = "completed"
@@ -1597,6 +1620,7 @@ func runSubtitleOCRAnalysisOperation(ctx context.Context, operationID, workspace
 			})
 			return
 		}
+		attachOCRCorrectionMemorySuggestions(dictionaryDB, input.ReviewTarget, &report)
 		report, err = enrichSubtitleOCRReportWithAI(ctx, operationID, report, input.ReviewTarget, dictionaryDB, input.aiLifecycle, input.ollamaHTTPClient)
 		if err != nil {
 			updateSubtitleExtractionOperation(operationID, func(operation *subtitleExtractionOperation) {

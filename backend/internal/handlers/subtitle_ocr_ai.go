@@ -120,6 +120,7 @@ func enrichSubtitleOCRReportWithAI(
 		return report, nil
 	}
 	cues, unassessed := subtitleOCRAIReviewCues(report, target)
+	attachOCRCorrectionMemoryPromptSuggestions(db, target, report, cues)
 	if len(cues) == 0 {
 		report.OCRAI.UnassessedCount = unassessed
 		report.OCRAI.State = "not_needed"

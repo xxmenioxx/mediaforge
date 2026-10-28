@@ -11,6 +11,7 @@ vi.mock('../api/client', () => ({
     subtitleExtractionOperation: vi.fn(),
     cancelSubtitleOperation: vi.fn(),
     correctSubtitleOCR: vi.fn(),
+    recordOCRCorrectionMemoryFeedback: vi.fn(),
   },
 }));
 
@@ -155,6 +156,70 @@ describe('SubtitleOCRReviewDialog', () => {
     expect(within(dialog).queryByText('AI Suggestion · ocr-fixture:latest:')).toBeNull();
     expect((correctedText as HTMLTextAreaElement).value).toBe('The home');
     expect(api.correctSubtitleOCR).not.toHaveBeenCalled();
+  });
+
+  it('rejects a memory suggestion without changing cue text or submitting a correction', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.analyzeSubtitleOCR).mockResolvedValue({ operationId: 'ocr-review-operation', status: 'running', phase: 'analyzing', progress: 20 });
+    vi.mocked(api.subtitleExtractionOperation).mockResolvedValue({
+      ...operation('completed', 'completed'),
+      qualityReport: {
+        artifactPath: '/media/movie.eng.srt', format: 'srt', logicalTransformKey: 'logical-review',
+        revision: { artifactPath: '/media/movie.eng.srt', artifactIdentity: 'srt', sizeBytes: 10, modifiedAtUnixNano: '10', contentHash: 'hash', logicalTransform: 'logical-review' },
+        revisionSet: [], baselineRevision: 'baseline-review', analyzerVersion: 'quality-v1', repairVersion: 'repair-v1',
+        cleanCount: 0, suspiciousCount: 1, reviewCount: 0, canCorrect: true,
+        findings: [{
+          cueId: 1, originalText: 'The h0use', status: 'suspicious', baselineRevision: 'baseline-review', startSeconds: 1, endSeconds: 2,
+          memorySuggestions: [{ entryId: 44, correctedText: 'The house', matchType: 'exact_context', scopeType: 'title', sourceLanguage: 'eng', acceptedSuggestions: 3, rejectedSuggestions: 1, provenanceCount: 2, sourceRevision: 'source-rev', artifactRevision: 'artifact-rev' }],
+        }],
+      },
+    } as never);
+    vi.mocked(api.recordOCRCorrectionMemoryFeedback).mockResolvedValue({} as never);
+    renderReview(exactTarget);
+
+    const dialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
+    const correctedText = await within(dialog).findByLabelText('Corrected text for cue 1');
+    expect(await within(dialog).findByText(/Approved memory suggestion · exact_context · ENG · title/)).toBeTruthy();
+    await user.click(within(dialog).getByRole('button', { name: 'Reject memory suggestion' }));
+
+    await waitFor(() => expect(api.recordOCRCorrectionMemoryFeedback).toHaveBeenCalledWith(44, 'rejected'));
+    expect((correctedText as HTMLTextAreaElement).value).toBe('The h0use');
+    expect(api.correctSubtitleOCR).not.toHaveBeenCalled();
+    expect(within(dialog).getByText(/Cue text remains unchanged/)).toBeTruthy();
+  });
+
+  it('records accepted memory feedback only after the confirmed correction succeeds', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.analyzeSubtitleOCR).mockResolvedValue({ operationId: 'ocr-review-operation', status: 'running', phase: 'analyzing', progress: 20 });
+    vi.mocked(api.subtitleExtractionOperation).mockResolvedValue({
+      ...operation('completed', 'completed'),
+      qualityReport: {
+        artifactPath: '/media/movie.eng.srt', format: 'srt', logicalTransformKey: 'logical-review',
+        revision: { artifactPath: '/media/movie.eng.srt', artifactIdentity: 'srt', sizeBytes: 10, modifiedAtUnixNano: '10', contentHash: 'hash', logicalTransform: 'logical-review' },
+        revisionSet: [], baselineRevision: 'baseline-review', analyzerVersion: 'quality-v1', repairVersion: 'repair-v1',
+        cleanCount: 0, suspiciousCount: 1, reviewCount: 0, canCorrect: true,
+        findings: [{
+          cueId: 1, originalText: 'The h0use', status: 'suspicious', baselineRevision: 'baseline-review', startSeconds: 1, endSeconds: 2,
+          memorySuggestions: [{ entryId: 45, correctedText: 'The house', matchType: 'exact_text', scopeType: 'asset', sourceLanguage: 'eng', acceptedSuggestions: 1, rejectedSuggestions: 0, provenanceCount: 1, sourceRevision: 'source-rev', artifactRevision: 'artifact-rev' }],
+        }],
+      },
+    } as never);
+    vi.mocked(api.correctSubtitleOCR).mockResolvedValue({ operationId: 'ocr-correction-operation', status: 'running', phase: 'preparing', progress: 1 } as never);
+    vi.mocked(api.recordOCRCorrectionMemoryFeedback).mockResolvedValue({} as never);
+    renderReview(exactTarget);
+
+    const dialog = await screen.findByRole('dialog', { name: 'OCR review for Translation' });
+    const correctedText = await within(dialog).findByLabelText('Corrected text for cue 1');
+    await user.click(within(dialog).getByRole('button', { name: 'Use memory suggestion' }));
+    expect((correctedText as HTMLTextAreaElement).value).toBe('The house');
+    expect(api.recordOCRCorrectionMemoryFeedback).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole('button', { name: 'Preview selected decisions (1)' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm and save' }));
+
+    await waitFor(() => expect(api.correctSubtitleOCR).toHaveBeenCalledWith(expect.objectContaining({
+      corrections: [{ cueId: 1, action: 'edit', text: 'The house' }],
+    })));
+    await waitFor(() => expect(api.recordOCRCorrectionMemoryFeedback).toHaveBeenCalledWith(45, 'accepted'));
   });
 
   it('saves a Correct decision and returns control to the Translation owner', async () => {

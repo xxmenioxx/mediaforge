@@ -109,6 +109,11 @@ import type {
   SubtitleSyncApplyInput,
   SubtitleSyncProposal,
   SubtitleSyncProvenance,
+  OCRCorrectionMemoryEntry,
+  OCRCorrectionMemoryExportResponse,
+  OCRCorrectionMemorySearchInput,
+  OCRCorrectionMemorySearchResponse,
+  OCRCorrectionMemoryScopeType,
   RemoteExecutorConfig,
   RemoteExecutorProbe,
   TrackProfileResolutionPreview,
@@ -509,6 +514,47 @@ export const api = {
     if (input.pageSize !== undefined) query.set('pageSize', String(input.pageSize));
     return request<OCRDictionarySearchResponse>(`/api/assets/ocr-dictionary?${query.toString()}`);
   },
+
+  searchOCRCorrectionMemory: (input: OCRCorrectionMemorySearchInput = {}) => {
+    const query = new URLSearchParams();
+    if (input.search?.trim()) query.set('search', input.search.trim());
+    if (input.language) query.set('language', input.language);
+    if (input.scopeType) query.set('scopeType', input.scopeType);
+    if (input.page !== undefined) query.set('page', String(input.page));
+    if (input.pageSize !== undefined) query.set('pageSize', String(input.pageSize));
+    return request<OCRCorrectionMemorySearchResponse>(`/api/assets/ocr-correction-memory?${query.toString()}`);
+  },
+
+  exportOCRCorrectionMemory: () =>
+    request<OCRCorrectionMemoryExportResponse>('/api/assets/ocr-correction-memory/export'),
+
+  updateOCRCorrectionMemoryEntry: (id: number, input: {
+    originalText: string;
+    correctedText: string;
+    scopeType: OCRCorrectionMemoryScopeType;
+    scopeId: string;
+  }) =>
+    request<OCRCorrectionMemoryEntry>(`/api/assets/ocr-correction-memory/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  setOCRCorrectionMemoryEntryEnabled: (id: number, enabled: boolean) =>
+    request<OCRCorrectionMemoryEntry>(`/api/assets/ocr-correction-memory/${encodeURIComponent(id)}/enabled`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
+
+  recordOCRCorrectionMemoryFeedback: (id: number, decision: 'accepted' | 'rejected') =>
+    request<OCRCorrectionMemoryEntry>(`/api/assets/ocr-correction-memory/${encodeURIComponent(id)}/feedback`, {
+      method: 'POST',
+      body: JSON.stringify({ decision }),
+    }),
+
+  deleteOCRCorrectionMemoryEntry: (id: number) =>
+    request<{ message?: string }>(`/api/assets/ocr-correction-memory/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
 
   createOCRDictionaryEntry: (input: OCRDictionaryRuleInput) =>
     request<OCRDictionaryEntry>('/api/assets/ocr-dictionary', {

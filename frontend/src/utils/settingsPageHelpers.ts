@@ -24,7 +24,7 @@ export const defaultLibraryTypes: LibraryType[] = [
 export const defaultAssetCategories = ['movie', 'anime', 'series', 'episode', 'season', 'extras', 'special', 'concert', 'music-video', 'documentary'];
 const ordinarySettingsKeys = [
   'testEncodePolicy', 'assetDefaults', 'validation', 'runtimePolicy', 'directPlay',
-  'workingHours', 'storageRoles', 'workspace', 'housekeeping', 'ocrAISettings',
+  'workingHours', 'storageRoles', 'workspace', 'housekeeping', 'ocrAISettings', 'ocrCorrectionMemorySettings',
   'subtitleSettings', 'subtitleTranslationSettings', 'ollamaProviderSettings',
   'aiCopilotSettings', 'aiResourceProtectionSettings',
 ] as const;
@@ -34,6 +34,7 @@ function defaultOrdinarySettings(): Record<string, Record<string, unknown>> {
     testEncodePolicy: {}, assetDefaults: {}, validation: {}, runtimePolicy: {}, directPlay: {},
     workingHours: {}, storageRoles: {}, workspace: {}, housekeeping: {},
     ocrAISettings: { enabled: false, model: '' },
+    ocrCorrectionMemorySettings: { enabled: false, retentionDays: 180, includeInAIPrompts: false },
     subtitleSettings: {},
     subtitleTranslationSettings: {
       provider: '', ollamaModel: '', qualityReviewerModel: '',

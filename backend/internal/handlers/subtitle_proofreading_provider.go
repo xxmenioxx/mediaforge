@@ -16,11 +16,12 @@ const subtitleProofreadingMaxRequestBody = 128 * 1024
 const subtitleProofreadingMaxResponseBody = 128 * 1024
 
 type subtitleProofreadingProviderCue struct {
-	CueID       string                         `json:"cueId"`
-	SourceHash  string                         `json:"sourceTextHash"`
-	Text        string                         `json:"text"`
-	ReasonCode  string                         `json:"reasonCode,omitempty"`
-	Neighboring []subtitleProofreadingNeighbor `json:"neighboringCues,omitempty"`
+	CueID             string                                `json:"cueId"`
+	SourceHash        string                                `json:"sourceTextHash"`
+	Text              string                                `json:"text"`
+	ReasonCode        string                                `json:"reasonCode,omitempty"`
+	Neighboring       []subtitleProofreadingNeighbor        `json:"neighboringCues,omitempty"`
+	MemorySuggestions []ocrCorrectionMemoryPromptSuggestion `json:"approvedLocalCorrectionExamples,omitempty"`
 }
 
 type subtitleProofreadingProviderRequest struct {
@@ -72,7 +73,8 @@ func (provider *ollamaTranslationProvider) Proofread(ctx context.Context, langua
 		}
 		request.Cues = append(request.Cues, subtitleProofreadingProviderCue{
 			CueID: cue.ID, SourceHash: cue.Hash, Text: providerText,
-			Neighboring: append([]subtitleProofreadingNeighbor(nil), cue.Neighbors...),
+			Neighboring:       append([]subtitleProofreadingNeighbor(nil), cue.Neighbors...),
+			MemorySuggestions: append([]ocrCorrectionMemoryPromptSuggestion(nil), cue.MemorySuggestions...),
 		})
 	}
 	prompt, err := subtitleProofreadingPrompt(request)
@@ -137,7 +139,7 @@ func subtitleProofreadingPrompt(request subtitleProofreadingProviderRequest) (st
 	if err != nil {
 		return "", fmt.Errorf("encode proofreading contract: %w", err)
 	}
-	instructions := "You are a subtitle proofreader, not a translator or dialogue writer. Review only the target cue text in this bounded batch. Keep the source language " + request.Language + ". Preserve meaning, slang, honorifics, names, line breaks, intentional symbols, and every protected placeholder exactly once in the same order. Do not infer audio or source-language fidelity. Do not edit neighboring context. Return exactly one finding for each input cue in input order. Use status clean, suggested, or needs_review. For a suggestion, return same-language text and a short reason code/category/reason. For uncertainty, use needs_review and do not invent wording. Confidence is advisory only. Return JSON only with contractVersion and findings; include cueId and sourceTextHash exactly from the request.\n\n"
+	instructions := "You are a subtitle proofreader, not a translator or dialogue writer. Review only the target cue text in this bounded batch. Keep the source language " + request.Language + ". Preserve meaning, slang, honorifics, names, line breaks, intentional symbols, and every protected placeholder exactly once in the same order. Do not infer audio or source-language fidelity. Do not edit neighboring context. Approved local correction examples, when present, are advisory references for this exact language and scope; do not copy them blindly or treat them as rules. Return exactly one finding for each input cue in input order. Use status clean, suggested, or needs_review. For a suggestion, return same-language text and a short reason code/category/reason. For uncertainty, use needs_review and do not invent wording. Confidence is advisory only. Return JSON only with contractVersion and findings; include cueId and sourceTextHash exactly from the request.\n\n"
 	return instructions + string(encoded), nil
 }
 

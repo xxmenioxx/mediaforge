@@ -238,6 +238,41 @@ describe('Settings domain navigation and drafts', () => {
     expect(api.updateSetting).not.toHaveBeenCalled();
   }, 15000);
 
+  it('saves correction memory opt-ins independently from OCR AI with conservative defaults', async () => {
+    const user = userEvent.setup();
+    const workerSetting = { key: 'workers', value: {
+      defaultWorkerName: 'local', autoWorkerEnabled: true, maxConcurrentJobs: 2, maxJobsPerBatch: 8,
+      delaySecondsBetweenJobs: 0, batchCooldownSeconds: 0, dryRunOnly: false,
+    } };
+    const initialSettings = [
+      workerSetting,
+      { key: 'ocrAISettings', value: { enabled: false, model: '' } },
+      { key: 'ocrCorrectionMemorySettings', value: { enabled: false, retentionDays: 180, includeInAIPrompts: false } },
+    ];
+    vi.mocked(api.settings).mockReset().mockResolvedValue(initialSettings as never);
+    vi.mocked(api.updateSettingsBatch).mockResolvedValue(initialSettings[2] as never);
+
+    renderSettings('/settings?section=subtitles');
+    const learnSwitch = await screen.findByRole('switch', { name: 'Learn from approved OCR corrections' });
+    const retention = screen.getByRole('spinbutton', { name: 'Correction memory retention (days)' });
+    const promptSwitch = screen.getByRole('switch', { name: 'Include bounded matches in optional OCR AI prompts' });
+    expect(learnSwitch).toHaveProperty('checked', false);
+    expect((retention as HTMLInputElement).value).toBe('180');
+    expect(promptSwitch).toHaveProperty('checked', false);
+    expect(promptSwitch).toHaveProperty('disabled', true);
+
+    await user.click(learnSwitch);
+    fireEvent.change(retention, { target: { value: '365' } });
+    await user.click(screen.getByRole('switch', { name: 'Include bounded matches in optional OCR AI prompts' }));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(api.updateSettingsBatch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateSettingsBatch).mock.calls[0]?.[0].settings).toEqual([
+      { key: 'ocrCorrectionMemorySettings', value: { enabled: true, retentionDays: 365, includeInAIPrompts: true } },
+    ]);
+    expect(vi.mocked(api.updateSettingsBatch).mock.calls[0]?.[0].settings.some(({ key }) => key === 'ocrAISettings')).toBe(false);
+  }, 15000);
+
   it('navigates to URL-addressable AI Copilot settings and saves its independent model draft', async () => {
     const user = userEvent.setup();
     const initialSettings = [
