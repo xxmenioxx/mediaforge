@@ -53,6 +53,18 @@ func TestSettingsRegistryValidationAndNormalization(t *testing.T) {
 	if _, err := resourceDefinition.Normalize(settingsMutationContext{}, models.JSONMap{"maxResidentModels": 0}); err == nil {
 		t.Fatal("invalid resource limits passed backend settings normalization")
 	}
+
+	for key, domain := range map[string]string{
+		"subtitleSettings":        "subtitles",
+		translationSettingsKey:    "subtitles",
+		ocrAISettingsKey:          "subtitles",
+		aiCopilotSettingsKey:      "ai-copilot",
+		ollamaProviderSettingsKey: "providers-integrations",
+	} {
+		if got := settingDefinitionFor(key).Domain; got != domain {
+			t.Errorf("setting %q has domain %q, want %q", key, got, domain)
+		}
+	}
 }
 
 func TestResourceProtectionSettingUpdatePreservesUnrelatedSettings(t *testing.T) {

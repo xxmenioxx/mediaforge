@@ -3,6 +3,7 @@ import { Alert, Button, Card, CardContent, FormControlLabel, MenuItem, Stack, Sw
 import { useEffect, useState } from 'react';
 import { ApiRequestError, api } from '../../api/client';
 import type { OCRAISettingsValue, OllamaModelReadinessResponse } from '../../api/types';
+import { ollamaModelCatalogQueryKey } from './OllamaSettings';
 
 export function ocrAISettingsValue(value?: Record<string, unknown>): OCRAISettingsValue {
   return {
@@ -29,7 +30,7 @@ export function OCRAISettingsCard({
     providerConfigurationRevision: string;
   } | null>(null);
   const models = useQuery({
-    queryKey: ['ollama-models'],
+    queryKey: ollamaModelCatalogQueryKey(providerConfigurationRevision),
     queryFn: api.listOllamaModels,
     enabled: false,
     retry: false,

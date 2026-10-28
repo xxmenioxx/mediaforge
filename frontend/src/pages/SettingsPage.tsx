@@ -1,5 +1,8 @@
 import {
   Alert,
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Box,
   Button,
   Card,
@@ -17,6 +20,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import AddIcon from '@mui/icons-material/Add';
 import CloseIcon from '@mui/icons-material/Close';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -29,6 +33,7 @@ import { Link as RouterLink, useLocation, useNavigate, useSearchParams } from 'r
 import { api } from '../api/client';
 import { PageHeader } from '../components/PageHeader';
 import { ValidationPolicySettingsCard } from '../components/ValidationPolicySettingsCard';
+import { OCRDictionaryManager } from '../components/OCRDictionaryManager';
 import { TestEncodeSettingsDomain } from './TestEncodeSettingsDomain';
 import { AdvancedSettings } from './settings/AdvancedSettings';
 import { GeneralSettingsDomain } from './settings/GeneralSettings';
@@ -41,6 +46,9 @@ import { OperationsSettingsDomain } from './settings/OperationsSettings';
 import { AssetsStorageSettingsDomain, rebuildAssetTypes, summarizeLibrariesByType } from './settings/AssetsStorageSettings';
 import { PipelineSettingsDomain } from './settings/PipelineSettings';
 import { OCRAISettingsCard, ocrAISettingsValue } from './settings/OCRAISettingsCard';
+import { AIModelRuntimeSettingsCard, AICopilotSettingsCard, AITranslationSettingsCard, aiCopilotSettingsValue } from './settings/OllamaSettings';
+export { AITranslationSettingsCard as SubtitleTranslationSettingsCard } from './settings/OllamaSettings';
+import { useSettingsDraftValue } from '../hooks/useSettingsDraftValue';
 export { HousekeepingCard } from './settings/OperationsSettings';
 import { encoderNamesForWorker } from '../utils/workerEncoders';
 import { DirectPlayCard, directPlayValue, RemoteExecutorsCard, remoteExecutorsValue, RuntimeProfilesCard, runtimePolicyValue, RuntimeSnapshotCard, WorkersCard } from './settings/RuntimeSettings';
@@ -64,7 +72,7 @@ import {
   settingsDraftSnapshot,
   settingsDraftStorageKey,
 } from './settings/settingsDrafts';
-import type { AppSetting, MVForgePreferences, SubtitleTranslationReadiness, SubtitleTranslationReadinessState, SubtitleTranslationSettingsValue } from '../api/types';
+import type { AppSetting, MVForgePreferences } from '../api/types';
 import {
   archivePathValue,
   arrayValue,
@@ -85,7 +93,8 @@ import {
   subtitleNormalizeHexColor,
   subtitleSRTFallbackValue,
   subtitleStylingValue,
-  subtitleTranslationReadinessForSettings,
+  subtitleTranslationSettingsDraftValue,
+  subtitleTranslationSettingsPayload,
   subtitleTranslationSettingsValue,
   workerJobStartPacingModeValue,
   workerProgressPercentError,
@@ -118,6 +127,10 @@ type LibraryTypeDraft = LibraryType & {
 };
 
 type WorkingWindow = { name: string; days: string[]; start: string; end: string };
+
+function identitySettingsValue<T>(value: unknown): T {
+  return value as T;
+}
 export type WorkingHoursValue = {
   enabled: boolean;
   timezone: string;
@@ -235,6 +248,8 @@ export function SettingsPage() {
   const schedulerRecovery = useQuery({ queryKey: ['scheduler-recovery'], queryFn: api.schedulerRecovery });
   const ollamaProviderSetting = settings.data?.find((item) => item.key === 'ollamaProviderSettings');
   const ollamaProviderConfigurationRevision = ollamaProviderSetting?.updatedAt ?? 'unconfigured';
+  const ollamaProviderConfigured = ollamaProviderSetting?.value.state === 'configured';
+  const subtitleTranslationSetting = settings.data?.find((item) => item.key === 'subtitleTranslationSettings');
   const autoPublisherSetting = settings.data?.find((item) => item.key === 'pipelineAutomation');
   const autoPublisherEnabled = settings.data
     ? autoPublisherSetting?.value.autoPublisherEnabled === true
@@ -361,6 +376,7 @@ export function SettingsPage() {
           { key: 'workers', value: workerSettingsPayload(nextForm.workers) as unknown as Record<string, unknown> },
           { key: 'runtimePolicy', value: nextForm.ordinarySettings.runtimePolicy },
           { key: 'directPlay', value: nextForm.ordinarySettings.directPlay },
+          { key: 'aiResourceProtectionSettings', value: nextForm.ordinarySettings.aiResourceProtectionSettings },
         );
       }
       if (draftSection === 'assets') {
@@ -400,8 +416,22 @@ export function SettingsPage() {
           { key: 'housekeeping', value: nextForm.ordinarySettings.housekeeping },
         );
       }
+      if (draftSection === 'providers-integrations' && !equalSettingsDrafts(nextForm.ordinarySettings.ollamaProviderSettings, baseline.ordinarySettings.ollamaProviderSettings)) {
+        batch.push({ key: 'ollamaProviderSettings', value: { endpoint: stringValue(nextForm.ordinarySettings.ollamaProviderSettings.endpoint, '') } });
+      }
+      if (draftSection === 'ai-copilot' && !equalSettingsDrafts(nextForm.ordinarySettings.aiCopilotSettings, baseline.ordinarySettings.aiCopilotSettings)) {
+        batch.push({ key: 'aiCopilotSettings', value: nextForm.ordinarySettings.aiCopilotSettings });
+      }
       if (draftSection === 'subtitles') {
-        batch.push({ key: 'ocrAISettings', value: nextForm.ordinarySettings.ocrAISettings });
+        if (!equalSettingsDrafts(nextForm.ordinarySettings.subtitleSettings, baseline.ordinarySettings.subtitleSettings)) {
+          batch.push({ key: 'subtitleSettings', value: nextForm.ordinarySettings.subtitleSettings });
+        }
+        if (!equalSettingsDrafts(nextForm.ordinarySettings.subtitleTranslationSettings, baseline.ordinarySettings.subtitleTranslationSettings)) {
+          batch.push({ key: 'subtitleTranslationSettings', value: subtitleTranslationSettingsPayload(nextForm.ordinarySettings.subtitleTranslationSettings) });
+        }
+        if (!equalSettingsDrafts(nextForm.ordinarySettings.ocrAISettings, baseline.ordinarySettings.ocrAISettings)) {
+          batch.push({ key: 'ocrAISettings', value: nextForm.ordinarySettings.ocrAISettings });
+        }
       }
       if (draftSection === 'test-encode') {
         batch.push({ key: 'testEncodePolicy', value: nextForm.ordinarySettings.testEncodePolicy });
@@ -830,11 +860,12 @@ export function SettingsPage() {
     general: ['mvforgePreferences'],
     pipeline: ['workingHours', 'pipelineAutomation'],
     analysis: ['analysisPolicy', 'profileSampleEstimatePolicy'],
-    runtime: ['runtimePolicy', 'remoteExecutors', 'directPlay'],
+    runtime: ['runtimePolicy', 'remoteExecutors', 'directPlay', 'aiResourceProtectionSettings'],
     assets: ['storageRoles', 'workspace', 'assetTypes', 'assetCategories', 'paths', 'assetInventory'],
     'asset-defaults': ['assetDefaults'],
     validation: ['validation'],
-    'providers-integrations': ['jellyfin'],
+    'providers-integrations': ['jellyfin', 'ollamaProviderSettings'],
+    'ai-copilot': ['aiCopilotSettings'],
     archive: ['originalRetentionPolicy', 'storageRoles'],
     operations: ['housekeeping', 'cancellationPolicy'],
     subtitles: ['subtitleSettings', 'subtitleTranslationSettings', 'ocrAISettings'],
@@ -914,12 +945,26 @@ export function SettingsPage() {
             {section === 'providers-integrations' ? (
               <ProvidersIntegrationsSettingsDomain
                 value={settings.data?.find((item) => item.key === 'jellyfin')?.value}
+                ollamaValue={form.ordinarySettings.ollamaProviderSettings}
+                ollamaSavedValue={ollamaProviderSetting?.value}
+                ollamaConfigured={ollamaProviderConfigured}
+                providerConfigurationRevision={ollamaProviderConfigurationRevision}
                 libraries={libraries.data ?? []}
                 saving={updateSetting.isPending}
                 saveError={updateSetting.isError && updateSetting.variables?.key === 'jellyfin'
                   ? updateSetting.error instanceof Error ? updateSetting.error.message : 'Please try again.'
                   : undefined}
+                onOllamaDraftChange={(value) => updateOrdinarySettingDraft('ollamaProviderSettings', value)}
                 onSave={async (value) => { await updateSetting.mutateAsync({ key: 'jellyfin', value }); }}
+              />
+            ) : null}
+
+            {section === 'ai-copilot' ? (
+              <AICopilotSettingsCard
+                value={aiCopilotSettingsValue(form.ordinarySettings.aiCopilotSettings)}
+                providerConfigured={ollamaProviderConfigured}
+                providerConfigurationRevision={ollamaProviderConfigurationRevision}
+                onDraftChange={(value) => updateOrdinarySettingDraft('aiCopilotSettings', value)}
               />
             ) : null}
 
@@ -1068,38 +1113,61 @@ export function SettingsPage() {
 
             {section === 'subtitles' ? (
               <SubtitleCompatibilityCard
-                key={JSON.stringify(subtitleSRTFallbackValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value))}
-                value={subtitleSRTFallbackValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value)}
-                saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'subtitleSettings', value: { ...(settings.data?.find((item) => item.key === 'subtitleSettings')?.value ?? {}), ...value } })}
+                value={subtitleSRTFallbackValue(form.ordinarySettings.subtitleSettings)}
+                saving={coreSavePending}
+                draftOnly
+                onDraftChange={(value) => updateOrdinarySettingDraft('subtitleSettings', { ...form.ordinarySettings.subtitleSettings, ...value })}
               />
             ) : null}
 
             {section === 'subtitles' ? (
               <SubtitleStylingCard
-                key={JSON.stringify(subtitleStylingValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value))}
-                value={subtitleStylingValue(settings.data?.find((item) => item.key === 'subtitleSettings')?.value)}
-                saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'subtitleSettings', value: { ...(settings.data?.find((item) => item.key === 'subtitleSettings')?.value ?? {}), subtitleStyling: value as unknown as Record<string, unknown> } })}
+                value={subtitleStylingValue(form.ordinarySettings.subtitleSettings)}
+                saving={coreSavePending}
+                draftOnly
+                onDraftChange={(value) => updateOrdinarySettingDraft('subtitleSettings', { ...form.ordinarySettings.subtitleSettings, subtitleStyling: value as unknown as Record<string, unknown> })}
               />
             ) : null}
 
             {section === 'subtitles' ? (
-              <SubtitleTranslationSettingsCard
-                key={JSON.stringify(subtitleTranslationSettingsValue(settings.data?.find((item) => item.key === 'subtitleTranslationSettings')?.value))}
-                value={subtitleTranslationSettingsValue(settings.data?.find((item) => item.key === 'subtitleTranslationSettings')?.value)}
-                saving={updateSetting.isPending}
-                onSave={(value) => updateSetting.mutate({ key: 'subtitleTranslationSettings', value })}
+              <AITranslationSettingsCard
+                value={subtitleTranslationSettingsValue({ ...(subtitleTranslationSetting?.value ?? {}), ...form.ordinarySettings.subtitleTranslationSettings })}
+                configDirty={!equalSettingsDrafts(form.ordinarySettings.subtitleTranslationSettings, savedForm.ordinarySettings.subtitleTranslationSettings)}
+                providerConfigured={ollamaProviderConfigured}
+                providerConfigurationRevision={ollamaProviderConfigurationRevision}
+                disableSaving={updateSetting.isPending && updateSetting.variables?.key === 'subtitleTranslationSettings'}
+                disableError={updateSetting.isError && updateSetting.variables?.key === 'subtitleTranslationSettings'
+                  ? updateSetting.error instanceof Error ? updateSetting.error.message : 'Translation could not be disabled.'
+                  : undefined}
+                onDraftChange={(value) => updateOrdinarySettingDraft('subtitleTranslationSettings', value)}
+                onDisable={() => updateSetting.mutate({
+                  key: 'subtitleTranslationSettings',
+                  value: { ...subtitleTranslationSettingsPayload(subtitleTranslationSettingsDraftValue(subtitleTranslationSetting?.value)), enabled: false },
+                })}
               />
             ) : null}
 
             {section === 'subtitles' ? (
               <OCRAISettingsCard
                 value={ocrAISettingsValue(form.ordinarySettings.ocrAISettings)}
-                providerConfigured={ollamaProviderSetting?.value.state === 'configured'}
+                providerConfigured={ollamaProviderConfigured}
                 providerConfigurationRevision={ollamaProviderConfigurationRevision}
                 onDraftChange={(value) => updateOrdinarySettingDraft('ocrAISettings', value)}
               />
+            ) : null}
+
+            {section === 'subtitles' ? (
+              <Accordion>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />} aria-controls="ocr-dictionary-panel-content" id="ocr-dictionary-panel-header">
+                  <Stack>
+                    <Typography variant="h3">OCR Dictionary</Typography>
+                    <Typography color="text.secondary" variant="body2">Search and manage contextual OCR correction rules.</Typography>
+                  </Stack>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <OCRDictionaryManager />
+                </AccordionDetails>
+              </Accordion>
             ) : null}
 
             {section === 'pipeline' ? (
@@ -1124,6 +1192,15 @@ export function SettingsPage() {
 
             {section === 'runtime' ? (
               <WorkersCard form={form} setForm={setForm} />
+            ) : null}
+
+            {section === 'runtime' ? (
+              <AIModelRuntimeSettingsCard
+                value={form.ordinarySettings.aiResourceProtectionSettings}
+                configured={ollamaProviderConfigured}
+                providerConfigurationRevision={ollamaProviderConfigurationRevision}
+                onDraftChange={(value) => updateOrdinarySettingDraft('aiResourceProtectionSettings', value)}
+              />
             ) : null}
 
             {section === 'runtime' ? (
@@ -1365,8 +1442,8 @@ function subtitlePresetValue(settings: SubtitleStylingSettings, id: string): Sub
   return { ...base, ...override, id: base.id, provenance: base.provenance };
 }
 
-export function SubtitleStylingCard({ value, saving, onSave }: { value: SubtitleStylingSettings; saving: boolean; onSave: (value: SubtitleStylingSettings) => void }) {
-  const [draft, setDraft] = useState(value);
+export function SubtitleStylingCard({ value, saving, onSave, onDraftChange, draftOnly = false }: { value: SubtitleStylingSettings; saving: boolean; onSave?: (value: SubtitleStylingSettings) => void; onDraftChange?: (value: SubtitleStylingSettings) => void; draftOnly?: boolean }) {
+  const [draft, setDraft] = useSettingsDraftValue(value, identitySettingsValue<SubtitleStylingSettings>, onDraftChange);
   const [selectedID, setSelectedID] = useState('MVF_Default');
   const valueSnapshot = JSON.stringify(value);
   const [previousValueSnapshot, setPreviousValueSnapshot] = useState(valueSnapshot);
@@ -1506,7 +1583,7 @@ export function SubtitleStylingCard({ value, saving, onSave }: { value: Subtitle
             </Grid>
           </Box>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-            <Button startIcon={<SaveIcon />} variant="contained" onClick={() => onSave(draft)} disabled={saving || !dirty || hasInvalidColor} sx={{ alignSelf: 'flex-start' }}>Save Subtitle Styling</Button>
+            {!draftOnly ? <Button startIcon={<SaveIcon />} variant="contained" onClick={() => onSave?.(draft)} disabled={saving || !dirty || hasInvalidColor} sx={{ alignSelf: 'flex-start' }}>Save Subtitle Styling</Button> : null}
             <Button variant="outlined" onClick={resetDraft} disabled={saving || !canReset} sx={{ alignSelf: 'flex-start' }}>Reset to defaults</Button>
           </Stack>
         </Stack>
@@ -1515,12 +1592,8 @@ export function SubtitleStylingCard({ value, saving, onSave }: { value: Subtitle
   );
 }
 
-export function SubtitleCompatibilityCard({ value, saving, onSave }: { value: SubtitleSRTFallbackSettings; saving: boolean; onSave: (value: SubtitleSRTFallbackSettings) => void }) {
-  const [draft, setDraft] = useState(value);
-
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
+export function SubtitleCompatibilityCard({ value, saving, onSave, onDraftChange, draftOnly = false }: { value: SubtitleSRTFallbackSettings; saving: boolean; onSave?: (value: SubtitleSRTFallbackSettings) => void; onDraftChange?: (value: SubtitleSRTFallbackSettings) => void; draftOnly?: boolean }) {
+  const [draft, setDraft] = useSettingsDraftValue(value, identitySettingsValue<SubtitleSRTFallbackSettings>, onDraftChange);
 
   return (
     <Card>
@@ -1544,217 +1617,15 @@ export function SubtitleCompatibilityCard({ value, saving, onSave }: { value: Su
           <Typography color="text.secondary" variant="caption">
             Disabled by default. When enabled, eligible ASS requests can also produce an SRT compatibility sidecar.
           </Typography>
-          <Button
+          {!draftOnly ? <Button
             startIcon={<SaveIcon />}
             variant="contained"
-            onClick={() => onSave(draft)}
+            onClick={() => onSave?.(draft)}
             disabled={saving}
             sx={{ alignSelf: 'flex-start' }}
           >
             Save Subtitle Settings
-          </Button>
-        </Stack>
-      </CardContent>
-    </Card>
-  );
-}
-
-const subtitleTranslationReadinessLabels: Record<SubtitleTranslationReadinessState, string> = {
-  disabled: 'Disabled',
-  not_configured: 'Not configured',
-  untested: 'Untested',
-  ready: 'Ready',
-  unavailable: 'Unavailable',
-  model_not_found: 'Model not found',
-  invalid_configuration: 'Invalid configuration',
-};
-
-
-function subtitleTranslationConfigurationPayload(value: SubtitleTranslationSettingsValue, enabled?: boolean): Record<string, unknown> {
-  const projectionFields = new Set([
-    'provider',
-    'ollamaEndpoint',
-    'ollamaModel',
-    'qualityReviewerModel',
-    'maxCuesPerRequest',
-    'maxRequestBytes',
-    'maxContextCues',
-    'maxContextChars',
-    'enabled',
-    'readiness',
-    'readinessConfigIdentity',
-    'readinessCheckedAt',
-    'readinessDiagnostic',
-    'ollamaProviderState',
-  ]);
-  const payload: Record<string, unknown> = Object.fromEntries(
-    Object.entries(value).filter(([key]) => !projectionFields.has(key)),
-  );
-  Object.assign(payload, {
-    provider: value.provider,
-    ollamaEndpoint: value.ollamaEndpoint,
-    ollamaModel: value.ollamaModel,
-    qualityReviewerModel: value.qualityReviewerModel,
-    maxCuesPerRequest: value.maxCuesPerRequest,
-    maxRequestBytes: value.maxRequestBytes,
-    maxContextCues: value.maxContextCues,
-    maxContextChars: value.maxContextChars,
-  });
-  if (enabled !== undefined) {
-    payload.enabled = enabled;
-  }
-  return payload;
-}
-
-function subtitleTranslationErrorMessage(error: unknown, fallback: string) {
-  return error instanceof Error ? error.message : fallback;
-}
-
-function formatSubtitleTranslationCheckedAt(value?: string) {
-  if (!value) {
-    return '';
-  }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-
-export function SubtitleTranslationSettingsCard({
-  value,
-  saving,
-  onSave,
-}: {
-  value: SubtitleTranslationSettingsValue;
-  saving: boolean;
-  onSave: (value: Record<string, unknown>) => void;
-}) {
-  const queryClient = useQueryClient();
-  const [draft, setDraft] = useState(value);
-  const [readinessOverride, setReadinessOverride] = useState<SubtitleTranslationReadiness | null>(null);
-  const [previousValue, setPreviousValue] = useState(value);
-  const testConnection = useMutation({
-    mutationFn: api.testSubtitleTranslationConnection,
-    onSuccess: async (result) => {
-      setReadinessOverride(result);
-      await queryClient.invalidateQueries({ queryKey: ['settings'] });
-    },
-    onError: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['settings'] });
-    },
-  });
-  const enable = useMutation({
-    mutationFn: api.enableSubtitleTranslation,
-    onSuccess: async (result) => {
-      setReadinessOverride(result);
-      await queryClient.invalidateQueries({ queryKey: ['settings'] });
-    },
-    onError: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['settings'] });
-    },
-  });
-
-  if (previousValue !== value) {
-    setPreviousValue(value);
-    setDraft(value);
-    setReadinessOverride(null);
-  }
-
-  const persistedReadiness = subtitleTranslationReadinessForSettings(value);
-  const readiness = readinessOverride ?? persistedReadiness;
-  const dirty = draft.provider !== value.provider || draft.ollamaEndpoint !== value.ollamaEndpoint || draft.ollamaModel !== value.ollamaModel || draft.qualityReviewerModel !== value.qualityReviewerModel;
-  const structurallyConfigured = draft.provider === 'ollama' && Boolean(draft.ollamaEndpoint.trim()) && Boolean(draft.ollamaModel.trim());
-  const canTest = structurallyConfigured && !dirty && !testConnection.isPending;
-  const canEnable = structurallyConfigured && !dirty && !readiness.enabled && !enable.isPending;
-
-  return (
-    <Card>
-      <CardContent>
-        <Stack spacing={2}>
-          <Stack>
-            <Typography variant="h3">Subtitle translation</Typography>
-            <Typography color="text.secondary" variant="body2">
-              Configure the backend-authorized Ollama provider. Readiness is checked by MVForge and is not inferred from these fields.
-            </Typography>
-          </Stack>
-          <TextField
-            select
-            label="Provider"
-            value={draft.provider}
-            onChange={(event) => setDraft((current) => ({ ...current, provider: event.target.value }))}
-            fullWidth
-          >
-            <MenuItem value="">Not configured</MenuItem>
-            <MenuItem value="ollama">Ollama</MenuItem>
-          </TextField>
-          {draft.provider === 'ollama' ? (
-            <>
-              <TextField
-                label="Ollama endpoint"
-                placeholder="http://192.168.1.100:11434"
-                value={draft.ollamaEndpoint}
-                onChange={(event) => setDraft((current) => ({ ...current, ollamaEndpoint: event.target.value }))}
-                fullWidth
-              />
-              <TextField
-                label="Ollama model"
-                placeholder="qwen2.5:7b"
-                value={draft.ollamaModel}
-                onChange={(event) => setDraft((current) => ({ ...current, ollamaModel: event.target.value }))}
-                fullWidth
-              />
-              <TextField
-                label="Independent quality reviewer model (optional)"
-                helperText="Uses a separate installed Ollama model. No model is downloaded automatically, and reviewer suggestions always require your decision."
-                value={draft.qualityReviewerModel}
-                onChange={(event) => setDraft((current) => ({ ...current, qualityReviewerModel: event.target.value }))}
-                fullWidth
-              />
-            </>
-          ) : null}
-          <Stack spacing={0.5}>
-            <Typography variant="body2">Configured: {readiness.configured ? 'Yes' : 'No'}</Typography>
-            <Typography variant="body2">Enabled: {readiness.enabled ? 'Yes' : 'No'}</Typography>
-            <Typography variant="body2">Readiness: {subtitleTranslationReadinessLabels[readiness.readiness]}</Typography>
-            {readiness.diagnostic ? <Typography color="text.secondary" variant="body2">{readiness.diagnostic}</Typography> : null}
-            {readiness.lastCheckedAt ? <Typography color="text.secondary" variant="caption">Last checked: {formatSubtitleTranslationCheckedAt(readiness.lastCheckedAt)}</Typography> : null}
-          </Stack>
-          {dirty ? <Alert severity="info">Save configuration before testing or enabling.</Alert> : null}
-          {testConnection.isError ? <Alert severity="warning">{subtitleTranslationErrorMessage(testConnection.error, 'Connection test failed.')}</Alert> : null}
-          {enable.isError ? <Alert severity="warning">{subtitleTranslationErrorMessage(enable.error, 'Translation could not be enabled.')}</Alert> : null}
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap>
-            <Button
-              startIcon={<SaveIcon />}
-              variant="contained"
-              onClick={() => onSave(subtitleTranslationConfigurationPayload(draft))}
-              disabled={saving}
-            >
-              Save translation configuration
-            </Button>
-            <Button
-              variant="outlined"
-              onClick={() => testConnection.mutate()}
-              disabled={!canTest}
-            >
-              {testConnection.isPending ? 'Testing…' : 'Test Connection'}
-            </Button>
-            {readiness.enabled ? (
-              <Button
-                variant="outlined"
-                color="warning"
-                onClick={() => onSave(subtitleTranslationConfigurationPayload(value, false))}
-                disabled={saving}
-              >
-                Disable translation
-              </Button>
-            ) : (
-              <Button
-                variant="outlined"
-                onClick={() => enable.mutate()}
-                disabled={!canEnable}
-              >
-                {enable.isPending ? 'Enabling…' : 'Enable translation'}
-              </Button>
-            )}
-          </Stack>
+          </Button> : null}
         </Stack>
       </CardContent>
     </Card>

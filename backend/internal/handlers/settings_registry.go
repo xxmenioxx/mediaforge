@@ -61,7 +61,8 @@ func buildSettingDefinitions() map[string]settingDefinition {
 		{"workers", "pipeline"}, {"pipelineAutomation", "pipeline"}, {"validation", "pipeline"},
 		{"cancellationPolicy", "operations"}, {"housekeeping", "operations"}, {testEncodePolicySettingKey, "test-encode"},
 		{"originalRetentionPolicy", "archive"},
-		{"subtitleSettings", "pipeline"}, {translationSettingsKey, "pipeline"}, {ocrAISettingsKey, "pipeline"},
+		{"subtitleSettings", "subtitles"}, {translationSettingsKey, "subtitles"}, {ocrAISettingsKey, "subtitles"},
+		{aiCopilotSettingsKey, "ai-copilot"},
 		{jellyfinSettingsKey, "providers-integrations"}, {ollamaProviderSettingsKey, "providers-integrations"},
 		{"runtimePolicy", "runtime"}, {"remoteExecutors", "runtime"}, {airesource.SettingsKey, "runtime"},
 		{"directPlay", "pipeline"}, {"workingHours", "pipeline"},
@@ -109,6 +110,9 @@ func buildSettingDefinitions() map[string]settingDefinition {
 	})
 	definitions[ocrAISettingsKey] = withNormalizer(definitions[ocrAISettingsKey], func(_ settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
 		return normalizeOCRAISettingsValue(value)
+	})
+	definitions[aiCopilotSettingsKey] = withNormalizer(definitions[aiCopilotSettingsKey], func(_ settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
+		return normalizeAICopilotSettingsValue(value)
 	})
 	definitions[ollamaProviderSettingsKey] = withNormalizer(definitions[ollamaProviderSettingsKey], func(ctx settingsMutationContext, value models.JSONMap) (models.JSONMap, error) {
 		return ollamaProviderSettingsForUpdate(ctx.db, value)

@@ -17,7 +17,7 @@ import (
 
 func TestOCRAISettingsRegistryNormalizesAndValidatesIndependentSelection(t *testing.T) {
 	definition := settingDefinitionFor(ocrAISettingsKey)
-	if definition.Domain != "pipeline" || definition.Normalize == nil {
+	if definition.Domain != "subtitles" || definition.Normalize == nil {
 		t.Fatalf("OCR AI setting is missing its canonical policy: %#v", definition)
 	}
 

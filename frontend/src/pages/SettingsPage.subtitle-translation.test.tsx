@@ -4,9 +4,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api } from '../api/client';
-import type { SubtitleTranslationReadiness } from '../api/types';
-import { SubtitleTranslationSettingsCard } from './SettingsPage';
+import { ApiRequestError, api } from '../api/client';
+import type { OllamaModelReadinessResponse } from '../api/types';
+import { AITranslationSettingsCard } from './settings/OllamaSettings';
 import { subtitleTranslationSettingsValue } from '../utils/settingsPageHelpers';
 
 afterEach(() => {
@@ -14,17 +14,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderCard(value = subtitleTranslationSettingsValue(undefined), onSave = vi.fn()) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  const view = render(
-    <QueryClientProvider client={queryClient}>
-      <SubtitleTranslationSettingsCard value={value} saving={false} onSave={onSave} />
-    </QueryClientProvider>,
-  );
-  return { queryClient, onSave, view };
-}
+beforeEach(() => {
+  vi.spyOn(api, 'listOllamaModels').mockResolvedValue({ state: 'available', installedModels: [] });
+  vi.spyOn(api, 'testOllamaModelReadiness').mockResolvedValue(readiness());
+  vi.spyOn(api, 'enableSubtitleTranslation').mockResolvedValue({ configured: true, enabled: true, readiness: 'ready', lastCheckedAt: '', diagnostic: '' });
+});
 
 function configuredValue(overrides: Record<string, unknown> = {}) {
   return subtitleTranslationSettingsValue({
@@ -36,269 +30,95 @@ function configuredValue(overrides: Record<string, unknown> = {}) {
   });
 }
 
-function readiness(overrides: Partial<SubtitleTranslationReadiness> = {}): SubtitleTranslationReadiness {
+function readiness(overrides: Partial<OllamaModelReadinessResponse> = {}): OllamaModelReadinessResponse {
   return {
-    configured: true,
-    enabled: false,
-    readiness: 'ready',
-    lastCheckedAt: '2026-09-20T23:30:00Z',
-    diagnostic: '',
-    ...overrides,
+    state: 'available', modelId: 'qwen2.5:7b', available: true,
+    checkedAt: '2026-10-20T12:00:00Z', scope: 'metadata_check', ...overrides,
   };
 }
 
-describe('SubtitleTranslationSettingsCard', () => {
-  beforeEach(() => {
-    vi.spyOn(api, 'testSubtitleTranslationConnection').mockResolvedValue(readiness());
-    vi.spyOn(api, 'enableSubtitleTranslation').mockResolvedValue(readiness({ enabled: true }));
-    vi.spyOn(api, 'updateSetting').mockResolvedValue({
-      key: 'subtitleTranslationSettings',
-      value: {},
-      createdAt: '',
-      updatedAt: '',
-    });
-  });
+function renderCard(value = configuredValue(), options: { configDirty?: boolean; providerConfigured?: boolean } = {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const onDraftChange = vi.fn();
+  const onDisable = vi.fn();
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <AITranslationSettingsCard
+        value={value}
+        configDirty={options.configDirty ?? false}
+        providerConfigured={options.providerConfigured ?? true}
+        providerConfigurationRevision="provider-v1"
+        disableSaving={false}
+        onDraftChange={onDraftChange}
+        onDisable={onDisable}
+      />
+    </QueryClientProvider>,
+  );
+  return { onDisable, onDraftChange, queryClient, view };
+}
 
-  it('defaults missing settings to not configured and disabled', () => {
-    renderCard();
-
-    expect(screen.getByText('Configured: No')).toBeTruthy();
-    expect(screen.getByText('Enabled: No')).toBeTruthy();
-    expect(screen.getByText('Readiness: Not configured')).toBeTruthy();
-    expect(api.testSubtitleTranslationConnection).not.toHaveBeenCalled();
-  });
-
-  it('saves Ollama configuration without enabling through generic settings', async () => {
+describe('AITranslationSettingsCard', () => {
+  it('uses the shared installed-model catalog and never exposes an endpoint field', async () => {
     const user = userEvent.setup();
-    const { onSave } = renderCard();
+    const onDraftChange = vi.fn();
+    vi.mocked(api.listOllamaModels).mockResolvedValue({
+      state: 'available', installedModels: [{ id: 'qwen2.5:7b', name: 'qwen2.5:7b' }],
+    });
+    cleanup();
+    const card = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
+        <AITranslationSettingsCard value={configuredValue({ ollamaModel: 'old-model' })} configDirty={false} providerConfigured providerConfigurationRevision="provider-v1" disableSaving={false} onDraftChange={onDraftChange} onDisable={vi.fn()} />
+      </QueryClientProvider>,
+    );
 
-    await user.click(screen.getByRole('combobox', { name: 'Provider' }));
-    await user.click(screen.getByRole('option', { name: 'Ollama' }));
-    await user.type(screen.getByRole('textbox', { name: 'Ollama endpoint' }), 'http://nas.local:11434');
-    await user.type(screen.getByRole('textbox', { name: 'Ollama model' }), 'qwen2.5:7b');
-    await user.click(screen.getByRole('button', { name: 'Save translation configuration' }));
+    expect(screen.queryByRole('textbox', { name: 'Ollama endpoint' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Load installed models' }));
+    await waitFor(() => expect(api.listOllamaModels).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('combobox', { name: 'AI Translation model' }));
+    await user.click(await screen.findByRole('option', { name: 'qwen2.5:7b' }));
 
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
-      provider: 'ollama',
-      ollamaEndpoint: 'http://nas.local:11434',
-      ollamaModel: 'qwen2.5:7b',
-      qualityReviewerModel: '',
-      maxCuesPerRequest: 32,
-      maxRequestBytes: 65536,
-      maxContextCues: 8,
-      maxContextChars: 4096,
-    }));
-    expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty('enabled', true);
-    expect(api.testSubtitleTranslationConnection).not.toHaveBeenCalled();
+    expect(onDraftChange).toHaveBeenCalledWith(expect.objectContaining({ ollamaModel: 'qwen2.5:7b' }));
+    expect(onDraftChange.mock.calls[0]?.[0]).not.toHaveProperty('ollamaEndpoint');
+    expect(api.listOllamaModels).toHaveBeenCalledTimes(1);
+    card.unmount();
+  });
+
+  it('requires a successful explicit readiness check before enabling and retains a missing model', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.testOllamaModelReadiness).mockRejectedValue(new ApiRequestError('missing', 404, { state: 'model_not_found' }));
+    renderCard(configuredValue({ ollamaModel: 'missing-model' }));
+
+    const enabled = screen.getByRole('switch', { name: 'AI Translation disabled' });
+    expect(enabled).toHaveProperty('disabled', true);
+    await user.click(screen.getByRole('button', { name: 'Check selected model' }));
+    await waitFor(() => expect(api.testOllamaModelReadiness).toHaveBeenCalledWith('missing-model'));
+    expect(await screen.findByText(/selected model was not found/i)).toBeTruthy();
+    expect(screen.getByRole('switch', { name: 'AI Translation disabled' })).toHaveProperty('disabled', true);
     expect(api.enableSubtitleTranslation).not.toHaveBeenCalled();
   });
 
-  it('preserves unknown future model-role fields when saving Translation configuration', async () => {
+  it('enables only after readiness succeeds and disables independently when provider is offline', async () => {
     const user = userEvent.setup();
-    const roleFields = { primary: 'qwen2.5:7b', fallback: 'future-model' };
-    const onSave = vi.fn();
-    renderCard(configuredValue({ ollamaModelRoles: roleFields }), onSave);
-
-    const model = screen.getByRole('textbox', { name: 'Ollama model' });
-    await user.clear(model);
-    await user.type(model, 'qwen2.5:14b');
-    await user.click(screen.getByRole('button', { name: 'Save translation configuration' }));
-
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
-      ollamaModelRoles: roleFields,
-      ollamaModel: 'qwen2.5:14b',
-    }));
-    expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty('readiness');
-    expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty('enabled', true);
-  });
-
-  it('trusts backend invalidation after a provider-defining configuration change', async () => {
-    const user = userEvent.setup();
-    const onSave = vi.fn();
-    const view = render(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
-        <SubtitleTranslationSettingsCard value={configuredValue({ enabled: true, readiness: 'ready', ollamaModel: 'model-a' })} saving={false} onSave={onSave} />
-      </QueryClientProvider>,
-    );
-
-    const model = screen.getByRole('textbox', { name: 'Ollama model' });
-    await user.clear(model);
-    await user.type(model, 'model-b');
-    await user.click(screen.getByRole('button', { name: 'Save translation configuration' }));
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ ollamaModel: 'model-b' }));
-
-    view.rerender(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
-        <SubtitleTranslationSettingsCard value={configuredValue({ enabled: false, readiness: 'untested', ollamaModel: 'model-b' })} saving={false} onSave={onSave} />
-      </QueryClientProvider>,
-    );
-    await waitFor(() => {
-      expect(screen.getByText('Enabled: No')).toBeTruthy();
-      expect(screen.getByText('Readiness: Untested')).toBeTruthy();
-    });
-  });
-
-  it('shows successful Test Connection as ready without enabling translation', async () => {
-    const user = userEvent.setup();
-    const testConnection = vi.mocked(api.testSubtitleTranslationConnection);
-    testConnection.mockResolvedValue(readiness({ enabled: false }));
+    vi.mocked(api.testOllamaModelReadiness).mockResolvedValue(readiness());
+    vi.mocked(api.enableSubtitleTranslation).mockResolvedValue({ configured: true, enabled: true, readiness: 'ready', lastCheckedAt: '', diagnostic: '' });
     renderCard(configuredValue());
 
-    await user.click(screen.getByRole('button', { name: 'Test Connection' }));
-
-    await waitFor(() => expect(screen.getByText('Readiness: Ready')).toBeTruthy());
-    expect(testConnection).toHaveBeenCalledTimes(1);
-    expect(api.enableSubtitleTranslation).not.toHaveBeenCalled();
-    expect(screen.getByText('Enabled: No')).toBeTruthy();
-    expect(screen.getByText(/Last checked:/)).toBeTruthy();
-  });
-
-  it('shows model-not-found readiness diagnostics without enabling', async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.testSubtitleTranslationConnection).mockResolvedValue(readiness({
-      readiness: 'model_not_found',
-      diagnostic: 'Configured translation model is unavailable.',
-    }));
-    renderCard(configuredValue());
-
-    await user.click(screen.getByRole('button', { name: 'Test Connection' }));
-
-    expect(await screen.findByText('Readiness: Model not found')).toBeTruthy();
-    expect(screen.getByText('Configured translation model is unavailable.')).toBeTruthy();
-    expect(api.enableSubtitleTranslation).not.toHaveBeenCalled();
-  });
-
-  it('enables only through the dedicated readiness-validated endpoint', async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.enableSubtitleTranslation).mockResolvedValue(readiness({ enabled: true }));
-    renderCard(configuredValue({ readiness: 'ready', enabled: false }));
-
-    await user.click(screen.getByRole('button', { name: 'Enable translation' }));
-
+    await user.click(screen.getByRole('button', { name: 'Check selected model' }));
+    await waitFor(() => expect(api.testOllamaModelReadiness).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('switch', { name: 'AI Translation disabled' }));
     await waitFor(() => expect(api.enableSubtitleTranslation).toHaveBeenCalledTimes(1));
-    expect(api.updateSetting).not.toHaveBeenCalledWith(expect.objectContaining({
-      value: expect.objectContaining({ enabled: true }),
-    }));
-    expect(await screen.findByText('Enabled: Yes')).toBeTruthy();
+
+    cleanup();
+    const offline = renderCard(configuredValue({ enabled: true }), { providerConfigured: false });
+    await user.click(screen.getByRole('switch', { name: 'AI Translation enabled' }));
+    expect(offline.onDisable).toHaveBeenCalledTimes(1);
+    expect(api.testOllamaModelReadiness).toHaveBeenCalledTimes(1);
   });
 
-  it('refreshes settings after a failed Enable and renders the persisted unavailable state', async () => {
-    const user = userEvent.setup();
-    const { queryClient, view } = renderCard(configuredValue({ readiness: 'ready', enabled: false }));
-    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
-    vi.mocked(api.enableSubtitleTranslation).mockRejectedValue(new Error('Request failed with 409'));
-
-    await user.click(screen.getByRole('button', { name: 'Enable translation' }));
-    await waitFor(() => expect(api.enableSubtitleTranslation).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['settings'] }));
-
-    view.rerender(
-      <QueryClientProvider client={queryClient}>
-        <SubtitleTranslationSettingsCard
-          value={configuredValue({
-            enabled: false,
-            readiness: 'unavailable',
-            readinessDiagnostic: 'Translation provider is unavailable.',
-            readinessCheckedAt: '2026-09-21T00:15:00Z',
-          })}
-          saving={false}
-          onSave={vi.fn()}
-        />
-      </QueryClientProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText('Enabled: No')).toBeTruthy();
-      expect(screen.getByText('Readiness: Unavailable')).toBeTruthy();
-      expect(screen.getByText('Translation provider is unavailable.')).toBeTruthy();
-      expect(screen.getByText(/Last checked:/)).toBeTruthy();
-    });
-    expect(screen.queryByText('Readiness: Ready')).toBeNull();
-  });
-
-  it('refreshes settings after a failed Test Connection and renders refreshed diagnostics', async () => {
-    const user = userEvent.setup();
-    const { queryClient, view } = renderCard(configuredValue({ readiness: 'untested', enabled: false }));
-    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
-    vi.mocked(api.testSubtitleTranslationConnection).mockRejectedValue(new Error('Request failed with 503'));
-
-    await user.click(screen.getByRole('button', { name: 'Test Connection' }));
-    await waitFor(() => expect(api.testSubtitleTranslationConnection).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['settings'] }));
-
-    view.rerender(
-      <QueryClientProvider client={queryClient}>
-        <SubtitleTranslationSettingsCard
-          value={configuredValue({
-            enabled: false,
-            readiness: 'model_not_found',
-            readinessDiagnostic: 'Configured translation model is unavailable.',
-            readinessCheckedAt: '2026-09-21T00:16:00Z',
-          })}
-          saving={false}
-          onSave={vi.fn()}
-        />
-      </QueryClientProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText('Enabled: No')).toBeTruthy();
-      expect(screen.getByText('Readiness: Model not found')).toBeTruthy();
-      expect(screen.getByText('Configured translation model is unavailable.')).toBeTruthy();
-      expect(screen.getByText(/Last checked:/)).toBeTruthy();
-    });
-    expect(screen.queryByText('Readiness: Untested')).toBeNull();
-  });
-
-  it('disables without testing or enabling and preserves configuration policy', async () => {
-    const user = userEvent.setup();
-    const onSave = vi.fn();
-    const value = configuredValue({ enabled: true, readiness: 'ready', maxCuesPerRequest: 24, maxRequestBytes: 32000, maxContextCues: 6, maxContextChars: 3000 });
-    renderCard(value, onSave);
-
-    await user.click(screen.getByRole('button', { name: 'Disable translation' }));
-
-    expect(onSave).toHaveBeenCalledWith({
-      provider: 'ollama',
-      ollamaEndpoint: 'http://nas.local:11434',
-      ollamaModel: 'qwen2.5:7b',
-      maxCuesPerRequest: 24,
-      maxRequestBytes: 32000,
-      maxContextCues: 6,
-      maxContextChars: 3000,
-      qualityReviewerModel: '',
-      enabled: false,
-    });
-    expect(api.testSubtitleTranslationConnection).not.toHaveBeenCalled();
-    expect(api.enableSubtitleTranslation).not.toHaveBeenCalled();
-  });
-
-  it('blocks readiness actions while provider configuration is dirty', async () => {
-    const user = userEvent.setup();
-    renderCard(configuredValue({ readiness: 'ready', enabled: false, ollamaModel: 'model-a' }));
-
-    await user.clear(screen.getByRole('textbox', { name: 'Ollama model' }));
-    await user.type(screen.getByRole('textbox', { name: 'Ollama model' }), 'model-b');
-
-    expect(screen.getByText('Save configuration before testing or enabling.')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Test Connection' })).toHaveProperty('disabled', true);
-    expect(screen.getByRole('button', { name: 'Enable translation' })).toHaveProperty('disabled', true);
-    expect(api.testSubtitleTranslationConnection).not.toHaveBeenCalled();
-    expect(api.enableSubtitleTranslation).not.toHaveBeenCalled();
-  });
-
-  it('uses persisted configuration when disabling with a dirty draft', async () => {
-    const user = userEvent.setup();
-    const onSave = vi.fn();
-    renderCard(configuredValue({ enabled: true, readiness: 'ready', ollamaModel: 'model-a' }), onSave);
-
-    await user.clear(screen.getByRole('textbox', { name: 'Ollama model' }));
-    await user.type(screen.getByRole('textbox', { name: 'Ollama model' }), 'unsaved-model');
-    await user.click(screen.getByRole('button', { name: 'Disable translation' }));
-
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
-      ollamaModel: 'model-a',
-      enabled: false,
-    }));
+  it('keeps changes in the central Subtitles draft before readiness actions', () => {
+    renderCard(configuredValue(), { configDirty: true });
+    expect(screen.getByRole('button', { name: 'Check selected model' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('switch', { name: 'AI Translation disabled' })).toHaveProperty('disabled', true);
+    expect(api.testOllamaModelReadiness).not.toHaveBeenCalled();
   });
 });
