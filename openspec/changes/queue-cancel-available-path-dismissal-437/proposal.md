@@ -10,7 +10,7 @@ Queue dismissal currently waits for per-job filesystem cleanup, so large cancele
 - Refresh Queue and affected asset lifecycle state after cancellation or dismissal without issuing per-job catalog refreshes.
 - Add focused persistence, race, exact-path, idempotency, and responsiveness coverage.
 
-Out of scope: deleting RAW or Library content, changing completed/Validation/Publisher dismissal rules, or broadening Housekeeping ownership and cleanup roots.
+This Draft is a verified slice. Durable Housekeeping execution and restart reconciliation for cancellation cleanup remain open in task 1.2; no Housekeeping roots are expanded. Deleting RAW or Library content and changing completed/Validation/Publisher dismissal rules remain out of scope.
 
 ## Capabilities
 
